@@ -1,11 +1,11 @@
 """Fluent setting cards backed by the application's JSON config."""
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTime, QSignalBlocker
 from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
-    SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel, TransparentToolButton, ScrollArea,
+    SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel, TransparentToolButton, ScrollArea, TimePicker,
 )
 from ..components.custom_widgets import make_card
 from ..theme import SettingSurface, style_controls
@@ -13,6 +13,7 @@ from core.background import BackgroundJobs
 from core.api_client import ApiClient
 from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
+from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
 from ..components.model_options import apply_model_options
 import copy
 
@@ -43,6 +44,7 @@ class CustomSettingCard(SettingSurface, SettingCard):
 
 class SettingsPage(QWidget):
     debug_mode_changed = pyqtSignal(bool)
+    schedule_changed = pyqtSignal()
     def __init__(self, config_manager, log_callback, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPage")
@@ -63,6 +65,8 @@ class SettingsPage(QWidget):
         self._build_pool()
         self._build_task()
         self._build_defaults()
+        self._build_schedule()
+        self._build_sync()
         self._build_appearance()
         self.root.addStretch(1)
         self.scroll = ScrollArea(self)
@@ -199,7 +203,62 @@ class SettingsPage(QWidget):
         group = self._group("外观")
         self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深色", "浅色", "跟随系统"])
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
-        self.root.addWidget(CaptionLabel('StoryboardVideoStudio v2.0A · 模型池和自动重试将在阶段2B启用'))
+        self.root.addWidget(CaptionLabel('StoryboardVideoStudio v3.0 · 产品批处理、定时执行与GitHub同步'))
+
+    def _build_schedule(self):
+        group = self._group('定时执行')
+        self.schedule_enabled = self._switch(group, '启用定时执行', ('schedule', 'enabled'), FIF.PLAY)
+        self.schedule_time = TimePicker(showSeconds=False)
+        self.schedule_time.setTime(QTime.fromString(self._value(('schedule', 'time')), 'HH:mm'))
+        group.addSettingCard(CustomSettingCard('定时开始时间', self.schedule_time, FIF.HISTORY))
+        self.schedule_mode = self._combo(group, '执行模式', ('schedule', 'mode'), ['once', 'daily'], ['仅一次', '每天重复'])
+        self.schedule_after = self._combo(group, '定时队列全部结束后', ('schedule', 'after_finish'), ['keep', 'close'], ['保持运行', '自动关闭软件'])
+        self.current_time = CaptionLabel('当前时间：正在读取')
+        self.current_time.setWordWrap(True)
+        group.addSettingCard(CustomSettingCard('当前时间 / 网络校时', self.current_time, FIF.HISTORY))
+        self.schedule_enabled.checkedChanged.connect(lambda *_: self.schedule_changed.emit())
+        self.schedule_time.timeChanged.connect(self._schedule_time_changed)
+        self.schedule_mode.currentIndexChanged.connect(lambda *_: self.schedule_changed.emit())
+        # Completion behavior does not re-arm an already consumed occurrence.
+
+    def _schedule_time_changed(self, value):
+        self.config_manager.update(('schedule', 'time'), value.toString('HH:mm'))
+        self.schedule_changed.emit()
+
+    def update_schedule_state(self, now, clock_status):
+        self.current_time.setText(now.strftime('%Y-%m-%d %H:%M:%S') + '\n' + clock_status)
+        enabled = bool(self.config_manager.config['schedule']['enabled'])
+        if self.schedule_enabled.isChecked() != enabled:
+            blocker = QSignalBlocker(self.schedule_enabled)
+            self.schedule_enabled.setChecked(enabled)
+            del blocker
+
+    def _build_sync(self):
+        group = self._group('GitHub代码同步')
+        self.sync_button = PushButton(FIF.SYNC, '同步到GitHub')
+        self.sync_button.setToolTip('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传')
+        self.sync_button.clicked.connect(self.sync_github)
+        group.addSettingCard(CustomSettingCard('私人仓库：admin11044/StoryboardVideoStudio', self.sync_button, FIF.SYNC))
+
+    def sync_github(self):
+        self.sync_button.setEnabled(False)
+        self.sync_button.setText('正在同步...')
+        config = copy.deepcopy(self.config_manager.config)
+        def work():
+            secrets = [config['api'].get(key, '') for key in ('api_key', 'upload_api_key')]
+            return RepositorySync(secrets=secrets, log=self.jobs.log_message.emit).sync()
+        def reset():
+            self.sync_button.setEnabled(True); self.sync_button.setText('同步到GitHub')
+        def done(result):
+            reset()
+            from qfluentwidgets import InfoBar
+            InfoBar.success('GitHub同步成功', '已同步到GitHub，最新commit: ' + result['commit'][:12], parent=self, duration=5000)
+        def failed(message):
+            reset()
+            self.log_callback(message, 'error')
+            from qfluentwidgets import InfoBar
+            InfoBar.error('GitHub同步失败', message, parent=self, duration=7000)
+        self.jobs.start(work, done, failed)
 
     def _add_model_row(self, name, enabled, status, persist=True):
         row = make_card()

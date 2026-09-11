@@ -21,7 +21,7 @@ class HistoryPage(QWidget):
         self.open_button = PushButton(FIF.FOLDER, '打开输出文件夹')
         self.open_button.clicked.connect(self.open_output)
         header.addWidget(self.open_button); root.addLayout(header)
-        columns = ['序号', '任务名', '模型', '状态', '提交时间', '完成时间', '文件大小', '操作']
+        columns = ['序号', '产品', '任务名', '模型', '状态', '提交时间', '完成时间', '文件大小', '操作']
         self.table = TableWidget(); self.table.setColumnCount(len(columns)); self.table.setHorizontalHeaderLabels(columns)
         self.table.setBorderVisible(True); self.table.setBorderRadius(8); self.table.setEditTriggers(self.table.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setDefaultSectionSize(48)
@@ -35,7 +35,7 @@ class HistoryPage(QWidget):
         self.table.setRowCount(len(self.records))
         for row, task in enumerate(self.records):
             status = STATUS_TEXT.get(task.get('status'), task.get('status', '—'))
-            values = [str(len(self.records)-row), task.get('prompt_name', ''), task.get('model', ''), status,
+            values = [str(len(self.records)-row), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
                       task.get('created_at', '').replace('T', '\n') or '—', task.get('finished_at', '').replace('T', '\n') or '—',
                       f"{task['size_bytes']/1024/1024:.1f} MB" if task.get('size_bytes') else '—']
             for column, value in enumerate(values):
@@ -61,4 +61,4 @@ class HistoryPage(QWidget):
 
     def _filter(self, status):
         for row in range(self.table.rowCount()):
-            self.table.setRowHidden(row, status != '全部状态' and self.table.item(row, 3).text() != status)
+            self.table.setRowHidden(row, status != '全部状态' and self.table.item(row, 4).text() != status)

@@ -28,7 +28,7 @@ class PipelineUiTests(unittest.TestCase):
             manager.config['api'].update(base_url=server.base, api_key='test-only', upload_url=server.base + '/upload')
             manager.config['workspace']['poll_interval'] = 3
             manager.save_config()
-            window = MainWindow(manager); window.show()
+            window = MainWindow(manager, network_time=False); window.show()
             workspace = window.workspace_page
             wait_until(lambda: len(workspace.data_source.matches) == 1 and not workspace.jobs.busy)
             self.assertEqual(workspace.queue_panel.list.count(), 1)
@@ -40,7 +40,7 @@ class PipelineUiTests(unittest.TestCase):
             self.assertFalse(workspace.start_button.isEnabled())
             wait_until(lambda: not workspace.task_manager.is_running)
             self.assertEqual(window.history_page.table.rowCount(), 1)
-            self.assertEqual(window.history_page.table.item(0, 3).text(), '已完成')
+            self.assertEqual(window.history_page.table.item(0, 4).text(), '已完成')
             self.assertEqual(workspace.recent_panel.list.count(), 1)
             record = manager.config['history'][0]
             target = Path(record['result_path'])
@@ -50,7 +50,7 @@ class PipelineUiTests(unittest.TestCase):
                 window.history_page.open_button.click()
                 opened.assert_called_once_with(str(target.parent))
             window.close(); window.deleteLater(); QTest.qWait(40)
-            reopened = MainWindow(ConfigManager(root / 'config.json')); reopened.show()
+            reopened = MainWindow(ConfigManager(root / 'config.json'), network_time=False); reopened.show()
             wait_until(lambda: not reopened.workspace_page.jobs.busy)
             self.assertEqual(reopened.history_page.table.rowCount(), 1)
             self.assertEqual(reopened.config_manager.config['history'][0]['task_id'], record['task_id'])

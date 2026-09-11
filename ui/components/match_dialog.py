@@ -36,7 +36,9 @@ class MatchDialog(FramelessDialog):
         splitter = QSplitter(Qt.Horizontal)
         self.prompt_list = ListWidget()
         for task in self.matches:
-            item = QListWidgetItem(Path(task['prompt_path']).name)
+            filename = Path(task['prompt_path']).name
+            label = f'{task["product"]} / {filename}' if task.get('product') else filename
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, task['prompt_path'])
             item.setToolTip(task['prompt_path'])
             item.setIcon(FIF.DOCUMENT.icon())

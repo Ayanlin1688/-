@@ -27,7 +27,7 @@ class InteractionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "config.json"
-        self.window = MainWindow(ConfigManager(self.path))
+        self.window = MainWindow(ConfigManager(self.path), network_time=False)
         self.window.show()
         QTest.qWait(40)
 
@@ -75,7 +75,7 @@ class InteractionTests(unittest.TestCase):
         params.audio.setChecked(False)
         params.seed.setText("12345")
         self.window.close()
-        reopened = MainWindow(ConfigManager(self.path))
+        reopened = MainWindow(ConfigManager(self.path), network_time=False)
         try:
             self.assertEqual(reopened.settings_page.base_url.text(), "https://example.invalid/v1")
             self.assertEqual(reopened.settings_page.api_key.text(), "test-only-secret")

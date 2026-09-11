@@ -5,8 +5,8 @@ from pathlib import Path
 import threading
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy
-from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar
-from core.task_manager import TaskManager, stamp
+from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar
+from core.task_manager import TaskManager, TERMINAL, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
 from core.api_client import ApiClient
@@ -40,7 +40,7 @@ class WorkspacePage(QWidget):
         self.cancel_button.clicked.connect(manager.cancel_all)
         self.current_task.skip_button.clicked.connect(manager.skip_current)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
-        manager.task_list_updated.connect(self.queue_panel.update_tasks)
+        manager.task_list_updated.connect(self._tasks_updated)
         manager.current_task_changed.connect(self._current_changed)
         manager.task_progress.connect(self.current_task.update_progress)
         manager.log_message.connect(self.append_log)
@@ -61,6 +61,12 @@ class WorkspacePage(QWidget):
         header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel("工作台")); title_box.addWidget(CaptionLabel("批量生成分镜视频")); header.addLayout(title_box); header.addStretch(1)
         self.start_button = PrimaryPushButton(FIF.PLAY, "开始生成"); self.pause_button = PushButton(FIF.PAUSE, "暂停"); self.cancel_button = PushButton(FIF.CANCEL, "取消全部")
         header.addWidget(self.start_button); header.addWidget(self.pause_button); header.addWidget(self.cancel_button); root.addLayout(header)
+        self.product_progress_label = CaptionLabel('当前：—，总进度：产品 0/0')
+        self.product_progress = ProgressBar()
+        self.product_progress.setRange(0, 1)
+        self.product_progress.setValue(0)
+        root.addWidget(self.product_progress_label)
+        root.addWidget(self.product_progress)
         splitter = QSplitter(Qt.Horizontal)
         self.splitter = splitter
         splitter.setChildrenCollapsible(False)
@@ -107,26 +113,28 @@ class WorkspacePage(QWidget):
         config = copy.deepcopy(self.config_manager.config)
         if not config['paths']['prompts']:
             self.data_source.set_matches([], [])
-            self.queue_panel.update_tasks([])
+            self._tasks_updated([])
             return
         self.data_source.status_label.setText('正在扫描匹配...')
         def scan():
             matcher = StoryboardMatcher.from_config(config)
-            prompts, images = matcher.scan_directories(config['paths']['prompts'], config['paths']['images'])
-            matched = matcher.match_files(prompts, images)
-            matcher.overrides = {}
-            return matched, matcher.match_files(prompts, images)
+            matched = matcher.scan_and_match(config['paths'])
+            automatic_matcher = StoryboardMatcher(matcher.recursive)
+            automatic = automatic_matcher.scan_and_match(config['paths'])
+            return matched, automatic, matcher.warnings
         def done(result):
             if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
                 return
-            matched, automatic = result
+            matched, automatic, warnings = result
             self.data_source.set_matches(matched, automatic)
-            self.queue_panel.update_tasks(matched)
+            self._tasks_updated(matched)
+            for warning in warnings:
+                self.append_log(warning, 'warning')
             self.append_log(f'扫描匹配完成：{len(matched)}个提示词，{sum(t["matched"] for t in matched)}个已匹配', 'info')
         def failed(message):
             if version == self._scan_version and not self.closing.is_set():
                 self.data_source.set_matches([], [])
-                self.queue_panel.update_tasks([])
+                self._tasks_updated([])
                 self.data_source.status_label.setText('扫描失败，请检查目录')
                 self.append_log(message, 'error')
         self.jobs.start(scan, done, failed)
@@ -159,7 +167,23 @@ class WorkspacePage(QWidget):
 
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)
-        self.queue_panel.list.setCurrentRow(index)
+        self.queue_panel.select_task(index)
+        product = task.get('product') or '未分组'
+        task_index = task.get('product_task_index', index + 1)
+        task_total = task.get('product_task_total', len(self.task_manager.tasks) or 1)
+        product_index = task.get('product_index', 1)
+        product_total = task.get('product_total', 1)
+        self.product_progress_label.setText(
+            f'当前：{product} ({task_index}/{task_total})，总进度：产品 {product_index}/{product_total}'
+        )
+
+    def _tasks_updated(self, tasks):
+        self.queue_panel.update_tasks(tasks)
+        total = len(tasks)
+        self.product_progress.setRange(0, max(1, total))
+        self.product_progress.setValue(sum(task.get('status') in TERMINAL for task in tasks))
+        if not tasks:
+            self.product_progress_label.setText('当前：—，总进度：产品 0/0')
 
     def _record(self, record):
         history = copy.deepcopy(self.config_manager.config['history'])
@@ -213,7 +237,7 @@ class WorkspacePage(QWidget):
                 folder = task.get('output_dir') or config['paths']['output']
                 if not folder:
                     raise ValueError('请先选择视频保存目录')
-                index = task.get('sequence') or next((i+1 for i, row in enumerate(config['history']) if row.get('local_id') == task.get('local_id')), 1)
+                index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(config['history']) if row.get('local_id') == task.get('local_id')), 1)
                 filename = task.get('filename') or build_filename(config['download_settings']['naming_rule'], task, index)
                 task['result_path'] = downloader.download_video(result['result_url'], folder, filename)
                 task.update(status='completed', result_url=result['result_url'], error='', finished_at=stamp(),

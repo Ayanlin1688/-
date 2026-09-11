@@ -21,7 +21,7 @@ class UiSmokeTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.window = MainWindow(ConfigManager(Path(self.temp.name) / 'config.json'))
+        self.window = MainWindow(ConfigManager(Path(self.temp.name) / 'config.json'), network_time=False)
 
     def tearDown(self):
         self.window.close()

@@ -203,7 +203,7 @@ class ReferenceDebugTests(unittest.TestCase):
 
     def test_fluent_toggle_filters_debug_and_controls_submitted_count(self):
         manager = ConfigManager(self.root / 'config.json'); manager.save_config()
-        window = MainWindow(manager)
+        window = MainWindow(manager, network_time=False)
         try:
             drawer = window.workspace_page.log_drawer
             self.assertFalse(window.settings_page.debug_mode.isChecked())

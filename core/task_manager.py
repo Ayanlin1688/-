@@ -3,6 +3,7 @@ import copy
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -27,6 +28,26 @@ STATUS_TEXT = {'waiting': '等待中', 'queued': '生成中', 'uploading': '上�
 
 def stamp():
     return datetime.now().isoformat(timespec='seconds')
+
+
+def resolve_output_directory(output_root, output_subdir=''):
+    """Resolve one product output folder without allowing root escapes."""
+    root = Path(output_root).expanduser().resolve()
+    subdir = str(output_subdir or '')
+    if subdir and (Path(subdir).name != subdir or subdir in {'.', '..'}):
+        raise ValueError('产品输出目录无效')
+    target = (root / subdir).resolve()
+    try:
+        inside_root = os.path.commonpath((str(root), str(target))) == str(root)
+    except ValueError:
+        inside_root = False
+    if not inside_root:
+        raise ValueError('产品输出目录超出视频保存目录')
+    target.mkdir(parents=True, exist_ok=True)
+    resolved = target.resolve()
+    if os.path.commonpath((str(root), str(resolved))) != str(root):
+        raise ValueError('产品输出目录超出视频保存目录')
+    return str(resolved)
 
 
 class TaskControl:
@@ -125,7 +146,10 @@ class TaskWorker(QThread):
         try:
             paths = self.config['paths']
             self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
-            self.tasks = StoryboardMatcher.from_config(self.config).scan_and_match(paths)
+            matcher = StoryboardMatcher.from_config(self.config)
+            self.tasks = matcher.scan_and_match(paths)
+            for warning in matcher.warnings:
+                self.log(warning, 'warning')
             limit = self.config.get('_task_limit')
             if limit:
                 self.tasks = self.tasks[:int(limit)]
@@ -154,13 +178,19 @@ class TaskWorker(QThread):
                 # Polling, retry placeholders, output folders and unsupported seed/audio settings
                 # do not change the submitted video and must not cause another paid request.
                 signature = hashlib.sha256(json.dumps([stats, effective, api['base_url'].rstrip('/')], sort_keys=True).encode()).hexdigest()
+                output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
                 task.update(status='waiting', task_id='', model=model, retry_count=0, result_path='',
                             local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
-                            api_base_url=api['base_url'].rstrip('/'), output_dir=str(Path(paths['output']).resolve()),
+                            api_base_url=api['base_url'].rstrip('/'), output_dir=output_dir,
                             sequence=sequence)
                 old = previous.get(signature)
-                if old and old.get('task_id'):
+                if old and old.get('task_id') and not task.get('skip_reason'):
+                    product_fields = {key: task[key] for key in (
+                        'product', 'product_index', 'product_total', 'product_task_index',
+                        'product_task_total', 'output_subdir', 'skip_reason', 'output_dir')
+                    }
                     task.update(copy.deepcopy(old))
+                    task.update(product_fields)
                     if old['status'] != 'completed' or not Path(old.get('result_path', '')).is_file():
                         task.update(status='failed', error='已有远端任务ID，请从历史记录重新下载，避免重复提交')
             matched = sum(t['matched'] for t in self.tasks)
@@ -180,6 +210,10 @@ class TaskWorker(QThread):
                     self.publish()
                     self.task_progress.emit(0, 0, -1)
                     self.control.before_task()
+                    if task.get('skip_reason'):
+                        self.log(f'任务{index+1}/{len(self.tasks)}：{task["skip_reason"]}，已跳过', 'warning')
+                        self.terminal(task, 'skipped', task['skip_reason'])
+                        continue
                     policy = self.config['task_strategy']['unmatched_prompt']
                     if not task['images'] and policy == '跳过并警告':
                         self.log(f'任务{index+1}/{len(self.tasks)}：未匹配图片，按策略跳过', 'warning')
@@ -256,8 +290,8 @@ class TaskWorker(QThread):
                             self.publish(record=True)
                             self.log(f'{prefix}：生成完成，开始下载...', 'success')
                             rule = self.config['download_settings']['naming_rule']
-                            task['filename'] = build_filename(rule, task, index + 1)
-                            task['output_dir'] = str(Path(paths['output']).resolve())
+                            task['filename'] = build_filename(rule, task, task.get('product_task_index', index + 1))
+                            task['output_dir'] = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
                             task['result_path'] = download.download_video(task['result_url'], task['output_dir'], task['filename'])
                             task['size_bytes'] = Path(task['result_path']).stat().st_size
                             self.task_progress.emit(100, time.monotonic()-started, 0)

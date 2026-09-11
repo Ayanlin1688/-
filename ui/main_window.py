@@ -5,9 +5,11 @@ from __future__ import annotations
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication
-from qfluentwidgets import Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
+from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
 
 from core.config_manager import ConfigManager
+from core.network_clock import NetworkClock
+from core.scheduler import ScheduleEngine
 from .components.custom_widgets import ensure_ui_font
 from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
@@ -16,7 +18,7 @@ from .theme import style_controls, style_page, apply_palette
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, config_manager: ConfigManager | None = None) -> None:
+    def __init__(self, config_manager: ConfigManager | None = None, network_time=True) -> None:
         ensure_ui_font()
         apply_palette(QApplication.instance())
         setTheme(Theme.DARK, save=False)
@@ -37,6 +39,7 @@ class MainWindow(FluentWindow):
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(100)
         self._close_timer.timeout.connect(self._finish_close)
+        self._setup_schedule(network_time)
         for page in (self.workspace_page, self.history_page, self.settings_page):
             style_page(page)
         style_controls(self)
@@ -61,13 +64,69 @@ class MainWindow(FluentWindow):
         )
 
     def show_about(self) -> None:
-        dialog = Dialog('关于 StoryboardVideoStudio', '版本 v2.0A\n扫描匹配 · 单模型提交 · 轮询 · 自动下载\n模型池和自动重试将在阶段2B启用', self)
+        dialog = Dialog('关于 StoryboardVideoStudio', '版本 v3.0\n产品批处理 · 定时执行 · GitHub同步\n扫描匹配 · 单模型提交 · 轮询 · 自动下载', self)
         dialog.exec_()
+
+    def _setup_schedule(self, network_time):
+        self.clock = NetworkClock()
+        self.schedule_engine = ScheduleEngine(self.config_manager, now=self.clock.now, log=self.workspace_page.append_log)
+        self.next_schedule_label = CaptionLabel(self.schedule_engine.next_text())
+        self.workspace_page.layout().insertWidget(1, self.next_schedule_label)
+        self._scheduled_batch = False
+        self.settings_page.schedule_changed.connect(self._schedule_changed)
+        self.workspace_page.task_manager.all_finished.connect(self._scheduled_finished)
+        self.schedule_timer = QTimer(self)
+        self.schedule_timer.setInterval(1000)
+        self.schedule_timer.timeout.connect(self._schedule_tick)
+        self.schedule_timer.start()
+        if network_time:
+            QTimer.singleShot(0, self._calibrate_clock)
+        else:
+            self.clock.status = '系统时间（未启用网络校时）'
+        self.settings_page.update_schedule_state(self.clock.now(), self.clock.status)
+
+    def _calibrate_clock(self):
+        if self._closing:
+            return
+        def done(sample):
+            self.clock.apply(sample)
+            if abs(sample['offset']) >= 60:
+                self.schedule_engine.configure(reset=True)
+            self.workspace_page.append_log(self.clock.status, 'info')
+            self._schedule_tick()
+        def failed(message):
+            self.clock.use_system_time()
+            self.workspace_page.append_log(message, 'warning')
+            self.settings_page.update_schedule_state(self.clock.now(), self.clock.status)
+        self.settings_page.jobs.start(self.clock.sample, done, failed)
+
+    def _schedule_changed(self):
+        self.schedule_engine.configure(reset=True)
+        self._schedule_tick()
+
+    def _schedule_tick(self):
+        if self._closing:
+            return
+        workspace = self.workspace_page
+        busy = workspace.task_manager.is_running or workspace._redownloading
+        if self.schedule_engine.tick(busy=busy):
+            workspace.start_generation()
+            self._scheduled_batch = workspace.task_manager.is_running
+        self.next_schedule_label.setText(self.schedule_engine.next_text())
+        self.settings_page.update_schedule_state(self.clock.now(), self.clock.status)
+
+    def _scheduled_finished(self, *_):
+        scheduled, self._scheduled_batch = self._scheduled_batch, False
+        tasks = self.workspace_page.task_manager.tasks
+        if scheduled and tasks and self.config_manager.config['schedule']['after_finish'] == 'close' and not any(t.get('status') == 'cancelled' for t in tasks):
+            self.workspace_page.append_log('定时队列全部结束，自动关闭软件', 'info')
+            QTimer.singleShot(100, self.close)
 
     def _background_busy(self):
         return self.workspace_page.task_manager.is_running or self.workspace_page.jobs.busy or self.settings_page.jobs.busy
 
     def closeEvent(self, event):
+        self.schedule_timer.stop()
         if self._background_busy():
             event.ignore()
             if not self._closing:

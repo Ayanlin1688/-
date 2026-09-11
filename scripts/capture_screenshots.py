@@ -1,4 +1,4 @@
-"""Capture the Stage 2A UI with labelled synthetic local screenshot fixtures."""
+"""Capture the Stage 3 UI with labelled synthetic local screenshot fixtures."""
 
 from __future__ import annotations
 
@@ -49,7 +49,8 @@ def main() -> None:
     # Synthetic data belongs only to this isolated screenshot config, never production history.
     temp = tempfile.TemporaryDirectory()
     config, tasks = make_fixture(temp.name)
-    window = MainWindow(config)
+    window = MainWindow(config, network_time=False)
+    window.schedule_timer.stop()  # A fixture's enabled schedule must never submit work.
     window.setWindowTitle('StoryboardVideoStudio · 本地截图示例（非真实生成结果）')
     window.resize(1600, 1100)
     window.show()
@@ -57,14 +58,14 @@ def main() -> None:
     wait_for_animation()
     while window.workspace_page.jobs.busy:
         wait_for_animation(50)
-    window.workspace_page.queue_panel.update_tasks(tasks)
-    window.workspace_page.current_task.update_task(1, tasks[1])
+    window.workspace_page._tasks_updated(tasks)
+    window.workspace_page._current_changed(4, tasks[4])
     window.workspace_page.current_task.update_progress(45, 84, 103)
-    window.workspace_page.queue_panel.list.setCurrentRow(1)
+    window.workspace_page.queue_panel.select_task(4)
     wait_for_animation()
-    window.workspace_page.append_log("示例：H3 参数校验通过，9:16 + 1080p → size=1088x1920", "success")
-    window.workspace_page.append_log("示例：非法参数在上传和提交前拦截", "warning")
-    window.workspace_page.append_log("示例：H3 不支持 720p，请选择 768p 或 1080p", "error")
+    window.workspace_page.append_log("本地界面示例：已识别 2 个产品，共 8 个提示词，每条绑定 3 张参考图", "success")
+    window.workspace_page.append_log("本地界面示例：玫瑰毯子队列结束，切换到车载风扇", "info")
+    window.workspace_page.append_log("本地界面示例：失败/跳过也计入产品已结束数量", "warning")
 
     # First view demonstrates failed/skipped states and the true empty recent panel.
     pending = copy.deepcopy(tasks)
@@ -72,11 +73,11 @@ def main() -> None:
         if task['status'] == 'completed':
             task.update(status='waiting', result_path='', task_id='')
     pending[0].update(status='failed', task_id='', error='参数校验失败：H3 不支持 720p（截图示例）')
-    window.workspace_page.queue_panel.update_tasks(pending)
+    window.workspace_page._tasks_updated(pending)
     window.workspace_page.recent_panel.update_history([])
-    window.workspace_page.current_task.update_task(0, pending[0])
+    window.workspace_page._current_changed(0, pending[0])
     window.workspace_page.current_task.update_progress(0, 3, -1)
-    window.workspace_page.queue_panel.list.setCurrentRow(0)
+    window.workspace_page.queue_panel.select_task(0)
     wait_for_animation()
     capture(window, "screenshot_1_workspace.png")
 
@@ -85,11 +86,11 @@ def main() -> None:
     capture(dialog, "screenshot_2_match_dialog.png")
     dialog.close()
 
-    window.workspace_page.queue_panel.update_tasks(tasks)
+    window.workspace_page._tasks_updated(tasks)
     window.workspace_page.recent_panel.update_history(config.config['history'])
-    window.workspace_page.current_task.update_task(1, tasks[1])
+    window.workspace_page._current_changed(4, tasks[4])
     window.workspace_page.current_task.update_progress(45, 84, 103)
-    window.workspace_page.queue_panel.list.setCurrentRow(1)
+    window.workspace_page.queue_panel.select_task(4)
     window.workspace_page.params_card.toggle_advanced()
     wait_for_animation()
     capture(window, "screenshot_3_params_collapsed.png")
@@ -100,13 +101,15 @@ def main() -> None:
     wait_for_animation(350)
     scroll = window.settings_page.findChild(QScrollArea)
     if scroll is not None:
-        scroll.ensureWidgetVisible(window.settings_page.default_resolution, 0, 160)
+        scroll.ensureWidgetVisible(window.settings_page.sync_button, 0, 60)
+    wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 
     window.switchTo(window.workspace_page)
     wait_for_animation(350)
     QApplication.processEvents()
     window.workspace_page.log_drawer.toggle()
+    window.workspace_page.queue_panel.toggle_group('玫瑰毯子')
     wait_for_animation()
     capture(window, "screenshot_6_log_collapsed.png")
     window.close()

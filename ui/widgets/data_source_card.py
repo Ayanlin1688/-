@@ -69,7 +69,11 @@ class DataSourceCard(QWidget):
         if automatic is not None:
             self.automatic_matches = automatic
         count = sum(bool(t['images']) for t in matches)
-        self.status_label.setText(f'匹配：已匹配 {count} 组 / 未匹配 {len(matches)-count} 组')
+        products = {task.get('product') for task in matches if task.get('product')}
+        self.status_label.setText(
+            f'已识别 {len(products)} 个产品，共 {len(matches)} 个提示词；'
+            f'已匹配 {count} / 未匹配 {len(matches)-count}'
+        )
 
     def open_match_dialog(self) -> None:
         self.log_callback("打开匹配详情", "info")
