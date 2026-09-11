@@ -1,0 +1,2 @@
+PyQt-Fluent-Widgets>=1.11.3
+requests>=2.31.0

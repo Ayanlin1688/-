@@ -1,0 +1,44 @@
+# Local configuration and credentials
+config.json
+config/
+.env
+.env.*
+*.key
+*.pem
+
+# Generated videos and local media
+视频输出目录/
+视频保存目录/
+*.mp4
+*.mov
+*.avi
+*.MP4
+*.MOV
+*.AVI
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+
+# Python / editor / temporary files
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.vscode/
+.idea/
+temp/
+tmp/
+.pytest_cache/
+
+# Local screenshots and real provider/debug evidence
+screenshots/
+screenshots.zip
+artifacts/
+live-smoke-result.json
+*-diagnostics.json
+*.log
+codex-*.txt
+docs/*investigation.md
+docs/*validation.md
+docs/superpowers/
