@@ -1,6 +1,6 @@
 """Fluent setting cards backed by the application's JSON config."""
 
-from PyQt5.QtCore import Qt, pyqtSignal, QTime, QSignalBlocker
+from PyQt5.QtCore import Qt, pyqtSignal, QTime, QSignalBlocker, QTimer
 from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
@@ -16,6 +16,8 @@ from core.model_parameters import MODELS
 from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
 from ..components.model_options import apply_model_options
 import copy
+import math
+import time
 
 
 class JsonComboBoxSettingCard(SettingSurface, ComboBoxSettingCard):
@@ -45,6 +47,7 @@ class CustomSettingCard(SettingSurface, SettingCard):
 class SettingsPage(QWidget):
     debug_mode_changed = pyqtSignal(bool)
     schedule_changed = pyqtSignal()
+    task_settings_changed = pyqtSignal()
     def __init__(self, config_manager, log_callback, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPage")
@@ -76,6 +79,11 @@ class SettingsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.scroll)
+        self.pool_timer = QTimer(self)
+        self.pool_timer.setInterval(1000)
+        self.pool_timer.timeout.connect(self.refresh_pool_state)
+        self.pool_timer.start()
+        self.refresh_pool_state()
 
     def _group(self, title):
         group = SettingCardGroup(title)
@@ -152,15 +160,20 @@ class SettingsPage(QWidget):
 
     def _build_pool(self):
         group = self._group("模型池")
+        self.pool_group = group
+        self.pool_enabled = self._switch(group, '启用模型池', ('model_pool', 'enabled'), FIF.SYNC)
+        self.pool_enabled.setToolTip('关闭时使用工作台所选单模型。运行期间修改设置将在下一批任务生效。')
         self.strategy = self._combo(group, "调用策略", ("model_pool", "strategy"), ["轮询", "随机", "优先级"])
         self.failover = self._switch(group, "自动故障转移", ("model_pool", "auto_failover"), FIF.SYNC)
-        self.cooldown = self._spin(group, "冷却时间（秒）", ("model_pool", "cooldown"), 10, 300)
+        self.cooldown = self._spin(group, "冷却时间（秒）", ("model_pool", "cooldown"), 1, 3600)
         card = make_card()
         self.models_card = card
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
-        layout.addWidget(CaptionLabel("模型列表"))
+        hint = CaptionLabel('模型列表 · 列表顺序即优先级；修改在下一批生效')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         self.model_layout = QVBoxLayout()
         self.model_layout.setSpacing(8)
         layout.addLayout(self.model_layout)
@@ -174,10 +187,16 @@ class SettingsPage(QWidget):
 
     def _build_task(self):
         group = self._group("任务策略")
+        self.task_group = group
+        self.max_concurrency = self._spin(group, '最大并发数', ('task_strategy', 'max_concurrency'), 1, 5)
+        self.max_concurrency.setToolTip('同一产品内最多同时处理的任务数；当前产品结束后切换下一产品')
         self.auto_retry = self._switch(group, "失败自动重试", ("task_strategy", "auto_retry"), FIF.SYNC)
-        self.max_retry = self._spin(group, "最大重试次数", ("task_strategy", "max_retries"), 1, 20)
+        self.max_retry = self._spin(group, "最大重试次数", ("task_strategy", "max_retries"), 0, 20)
+        self.max_retry.setToolTip('首次尝试之外的重试次数；5 次重试最多执行 6 次')
         self.retry_interval = self._spin(group, "重试间隔（秒）", ("task_strategy", "retry_interval"), 1, 60)
         self.fail_threshold = self._spin(group, "连续失败阈值", ("task_strategy", "failure_skip_threshold"), 1, 100)
+        self.max_retry.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
+        self.fail_threshold.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
         self.unmatched = self._combo(group, "未匹配提示词处理", ("task_strategy", "unmatched_prompt"), ["跳过并警告", "仍提交文生视频", "暂停任务"])
         self.naming = self._line(group, "下载命名规则", ("task_strategy", "naming_rule"))
         self.open_folder = self._switch(group, "下载完成自动打开", ("task_strategy", "open_folder_after_download"), FIF.FOLDER)
@@ -203,7 +222,7 @@ class SettingsPage(QWidget):
         group = self._group("外观")
         self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深色", "浅色", "跟随系统"])
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
-        self.root.addWidget(CaptionLabel('StoryboardVideoStudio v3.0 · 产品批处理、定时执行与GitHub同步'))
+        self.root.addWidget(CaptionLabel('StoryboardVideoStudio v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
 
     def _build_schedule(self):
         group = self._group('定时执行')
@@ -268,6 +287,8 @@ class SettingsPage(QWidget):
         check.setChecked(enabled)
         combo = ComboBox()
         combo.addItems(MODELS)
+        if name not in MODELS:
+            combo.addItem(name)
         combo.setCurrentText(name)
         state = CaptionLabel(f"● {status}")
         color = "#22c55e" if status == "健康" else "#f59e0b"
@@ -277,7 +298,7 @@ class SettingsPage(QWidget):
         for widget in (check, combo, state, remove):
             layout.addWidget(widget, 1 if widget is combo else 0)
         self.model_layout.addWidget(row)
-        self.model_rows.append((row, check, combo, status))
+        self.model_rows.append((row, check, combo, state))
         check.stateChanged.connect(self._persist_models)
         combo.currentTextChanged.connect(self._persist_models)
         remove.clicked.connect(lambda: self._remove_model_row(row))
@@ -295,10 +316,57 @@ class SettingsPage(QWidget):
         self.models_card.setFixedHeight(self.models_card.layout().sizeHint().height())
 
     def _persist_models(self, *_):
+        previous = {model['name']: model for model in self._value(('model_pool', 'models'))}
         self.config_manager.update(("model_pool", "models"), [
-            {"name": combo.currentText(), "enabled": check.isChecked(), "status": status}
-            for _, check, combo, status in self.model_rows
+            dict(previous.get(combo.currentText(), {'status': '健康'}), name=combo.currentText(), enabled=check.isChecked())
+            for _, check, combo, _ in self.model_rows
         ])
+        self.refresh_pool_state()
+
+    def update_pool_state(self, snapshot):
+        """Merge runtime health only; user model selection belongs to the next batch."""
+        updates = {item['name']: item for item in snapshot}
+        models = copy.deepcopy(self._value(('model_pool', 'models')))
+        changed = False
+        for model in models:
+            state = updates.get(model['name'])
+            if state is None:
+                continue
+            for key in ('status', 'cooldown_until', 'consecutive_failures'):
+                if key in state and model.get(key) != state[key]:
+                    model[key] = state[key]; changed = True
+        if changed:
+            self.config_manager.update(('model_pool', 'models'), models)
+        self.refresh_pool_state()
+
+    def refresh_pool_state(self):
+        now = time.time()
+        models = copy.deepcopy(self._value(('model_pool', 'models')))
+        changed = False
+        for model in models:
+            if model.get('status') == '冷却中':
+                if not model.get('cooldown_until'):
+                    model['cooldown_until'] = now + self._value(('model_pool', 'cooldown'))
+                    changed = True
+                elif model['cooldown_until'] <= now:
+                    model.update(status='健康', cooldown_until=0, consecutive_failures=0)
+                    changed = True
+        if changed:
+            self.config_manager.update(('model_pool', 'models'), models)
+        states = {model['name']: model for model in models}
+        for _, _, combo, label in self.model_rows:
+            model = states.get(combo.currentText(), {})
+            cooling = model.get('status') == '冷却中'
+            remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
+            label.setText(f'● 冷却中 {remaining}秒' if cooling else '● 健康')
+            color = '#f59e0b' if cooling else '#22c55e'
+            label.setTextColor(color, color)
+
+    def refresh_task_settings(self, *_):
+        for widget, key in ((self.max_retry, 'max_retries'), (self.fail_threshold, 'failure_skip_threshold')):
+            blocker = QSignalBlocker(widget)
+            widget.setValue(self._value(('task_strategy', key)))
+            del blocker
 
     def test_connection(self):
         config = copy.deepcopy(self.config_manager.config)

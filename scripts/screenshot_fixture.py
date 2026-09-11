@@ -4,6 +4,7 @@ from PyQt5.QtGui import QColor, QFont, QImage, QPainter
 from PyQt5.QtCore import Qt, QRect
 from core.config_manager import ConfigManager
 from core.matcher import StoryboardMatcher
+import time
 
 
 def make_fixture(root):
@@ -32,10 +33,15 @@ def make_fixture(root):
     manager.config['paths'] = dict(prompts=str(root / '提示词'), images=str(root / '参考图片'), output=str(root / '视频输出'))
     manager.config['workspace'].update(model='MiniMax-H3', aspect_ratio='9:16', resolution='1080p', duration=8)
     manager.config['defaults'].update(model='MiniMax-H3', aspect_ratio='9:16', resolution='1080p', duration=8)
+    manager.config['model_pool'].update(enabled=True, strategy='轮询', cooldown=30, models=[
+        dict(name='video-v2', enabled=True, status='冷却中', cooldown_until=time.time()+30),
+        dict(name='video-v3', enabled=True, status='健康'),
+        dict(name='seedance-2.5', enabled=True, status='健康')])
+    manager.config['task_strategy'].update(max_concurrency=2, max_retries=5)
     tasks = StoryboardMatcher.from_config(manager.config).scan_and_match(manager.config['paths'])
-    states = ['completed', 'completed', 'failed', 'skipped', 'processing', 'waiting', 'waiting', 'waiting']
+    states = ['completed', 'completed', 'failed', 'skipped', 'processing', 'retry_wait', 'waiting', 'waiting']
     for index, task in enumerate(tasks):
-        task.update(local_id=f'screenshot-{index}', status=states[index], model='MiniMax-H3',
+        task.update(local_id=f'screenshot-{index}', status=states[index], model=['video-v2', 'video-v3', 'seedance-2.5'][index%3],
                     task_id=f'local_fixture_{index+1:03d}' if states[index] != 'waiting' else '',
                     created_at='2026-09-11T14:00:00', finished_at='2026-09-11T14:02:15' if states[index] == 'completed' else '',
                     result_path=str(root / '视频输出' / task['product'] / f'{task["product_task_index"]:03d}_{task["prompt_name"]}.mp4') if states[index] == 'completed' else '',

@@ -1,105 +1,30 @@
-"""Sequential background generation with explicit local pause/cancel/skip."""
+"""Product-aware bounded task coordination with isolated HTTP execution."""
 import copy
-from datetime import datetime
-import hashlib
-import json
-import os
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from itertools import groupby
 from pathlib import Path
 import threading
-import time
 import uuid
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from .api_client import ApiClient, GROK, V3_MODELS
-from .model_parameters import validate_task_parameters, model_prompt
-from .http_client import Cancelled, extract
-from .image_uploader import ImageUploader, upload_credentials
+from .http_client import Cancelled
+from .image_uploader import ImageUploader
+from .reference_diagnostics import ReferenceDiagnostics
 from .matcher import StoryboardMatcher
-from .prompt_processor import process_prompt, reference_warnings
-from .reference_diagnostics import ReferenceDiagnostics, describe_image
-from .log_redaction import redact_text, redact_structure
-from .video_downloader import VideoDownloader, build_filename
-
-TERMINAL = {'completed', 'failed', 'cancelled', 'skipped'}
-STATUS_TEXT = {'waiting': '等待中', 'queued': '生成中', 'uploading': '上传中', 'submitting': '提交中',
-               'processing': '生成中', 'downloading': '下载中', 'completed': '已完成',
-               'failed': '失败', 'cancelled': '已取消', 'skipped': '已跳过', 'paused': '已暂停'}
-
-
-def stamp():
-    return datetime.now().isoformat(timespec='seconds')
-
-
-def resolve_output_directory(output_root, output_subdir=''):
-    """Resolve one product output folder without allowing root escapes."""
-    root = Path(output_root).expanduser().resolve()
-    subdir = str(output_subdir or '')
-    if subdir and (Path(subdir).name != subdir or subdir in {'.', '..'}):
-        raise ValueError('产品输出目录无效')
-    target = (root / subdir).resolve()
-    try:
-        inside_root = os.path.commonpath((str(root), str(target))) == str(root)
-    except ValueError:
-        inside_root = False
-    if not inside_root:
-        raise ValueError('产品输出目录超出视频保存目录')
-    target.mkdir(parents=True, exist_ok=True)
-    resolved = target.resolve()
-    if os.path.commonpath((str(root), str(resolved))) != str(root):
-        raise ValueError('产品输出目录超出视频保存目录')
-    return str(resolved)
-
-
-class TaskControl:
-    def __init__(self):
-        self.condition = threading.Condition()
-        self.cancelled = False
-        self.skipped = False
-        self.paused = False
-        self.active_index = -1
-
-    def begin(self, index):
-        with self.condition:
-            self.active_index = index
-            self.skipped = False
-
-    def skip_for(self, index):
-        # A delayed UI click for the preceding task must not skip a newer task.
-        with self.condition:
-            if index == self.active_index:
-                self.skipped = True
-                self.condition.notify_all()
-
-    def set(self, name, value):
-        with self.condition:
-            setattr(self, name, value)
-            self.condition.notify_all()
-
-    def check(self):
-        with self.condition:
-            if self.cancelled or self.skipped:
-                raise Cancelled('已取消' if self.cancelled else '已跳过')
-
-    def delay(self, seconds):
-        deadline = time.monotonic() + seconds
-        with self.condition:
-            while time.monotonic() < deadline:
-                self.check()
-                self.condition.wait(max(0, deadline - time.monotonic()))
-            self.check()
-
-    def before_task(self):
-        with self.condition:
-            while self.paused:
-                self.check()
-                self.condition.wait()
-            self.check()
+from .log_redaction import redact_text
+from .model_pool import ModelPool
+from .task_state import (ACTIVE, TERMINAL, STATUS_TEXT, TaskControl, stamp, resolve_output_directory,
+                         parameters_for_model, task_signature)
+from .task_execution import TaskExecution
 
 
 class TaskWorker(QThread):
     task_list_updated = pyqtSignal(object)
     current_task_changed = pyqtSignal(int, object)
     task_progress = pyqtSignal(float, float, float)
+    indexed_progress = pyqtSignal(int, float, float, float)
+    pool_updated = pyqtSignal(object)
     log_message = pyqtSignal(str, str)
     record_updated = pyqtSignal(object)
     pause_changed = pyqtSignal(bool)
@@ -114,10 +39,15 @@ class TaskWorker(QThread):
         self.control = TaskControl()
         self.tasks = []
         self.index = -1
+        self.lock = threading.RLock()
         self.debug_mode = bool(self.config.get('diagnostics', {}).get('debug_mode', False))
+        self.max_concurrency = max(1, min(5, int(self.config['task_strategy'].get('max_concurrency', 1))))
+        self.pool = ModelPool(self.config['model_pool'], self.config['workspace']['model'],
+                              failure_threshold=self.config['task_strategy'].get('failure_skip_threshold', 3),
+                              log=self.log, on_change=self.pool_updated.emit)
 
     def redact(self, message):
-        api = self.config.get('api', {})
+        api = self.config['api']
         return redact_text(message, (api.get('api_key'), api.get('upload_api_key')))
 
     def log(self, message, level='info'):
@@ -126,207 +56,173 @@ class TaskWorker(QThread):
         self.log_message.emit(self.redact(message), level)
 
     def publish(self, record=False):
-        self.task_list_updated.emit(copy.deepcopy(self.tasks))
-        if 0 <= self.index < len(self.tasks):
-            self.current_task_changed.emit(self.index, copy.deepcopy(self.tasks[self.index]))
-            if record:
-                self.record_updated.emit(copy.deepcopy(self.tasks[self.index]))
+        with self.lock:
+            self.task_list_updated.emit(copy.deepcopy(self.tasks))
+            if 0 <= self.index < len(self.tasks):
+                task = copy.deepcopy(self.tasks[self.index])
+                self.current_task_changed.emit(self.index, task)
+                if record:
+                    self.record_updated.emit(task)
+
+    def update_task(self, index, task, record=False):
+        with self.lock:
+            self.tasks[index] = copy.deepcopy(task)
+            self.index = index
+            self.publish(record)
+
+    def progress_for(self, index, value, elapsed, eta):
+        with self.lock:
+            self.tasks[index].update(progress=value, elapsed=elapsed, eta=eta)
+            self.indexed_progress.emit(index, value, elapsed, eta)
+            if self.max_concurrency == 1:
+                self.task_progress.emit(value, elapsed, eta)
 
     def terminal(self, task, status, error=''):
-        task.update(status=status, error=error, finished_at=stamp())
+        task.update(status=status, error=self.redact(error), finished_at=stamp())
         self.publish(record=True)
 
-    def run(self):
-        api = self.config['api']
-        client = ApiClient(api['base_url'], api['api_key'], debug_mode=lambda: self.debug_mode,
-                           log_secrets=(api.get('upload_api_key'),), log=self.log)
-        uploader = ImageUploader.from_config(self.config, log=self.log, check_cancel=self.control.check)
-        download = VideoDownloader(self.config.get('download_settings', {}).get('overwrite_existing', False), self.control.check, log=self.log)
-        diagnostics = ReferenceDiagnostics(self.log, self.control.check)
-        try:
-            paths = self.config['paths']
-            self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
-            matcher = StoryboardMatcher.from_config(self.config)
-            self.tasks = matcher.scan_and_match(paths)
-            for warning in matcher.warnings:
-                self.log(warning, 'warning')
-            limit = self.config.get('_task_limit')
-            if limit:
-                self.tasks = self.tasks[:int(limit)]
+    def _scan(self):
+        paths = self.config['paths']
+        self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
+        matcher = StoryboardMatcher.from_config(self.config)
+        self.tasks = matcher.scan_and_match(paths)
+        for warning in matcher.warnings:
+            self.log(warning, 'warning')
+        if self.config.get('_task_limit'):
+            self.tasks = self.tasks[:int(self.config['_task_limit'])]
+        previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous] if t.get('signature')}
+        for sequence, task in enumerate(self.tasks, 1):
             model = self.config['workspace']['model']
-            previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous] if t.get('signature')}
-            for sequence, task in enumerate(self.tasks, 1):
-                # Compare inputs and generation parameters to prevent accidental duplicate paid submissions.
-                inputs = [task['prompt_path'], *task['images']]
-                stats = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) if Path(p).is_file() else (p, None, None) for p in inputs]
-                params = self.config['workspace']
-                effective = dict(model=model, duration=params.get('duration'), aspect_ratio=params.get('aspect_ratio'))
-                if model in V3_MODELS:
-                    effective['resolution'] = '720p'
-                elif model != 'video-v1':
-                    effective['resolution'] = params.get('resolution')
-                # Preserve legacy signatures for unchanged requests with audio=True/no seed.
-                # H3 fixed sizes now depend on ratio; the old code wrongly ignored it.
-                if model in V3_MODELS or model in {'video-v2', 'video-v2-fast'}:
-                    if params.get('generate_audio') is not True:
-                        effective['generate_audio'] = params.get('generate_audio')
-                if model in V3_MODELS and params.get('seed') not in ('', None):
-                    try:
-                        effective['seed'] = int(params['seed'])
-                    except (ValueError, TypeError):
-                        effective['seed'] = params['seed']
-                # Polling, retry placeholders, output folders and unsupported seed/audio settings
-                # do not change the submitted video and must not cause another paid request.
-                signature = hashlib.sha256(json.dumps([stats, effective, api['base_url'].rstrip('/')], sort_keys=True).encode()).hexdigest()
-                output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
-                task.update(status='waiting', task_id='', model=model, retry_count=0, result_path='',
-                            local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
-                            api_base_url=api['base_url'].rstrip('/'), output_dir=output_dir,
-                            sequence=sequence)
-                old = previous.get(signature)
-                if old and old.get('task_id') and not task.get('skip_reason'):
-                    product_fields = {key: task[key] for key in (
-                        'product', 'product_index', 'product_total', 'product_task_index',
-                        'product_task_total', 'output_subdir', 'skip_reason', 'output_dir')
-                    }
-                    task.update(copy.deepcopy(old))
-                    task.update(product_fields)
-                    if old['status'] != 'completed' or not Path(old.get('result_path', '')).is_file():
-                        task.update(status='failed', error='已有远端任务ID，请从历史记录重新下载，避免重复提交')
-            matched = sum(t['matched'] for t in self.tasks)
-            self.log(f'匹配完成：共{len(self.tasks)}个提示词，{matched}个已匹配，{len(self.tasks)-matched}个未匹配')
-            self.publish()
+            signature = task_signature(task, model, self.config['workspace'], self.config['api']['base_url'])
+            output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
+            task.update(status='waiting', task_id='', model=model, retry_count=0, attempts=[], result_path='',
+                        local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
+                        api_base_url=self.config['api']['base_url'].rstrip('/'), output_dir=output_dir, sequence=sequence)
+            candidates = []
+            for candidate in self.pool.names:
+                try:
+                    params = parameters_for_model(candidate, self.config['workspace'], self.pool.enabled, len(task['images']))
+                    key = task_signature(task, candidate, params, self.config['api']['base_url'])
+                    old = previous.get(key)
+                    if old and old.get('task_id'):
+                        candidates.append(old)
+                except ValueError:
+                    continue
+            old = candidates[-1] if candidates else None
+            if old and not task.get('skip_reason'):
+                product_fields = {key: task[key] for key in ('product', 'product_index', 'product_total', 'product_task_index',
+                                 'product_task_total', 'output_subdir', 'skip_reason', 'output_dir', 'sequence')}
+                task.update(copy.deepcopy(old)); task.update(product_fields)
+                if old['status'] != 'completed' or not Path(old.get('result_path', '')).is_file():
+                    task.update(status='failed', error='已有远端任务ID，请从历史记录重新下载，避免重复提交')
+        matched = sum(t['matched'] for t in self.tasks)
+        self.log(f'匹配完成：共{len(self.tasks)}个提示词，{matched}个已匹配，{len(self.tasks)-matched}个未匹配')
+        self.publish()
+        self.pool_updated.emit(self.pool.snapshot())
+
+    def _pick(self, index):
+        """Bind cooldown waiting to a selectable, independently skippable task."""
+        warned = False
+        self.control.begin(index)
+        try:
+            while True:
+                self.control.before_task()
+                model = self.pool.pick()
+                if model is not None:
+                    return model
+                if not warned:
+                    self.log('所有启用模型都在冷却，等待最快恢复的模型', 'warning'); warned = True
+                    task = copy.deepcopy(self.tasks[index]); task['status'] = 'cooling'
+                    self.update_task(index, task)
+                self.control.delay(min(.2, max(.01, self.pool.wait_seconds())))
+        except Cancelled:
+            if self.control.cancelled:
+                raise
+            task = copy.deepcopy(self.tasks[index])
+            task.update(status='skipped', error='已跳过冷却等待', finished_at=stamp())
+            self.update_task(index, task, record=True)
+            self.log(f'任务{index+1}：已跳过冷却等待', 'warning')
+            return None
+        finally:
+            self.control.release(index)
+
+    def _execute(self, index, model):
+        task = copy.deepcopy(self.tasks[index])
+        task.update(model=model, status='queued')
+        self.update_task(index, task)
+        TaskExecution(self, index, task, model).run()
+
+    def run(self):
+        try:
+            self._scan()
             if not self.tasks:
                 self.log('目录中没有 .txt 提示词', 'warning')
-            for index, task in enumerate(self.tasks):
-                self.index = index
-                self.control.begin(index)
-                if task.get('task_id'):
-                    self.log(f"保留已有任务：{task['prompt_name']}，task_id={task['task_id']}，不重复提交", 'warning')
-                    self.publish()
-                    continue
-                started = time.monotonic()
-                try:
-                    self.publish()
-                    self.task_progress.emit(0, 0, -1)
-                    self.control.before_task()
-                    if task.get('skip_reason'):
-                        self.log(f'任务{index+1}/{len(self.tasks)}：{task["skip_reason"]}，已跳过', 'warning')
-                        self.terminal(task, 'skipped', task['skip_reason'])
-                        continue
-                    policy = self.config['task_strategy']['unmatched_prompt']
-                    if not task['images'] and policy == '跳过并警告':
-                        self.log(f'任务{index+1}/{len(self.tasks)}：未匹配图片，按策略跳过', 'warning')
-                        self.terminal(task, 'skipped')
-                        continue
-                    if not task['images'] and policy == '暂停任务':
-                        self.control.set('paused', True)
-                        self.pause_changed.emit(True)
-                        task['status'] = 'paused'; self.publish()
-                        self.log('未匹配图片，已暂停；点击继续将对此任务提交文生视频，或点击跳过/取消', 'warning')
-                        self.control.before_task()
-                    original_prompt = Path(task['prompt_path']).read_text(encoding='utf-8-sig')
-                    prompt = process_prompt(original_prompt)
-                    self.log(f'提示词文件名: {Path(task["prompt_path"]).name}', 'debug')
-                    self.log(f'任务"{task["prompt_name"]}"：绑定{len(task["images"])}张参考图；Picture 1 对应 images[0]，按绑定顺序提交', 'debug')
-                    self.log('绑定来源: ' + task.get('match_method', '历史记录'), 'debug')
-                    self.log('提示词替换前: ' + original_prompt, 'debug')
-                    self.log('提示词替换后: ' + prompt, 'debug')
-                    self.log('实际提交提示词: ' + model_prompt(model, prompt), 'debug')
-                    for warning in reference_warnings(original_prompt, len(task['images'])):
-                        self.log(warning + '；请在匹配详情核对绑定顺序和数量', 'warning')
-                    fields = validate_task_parameters(model, prompt, self.config['workspace'], len(task['images']))
-                    self.log(f'{model} 参数校验通过：' + json.dumps(fields, ensure_ascii=False))
-                    task['request_parameters'] = fields
-                    task.update(created_at=stamp(), status='uploading')
-                    self.publish()
-                    started = time.monotonic()
-                    prefix = f'任务{index+1}/{len(self.tasks)}'
-                    originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(task['images'])] if self.debug_mode else []
-                    if model == GROK:
-                        urls = task['images']
-                        self.log(f'{prefix}：Grok 使用本地参考文件 {len(urls)} 张')
+            if not self.pool.names:
+                raise ValueError('模型池没有启用的模型，请启用至少一个模型或关闭模型池')
+            for product, rows in groupby(enumerate(self.tasks), key=lambda pair: pair[1].get('product', '')):
+                indices = [i for i, _ in rows]
+                self.log(f'开始处理产品：{product or "未分组"}，共{len(indices)}个任务；最大并发{self.max_concurrency}')
+                pending = []
+                for index in indices:
+                    task = self.tasks[index]
+                    if task.get('task_id'):
+                        self.log(f"保留已有任务：{task['prompt_name']}，task_id={task['task_id']}，不重复提交", 'warning')
                     else:
-                        self.log(f"{prefix}：上传图片{len(task['images'])}张...")
-                        urls = uploader.upload_images(task['images'], self.control.check)
-                        if any(url is None for url in urls):
-                            raise RuntimeError('图片上传失败，本任务不提交；继续下一个任务')
-                        if self.debug_mode:
-                            for i, (path, url) in enumerate(zip(task['images'], urls), 1):
-                                if not self.debug_mode:
-                                    break
-                                original = originals[i-1] if i <= len(originals) else diagnostics.inspect_local(path, i)
-                                description = describe_image(original) if original else '尺寸/格式未知'
-                                self.log(f'  图{i}: {path} ({description}) -> {url}', 'debug')
-                                diagnostics.verify_uploaded(original, url, i)
-                    field_name = 'input_reference（真实文件）' if model == GROK else 'images'
-                    self.log(f'实际提交{field_name}: ' + json.dumps(redact_structure(urls, self.redact), ensure_ascii=False), 'debug')
-                    self.control.check()
-                    task['status'] = 'submitting'; self.publish()
-                    self.log(f'{prefix}：提交创建任务，模型={model}')
-                    task['task_id'] = client.create_task(model, prompt, urls, self.config['workspace'])
-                    task['submitted_image_count'] = len(urls)
-                    task['status'] = 'queued'
-                    self.publish(record=True)
-                    self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
-                    deadline = time.monotonic() + float(self.config['workspace'].get('poll_timeout', 3600))
-                    while True:
+                        pending.append(index)
+                if self.max_concurrency == 1:
+                    for index in pending:
+                        model = self._pick(index)
+                        if model is not None:
+                            self._execute(index, model)
                         self.control.check()
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError('轮询超过最长等待时间，已停止本地等待；保留 task_id')
-                        result = client.query_task(task['task_id'], model)
-                        self.control.check()
-                        elapsed = time.monotonic() - started
-                        progress = result['progress']
-                        self.task_progress.emit(progress, elapsed, elapsed * (100-progress) / progress if progress > 0 else -1)
-                        task['status'] = 'downloading' if result['status'] == 'completed' else result['status']; self.publish()
-                        self.log(f"{prefix}：轮询中... 状态={result['status']}，进度={progress:g}%")
-                        if result['status'] == 'failed':
-                            raise RuntimeError('远端生成失败：' + str(extract(result['raw'], ('error', 'message')) or result['raw']))
-                        if result['status'] == 'completed':
-                            if not result['result_url']:
-                                raise RuntimeError('完成响应没有视频下载地址')
-                            task.update(status='downloading', result_url=result['result_url'])
-                            self.publish(record=True)
-                            self.log(f'{prefix}：生成完成，开始下载...', 'success')
-                            rule = self.config['download_settings']['naming_rule']
-                            task['filename'] = build_filename(rule, task, task.get('product_task_index', index + 1))
-                            task['output_dir'] = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
-                            task['result_path'] = download.download_video(task['result_url'], task['output_dir'], task['filename'])
-                            task['size_bytes'] = Path(task['result_path']).stat().st_size
-                            self.task_progress.emit(100, time.monotonic()-started, 0)
-                            self.terminal(task, 'completed')
-                            break
-                        self.control.delay(max(0.01, float(self.config['workspace']['poll_interval'])))
-                except Cancelled as error:
-                    self.terminal(task, 'cancelled' if self.control.cancelled else 'skipped', str(error))
-                    self.log(f'任务{index+1}：{error}；仅停止本地处理，远端任务可能继续执行', 'warning')
-                except Exception as error:
-                    message = str(error)
-                    for key in ('api_key', 'upload_api_key'):
-                        secret = api.get(key)
-                        if secret:
-                            message = message.replace(secret, '[REDACTED]')
-                    self.terminal(task, 'failed', message)
-                    self.log(f'任务{index+1}失败：{message}', 'error')
-                if self.control.cancelled:
-                    for remaining in range(index + 1, len(self.tasks)):
-                        if self.tasks[remaining]['status'] not in TERMINAL:
-                            self.index = remaining
-                            self.terminal(self.tasks[remaining], 'cancelled', '用户取消全部')
-                    break
+                else:
+                    self._concurrent_product(pending)
+                self.control.check()
+                self.log(f'产品处理结束：{product or "未分组"}')
+        except Cancelled:
+            self.log('已取消后续排队任务', 'warning')
         except Exception as error:
             self.log(f'任务队列无法继续：{error}', 'error')
+            with self.lock:
+                for index, task in enumerate(self.tasks):
+                    if task.get('status') not in TERMINAL:
+                        self.index = index; self.terminal(task, 'failed', str(error))
         finally:
-            client.close(); uploader.close(); download.close(); diagnostics.close()
-            self.summary.emit(sum(t.get('status') == 'completed' for t in self.tasks),
-                              sum(t.get('status') == 'failed' for t in self.tasks))
+            with self.lock:
+                if self.control.cancelled:
+                    for index, task in enumerate(self.tasks):
+                        if task.get('status') not in TERMINAL:
+                            self.index = index; self.terminal(task, 'cancelled', '用户取消全部')
+                self.summary.emit(sum(t.get('status') == 'completed' for t in self.tasks), sum(t.get('status') == 'failed' for t in self.tasks))
+
+    def _concurrent_product(self, pending):
+        pending = iter(pending)
+        active = set()
+        exhausted = False
+        with ThreadPoolExecutor(max_workers=self.max_concurrency, thread_name_prefix='storyboard-task') as executor:
+            while active or not exhausted:
+                self.control.check()
+                while len(active) < self.max_concurrency and not exhausted and not self.control.paused:
+                    try:
+                        index = next(pending)
+                    except StopIteration:
+                        exhausted = True; break
+                    model = self._pick(index)
+                    if model is not None:
+                        active.add(executor.submit(self._execute, index, model))
+                if active:
+                    finished, active = wait(active, timeout=.05, return_when=FIRST_COMPLETED)
+                    for future in finished:
+                        future.result()
+                elif not exhausted:
+                    self.control.before_task()
 
 
 class TaskManager(QObject):
     task_list_updated = pyqtSignal(object)
     current_task_changed = pyqtSignal(int, object)
     task_progress = pyqtSignal(float, float, float)
+    pool_updated = pyqtSignal(object)
     log_message = pyqtSignal(str, str)
     all_finished = pyqtSignal(int, int)
     record_updated = pyqtSignal(object)
@@ -352,7 +248,8 @@ class TaskManager(QObject):
         self.worker = TaskWorker(config, self.tasks, self)
         self.worker.task_list_updated.connect(self._list)
         self.worker.current_task_changed.connect(self._current)
-        self.worker.task_progress.connect(self.task_progress)
+        self.worker.indexed_progress.connect(self._progress)
+        self.worker.pool_updated.connect(self.pool_updated)
         self.worker.log_message.connect(self.log_message)
         self.worker.record_updated.connect(self.record_updated)
         self.worker.pause_changed.connect(self._paused)
@@ -370,8 +267,20 @@ class TaskManager(QObject):
         self.task_list_updated.emit(copy.deepcopy(tasks))
 
     def _current(self, index, task):
-        self.current_index = index
-        self.current_task_changed.emit(index, task)
+        selected = self.tasks[self.current_index] if 0 <= self.current_index < len(self.tasks) else None
+        if index == self.current_index or selected is None or selected.get('status') not in ACTIVE:
+            self.current_index = index
+            self.current_task_changed.emit(index, task)
+            self.task_progress.emit(task.get('progress', 0), task.get('elapsed', 0), task.get('eta', -1))
+
+    def select_current(self, index):
+        if 0 <= index < len(self.tasks):
+            self.current_index = index
+            self._current(index, self.tasks[index])
+
+    def _progress(self, index, value, elapsed, eta):
+        if index == self.current_index:
+            self.task_progress.emit(value, elapsed, eta)
 
     def _paused(self, paused):
         self.is_paused = paused
@@ -392,7 +301,7 @@ class TaskManager(QObject):
         if self.is_running:
             self.worker.control.set('paused', True)
             self._paused(True)
-            self.log_message.emit('已请求暂停：当前任务完成后暂停，点击继续可恢复', 'info')
+            self.log_message.emit('已请求暂停：运行中的任务结束后暂停，不再启动排队任务', 'info')
 
     def resume_tasks(self):
         if self.is_running:
@@ -408,4 +317,4 @@ class TaskManager(QObject):
     def skip_current(self):
         if self.is_running:
             self.worker.control.skip_for(self.current_index)
-            self.log_message.emit('正在跳过当前任务；不会向服务端发送取消请求', 'warning')
+            self.log_message.emit('正在跳过所选当前任务；不会向服务端发送取消请求', 'warning')

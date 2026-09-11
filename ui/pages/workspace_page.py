@@ -6,7 +6,7 @@ import threading
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar
-from core.task_manager import TaskManager, TERMINAL, stamp
+from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
 from core.api_client import ApiClient
@@ -40,6 +40,7 @@ class WorkspacePage(QWidget):
         self.cancel_button.clicked.connect(manager.cancel_all)
         self.current_task.skip_button.clicked.connect(manager.skip_current)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
+        self.queue_panel.task_selected.connect(manager.select_current)
         manager.task_list_updated.connect(self._tasks_updated)
         manager.current_task_changed.connect(self._current_changed)
         manager.task_progress.connect(self.current_task.update_progress)
@@ -53,7 +54,7 @@ class WorkspacePage(QWidget):
         self.data_source.overrides_changed.connect(self.scan_sources)
         self.recent_panel.update_history(config_manager.config['history'])
         self._running_changed(False)
-        self.append_log('工作台已加载：阶段2A使用所选单模型，失败后继续下一条，不自动重试', 'info')
+        self.append_log('工作台已加载：支持模型池、自动重试和并发控制；关闭模型池时使用工作台所选模型', 'info')
         QTimer.singleShot(0, self.scan_sources)
 
     def _build_ui(self):
@@ -160,13 +161,14 @@ class WorkspacePage(QWidget):
         self.start_button.setEnabled(not running and not self._redownloading and not self.closing.is_set())
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
-        self.current_task.skip_button.setEnabled(running)
+        self.current_task.skip_button.setEnabled(running and self.current_task.task_info.get('status') in ACTIVE)
         self.current_task.cancel_button.setEnabled(not running and not self._redownloading and bool(self.current_task.task_info.get('task_id')))
         self.params_card.setEnabled(not running)
         self.data_source.setEnabled(not running)
 
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)
+        self.current_task.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
         self.queue_panel.select_task(index)
         product = task.get('product') or '未分组'
         task_index = task.get('product_task_index', index + 1)
@@ -179,6 +181,8 @@ class WorkspacePage(QWidget):
 
     def _tasks_updated(self, tasks):
         self.queue_panel.update_tasks(tasks)
+        self.current_task.update_counts(sum(t.get('status') in ACTIVE for t in tasks),
+                                        sum(t.get('status', 'waiting') == 'waiting' for t in tasks))
         total = len(tasks)
         self.product_progress.setRange(0, max(1, total))
         self.product_progress.setValue(sum(task.get('status') in TERMINAL for task in tasks))

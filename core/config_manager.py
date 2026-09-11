@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "generate_audio": True,
         "poll_interval": 5,
-        "max_retries": 3,
+        "max_retries": 5,
         "skip_threshold": 3,
         "seed": "",
     },
@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_upload_missing": True,
     },
     "model_pool": {
+        "enabled": False,
         "strategy": "轮询",
         "auto_failover": True,
         "cooldown": 30,
@@ -41,6 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
     },
     "task_strategy": {
+        "max_concurrency": 1,
         "auto_retry": True,
         "max_retries": 5,
         "retry_interval": 3,
@@ -97,6 +99,8 @@ class ConfigManager:
             if 'naming_rule' not in raw.get('download_settings', {}):
                 self.config['download_settings']['naming_rule'] = self.config['task_strategy']['naming_rule']
             self.config['task_strategy']['naming_rule'] = self.config['download_settings']['naming_rule']
+            self.config['workspace']['max_retries'] = self.config['task_strategy']['max_retries']
+            self.config['workspace']['skip_threshold'] = self.config['task_strategy']['failure_skip_threshold']
             # Only migrate real Stage 1 bindings; synthetic demo entries never become production references.
             for name, images in raw.get('matching_order', {}).items():
                 if all(not p.startswith('demo:') for p in images) and self.config['paths']['prompts']:
@@ -137,6 +141,10 @@ class ConfigManager:
         if keys in {('task_strategy', 'naming_rule'), ('download_settings', 'naming_rule')}:
             self.config['task_strategy']['naming_rule'] = value
             self.config['download_settings']['naming_rule'] = value
+        for workspace_key, strategy_key in [('max_retries', 'max_retries'), ('skip_threshold', 'failure_skip_threshold')]:
+            if keys in {('workspace', workspace_key), ('task_strategy', strategy_key)}:
+                self.config['workspace'][workspace_key] = value
+                self.config['task_strategy'][strategy_key] = value
         if save:
             try:
                 self.save_config()

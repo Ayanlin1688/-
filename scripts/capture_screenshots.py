@@ -1,4 +1,4 @@
-"""Capture the Stage 3 UI with labelled synthetic local screenshot fixtures."""
+"""Capture the Stage2B UI with labelled synthetic local screenshot fixtures."""
 
 from __future__ import annotations
 
@@ -51,6 +51,7 @@ def main() -> None:
     config, tasks = make_fixture(temp.name)
     window = MainWindow(config, network_time=False)
     window.schedule_timer.stop()  # A fixture's enabled schedule must never submit work.
+    window.settings_page.pool_timer.stop()  # Keep fixture countdown stable during capture.
     window.setWindowTitle('StoryboardVideoStudio · 本地截图示例（非真实生成结果）')
     window.resize(1600, 1100)
     window.show()
@@ -65,18 +66,22 @@ def main() -> None:
     wait_for_animation()
     window.workspace_page.append_log("本地界面示例：已识别 2 个产品，共 8 个提示词，每条绑定 3 张参考图", "success")
     window.workspace_page.append_log("本地界面示例：玫瑰毯子队列结束，切换到车载风扇", "info")
-    window.workspace_page.append_log("本地界面示例：失败/跳过也计入产品已结束数量", "warning")
+    window.workspace_page.append_log("本地界面示例：模型 video-v2 失败，切换到 video-v3 重试，video-v2 进入冷却30秒", "warning")
+    window.workspace_page.append_log("本地界面示例：第2次重试，剩余3次；最大并发2", "warning")
 
-    # First view demonstrates failed/skipped states and the true empty recent panel.
+    # First view demonstrates two occupied slots and the empty recent panel.
     pending = copy.deepcopy(tasks)
     for task in pending:
         if task['status'] == 'completed':
             task.update(status='waiting', result_path='', task_id='')
-    pending[0].update(status='failed', task_id='', error='参数校验失败：H3 不支持 720p（截图示例）')
+    pending[0].update(status='processing', model='video-v3', task_id='local_fixture_001', error='本地截图示例')
+    pending[1].update(status='retry_wait', model='video-v2', error='提交失败，正在重试（截图示例）')
+    for task in pending[4:]:
+        task.update(status='waiting', task_id='')
     window.workspace_page._tasks_updated(pending)
     window.workspace_page.recent_panel.update_history([])
     window.workspace_page._current_changed(0, pending[0])
-    window.workspace_page.current_task.update_progress(0, 3, -1)
+    window.workspace_page.current_task.update_progress(45, 84, 103)
     window.workspace_page.queue_panel.select_task(0)
     wait_for_animation()
     capture(window, "screenshot_1_workspace.png")
@@ -98,13 +103,15 @@ def main() -> None:
     wait_for_animation(350)
     capture(window, "screenshot_4_history.png")
     window.switchTo(window.settings_page)
+    window.resize(1600, 1160)
     wait_for_animation(350)
     scroll = window.settings_page.findChild(QScrollArea)
     if scroll is not None:
-        scroll.ensureWidgetVisible(window.settings_page.sync_button, 0, 60)
+        scroll.verticalScrollBar().setValue(window.settings_page.pool_group.y() - 15)
     wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 
+    window.resize(1600, 1100)
     window.switchTo(window.workspace_page)
     wait_for_animation(350)
     QApplication.processEvents()

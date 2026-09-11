@@ -49,6 +49,11 @@ class MainWindow(FluentWindow):
         self.history_page = HistoryPage(self.workspace_page.append_log, self.config_manager)
         self.settings_page = SettingsPage(self.config_manager, self.workspace_page.append_log)
         self.settings_page.debug_mode_changed.connect(self.workspace_page.set_debug_mode)
+        self.workspace_page.task_manager.pool_updated.connect(self.settings_page.update_pool_state)
+        self.settings_page.task_settings_changed.connect(self.workspace_page.params_card.refresh_task_settings)
+        self.workspace_page.params_card.values_changed.connect(self.settings_page.refresh_task_settings)
+        self.settings_page.pool_enabled.checkedChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
+        self.settings_page.strategy.currentTextChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.workspace_page.history_changed.connect(self.history_page.update_history)
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.addSubInterface(self.workspace_page, FIF.HOME, "工作台")
@@ -64,7 +69,7 @@ class MainWindow(FluentWindow):
         )
 
     def show_about(self) -> None:
-        dialog = Dialog('关于 StoryboardVideoStudio', '版本 v3.0\n产品批处理 · 定时执行 · GitHub同步\n扫描匹配 · 单模型提交 · 轮询 · 自动下载', self)
+        dialog = Dialog('关于 StoryboardVideoStudio', '版本 v3.1\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
         dialog.exec_()
 
     def _setup_schedule(self, network_time):

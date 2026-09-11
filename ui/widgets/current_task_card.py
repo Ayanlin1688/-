@@ -17,6 +17,7 @@ class CurrentTaskCard(QWidget):
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.addWidget(card)
         root = QVBoxLayout(card); root.setContentsMargins(20, 20, 20, 20); root.setSpacing(9)
         root.addWidget(StrongBodyLabel("当前任务"))
+        self.concurrency_label = CaptionLabel('正在生成0个，排队0个'); root.addWidget(self.concurrency_label)
         self.title = StrongBodyLabel('尚未开始任务'); root.addWidget(self.title)
         self.details = CaptionLabel('请选择目录并开始生成'); self.details.setWordWrap(True); root.addWidget(self.details)
         self.debug_mode = False
@@ -30,6 +31,9 @@ class CurrentTaskCard(QWidget):
         buttons.addWidget(self.skip_button); buttons.addWidget(self.cancel_button); root.addLayout(buttons)
         self.task_info = {}
         self.skip_button.setEnabled(False); self.cancel_button.setEnabled(False)
+
+    def update_counts(self, running, waiting):
+        self.concurrency_label.setText(f'正在生成{running}个，排队{waiting}个')
 
     def update_task(self, index, task):
         self.task_info = task

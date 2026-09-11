@@ -1,6 +1,6 @@
 """Generation parameter card with collapsible advanced section."""
 
-from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve, QSignalBlocker
 from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
 from qfluentwidgets import FluentIcon as FIF, PushButton
 
@@ -48,6 +48,10 @@ class ParamsCard(QWidget):
         self.size_hint = CaptionLabel('')
         self.size_hint.setWordWrap(True)
         root.addWidget(self.size_hint)
+        self.pool_hint = CaptionLabel('')
+        self.pool_hint.setWordWrap(True)
+        root.addWidget(self.pool_hint)
+        self.refresh_pool_hint()
 
         self.advanced = QWidget()
         advanced_form = QGridLayout(self.advanced)
@@ -59,7 +63,7 @@ class ParamsCard(QWidget):
         self.retries = SpinBox(); self.retries.setRange(0, 20); self.retries.setValue(workspace["max_retries"])
         self.threshold = SpinBox(); self.threshold.setRange(1, 100); self.threshold.setValue(workspace["skip_threshold"])
         self.seed = LineEdit(); self.seed.setText(workspace["seed"]); self.seed.setPlaceholderText("留空则随机")
-        advanced_fields = [("生成音频", self.audio), ("轮询间隔（秒）", self.poll), ("最大重试次数", self.retries), ("失败跳过阈值", self.threshold)]
+        advanced_fields = [("生成音频", self.audio), ("轮询间隔（秒）", self.poll), ("最大重试次数", self.retries), ("模型连续失败阈值", self.threshold)]
         for index, (text, control) in enumerate(advanced_fields):
             row, pair = divmod(index, 2)
             control.setMinimumWidth(0)
@@ -88,6 +92,18 @@ class ParamsCard(QWidget):
             elif hasattr(control, "stateChanged"):
                 control.stateChanged.connect(lambda value, k=key: self._save(k, bool(value)))
         self._refresh_model_options()
+        self.refresh_task_settings()
+
+    def refresh_task_settings(self):
+        for widget, key in ((self.retries, 'max_retries'), (self.threshold, 'failure_skip_threshold')):
+            blocker = QSignalBlocker(widget)
+            widget.setValue(self.config_manager.config['task_strategy'][key])
+            del blocker
+
+    def refresh_pool_hint(self, *_):
+        pool = self.config_manager.config['model_pool']
+        self.pool_hint.setText(f'已启用模型池 · {pool["strategy"]}；实际模型见当前任务，参数按模型适配' if pool.get('enabled') else '')
+        self.pool_hint.setVisible(bool(pool.get('enabled')))
 
     def _save(self, key: str, value) -> None:
         self.config_manager.update(("workspace", key), value)

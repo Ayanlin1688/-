@@ -37,6 +37,9 @@ class TaskTests(unittest.TestCase):
             (root / '提示词' / f'{i}汽车.txt').write_text('<Picture 1> 环绕汽车', encoding='utf-8')
             (root / '图片' / f'{i}汽车.png').write_bytes(b'good-image')
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        # These legacy fixtures verify the original no-retry branch. Stage2B
+        # retry behavior has separate local HTTP integration coverage.
+        self.config['task_strategy']['auto_retry'] = False
         self.config['paths'] = dict(prompts=str(root / '提示词'), images=str(root / '图片'), output=str(root / '输出'))
         self.config['api'].update(base_url=self.server.base, api_key='local-test', upload_url=self.server.base + '/upload')
         self.config['workspace']['poll_interval'] = 0.04

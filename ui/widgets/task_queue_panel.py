@@ -1,8 +1,9 @@
 """Task queue driven by scheduler snapshots."""
-from PyQt5.QtCore import Qt
-from core.task_manager import STATUS_TEXT, TERMINAL
+from PyQt5.QtCore import Qt, pyqtSignal
+from core.task_manager import STATUS_TEXT, TERMINAL, ACTIVE
 
 COLORS = {'已完成': '#22c55e', '生成中': '#5e6ad2', '等待中': '#f59e0b', '失败': '#ef4444',
+          '重试中': '#f59e0b', '等待冷却': '#f59e0b',
           '已取消': '#92929b', '已跳过': '#f59e0b', '已暂停': '#f59e0b', '上传中': '#5e6ad2', '提交中': '#5e6ad2', '下载中': '#5e6ad2'}
 
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QGridLayout, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
@@ -49,14 +50,17 @@ class TaskGroupHeader(QWidget):
 
 
 class TaskQueuePanel(QWidget):
+    task_selected = pyqtSignal(int)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._programmatic_selection = False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 8, 0)
         root.setSpacing(10)
         root.addWidget(StrongBodyLabel("任务队列"))
         self.filter_box = ComboBox()
-        self.filter_box.addItems(["全部", "等待中", "生成中", "已完成", "失败", "已跳过", "已取消", "已暂停"])
+        self.filter_box.addItems(["全部", "等待中", "生成中", "重试中", "等待冷却", "已完成", "失败", "已跳过", "已取消", "已暂停"])
         root.addWidget(self.filter_box)
         self.list = QListWidget()
         self.list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -102,7 +106,7 @@ class TaskQueuePanel(QWidget):
         group_matches = {}
         for index, task in enumerate(self._tasks):
             current = STATUS_TEXT.get(task.get('status', 'waiting'), '等待中')
-            matches = status == '全部' or current == status or (status == '生成中' and current in {'上传中', '提交中', '下载中'})
+            matches = status == '全部' or current == status or (status == '生成中' and task.get('status') in ACTIVE)
             product = task.get('product', '')
             group_matches[product] = group_matches.get(product, False) or matches
             item = self._task_items.get(index)
@@ -150,7 +154,7 @@ class TaskQueuePanel(QWidget):
         if tasks:
             self.select_task(selected if isinstance(selected, int) and 0 <= selected < len(tasks) else 0)
         statuses = [t.get('status', 'waiting') for t in tasks]
-        counts = [statuses.count('completed'), sum(s in {'uploading', 'submitting', 'queued', 'processing', 'downloading'} for s in statuses),
+        counts = [statuses.count('completed'), sum(s in ACTIVE for s in statuses),
                   statuses.count('failed'), statuses.count('skipped')]
         for label, value in zip(self.stat_labels, counts):
             label.setText(f'{value:02d}')
@@ -168,7 +172,11 @@ class TaskQueuePanel(QWidget):
     def select_task(self, index):
         item = self._task_items.get(index)
         if item is not None:
-            self.list.setCurrentItem(item)
+            self._programmatic_selection = True
+            try:
+                self.list.setCurrentItem(item)
+            finally:
+                self._programmatic_selection = False
 
     def toggle_group(self, product):
         if product in self._collapsed:
@@ -191,6 +199,8 @@ class TaskQueuePanel(QWidget):
         if isinstance(index, int) and 0 <= index < len(self._tasks):
             product = self._tasks[index].get('product') or '未分组'
             self.current_product_label.setText(f'当前产品 {product}')
+            if not self._programmatic_selection:
+                self.task_selected.emit(index)
 
     def _selection_color(self, current, previous):
         from PyQt5.QtCore import Qt
