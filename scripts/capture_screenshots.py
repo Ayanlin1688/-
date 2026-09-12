@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "screenshots"
 sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import QEventLoop, QTimer
+from PyQt5.QtCore import QEventLoop, QPoint, QTimer
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication, QScrollArea
 from qfluentwidgets import Theme, setTheme, setThemeColor
@@ -69,6 +69,9 @@ def main() -> None:
     window.workspace_page.append_log("本地界面示例：模型 video-v2 失败，切换到 video-v3 重试，video-v2 进入冷却30秒", "warning")
     window.workspace_page.append_log("本地界面示例：第2次重试，剩余3次；最大并发2", "warning")
     window.workspace_page.append_log("本地界面示例：提示词已分别识别为 MiniMax-H3 / video-v2 / video-v3", "info")
+    window.workspace_page.append_log("本地界面示例：提示词格式已从H3转换为V2格式", "info")
+    window.workspace_page.append_log("本地界面示例：检测到相同任务，跳过避免重复扣费", "warning")
+    window.workspace_page.append_log("本地界面示例：HTTP 429，提交待确认，禁止自动重新创建", "warning")
 
     # First view demonstrates two occupied slots and the empty recent panel.
     pending = copy.deepcopy(tasks)
@@ -89,6 +92,10 @@ def main() -> None:
 
     dialog = MatchDialog(window, window.workspace_page.append_log, config,
                          window.workspace_page.data_source.matches, window.workspace_page.data_source.automatic_matches)
+    dialog.resize(1200, 1100)
+    dialog.model_combo.setCurrentText('video-v2')
+    dialog.preview_tabs.setCurrentItem('converted')
+    wait_for_animation()
     capture(dialog, "screenshot_2_match_dialog.png")
     dialog.close()
 
@@ -98,6 +105,9 @@ def main() -> None:
     window.workspace_page.current_task.update_progress(45, 84, 103)
     window.workspace_page.queue_panel.select_task(4)
     window.workspace_page.params_card.toggle_advanced()
+    window.workspace_page._current_changed(2, tasks[2])
+    window.workspace_page.queue_panel.select_task(2)
+    window.workspace_page.current_task.update_progress(0, 0, -1)
     wait_for_animation()
     capture(window, "screenshot_3_params_collapsed.png")
     window.switchTo(window.history_page)
@@ -108,7 +118,7 @@ def main() -> None:
     wait_for_animation(350)
     scroll = window.settings_page.findChild(QScrollArea)
     if scroll is not None:
-        scroll.verticalScrollBar().setValue(0)
+        scroll.verticalScrollBar().setValue(window.settings_page.auto_detect.mapTo(scroll.widget(), QPoint()).y() - 50)
     wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 

@@ -151,6 +151,7 @@ class ReferenceDebugTests(unittest.TestCase):
         self.assertEqual(worker.tasks[0]['status'], 'completed')
         self.assertTrue(any('尺寸变化' in message and level == 'warning' for message, level in logs))
         self.server.reference_failure = True
+        self.config['_rerun_signatures'] = [worker.tasks[0]['signature']]
         worker, logs = self.run_worker()
         self.assertEqual(worker.tasks[0]['status'], 'completed')
         self.assertTrue(any('检查失败' in message and level == 'warning' for message, level in logs))

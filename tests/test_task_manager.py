@@ -34,7 +34,7 @@ class TaskTests(unittest.TestCase):
         for name in ['提示词', '图片', '输出']:
             (root / name).mkdir()
         for i in range(1, 4):
-            (root / '提示词' / f'{i}汽车.txt').write_text('<Picture 1> 环绕汽车', encoding='utf-8')
+            (root / '提示词' / f'{i}汽车.txt').write_text(f'<Picture 1> 环绕汽车，场景{i}', encoding='utf-8')
             (root / '图片' / f'{i}汽车.png').write_bytes(b'good-image')
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         # These legacy fixtures verify the original no-retry branch. Stage2B
@@ -81,7 +81,7 @@ class TaskTests(unittest.TestCase):
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running)
         self.assertEqual(len(self.server.calls), submitted)
-        self.assertEqual([t['status'] for t in self.manager.tasks], ['completed'] * 3)
+        self.assertEqual([t['status'] for t in self.manager.tasks], ['duplicate'] * 3)
 
     def test_upload_failure_continues_and_retains_task_id_on_download_error(self):
         (Path(self.config['paths']['images']) / '1汽车.png').write_bytes(b'bad-image')
@@ -92,6 +92,16 @@ class TaskTests(unittest.TestCase):
         self.assertFalse(self.manager.tasks[0]['task_id'])
         self.assertTrue(self.manager.tasks[1]['task_id'])
         self.assertTrue(self.manager.tasks[1]['result_url'])
+
+    def test_unreadable_prompt_fails_only_its_task_before_upload(self):
+        path = sorted(Path(self.config['paths']['prompts']).glob('*.txt'))[0]
+        path.write_bytes(b'\xff\xfeinvalid-utf8')
+        self.manager.start_tasks(self.config)
+        wait_until(lambda: not self.manager.is_running)
+        self.assertEqual([task['status'] for task in self.manager.tasks], ['failed', 'completed', 'completed'])
+        self.assertFalse(self.manager.tasks[0]['task_id'])
+        self.assertIn('读取提示词失败', self.manager.tasks[0]['error'])
+        self.assertEqual(len([row for row in self.server.calls if row[0] == '/videos']), 2)
 
     def test_skip_current_then_cancel_marks_remaining(self):
         self.server.always_processing = True
@@ -127,7 +137,11 @@ class TaskTests(unittest.TestCase):
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running)
         self.assertEqual(len([p for p, _, _ in self.server.calls if p == '/videos']), 3)
-        self.assertTrue(all(t['status'] == 'failed' and not t['task_id'] for t in self.manager.tasks))
+        self.assertTrue(all(t['status'] == 'submission_unknown' and not t['task_id'] for t in self.manager.tasks))
+        from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
+        ledger = SubmissionLedger(ledger_path(self.config))
+        for task in self.manager.tasks:
+            ledger.resolve(task['ledger_id'], account_scope(self.config), confirmed_not_created=True)
         self.server.reject = False
         self.server.always_processing = True
         self.config['workspace']['poll_timeout'] = .08

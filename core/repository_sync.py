@@ -44,6 +44,7 @@ class RepositorySync:
         path = Path(name)
         folders = {part.casefold() for part in path.parts}
         return (path.name.casefold() in {'config.json', 'models_cache.json', 'models_cache.json.tmp'} or path.name.startswith('.env') or
+                path.name.startswith(('submissions.sqlite3', '.storyboard-submissions.sqlite3')) or
                 path.suffix.casefold() in {'.mp4', '.mov', '.avi', '.log', '.pyc', '.pyo', '.key', '.pem'} or
                 bool(folders & {'artifacts', 'screenshots', 'temp', 'tmp', '__pycache__', '.vscode', '.idea', '.venv', 'venv', '视频输出目录', '视频保存目录'}))
 

@@ -81,7 +81,7 @@ class ModelPool:
             self.names.append(name)
             self._states[name] = state
 
-    def pick(self, after: str | None = None, preferred: str | None = None) -> str | None:
+    def pick(self, after: str | None = None, preferred: str | None = None, preferred_names=None) -> str | None:
         recovered: list[str]
         change_snapshot = None
         with self._lock:
@@ -91,9 +91,13 @@ class ModelPool:
             if recovered:
                 change_snapshot = self._snapshot_locked(current, self._wall())
 
+            compatible = [name for name in (preferred_names or [])
+                          if name in self._states and self._eligible(self._states[name], current)]
             if preferred is not None:
                 state = self._states.get(preferred)
                 selected = preferred if state is not None and self._eligible(state, current) else None
+            elif compatible:
+                selected = compatible[0]
             elif after in self._states:
                 selected = self._pick_after_locked(after, current)
             else:

@@ -181,7 +181,7 @@ class ModelContractTests(unittest.TestCase):
                 body = json.loads(server.calls[-1][2])
                 self.assertNotIn('generate_audio', body)
                 self.assertNotIn('seed', body)
-                task = dict(prompt_path='nonexistent-prompt-fixture', images=[])
+                task = dict(prompt_path='nonexistent-prompt-fixture', images=[], _original_prompt='text')
                 first = task_signature(task, model, values, server.base, catalog)
                 values.update(generate_audio=False, seed='456')
                 self.assertEqual(task_signature(task, model, values, server.base, catalog), first)

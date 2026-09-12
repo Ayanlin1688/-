@@ -34,7 +34,7 @@ class PoolHandler(FixtureHandler):
             self.server.calls.append((self.path, dict(self.headers), body))
             model = payload['model']
             if model in self.server.fail_models:
-                return self.respond({'error': 'model unavailable'}, 503)
+                return self.respond({'error': 'model parameters rejected'}, self.server.failure_status)
             task_id = f'pool-{len(self.server.calls)}'
             self.server.jobs[task_id] = dict(model=model, started=time.monotonic(), polls=0)
             self.server.active.add(task_id)
@@ -73,6 +73,7 @@ class PoolServer(LocalServer):
         server.lock = threading.Lock()
         server.jobs = {}; server.active = set(); server.events = []
         server.maximum = 0; server.fail_models = set(); server.remote_fail_models = set()
+        server.failure_status = 422  # A definite rejection is safe for model failover.
         server.poll_errors = 0; server.processing_seconds = .1
         server.upload_errors = 0; server.download_errors = 0
         return server
@@ -111,7 +112,7 @@ class PoolExecutionTests(unittest.TestCase):
         self.make_prompts(count)
         self.config['api'].update(base_url=server.base, api_key='local-fixture-only', upload_url=server.base + '/upload')
         self.manager.start_tasks(self.config)
-        wait_until(lambda: not self.manager.is_running, timeout=15000)
+        wait_until(lambda: not self.manager.is_running, timeout=30000)
         return self.manager.tasks
 
     def test_round_robin_three_tasks_use_three_actual_models(self):
@@ -187,7 +188,7 @@ class PoolExecutionTests(unittest.TestCase):
             self.assertEqual(len(server.calls) - before, 1)
             self.assertEqual(task['retry_count'], 0)
 
-    def test_refused_connection_retries_five_times_before_failure(self):
+    def test_refused_connection_pauses_creation_without_retry(self):
         self.make_prompts(1)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -196,10 +197,10 @@ class PoolExecutionTests(unittest.TestCase):
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running, timeout=20000)
         task = self.manager.tasks[0]
-        self.assertEqual(task['status'], 'failed')
-        self.assertEqual(task['retry_count'], 5)
-        self.assertEqual(len(task['attempts']), 6)
-        self.assertEqual(sum('次重试，剩余' in text for _, text in self.logs), 5)
+        self.assertEqual(task['status'], 'submission_unknown')
+        self.assertEqual(task['retry_count'], 0)
+        self.assertEqual(len(task['attempts']), 1)
+        self.assertEqual(sum('次重试，剩余' in text for _, text in self.logs), 0)
 
     def test_poll_transport_errors_keep_same_remote_task_id(self):
         with PoolServer() as server:
@@ -323,7 +324,7 @@ class PoolExecutionTests(unittest.TestCase):
         for product in ['A产品', 'B产品']:
             (self.prompts / product).mkdir(); (images / product).mkdir()
             for i in range(2):
-                (self.prompts / product / f'{i+1}.txt').write_text(product, encoding='utf-8')
+                (self.prompts / product / f'{i+1}.txt').write_text(f'{product} 场景{i+1}', encoding='utf-8')
         with PoolServer() as server:
             tasks = self.run_tasks(server, count=0)
             self.assertEqual([e[0] for e in server.events], ['submit', 'submit', 'done', 'done']*2)

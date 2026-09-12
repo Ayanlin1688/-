@@ -18,6 +18,11 @@ _MODEL_FIELDS = {
 }
 
 
+class SubmissionUncertain(RequestError):
+    """A creation may have been accepted; repeating POST is unsafe."""
+    pass
+
+
 def _has_error_object(payload):
     return isinstance(payload, dict) and isinstance(payload.get('error'), (dict, str))
 
@@ -97,18 +102,32 @@ class ApiClient(HttpClient):
                         manifest['input_reference'].append(dict(filename=path.name, path=str(path.resolve()), size_bytes=path.stat().st_size,
                                                                 content_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream'))
                     self._debug_request(endpoint, manifest, multipart=True)
-                    response = stack.enter_context(self.request('POST', self.base_url + endpoint, files=files))
+                    response = stack.enter_context(self._create_request(endpoint, files=files))
                 else:
                     self._debug_request(endpoint, payload)
-                    response = stack.enter_context(self.request('POST', self.base_url + endpoint, json=payload))
-                raw = self.json(response)
+                    response = stack.enter_context(self._create_request(endpoint, json=payload))
+                self.last_submit_status = response.status_code
+                try:
+                    raw = self.json(response)
+                except RequestError as error:
+                    raise SubmissionUncertain(str(error), response.status_code) from None
                 task_id = extract(raw, ('task_id', 'id'))
-                if task_id is None:
-                    raise RequestError(f'HTTP {response.status_code}: 创建响应缺少 task_id/id：{self.redact(response.text)}')
-                return str(task_id)
+                if isinstance(task_id, (str, int)) and not isinstance(task_id, bool) and str(task_id).strip():
+                    return str(task_id).strip()
+                message = f'HTTP {response.status_code}: 创建响应缺少 task_id/id：{self.redact(response.text)}'
+                if response.status_code in {400, 422}:
+                    raise RequestError(message, response.status_code, self.redact(response.text))
+                raise SubmissionUncertain(message, response.status_code, self.redact(response.text))
         except Exception as error:
             self.log(f'提交失败：{self.redact(error)}', 'error')
             raise
+
+    def _create_request(self, endpoint, **kwargs):
+        try:
+            return self.request('POST', self.base_url + endpoint, check_status=False,
+                                timeout=(10, 30), allow_redirects=False, **kwargs)
+        except RequestError as error:
+            raise SubmissionUncertain(str(error), error.status_code, error.body) from None
 
     def query_task(self, task_id, model, catalog=None):
         endpoint = '/video/generations/' if family_for(model, catalog) == 'video-v1' else '/videos/'

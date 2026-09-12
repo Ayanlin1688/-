@@ -83,6 +83,8 @@ class MainWindow(FluentWindow):
         self.settings_page.strategy.currentTextChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.workspace_page.history_changed.connect(self.history_page.update_history)
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
+        self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
+        self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
         self.addSubInterface(self.workspace_page, FIF.HOME, "工作台")
         self.addSubInterface(self.history_page, FIF.HISTORY, "任务历史")
         self.addSubInterface(self.settings_page, FIF.SETTING, "设置")

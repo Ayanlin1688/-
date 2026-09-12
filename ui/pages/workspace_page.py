@@ -3,6 +3,7 @@
 import copy
 from pathlib import Path
 import threading
+import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar
@@ -14,6 +15,8 @@ from ..model_catalog_controller import runtime_config
 from ..components.model_selector import catalog_snapshot, usable
 from core.api_client import ApiClient
 from core.http_client import Cancelled
+from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
+from ..components.submission_dialog import SubmissionRecoveryDialog
 from core.video_downloader import VideoDownloader, build_filename
 from ..file_actions import open_local
 
@@ -44,6 +47,7 @@ class WorkspacePage(QWidget):
         self.cancel_button.clicked.connect(manager.cancel_all)
         self.current_task.skip_button.clicked.connect(manager.skip_current)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
+        self.current_task.resolve_button.clicked.connect(lambda: self.resolve_submission(self.current_task.task_info))
         self.queue_panel.task_selected.connect(manager.select_current)
         self.queue_panel.model_override_requested.connect(self.force_task_model)
         self.queue_panel.reset_models_requested.connect(self.reset_task_models)
@@ -253,10 +257,71 @@ class WorkspacePage(QWidget):
     def _finished(self, success, failed):
         skipped = sum(t['status'] == 'skipped' for t in self.task_manager.tasks)
         cancelled = sum(t['status'] == 'cancelled' for t in self.task_manager.tasks)
-        message = f'成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled}'
+        duplicates = sum(t['status'] == 'duplicate' for t in self.task_manager.tasks)
+        uncertain = sum(t['status'] == 'submission_unknown' for t in self.task_manager.tasks)
+        message = f'成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled} · 重复 {duplicates} · 待确认 {uncertain}'
         self.append_log('队列结束：' + message, 'info')
         if not self.closing.is_set():
             InfoBar.info('队列结束', message, parent=self, duration=5000)
+            if duplicates:
+                InfoBar.warning('防重复提交', f'已跳过{duplicates}个重复任务，避免重复扣费', parent=self, duration=6000)
+            if uncertain:
+                InfoBar.warning('提交待确认', '提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。', parent=self, duration=8000)
+
+    def resolve_submission(self, record):
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+            self.append_log('请先暂停并结束当前队列，再处理待确认提交', 'warning')
+            return
+        config = runtime_config(self.config_manager)
+        pending = record.get('duplicate_record') or record
+        dialog = SubmissionRecoveryDialog(self.window())
+        if pending.get('legacy_task_id'):
+            hint = CaptionLabel('旧记录候选ID：' + str(pending['legacy_task_id']) +
+                                '。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。')
+            hint.setWordWrap(True)
+            dialog.viewLayout.addWidget(hint)
+        if not dialog.exec():
+            return
+        try:
+            ledger = SubmissionLedger(ledger_path(config))
+            result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
+                                    task_id=dialog.task_id.text() if dialog.action.currentIndex() == 1 else '',
+                                    confirmed_not_created=dialog.action.currentIndex() == 2)
+            self._record(result)
+            for index, task in enumerate(self.task_manager.tasks):
+                candidate = task.get('duplicate_record') or task
+                if candidate.get('ledger_id') == pending.get('ledger_id'):
+                    self.task_manager.tasks[index] = copy.deepcopy(result)
+                    self._current_changed(index, result)
+            self._tasks_updated(self.task_manager.tasks)
+            self.append_log('确认结果已保存；填写已有ID的任务将仅查询原任务，不重新创建', 'info')
+        except Exception as error:
+            InfoBar.error('未保存确认结果', str(error), parent=self, duration=6500)
+
+    def regenerate(self, record):
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+            return
+        from qfluentwidgets import Dialog
+        original = record.get('duplicate_record') or record
+        if original.get('status') != 'completed':
+            return
+        dialog = Dialog('重新生成确认', '该任务已生成过，是否重新生成？这会创建一个新的付费任务。', self.window())
+        dialog.yesButton.setText('确认重新生成')
+        dialog.cancelButton.setText('不重新生成')
+        dialog.cancelButton.setFocus()
+        if not dialog.exec():
+            return
+        config = runtime_config(self.config_manager)
+        config['_rerun_signatures'] = [original['signature']]
+        config['_only_prompt_paths'] = [original['prompt_path']]
+        config['workspace'].update(original.get('effective_parameters', {}))
+        config['workspace']['model'] = original['model']
+        config['prompt_detection']['enabled'] = True
+        config['model_overrides'][original['prompt_path']] = original['model']
+        try:
+            self.task_manager.start_tasks(config)
+        except Exception as error:
+            InfoBar.warning('未开始重新生成', str(error), parent=self, duration=6000)
 
     def redownload(self, record):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
@@ -265,8 +330,15 @@ class WorkspacePage(QWidget):
         if not record.get('task_id'):
             self.append_log('此记录没有远端 task_id，无法重新下载', 'warning')
             return
-        config = copy.deepcopy(self.config_manager.config)
+        config = runtime_config(self.config_manager)
         task = copy.deepcopy(record)
+        if task.get('api_scope') != account_scope(config):
+            message = ('此旧记录尚未确认账号归属，请先开始队列建立待确认保护，再通过“确认提交结果”核对当前账号和任务ID'
+                       if not task.get('api_scope') else
+                       '此任务属于其他 API 账号，请先在设置中切回原账号及对应密钥')
+            self.append_log(message, 'warning')
+            InfoBar.warning('请先核对任务账号', message, parent=self, duration=6500)
+            return
         if task.get('api_base_url', config['api']['base_url']).strip().rstrip('/') != config['api']['base_url'].strip().rstrip('/'):
             self.append_log('此任务来自其他 API 地址，请先在设置中切回原接口及对应密钥：' + task['api_base_url'], 'warning')
             return
@@ -280,9 +352,19 @@ class WorkspacePage(QWidget):
             downloader = VideoDownloader(config['download_settings']['overwrite_existing'], check, log=self.jobs.log_message.emit)
             try:
                 check()
-                result = client.query_task(task['task_id'], task['model'])
-                if result['status'] != 'completed' or not result['result_url']:
-                    raise ValueError(f"远端状态 {result['status']}，暂时无法下载")
+                self.jobs.log_message.emit(f"沿用已有task_id={task['task_id']}继续轮询，不重复创建", 'info')
+                frozen = task.get('submission_model')
+                catalog = {task['model']: frozen} if isinstance(frozen, dict) else config.get('_model_catalog')
+                deadline = time.monotonic() + float(config['workspace'].get('poll_timeout', 3600))
+                while True:
+                    check()
+                    result = client.query_task(task['task_id'], task['model'], catalog)
+                    if result['status'] == 'completed' and result['result_url']:
+                        break
+                    if result['status'] == 'failed' or time.monotonic() >= deadline:
+                        raise ValueError(f"远端状态 {result['status']}；保留 task_id")
+                    self.jobs.log_message.emit(f"继续轮询：{task['task_id']}，状态={result['status']}", 'info')
+                    self.closing.wait(max(.01, float(config['workspace']['poll_interval'])))
                 folder = task.get('output_dir') or config['paths']['output']
                 if not folder:
                     raise ValueError('请先选择视频保存目录')
@@ -291,6 +373,8 @@ class WorkspacePage(QWidget):
                 task['result_path'] = downloader.download_video(result['result_url'], folder, filename)
                 task.update(status='completed', result_url=result['result_url'], error='', finished_at=stamp(),
                             size_bytes=Path(task['result_path']).stat().st_size, filename=filename, output_dir=str(Path(folder).resolve()))
+                if task.get('ledger_id'):
+                    SubmissionLedger(ledger_path(config)).save(task, 'completed')
                 return task
             finally:
                 client.close(); downloader.close()

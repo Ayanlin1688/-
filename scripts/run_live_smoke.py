@@ -1,6 +1,5 @@
 """Opt-in one-task provider smoke test. Reads keys locally and never prints them."""
 import argparse
-import copy
 import json
 from pathlib import Path
 import signal
@@ -10,7 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from PyQt5.QtCore import QCoreApplication, QTimer
 from core.config_manager import ConfigManager
+from core.model_catalog import ModelCatalog
 from core.task_manager import TaskManager
+from ui.model_catalog_controller import runtime_config
 
 
 def main():
@@ -35,7 +36,11 @@ def main():
     if not args.submit:
         print('配置前置检查通过。执行真实测试：python scripts\\run_live_smoke.py --submit（最多一个任务，可能计费）。')
         return 0
-    config = copy.deepcopy(config)
+    # Share the GUI's pre-POST ledger even when the material directory lives on
+    # a different drive. Cached model capabilities also match desktop behavior.
+    config = runtime_config(config_manager)
+    config['_model_catalog'] = ModelCatalog(config_manager.path, config['api']['base_url'],
+                                             config['api']['api_key']).snapshot()
     config['_task_limit'] = 1
     # A noninteractive smoke test cannot wait for a UI resume decision.
     if config['task_strategy']['unmatched_prompt'] == '暂停任务':
@@ -59,7 +64,7 @@ def main():
         code[0] = 0 if success == 1 and failed == 0 else 1
         report = dict(success=success, failed=failed, tasks=manager.tasks)
         # No keys or raw configuration are included in the report.
-        path = ROOT / 'live-smoke-result.json'
+        path = config_manager.path.with_name('live-smoke-result.json')
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         print(f'验证结果：{path}', flush=True)
         app.quit()

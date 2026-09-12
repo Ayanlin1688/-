@@ -42,6 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
     },
     "task_strategy": {
+        "prevent_duplicates": True,
         "max_concurrency": 1,
         "auto_retry": True,
         "max_retries": 5,
@@ -61,6 +62,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "appearance": {"theme": "dark", "language": "简体中文"},
     "diagnostics": {"debug_mode": False},
     "prompt_detection": {"enabled": True, "fallback_model": ""},
+    "prompt_conversion": {"enabled": True, "preserve_original": True, "prefer_same_format": True},
     "model_overrides": {},
     "schedule": {
         "enabled": False, "time": "23:00", "mode": "once", "after_finish": "keep",

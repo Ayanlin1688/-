@@ -11,11 +11,12 @@ from .http_client import Cancelled
 from .model_parameters import GROK, V3_MODELS, model_options
 from .model_catalog import family_for
 
-TERMINAL = {'completed', 'failed', 'cancelled', 'skipped'}
+TERMINAL = {'completed', 'failed', 'cancelled', 'skipped', 'duplicate', 'submission_unknown'}
 ACTIVE = {'queued', 'uploading', 'submitting', 'processing', 'downloading', 'retry_wait', 'cooling', 'paused'}
 STATUS_TEXT = {'waiting': '等待中', 'queued': '生成中', 'uploading': '上传中', 'submitting': '提交中',
                'processing': '生成中', 'downloading': '下载中', 'completed': '已完成', 'retry_wait': '重试中',
-               'cooling': '等待冷却', 'failed': '失败', 'cancelled': '已取消', 'skipped': '已跳过', 'paused': '已暂停'}
+               'cooling': '等待冷却', 'failed': '失败', 'cancelled': '已取消', 'skipped': '已跳过', 'paused': '已暂停',
+               'duplicate': '重复', 'submission_unknown': '提交待确认'}
 
 
 def stamp():
@@ -63,9 +64,28 @@ def parameters_for_model(model, values, pooled=False, image_count=0, catalog=Non
     return params
 
 
-def task_signature(task, model, params, base_url, catalog=None):
+def prompt_content(task):
+    return task.get('_original_prompt') if '_original_prompt' in task else Path(task['prompt_path']).read_text(encoding='utf-8-sig')
+
+
+def prompt_sha256(task):
+    return hashlib.sha256(prompt_content(task).encode('utf-8')).hexdigest()
+
+
+def task_signature(task, model, params, base_url, catalog=None, *, legacy=False):
     inputs = [task['prompt_path'], *task['images']]
-    stats = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) if Path(p).is_file() else (p, None, None) for p in inputs]
+    if legacy:
+        stats = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) if Path(p).is_file() else (p, None, None) for p in inputs]
+    else:
+        images = []
+        for value in task['images']:
+            path = Path(value)
+            if path.is_file():
+                with path.open('rb') as stream:
+                    images.append([os.path.normcase(str(path.resolve())), hashlib.file_digest(stream, 'sha256').hexdigest()])
+            else:
+                images.append({'missing': str(path.resolve())})
+        stats = [prompt_sha256(task), images]
     effective = dict(model=model, duration=params.get('duration'), aspect_ratio=params.get('aspect_ratio'))
     family = family_for(model, catalog)
     if family == 'video-v3':

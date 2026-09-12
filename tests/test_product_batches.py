@@ -354,6 +354,8 @@ class ProductUiTests(unittest.TestCase):
                 task = dict(local_id='restore-product', task_id='already-submitted', model='MiniMax-H3',
                             prompt_name='分镜1', product='产品2', product_task_index=1, sequence=3,
                             output_dir=str(output), status='failed', error='poll interrupted')
+                from core.submission_ledger import account_scope
+                task['api_scope'] = account_scope(self.manager.config)
                 window.workspace_page.redownload(task)
                 wait_until(lambda: not window.workspace_page.jobs.busy)
                 saved = self.manager.config['history'][0]

@@ -27,8 +27,10 @@ class CurrentTaskCard(QWidget):
         buttons = QHBoxLayout(); buttons.addStretch(1)
         self.skip_button = PushButton(FIF.SKIP_FORWARD, '跳过当前')
         self.cancel_button = PushButton(FIF.SYNC, '重新下载')
+        self.resolve_button = PushButton(FIF.INFO, '处理待确认')
+        self.resolve_button.setVisible(False)
         self.cancel_button.setToolTip('已有 task_id 时仅查询并下载，不重新创建任务')
-        buttons.addWidget(self.skip_button); buttons.addWidget(self.cancel_button); root.addLayout(buttons)
+        buttons.addWidget(self.resolve_button); buttons.addWidget(self.skip_button); buttons.addWidget(self.cancel_button); root.addLayout(buttons)
         self.task_info = {}
         self.skip_button.setEnabled(False); self.cancel_button.setEnabled(False)
 
@@ -37,6 +39,7 @@ class CurrentTaskCard(QWidget):
 
     def update_task(self, index, task):
         self.task_info = task
+        self.resolve_button.setVisible(task.get('status') == 'submission_unknown')
         failed = task.get('status') == 'failed'
         self.progress.setError(failed)
         # Tint the track too: an upload failure may occur while progress is still 0%.

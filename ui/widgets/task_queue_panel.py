@@ -4,6 +4,7 @@ from core.task_manager import STATUS_TEXT, TERMINAL, ACTIVE
 
 COLORS = {'已完成': '#67c23a', '生成中': '#409eff', '等待中': '#e6a23c', '失败': '#f56c6c',
           '重试中': '#e6a23c', '等待冷却': '#e6a23c',
+          '重复': '#92929b', '提交待确认': '#e6a23c',
           '已取消': '#92929b', '已跳过': '#e6a23c', '已暂停': '#e6a23c', '上传中': '#409eff', '提交中': '#409eff', '下载中': '#409eff'}
 from ..motion import StatusDot
 from core.prompt_detector import short_model_name, SOURCE_TEXT
@@ -79,7 +80,7 @@ class TaskQueuePanel(QWidget):
         root.setSpacing(10)
         root.addWidget(StrongBodyLabel("任务队列"))
         self.filter_box = ComboBox()
-        self.filter_box.addItems(["全部", "等待中", "生成中", "重试中", "等待冷却", "已完成", "失败", "已跳过", "已取消", "已暂停"])
+        self.filter_box.addItems(["全部", "等待中", "生成中", "重试中", "等待冷却", "已完成", "失败", "重复", "提交待确认", "已跳过", "已取消", "已暂停"])
         root.addWidget(self.filter_box)
         self.reset_models_button = PushButton(FIF.SYNC, '重置模型识别')
         self.reset_models_button.setToolTip('全部重置为自动识别')

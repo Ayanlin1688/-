@@ -13,6 +13,19 @@ from core.task_manager import TaskManager
 from test_pool_execution import PoolServer
 from test_task_manager import wait_until
 
+H3_COMPLETE = '''subject_definitions:
+<Subject 1> is a blanket from <Picture 1>.
+summary:
+[reference generation] A blanket demonstration.
+retention_analysis:
+<Subject 1>: fully_preserved
+detailed_description:
+[Shot 1] A hand unfolds the blanket.
+overall_soundscape:
+Cloth rustles.
+non_diegetic_music:
+N/A'''
+
 
 def catalog_fixture():
     records = {}
@@ -77,7 +90,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertTrue(any('任务1使用模型 MiniMax-H3（自动识别）' in text for text in self.logs))
 
     def test_manual_model_is_locked_even_with_failover_enabled(self):
-        path = self.prompts/'1.txt'; path.write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        path = self.prompts/'1.txt'; path.write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_overrides'] = {str(path): 'video-v2'}
         self.config['model_pool']['enabled'] = True
         with PoolServer() as server:
@@ -96,7 +109,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(self.manager.tasks[0]['effective_parameters']['resolution'], '1080p')
 
     def test_detected_model_outside_pool_can_fail_over_to_enabled_pool(self):
-        (self.prompts/'1.txt').write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        (self.prompts/'1.txt').write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_pool']['enabled'] = True
         with PoolServer() as server:
             server.fail_models = {'MiniMax-H3'}
@@ -105,7 +118,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(self.manager.tasks[0]['status'], 'completed')
 
     def test_detected_model_outside_pool_retries_same_model_without_failover(self):
-        (self.prompts/'1.txt').write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        (self.prompts/'1.txt').write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_pool'].update(enabled=True, auto_failover=False)
         self.config['task_strategy']['max_retries'] = 1
         with PoolServer() as server:
@@ -115,7 +128,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(self.manager.tasks[0]['status'], 'failed')
 
     def test_detected_model_history_resumes_the_same_actual_model(self):
-        (self.prompts/'1.txt').write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        (self.prompts/'1.txt').write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_pool']['enabled'] = True
         with PoolServer() as server:
             server.fail_models = {'MiniMax-H3'}
@@ -130,7 +143,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(self.manager.tasks[0]['model'], 'video-v2')
 
     def test_changed_manual_override_does_not_recover_an_unrelated_model(self):
-        path = self.prompts/'1.txt'; path.write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        path = self.prompts/'1.txt'; path.write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_pool']['enabled'] = True
         self.config['model_overrides'] = {str(path): 'video-v2'}
         with PoolServer() as server:
@@ -142,7 +155,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(self.manager.tasks[0]['requested_model'], 'video-v3')
 
     def test_delisted_actual_model_keeps_prior_task_id_and_prevents_resubmission(self):
-        (self.prompts/'1.txt').write_text('subject_definitions: a\n[Shot 1] a', encoding='utf-8')
+        (self.prompts/'1.txt').write_text(H3_COMPLETE, encoding='utf-8')
         self.config['model_pool']['enabled'] = True
         with PoolServer() as server:
             server.fail_models = {'MiniMax-H3'}

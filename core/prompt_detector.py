@@ -26,7 +26,7 @@ def detect_model(prompt_text) -> str:
     if score:
         # Incomplete H3 must not be mistaken for English Grok or simple prose.
         return ''
-    if re.search(r'镜头\s*[一二三四五六七八九十百\d]+|第[一二三四五六七八九十百\d]+镜|@(?:图片|图)\s*\d+', text):
+    if re.search(r'【(?:分镜|禁止项|强制声明)】|人物站位\s*：|镜头\s*[一二三四五六七八九十百\d]+|第[一二三四五六七八九十百\d]+镜|@(?:图片|图)\s*\d+', text):
         return SEEDANCE
     structured = bool(re.search(r'^\s*[\w\u4e00-\u9fff-]{2,40}\s*[:：]|[{}]|\[\s*Shot\s*\d+|\bShot\s+\d+', text, re.I | re.M))
     if structured:

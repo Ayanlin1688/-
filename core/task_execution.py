@@ -4,19 +4,24 @@ import json
 from pathlib import Path
 import time
 
-from .api_client import ApiClient
+from .api_client import ApiClient, SubmissionUncertain
 from .http_client import Cancelled, extract
 from .image_uploader import ImageUploader
 from .log_redaction import redact_structure
 from .model_catalog import family_for
 from .model_parameters import GROK, validate_task_parameters, model_prompt
 from .prompt_processor import process_prompt, reference_warnings
+from .prompt_converter import convert_for_model, model_format
 from .reference_diagnostics import ReferenceDiagnostics, describe_image
 from .task_state import stamp, parameters_for_model, task_signature, resolve_output_directory
 from .video_downloader import VideoDownloader, build_filename
 
 
 class RemoteGenerationFailed(RuntimeError):
+    pass
+
+
+class DuplicateSubmission(RuntimeError):
     pass
 
 
@@ -33,9 +38,16 @@ class TaskExecution:
         self.phase = 'validation'
         self.started = time.monotonic()
         self.urls = None
+        self.intent_sent = bool(task.get('task_id'))
 
     def publish(self, record=False, **values):
         self.task.update(values)
+        if record and self.task.get('ledger_id'):
+            state = ('completed' if self.task.get('status') == 'completed' else
+                     'failed' if self.task.get('remote_failed') else
+                     'active' if self.task.get('task_id') else 'unknown' if self.intent_sent else
+                     'released' if self.task.get('status') in {'failed', 'cancelled', 'skipped'} else 'reserved')
+            self.owner.ledger.save(self.task, state)
         self.owner.update_task(self.index, self.task, record=record)
 
     def terminal(self, status, error=''):
@@ -53,7 +65,12 @@ class TaskExecution:
         waiting = False
         while True:
             self.control.check()
-            model = self.pool.pick(after=after) if after in self.pool.names else self.pool.pick()
+            preferred_names = None
+            if after and self.config.get('prompt_conversion', {}).get('prefer_same_format', True):
+                catalog = self.config.get('_model_catalog')
+                preferred_names = [name for name in self.pool.names
+                                   if name != after and model_format(name, catalog) == model_format(after, catalog)]
+            model = self.pool.pick(after=after, preferred_names=preferred_names) if after in self.pool.names else self.pool.pick(preferred_names=preferred_names)
             if model is not None:
                 if after is not None:
                     self.log(f'模型 {after} 失败，切换到 {model} 重试；{after} 冷却时间 {self.config["model_pool"]["cooldown"]}秒', 'warning')
@@ -75,6 +92,8 @@ class TaskExecution:
         try:
             self.progress(0, 0, -1)
             self.control.before_task()
+            if self.task.get('prompt_read_error'):
+                raise ValueError(self.task['prompt_read_error'])
             if self.task.get('skip_reason'):
                 self.log(self.task['skip_reason'] + '，已跳过', 'warning')
                 self.terminal('skipped', self.task['skip_reason']); return
@@ -87,7 +106,9 @@ class TaskExecution:
                 self.publish(status='paused')
                 self.log('未匹配图片，已暂停；点击继续将对此任务提交文生视频，或点击跳过/取消', 'warning')
                 self.control.before_task()
-            original = Path(self.task['prompt_path']).read_text(encoding='utf-8-sig')
+            original = self.task.get('_original_prompt')
+            if original is None:
+                original = Path(self.task['prompt_path']).read_text(encoding='utf-8-sig')
             prompt = process_prompt(original)
             self.log(f'提示词文件名: {Path(self.task["prompt_path"]).name}', 'debug')
             self.log(f'任务"{self.task["prompt_name"]}"：绑定{len(self.task["images"])}张参考图；Picture 1 对应 images[0]，按绑定顺序提交', 'debug')
@@ -104,7 +125,7 @@ class TaskExecution:
                 entry = self.task['attempts'][-1]
                 self.publish(model=self.model, retry_count=attempt, error='', finished_at='')
                 try:
-                    self._attempt(prompt, client, uploader, downloader, diagnostics)
+                    self._attempt(original, client, uploader, downloader, diagnostics)
                     entry.update(status='completed', task_id=self.task['task_id'], finished_at=stamp())
                     if self.model in self.pool.names:
                         self.pool.succeeded(self.model)
@@ -112,10 +133,31 @@ class TaskExecution:
                     self.terminal('completed'); return
                 except Cancelled:
                     raise
+                except DuplicateSubmission:
+                    return
+                except SubmissionUncertain as error:
+                    self.owner.submission_error(getattr(error, 'status_code', None))
+                    message = '无法确认是否创建成功，已暂停此任务，禁止自动重新创建：' + self.owner.redact(error)
+                    entry.update(status='submission_unknown', phase='submit', error=message, finished_at=stamp())
+                    self.terminal('submission_unknown', message)
+                    self.log(message, 'error')
+                    return
                 except Exception as error:
                     message = self.owner.redact(error)
                     entry.update(status='failed', task_id=self.task.get('task_id', ''), phase=self.phase, error=message, finished_at=stamp())
                     remote_failed = isinstance(error, RemoteGenerationFailed)
+                    if remote_failed:
+                        self.task['remote_failed'] = True
+                    if self.phase == 'submit' and self.intent_sent:
+                        status = getattr(error, 'status_code', None)
+                        if status not in {400, 422}:
+                            self.owner.submission_error(status)
+                            self.terminal('submission_unknown', message)
+                            self.log('提交结果不确定，禁止自动重新创建：' + message, 'error')
+                            return
+                        self.intent_sent = False
+                        self.owner.ledger.save(self.task, 'rejected')
+                        self.task.pop('ledger_id', None)
                     model_failure = self.phase in {'validation', 'submit'} or remote_failed
                     in_pool = self.model in self.pool.names
                     remaining = self.pool.failed(self.model, force_cooldown=bool(failover)) if model_failure and in_pool else 0
@@ -129,7 +171,11 @@ class TaskExecution:
                     self.log(f'任务{self.index+1}：第{attempt+1}次重试，剩余{retries-attempt-1}次；间隔{strategy.get("retry_interval", 3)}秒', 'warning')
                     self.control.delay(max(0, float(strategy.get('retry_interval', 3))))
                     if remote_failed:
+                        self.owner.ledger.save(self.task, 'failed')
                         self.task.update(task_id='', result_url='', result_path='', filename='')
+                        self.task.pop('remote_failed', None)
+                        self.task.pop('ledger_id', None)
+                        self.intent_sent = False
                     # Known IDs always keep their original model for query/download recovery.
                     if model_failure and not self.task.get('task_id') and not self.task.get('model_locked'):
                         # Recognition may select a model outside the configured
@@ -141,15 +187,23 @@ class TaskExecution:
         except Cancelled as error:
             if self.task.get('attempts') and self.task['attempts'][-1]['status'] == 'running':
                 self.task['attempts'][-1].update(status='cancelled' if self.control.cancelled else 'skipped', task_id=self.task.get('task_id', ''))
-            self.terminal('cancelled' if self.control.cancelled else 'skipped', str(error))
+            self.terminal('submission_unknown' if self.intent_sent and not self.task.get('task_id') else
+                          'cancelled' if self.control.cancelled else 'skipped', str(error))
             self.log(f'任务{self.index+1}：{error}；仅停止本地处理，远端任务可能继续执行', 'warning')
         except Exception as error:
-            self.terminal('failed', str(error)); self.log(f'任务{self.index+1}失败：{error}', 'error')
+            status = 'submission_unknown' if self.intent_sent and not self.task.get('task_id') else 'failed'
+            try:
+                self.terminal(status, str(error))
+            except Exception as persistence_error:
+                self.task.update(status=status, error=str(error))
+                self.owner.update_task(self.index, self.task, record=True)
+                self.log(f'提交账本写入失败，已停止：{persistence_error}', 'error')
+            self.log(f'任务{self.index+1}失败：{error}', 'error')
         finally:
             client.close(); uploader.close(); downloader.close(); diagnostics.close()
             self.control.release(self.index)
 
-    def _attempt(self, prompt, client, uploader, downloader, diagnostics):
+    def _attempt(self, original, client, uploader, downloader, diagnostics):
         task = self.task
         prefix = f'任务{self.index+1}/{len(self.owner.tasks)}'
         if not task.get('task_id'):
@@ -158,16 +212,61 @@ class TaskExecution:
             task_specific = task.get('model_source') in {'auto', 'manual', 'fallback'}
             params = parameters_for_model(self.model, self.config['workspace'], self.pool.enabled or task_specific,
                                           len(task['images']), catalog)
+            conversion = self.config.get('prompt_conversion', {})
+            result = convert_for_model(original, self.model, duration=params.get('duration'),
+                                       enabled=conversion.get('enabled', True), catalog=catalog)
+            if result.converted:
+                self.log(f'提示词格式已从{result.source_format}转换为{result.target_format}格式')
+            for warning in result.warnings:
+                self.log(warning, 'warning')
+            if conversion.get('preserve_original', True):
+                task['original_prompt'] = original
+            else:
+                task.pop('original_prompt', None)
+            prompt = process_prompt(result.text)
+            task.update(converted_prompt=result.text, source_format=result.source_format,
+                        target_format=result.target_format, prompt_converted=result.converted)
             fields = validate_task_parameters(self.model, prompt, params, len(task['images']), catalog)
             changed = {key: value for key, value in params.items() if self.config['workspace'].get(key) != value}
             if changed:
                 self.log(f'{self.model} 按支持范围调整参数：' + json.dumps(changed, ensure_ascii=False), 'warning')
             self.log('实际提交提示词: ' + model_prompt(self.model, prompt, catalog), 'debug')
+            task['submitted_prompt'] = model_prompt(self.model, prompt, catalog)
             self.log(f'{self.model} 参数校验通过：' + json.dumps(fields, ensure_ascii=False))
             self.publish(request_parameters=fields, effective_parameters=params,
                          submission_model=copy.deepcopy(catalog.get(self.model)) if isinstance(catalog, dict) else None,
                          signature=task_signature(task, self.model, params, self.config['api']['base_url'], catalog),
                          created_at=task.get('created_at') or stamp(), status='uploading')
+            if not task.get('ledger_id'):
+                prevent = self.config['task_strategy'].get('prevent_duplicates', True)
+                if task['signature'] in self.config.get('_rerun_signatures', []):
+                    prevent = False
+                self.control.check()
+                outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                while outcome == 'busy' and any(
+                        row.get('local_id') == saved.get('local_id') and row.get('status') in
+                        {'queued', 'uploading', 'submitting', 'processing', 'downloading', 'retry_wait'}
+                        for row in self.owner.tasks):
+                    # Different image lists/parameters for the same prompt are
+                    # serialized, rather than dropped, within this live batch.
+                    self.control.delay(.1)
+                    outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                if outcome == 'unknown' and saved.get('signature') == task['signature'] and any(
+                        row.get('local_id') == saved.get('local_id') and row.get('status') in
+                        {'uploading', 'submitting', 'queued', 'processing', 'downloading'}
+                        for row in self.owner.tasks):
+                    # A live sibling owns this exact request. A persisted intent
+                    # from a previous run still requires explicit recovery.
+                    outcome = 'duplicate'
+                if outcome != 'claimed':
+                    state = 'submission_unknown' if outcome == 'unknown' else 'duplicate'
+                    message = ('存在待确认提交，禁止再次创建' if outcome == 'unknown' else
+                               '同一提示词已有生成中的任务，跳过避免重复扣费' if outcome == 'busy' else
+                               '检测到相同任务，跳过避免重复扣费')
+                    self.publish(record=True, status=state, duplicate_record=saved, duplicate_of=saved.get('local_id'), error=message)
+                    self.log(message, 'warning')
+                    raise DuplicateSubmission(message)
+                task['ledger_id'] = saved['ledger_id']
             self.phase = 'upload'
             originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(task['images'])] if self.owner.debug_mode else []
             if family_for(self.model, catalog) == GROK:
@@ -192,12 +291,26 @@ class TaskExecution:
             field_name = 'input_reference（真实文件）' if family_for(self.model, catalog) == GROK else 'images'
             self.log(f'实际提交{field_name}: ' + json.dumps(redact_structure(urls, self.owner.redact), ensure_ascii=False), 'debug')
             self.control.check()
+            self.owner.gate.wait(self.control)
+            self.control.before_task()
+            if task_signature(task, self.model, params, self.config['api']['base_url'], catalog) != task['signature']:
+                self.urls = None
+                raise ValueError('参考图片在上传过程中发生变化，已停止提交；请重新扫描')
             self.phase = 'submit'; self.publish(status='submitting')
+            # Commit the intent synchronously before the first network byte.
+            self.owner.ledger.save(task, 'submitting')
+            self.intent_sent = True
             self.log(f'{prefix}：提交创建任务，模型={self.model}')
             task['task_id'] = client.create_task(self.model, prompt, urls, params, catalog)
             task['attempts'][-1]['task_id'] = task['task_id']
             self.publish(record=True, submitted_image_count=len(urls), status='queued')
+            if getattr(client, 'last_submit_status', 200) == 429 or getattr(client, 'last_submit_status', 200) >= 500:
+                self.owner.submission_error(client.last_submit_status)
+            else:
+                self.owner.gate.succeeded()
             self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
+        else:
+            self.log(f"沿用已有task_id={task['task_id']}继续轮询，不重复创建")
         if not task.get('result_url'):
             self.phase = 'poll'
             deadline = time.monotonic() + float(self.config['workspace'].get('poll_timeout', 3600))
@@ -205,7 +318,15 @@ class TaskExecution:
                 self.control.check()
                 if time.monotonic() >= deadline:
                     raise TimeoutError('轮询超过最长等待时间；保留 task_id')
-                result = client.query_task(task['task_id'], self.model, self.config.get('_model_catalog'))
+                frozen = task.get('submission_model')
+                catalog = {self.model: frozen} if isinstance(frozen, dict) else self.config.get('_model_catalog')
+                try:
+                    result = client.query_task(task['task_id'], self.model, catalog)
+                except Exception as error:
+                    seconds = self.owner.submission_error(getattr(error, 'status_code', None))
+                    if seconds:
+                        self.control.delay(seconds)
+                    raise
                 self.control.check()
                 self.progress(result['progress'])
                 self.publish(status='downloading' if result['status'] == 'completed' else ('processing' if result['status'] == 'failed' else result['status']))

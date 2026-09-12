@@ -8,6 +8,8 @@ from ..file_actions import open_local
 
 class HistoryPage(QWidget):
     redownload_requested = pyqtSignal(object)
+    resolve_requested = pyqtSignal(object)
+    regenerate_requested = pyqtSignal(object)
 
     def __init__(self, log_callback, config_manager, parent=None):
         super().__init__(parent)
@@ -17,7 +19,7 @@ class HistoryPage(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(22, 18, 22, 18); root.setSpacing(14)
         header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel('任务历史')); title_box.addWidget(CaptionLabel('查看生成记录 · 重新下载会沿用 task_id，不重复提交'))
         header.addLayout(title_box); header.addStretch(1)
-        self.filter_box = ComboBox(); self.filter_box.addItems(['全部状态', '已完成', '生成中', '失败', '已取消', '已跳过']); header.addWidget(self.filter_box)
+        self.filter_box = ComboBox(); self.filter_box.addItems(['全部状态', '已完成', '生成中', '失败', '重复', '提交待确认', '已取消', '已跳过']); header.addWidget(self.filter_box)
         self.open_button = PushButton(FIF.FOLDER, '打开输出文件夹')
         self.open_button.clicked.connect(self.open_output)
         header.addWidget(self.open_button); root.addLayout(header)
@@ -50,6 +52,16 @@ class HistoryPage(QWidget):
             retry.setEnabled(bool(task.get('task_id')))
             retry.clicked.connect(lambda _, t=task: self.redownload_requested.emit(t))
             layout.addWidget(open_file); layout.addWidget(retry)
+            if task.get('status') == 'submission_unknown':
+                resolve = TransparentToolButton(FIF.INFO)
+                resolve.setToolTip('处理待确认提交')
+                resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
+                layout.addWidget(resolve)
+            elif task.get('status') in {'completed', 'duplicate'}:
+                regenerate = TransparentToolButton(FIF.PLAY)
+                regenerate.setToolTip('重新生成（需确认，会创建新任务）')
+                regenerate.clicked.connect(lambda _, t=task: self.regenerate_requested.emit(t))
+                layout.addWidget(regenerate)
             self.table.setCellWidget(row, len(values), action)
         self._filter(self.filter_box.currentText())
         from ..theme import style_controls

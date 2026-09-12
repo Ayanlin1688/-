@@ -10,10 +10,13 @@ from qframelesswindow import FramelessDialog
 from qfluentwidgets import (
     CaptionLabel, ImageLabel, ListWidget, PrimaryPushButton, PushButton,
     StrongBodyLabel, TransparentToolButton, FluentIcon as FIF, Theme,
+    PlainTextEdit, SegmentedWidget,
 )
 from ..theme import style_controls, style_page
 from .model_selector import ModelComboBox, catalog_snapshot
 from core.prompt_detector import annotate_tasks
+from core.prompt_converter import convert_for_model
+from core.task_state import parameters_for_model
 
 
 class MatchDialog(FramelessDialog):
@@ -74,6 +77,20 @@ class MatchDialog(FramelessDialog):
         actions.addWidget(remove)
         actions.addStretch(1)
         layout.addLayout(actions)
+        layout.addWidget(StrongBodyLabel('提示词预览'))
+        self.preview_tabs = SegmentedWidget()
+        self.preview_tabs.addItem('original', '原始格式')
+        self.preview_tabs.addItem('converted', '转换后格式')
+        layout.addWidget(self.preview_tabs)
+        self.preview_status = CaptionLabel('选择提示词后显示预览')
+        self.preview_status.setWordWrap(True)
+        layout.addWidget(self.preview_status)
+        self.prompt_preview = PlainTextEdit()
+        self.prompt_preview.setReadOnly(True)
+        self.prompt_preview.setMinimumHeight(130)
+        layout.addWidget(self.prompt_preview, 1)
+        self.preview_tabs.currentItemChanged.connect(self._show_preview_mode)
+        self.preview_tabs.setCurrentItem('original')
         splitter.addWidget(detail)
         splitter.setSizes([290, 550])
         root.addWidget(splitter, 1)
@@ -113,6 +130,7 @@ class MatchDialog(FramelessDialog):
         for path in paths:
             self._append_picture(path)
         self._refresh_picture_labels()
+        self._refresh_prompt_preview()
 
     def _append_picture(self, path):
         item = QListWidgetItem(self.picture_list)
@@ -165,6 +183,7 @@ class MatchDialog(FramelessDialog):
             key = item.data(Qt.UserRole)
             self.bindings[key] = [self.picture_list.item(i).data(Qt.UserRole) for i in range(self.picture_list.count())]
             self.dirty.add(key)
+            self._refresh_prompt_preview()
 
     def _add(self):
         if self.prompt_list.currentRow() < 0:
@@ -209,6 +228,65 @@ class MatchDialog(FramelessDialog):
         else:
             self.model_overrides.pop(key, None)
         self.models_dirty = True
+        self._refresh_prompt_preview()
+
+    def _effective_preview_model(self, task):
+        if self.config_manager:
+            config = dict(self.config_manager.config, model_overrides=dict(self.model_overrides))
+            current = copy.deepcopy(task)
+            annotate_tasks([current], config)
+            return current['requested_model']
+        selected = self.model_combo.currentText()
+        return selected or task.get('requested_model') or task.get('model') or ''
+
+    def _refresh_prompt_preview(self):
+        row = self.prompt_list.currentRow()
+        if row < 0:
+            self._preview_original = ''
+            self._preview_converted = ''
+            self.preview_status.setText('选择提示词后显示预览')
+            self._show_preview_mode(self.preview_tabs.currentRouteKey() or 'original')
+            return
+        task = self.matches[row]
+        try:
+            original = Path(task['prompt_path']).read_text(encoding='utf-8-sig')
+            model = self._effective_preview_model(task)
+            catalog = catalog_snapshot(self.config_manager)
+            values = self.config_manager.config.get('workspace', {}) if self.config_manager else {}
+            task_specific = bool(self.model_combo.currentText()) or task.get('model_source') in {'auto', 'manual', 'fallback'}
+            pooled = bool(self.config_manager and self.config_manager.config.get('model_pool', {}).get('enabled'))
+            params = parameters_for_model(model, values, pooled or task_specific,
+                                          len(self.bindings.get(task['prompt_path'], [])), catalog)
+            enabled = True
+            if self.config_manager:
+                enabled = self.config_manager.config.get('prompt_conversion', {}).get('enabled', True)
+            result = convert_for_model(original, model, duration=params.get('duration'),
+                                       enabled=enabled, catalog=catalog)
+            self._preview_original = original
+            self._preview_converted = result.text
+            if result.converted:
+                status = f'{result.source_format} → {result.target_format}'
+            elif not enabled:
+                status = '自动转换已关闭'
+            else:
+                status = f'{result.source_format} → {result.target_format} · 无需转换'
+            if result.warnings:
+                status += ' · ' + '；'.join(result.warnings)
+            self.preview_status.setText(status)
+        except Exception as error:
+            try:
+                self._preview_original = Path(task['prompt_path']).read_text(encoding='utf-8-sig')
+            except Exception:
+                self._preview_original = ''
+            self._preview_converted = f'转换失败：{error}'
+            self.preview_status.setText('转换失败 · 请检查提示词结构')
+        self._show_preview_mode(self.preview_tabs.currentRouteKey() or 'original')
+
+    def _show_preview_mode(self, route_key):
+        if route_key == 'converted':
+            self.prompt_preview.setPlainText(getattr(self, '_preview_converted', ''))
+        else:
+            self.prompt_preview.setPlainText(getattr(self, '_preview_original', ''))
 
     def reset_models(self):
         self.model_overrides.clear()

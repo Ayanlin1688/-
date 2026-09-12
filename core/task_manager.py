@@ -15,9 +15,11 @@ from .matcher import StoryboardMatcher
 from .log_redaction import redact_text
 from .model_pool import ModelPool
 from .task_state import (ACTIVE, TERMINAL, STATUS_TEXT, TaskControl, stamp, resolve_output_directory,
-                         parameters_for_model, task_signature)
+                         parameters_for_model, task_signature, prompt_content, prompt_sha256)
 from .task_execution import TaskExecution
 from .prompt_detector import SOURCE_TEXT, annotate_tasks
+from .submission_ledger import SubmissionLedger, account_scope, ledger_path
+from .submission_safety import SubmissionGate
 
 
 class TaskWorker(QThread):
@@ -44,6 +46,9 @@ class TaskWorker(QThread):
         self.lock = threading.RLock()
         self.debug_mode = bool(self.config.get('diagnostics', {}).get('debug_mode', False))
         self.max_concurrency = max(1, min(5, int(self.config['task_strategy'].get('max_concurrency', 1))))
+        self.gate = SubmissionGate(self.max_concurrency)
+        self.ledger = None
+        self.scope = account_scope(self.config)
         pool_settings = copy.deepcopy(self.config['model_pool'])
         catalog = self.config.get('_model_catalog')
         if pool_settings.get('enabled') and isinstance(catalog, dict):
@@ -84,13 +89,22 @@ class TaskWorker(QThread):
                 task = copy.deepcopy(self.tasks[self.index])
                 self.current_task_changed.emit(self.index, task)
                 if record:
-                    self.record_updated.emit(task)
+                    self.record_updated.emit({key: value for key, value in task.items() if not key.startswith('_')})
 
     def update_task(self, index, task, record=False):
         with self.lock:
             self.tasks[index] = copy.deepcopy(task)
             self.index = index
             self.publish(record)
+
+    def submission_error(self, status_code):
+        seconds = self.gate.failed(status_code)
+        if seconds:
+            self.log(f'HTTP {status_code}：新提交退避{seconds}秒，当前并发上限{self.gate.limit}；已有任务继续轮询', 'warning')
+        if self.gate.paused:
+            self.log('API限流，已暂停新任务提交', 'warning')
+            self.pause_changed.emit(True)
+        return seconds
 
     def progress_for(self, index, value, elapsed, eta):
         with self.lock:
@@ -103,18 +117,57 @@ class TaskWorker(QThread):
         task.update(status=status, error=self.redact(error), finished_at=stamp())
         self.publish(record=True)
 
+    def _quarantine_legacy(self, task, old):
+        """Keep an unowned paid ID as evidence, never as a current-account ID."""
+        for record in reversed(self.ledger.records(self.scope)):
+            if (record.get('legacy_signature') == old['signature']
+                    and record.get('legacy_task_id') == old.get('task_id')):
+                # A user's explicit noncreation decision must survive old history.
+                return None if record['ledger_state'] == 'released' else record
+        model = old.get('model') or task['model']
+        frozen = old.get('submission_model')
+        catalog = {model: frozen} if isinstance(frozen, dict) else self.config.get('_model_catalog')
+        params = old.get('effective_parameters') or self._parameters(task, model)
+        pending = dict(task, model=model, task_id='', result_url='', result_path='',
+                       status='submission_unknown', api_scope=self.scope,
+                       legacy_task_id=old.get('task_id', ''), legacy_signature=old['signature'],
+                       effective_parameters=copy.deepcopy(params), submission_model=copy.deepcopy(frozen),
+                       error='旧记录的账号归属未确认，已阻止创建和查询；请核对当前账号及候选任务ID')
+        pending['signature'] = task_signature(task, model, params, self.config['api']['base_url'], catalog)
+        outcome, record = self.ledger.reserve(pending, self.scope)
+        if outcome == 'claimed':
+            self.ledger.save(record, 'unknown')
+            record['ledger_state'] = 'unknown'
+            self.record_updated.emit({key: value for key, value in record.items() if not key.startswith('_')})
+        return record
+
     def _scan(self):
         paths = self.config['paths']
         self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
         matcher = StoryboardMatcher.from_config(self.config)
         self.tasks = matcher.scan_and_match(paths)
+        if self.config.get('_only_prompt_paths'):
+            selected = {str(Path(path).resolve()) for path in self.config['_only_prompt_paths']}
+            self.tasks = [task for task in self.tasks if str(Path(task['prompt_path']).resolve()) in selected]
         annotate_tasks(self.tasks, self.config)
         for warning in matcher.warnings:
             self.log(warning, 'warning')
         if self.config.get('_task_limit'):
             self.tasks = self.tasks[:int(self.config['_task_limit'])]
-        previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous] if t.get('signature')}
+        self.ledger = SubmissionLedger(ledger_path(self.config))
+        # The ledger's scope column is authoritative for older ledger records.
+        saved = [dict(record, api_scope=self.scope) for record in self.ledger.records(self.scope)]
+        previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous, *saved]
+                    if t.get('signature') and (not t.get('api_scope') or t['api_scope'] == self.scope)}
         for sequence, task in enumerate(self.tasks, 1):
+            try:
+                task['_original_prompt'] = prompt_content(task)
+            except (OSError, UnicodeError) as error:
+                # Keep a bad file local to its task, as execution did before
+                # source hashing moved into the batch scan.
+                task['_original_prompt'] = ''
+                task['prompt_read_error'] = '读取提示词失败：' + str(error)
+            task['prompt_sha256'] = prompt_sha256(task)
             model = task.get('requested_model') or self.config['workspace']['model']
             params = self._parameters(task, model)
             signature = task_signature(task, model, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
@@ -122,6 +175,7 @@ class TaskWorker(QThread):
             task.update(status='waiting', task_id='', model=model, retry_count=0, attempts=[], result_path='',
                         local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
                         api_base_url=self.config['api']['base_url'].rstrip('/'), output_dir=output_dir, sequence=sequence)
+            task['api_scope'] = self.scope
             if task.get('model_locked'):
                 candidate_models = [model]
             elif self._uses_task_model(task):
@@ -133,8 +187,8 @@ class TaskWorker(QThread):
                 try:
                     params = self._parameters(task, candidate)
                     key = task_signature(task, candidate, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
-                    old = previous.get(key)
-                    if old and old.get('task_id'):
+                    old = previous.get(key) or previous.get(task_signature(task, candidate, params, self.config['api']['base_url'], self.config.get('_model_catalog'), legacy=True))
+                    if old and old.get('ledger_state') != 'released' and (old.get('task_id') or old.get('ledger_state') in {'unknown', 'submitting', 'reserved'}):
                         candidates.append(old)
                 except ValueError:
                     continue
@@ -166,16 +220,30 @@ class TaskWorker(QThread):
                         candidates.append(old)
                 except ValueError:
                     continue
-            old = candidates[-1] if candidates else None
+            scoped = [record for record in candidates if record.get('api_scope') == self.scope]
+            old = scoped[-1] if scoped else candidates[-1] if candidates else None
+            if old and not old.get('api_scope') and not task.get('skip_reason'):
+                old = self._quarantine_legacy(task, old)
             if old and not task.get('skip_reason'):
+                if old.get('status') == 'completed' and (not self.config['task_strategy'].get('prevent_duplicates', True)
+                        or task['signature'] in self.config.get('_rerun_signatures', []) or old.get('signature') in self.config.get('_rerun_signatures', [])):
+                    continue
                 product_fields = {key: task[key] for key in ('product', 'product_index', 'product_total', 'product_task_index',
                                  'product_task_total', 'output_subdir', 'skip_reason', 'output_dir', 'sequence')}
                 decision_fields = {key: task[key] for key in (
                     'detected_model', 'requested_model', 'model_source', 'model_locked', 'model_detection_error')
                     if key in task}
+                original = task['_original_prompt']
+                content_sha = task['prompt_sha256']
                 task.update(copy.deepcopy(old)); task.update(product_fields); task.update(decision_fields)
-                if old['status'] != 'completed' or not Path(old.get('result_path', '')).is_file():
-                    task.update(status='failed', error='已有远端任务ID，请从历史记录重新下载，避免重复提交')
+                task.update(_original_prompt=original, prompt_sha256=content_sha)
+                if not task.get('task_id'):
+                    task.update(status='submission_unknown', error=old.get('error') or '提交结果未确认，禁止再次创建；请先核对服务端')
+                elif old['status'] == 'completed':
+                    task.update(status='duplicate', duplicate_of=old.get('local_id'), duplicate_record=copy.deepcopy(old),
+                                error='检测到相同任务，跳过避免重复扣费')
+                else:
+                    task.update(status='queued', error='')
         matched = sum(t['matched'] for t in self.tasks)
         self.log(f'匹配完成：共{len(self.tasks)}个提示词，{matched}个已匹配，{len(self.tasks)-matched}个未匹配')
         self.publish()
@@ -243,13 +311,13 @@ class TaskWorker(QThread):
                 pending = []
                 for index in indices:
                     task = self.tasks[index]
-                    if task.get('task_id'):
-                        self.log(f"保留已有任务：{task['prompt_name']}，task_id={task['task_id']}，不重复提交", 'warning')
+                    if task.get('status') in {'duplicate', 'submission_unknown'}:
+                        self.log(task.get('error', ''), 'warning')
                     else:
                         pending.append(index)
                 if self.max_concurrency == 1:
                     for index in pending:
-                        model = self._pick(index)
+                        model = self.tasks[index]['model'] if self.tasks[index].get('task_id') else self._pick(index)
                         if model is not None:
                             self._execute(index, model)
                         self.control.check()
@@ -280,12 +348,12 @@ class TaskWorker(QThread):
         with ThreadPoolExecutor(max_workers=self.max_concurrency, thread_name_prefix='storyboard-task') as executor:
             while active or not exhausted:
                 self.control.check()
-                while len(active) < self.max_concurrency and not exhausted and not self.control.paused:
+                while len(active) < self.gate.limit and not exhausted and not self.control.paused and not self.gate.paused and self.gate.remaining() <= 0:
                     try:
                         index = next(pending)
                     except StopIteration:
                         exhausted = True; break
-                    model = self._pick(index)
+                    model = self.tasks[index]['model'] if self.tasks[index].get('task_id') else self._pick(index)
                     if model is not None:
                         active.add(executor.submit(self._execute, index, model))
                 if active:
@@ -294,6 +362,7 @@ class TaskWorker(QThread):
                         future.result()
                 elif not exhausted:
                     self.control.before_task()
+                    self.control.delay(.05)
 
 
 class TaskManager(QObject):
@@ -318,6 +387,7 @@ class TaskManager(QObject):
 
     def start_tasks(self, config):
         if self.is_running:
+            self.log_message.emit('检测到相同任务，跳过避免重复扣费；当前队列正在运行', 'warning')
             return False
         if not config['api']['api_key'].strip():
             raise ValueError('请先在设置中填写 API Key')
@@ -383,6 +453,7 @@ class TaskManager(QObject):
 
     def resume_tasks(self):
         if self.is_running:
+            self.worker.gate.resume()
             self.worker.control.set('paused', False)
             self._paused(False)
             self.log_message.emit('继续任务队列', 'info')

@@ -28,14 +28,14 @@ def verify():
     evidence = ROOT / 'artifacts' / 'stage2b'; evidence.mkdir(parents=True, exist_ok=True)
     result = dict(kind='local HTTP + Qt UI', provider_requests=0, platform=os.environ['QT_QPA_PLATFORM'], scenarios=[])
     logs = []
-    cases = [('轮询三模型', 3), ('提交错误故障转移', 1), ('断网重试五次', 1), ('并发2跑5任务', 5), ('冷却恢复', 1)]
+    cases = [('轮询三模型', 3), ('提交错误故障转移', 1), ('断网暂停待确认', 1), ('并发2跑5任务', 5), ('冷却恢复', 1)]
     for name, count in cases:
         with tempfile.TemporaryDirectory(prefix='storyboard-stage2b-') as temp, PoolServer() as server:
             root = Path(temp)
             prompts = root / '提示词'; prompts.mkdir()
             images = root / '参考图'; images.mkdir()
             for n in range(1, count+1):
-                (prompts / f'{n:02d}_产品.txt').write_text('<Picture1> <Picture2> <Picture3> product', encoding='utf-8')
+                (prompts / f'{n:02d}_产品.txt').write_text(f'<Picture1> <Picture2> <Picture3> product {n}', encoding='utf-8')
                 for k in (3, 1, 2):
                     (images / f'{n}({k}).png').write_bytes(connection_probe_png())
             config = ConfigManager(root / 'config.json'); config.load_config()
@@ -48,7 +48,7 @@ def verify():
             config.config['task_strategy'].update(retry_interval=1, max_retries=5, failure_skip_threshold=100)
             if name == '提交错误故障转移':
                 server.fail_models = {'video-v2'}
-            elif name == '断网重试五次':
+            elif name == '断网暂停待确认':
                 with socket.socket() as sock:
                     sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
                 config.config['api']['base_url'] = f'http://127.0.0.1:{port}'
@@ -77,7 +77,7 @@ def verify():
                 wait_until(lambda: not manager.is_running, timeout=45000)
                 tasks = manager.tasks
                 posts = [json.loads(body) for path, _, body in server.calls if path == '/videos']
-                expected = 'failed' if name == '断网重试五次' else 'completed'
+                expected = 'submission_unknown' if name == '断网暂停待确认' else 'completed'
                 assert [t['status'] for t in tasks] == [expected]*count
                 assert all(len(body['images']) == 3 for body in posts)
                 if name == '轮询三模型':
@@ -85,8 +85,8 @@ def verify():
                 if name == '提交错误故障转移':
                     assert tasks[0]['model'] == 'video-v2-fast' and tasks[0]['retry_count'] == 1
                     assert any(row['status'] == '冷却中' for snap in pool_states for row in snap)
-                if name == '断网重试五次':
-                    assert len(tasks[0]['attempts']) == 6 and tasks[0]['retry_count'] == 5
+                if name == '断网暂停待确认':
+                    assert len(tasks[0]['attempts']) == 1 and tasks[0]['retry_count'] == 0
                 if name == '并发2跑5任务':
                     assert server.maximum == 2
                 if name == '冷却恢复':

@@ -57,6 +57,18 @@ class RepositorySyncTests(unittest.TestCase):
             self.sync.sync('fix: 阻止模型缓存强制暂存')
         self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main').split()[0], result['commit'])
 
+    def test_submission_ledgers_are_ignored_and_forced_staging_is_blocked(self):
+        names = ('submissions.sqlite3', 'submissions.sqlite3-wal', '.storyboard-submissions.sqlite3')
+        for name in names:
+            (self.root / name).write_bytes(b'private submission audit')
+        result = self.sync.sync('feat: 测试提交账本排除')
+        tracked = self.git('ls-files').splitlines()
+        self.assertTrue(all(name not in tracked for name in names))
+        self.git('add', '-f', *names)
+        with self.assertRaises(GitSyncError):
+            self.sync.sync('fix: 阻止账本强制暂存')
+        self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main').split()[0], result['commit'])
+
     def test_push_retries_twice_then_remote_matches(self):
         real = self.sync._git
         attempts = []

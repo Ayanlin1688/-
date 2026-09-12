@@ -18,7 +18,13 @@ def make_fixture(root):
         product = '玫瑰毯子' if n < 4 else '车载风扇'
         prompt_dir, image_dir = root / '提示词' / product, root / '参考图片' / product
         prompt_dir.mkdir(exist_ok=True); image_dir.mkdir(exist_ok=True)
-        prompt = ['subject_definitions: product\n[Shot 1] <Picture 1> <Picture 2> <Picture 3>',
+        h3_prompt = (f'subject_definitions:\n<Subject 1> is {name}，外观参考 <Picture 1>。\n\n'
+                     f'summary:\n[reference generation] 展示{name}。\n\n'
+                     'retention_analysis:\n<Subject 1>: fully_preserved\n\n'
+                     'detailed_description:\n[Shot 1] 自然光下展示 <Picture 1>，保持产品完整形态。\n'
+                     '[Shot 2] At 00:03.000, cut to <Picture 2> 和 <Picture 3> 的细节。\n\n'
+                     'overall_soundscape:\n自然环境音。\n\nnon_diegetic_music:\nN/A')
+        prompt = [h3_prompt,
                   '镜头1：展示@图1。镜头2：结合@图2、@图3展示细节。',
                   '自然光下缓缓展示产品，镜头靠近表面纹理。'][n % 3]
         (prompt_dir / f'{n%4+1:02d}_{name}.txt').write_text(prompt, encoding='utf-8')
@@ -46,14 +52,15 @@ def make_fixture(root):
     annotate_tasks(tasks, manager.config)
     tasks[2].update(model_source='manual', requested_model='video-v3', model='video-v3', model_locked=True)
     manager.config['model_overrides'][tasks[2]['prompt_path']] = 'video-v3'
-    states = ['completed', 'completed', 'failed', 'skipped', 'processing', 'retry_wait', 'waiting', 'waiting']
+    states = ['completed', 'completed', 'submission_unknown', 'duplicate', 'processing', 'retry_wait', 'waiting', 'waiting']
     for index, task in enumerate(tasks):
         task.update(local_id=f'screenshot-{index}', status=states[index], model=task['requested_model'],
-                    task_id=f'local_fixture_{index+1:03d}' if states[index] != 'waiting' else '',
-                    created_at='2026-09-11T14:00:00', finished_at='2026-09-11T14:02:15' if states[index] == 'completed' else '',
+                    task_id=f'local_fixture_{index+1:03d}' if states[index] not in {'waiting', 'submission_unknown'} else '',
+                    created_at='2026-09-12T14:00:00', finished_at='2026-09-12T14:02:15' if states[index] == 'completed' else '',
                     result_path=str(root / '视频输出' / task['product'] / f'{task["product_task_index"]:03d}_{task["prompt_name"]}.mp4') if states[index] == 'completed' else '',
                     size_bytes=8600000 if states[index] == 'completed' else 0, error='本地截图示例')
     manager.config['schedule'].update(enabled=True, time='23:00', mode='daily')
+    tasks[2]['error'] = 'HTTP 429，提交结果未确认；已阻止重新创建，请核对服务商后台。'
     manager.config['history'] = [t for t in tasks if t['status'] != 'waiting']
     manager.save_config()
     return manager, tasks
