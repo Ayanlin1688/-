@@ -39,9 +39,9 @@ class RecentCompletedPanel(QWidget):
         self.list = QListWidget()
         self.list.setSpacing(2)
         self.list.setStyleSheet(
-            "QListWidget { background: #101013; border: 1px solid rgba(255,255,255,0.08); }"
+            "QListWidget { background: rgba(0,0,0,0.15); border: 1px solid rgba(255,255,255,0.08); border-radius:12px; }"
             "QListWidget::item { background: transparent; border-radius: 8px; }"
-            "QListWidget::item:selected { background: #5e6ad2; }"
+            "QListWidget::item:selected { background: rgba(64,158,255,0.3); }"
         )
         root.addWidget(self.list, 1)
         self.empty_state = QWidget()
@@ -70,3 +70,5 @@ class RecentCompletedPanel(QWidget):
                                      task.get('finished_at', '').replace('T', ' '), self.log_callback, path)
             item.setSizeHint(row.sizeHint())
             self.list.setItemWidget(item, row)
+        from ..theme import style_controls
+        style_controls(self.list)

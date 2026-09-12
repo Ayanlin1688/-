@@ -18,6 +18,7 @@ from qfluentwidgets import (
     PushButton, SpinBox, StrongBodyLabel, SubtitleLabel, SwitchButton,
     TextBrowser, TitleLabel, TransparentToolButton,
 )
+from ..materials import paint_surface
 
 _font_loaded = False
 
@@ -47,21 +48,17 @@ class StudioCard(CardWidget):
         self.setBorderRadius(12)
 
     def _normalBackgroundColor(self):
-        return QColor("#141416")
+        return QColor(255,255,255,10)
 
     def _hoverBackgroundColor(self):
-        return QColor("#19191e")
+        return QColor(255,255,255,16)
 
     def _pressedBackgroundColor(self):
-        return QColor("#141416")
+        return QColor(255,255,255,8)
 
     def paintEvent(self, event):
-        super().paintEvent(event)
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor("#5e6ad2") if self.elevated else QColor(255, 255, 255, 20), 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 12, 12)
+        paint_surface(self, painter, self.elevated, getattr(getattr(self, '_studio_motion', None), 'amount', 0))
 
 
 def make_card(parent: QWidget | None = None, elevated: bool = False):

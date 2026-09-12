@@ -291,7 +291,7 @@ class SettingsPage(QWidget):
             combo.addItem(name)
         combo.setCurrentText(name)
         state = CaptionLabel(f"● {status}")
-        color = "#22c55e" if status == "健康" else "#f59e0b"
+        color = "#67c23a" if status == "健康" else "#e6a23c"
         state.setTextColor(color, color)
         remove = TransparentToolButton(FIF.DELETE)
         remove.setToolTip("删除模型")
@@ -359,7 +359,7 @@ class SettingsPage(QWidget):
             cooling = model.get('status') == '冷却中'
             remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
             label.setText(f'● 冷却中 {remaining}秒' if cooling else '● 健康')
-            color = '#f59e0b' if cooling else '#22c55e'
+            color = '#e6a23c' if cooling else '#67c23a'
             label.setTextColor(color, color)
 
     def refresh_task_settings(self, *_):

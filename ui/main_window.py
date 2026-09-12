@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt5.QtGui import QColor
-from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QColor, QPainter
+from PyQt5.QtCore import QTimer, QRectF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -15,6 +15,8 @@ from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
+from .materials import ACCENT, background_brush
+from .motion import PageTransition
 
 
 class MainWindow(FluentWindow):
@@ -22,7 +24,7 @@ class MainWindow(FluentWindow):
         ensure_ui_font()
         apply_palette(QApplication.instance())
         setTheme(Theme.DARK, save=False)
-        setThemeColor(QColor("#5e6ad2"), save=False)
+        setThemeColor(QColor(ACCENT), save=False)
         super().__init__()
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor("#0a0a0b", "#0a0a0b")
@@ -32,8 +34,15 @@ class MainWindow(FluentWindow):
         self.resize(1400, 900)
         self.setMinimumSize(1100, 750)
         self._setup_pages()
+        self.stackedWidget.setAnimationEnabled(False)
+        self.page_transition = PageTransition(self.stackedWidget)
         self.navigationInterface.setMinimumExpandWidth(100000)
         self.navigationInterface.panel.collapse()
+        from qfluentwidgets import setCustomStyleSheet
+        from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
+        self.navigationInterface.panel.setAcrylicEnabled(isAcrylicAvailable)
+        navigation_style = 'NavigationPanel {background:rgba(0,0,0,0.3); border:0;}'
+        setCustomStyleSheet(self.navigationInterface.panel, navigation_style, navigation_style)
         self.config_manager.error_callback = self.workspace_page.append_log
         self._closing = False
         self._close_timer = QTimer(self)
@@ -42,7 +51,12 @@ class MainWindow(FluentWindow):
         self._setup_schedule(network_time)
         for page in (self.workspace_page, self.history_page, self.settings_page):
             style_page(page)
+        self._updateStackedBackground()
         style_controls(self)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), background_brush(QRectF(self.rect())))
 
     def _setup_pages(self) -> None:
         self.workspace_page = WorkspacePage(self.config_manager)

@@ -52,6 +52,8 @@ class HistoryPage(QWidget):
             layout.addWidget(open_file); layout.addWidget(retry)
             self.table.setCellWidget(row, len(values), action)
         self._filter(self.filter_box.currentText())
+        from ..theme import style_controls
+        style_controls(self.table)
 
     def open_output(self):
         row = self.table.currentRow()

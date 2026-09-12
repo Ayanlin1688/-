@@ -2,9 +2,10 @@
 from PyQt5.QtCore import Qt, pyqtSignal
 from core.task_manager import STATUS_TEXT, TERMINAL, ACTIVE
 
-COLORS = {'已完成': '#22c55e', '生成中': '#5e6ad2', '等待中': '#f59e0b', '失败': '#ef4444',
-          '重试中': '#f59e0b', '等待冷却': '#f59e0b',
-          '已取消': '#92929b', '已跳过': '#f59e0b', '已暂停': '#f59e0b', '上传中': '#5e6ad2', '提交中': '#5e6ad2', '下载中': '#5e6ad2'}
+COLORS = {'已完成': '#67c23a', '生成中': '#409eff', '等待中': '#e6a23c', '失败': '#f56c6c',
+          '重试中': '#e6a23c', '等待冷却': '#e6a23c',
+          '已取消': '#92929b', '已跳过': '#e6a23c', '已暂停': '#e6a23c', '上传中': '#409eff', '提交中': '#409eff', '下载中': '#409eff'}
+from ..motion import StatusDot
 
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QGridLayout, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
 from qfluentwidgets import IconWidget, FluentIcon as FIF
@@ -20,7 +21,7 @@ class TaskQueueRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
-        dot = BodyLabel("●")
+        dot = StatusDot(color, active=status in {'生成中', '上传中', '提交中', '下载中'})
         dot.setTextColor(color, color)
         layout.addWidget(dot)
         layout.addWidget(CaptionLabel(f"{number:02d}"))
@@ -67,9 +68,9 @@ class TaskQueuePanel(QWidget):
         self.list.setSelectionMode(QListWidget.SingleSelection)
         self.list.setSpacing(2)
         self.list.setStyleSheet(
-            "QListWidget { background: #101013; border: 1px solid rgba(255,255,255,0.08); }"
+            "QListWidget { background: rgba(0,0,0,0.15); border: 1px solid rgba(255,255,255,0.08); border-radius:12px; }"
             "QListWidget::item { background: transparent; border-radius: 8px; }"
-            "QListWidget::item:selected { background: #5e6ad2; }"
+            "QListWidget::item:selected { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(64,158,255,0.5),stop:1 rgba(64,158,255,0.18)); }"
         )
         self.list.currentItemChanged.connect(self._selection_color)
         self.list.currentItemChanged.connect(self._selected_task_changed)
@@ -83,7 +84,7 @@ class TaskQueuePanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
         self.stat_labels = []
-        stats = [("成功数", "00", "#22c55e"), ("进行中", "00", "#5e6ad2"), ("失败数", "00", "#ef4444"), ("跳过数", "00", "#f59e0b")]
+        stats = [("成功数", "00", "#67c23a"), ("进行中", "00", "#409eff"), ("失败数", "00", "#f56c6c"), ("跳过数", "00", "#e6a23c")]
         for index, (title, value, color) in enumerate(stats):
             card = make_card()
             card.setFixedHeight(66)
@@ -213,5 +214,7 @@ class TaskQueuePanel(QWidget):
             color = "#ffffff" if item is current else COLORS.get(item.data(Qt.UserRole), '#92929b')
             dot = row.findChild(BodyLabel)
             if dot is not None:
-                dot.setTextColor(color, color)
+                # Selection brightens text; keep the status dot's semantic hue.
+                dot_color = COLORS.get(item.data(Qt.UserRole), color)
+                dot.setTextColor(dot_color, dot_color)
             row.findChildren(CaptionLabel)[-1].setTextColor(color, color)

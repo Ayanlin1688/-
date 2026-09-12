@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 from qfluentwidgets import FluentIcon as FIF
 from ..components.custom_widgets import CaptionLabel, ProgressBar, PushButton, StrongBodyLabel, make_card
+from ..materials import ERROR
 
 
 class CurrentTaskCard(QWidget):
@@ -13,7 +14,6 @@ class CurrentTaskCard(QWidget):
         self.log_callback = log_callback
         card = make_card(elevated=True)
         card.setObjectName("currentTaskCard")
-        card.setStyleSheet("#currentTaskCard { border: 1px solid rgba(94,106,210,0.75); border-radius: 12px; }")
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.addWidget(card)
         root = QVBoxLayout(card); root.setContentsMargins(20, 20, 20, 20); root.setSpacing(9)
         root.addWidget(StrongBodyLabel("当前任务"))
@@ -40,9 +40,9 @@ class CurrentTaskCard(QWidget):
         failed = task.get('status') == 'failed'
         self.progress.setError(failed)
         # Tint the track too: an upload failure may occur while progress is still 0%.
-        track = '#ef4444' if failed else '#66666c'
+        track = ERROR if failed else '#35353c'
         self.progress.setCustomBackgroundColor(track, track)
-        self.title.setTextColor('#ef4444' if failed else '#ffffff', '#ef4444' if failed else '#ffffff')
+        self.title.setTextColor(ERROR if failed else '#ffffff', ERROR if failed else '#ffffff')
         self.title.setText(f"{index + 1:02d} · {task['prompt_name']} · {STATUS_TEXT.get(task['status'], task['status'])}")
         self.details.setText(f"参考图 {len(task.get('images', []))} 张    模型 {task['model']}\n任务ID：{task.get('task_id') or '待提交'}")
         self._update_debug_summary()

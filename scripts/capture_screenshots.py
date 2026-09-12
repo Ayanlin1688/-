@@ -1,4 +1,4 @@
-"""Capture the Stage2B UI with labelled synthetic local screenshot fixtures."""
+"""Capture the Fluent UI with labelled synthetic local screenshot fixtures."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
     setTheme(Theme.DARK, save=False)
-    setThemeColor(QColor("#5e6ad2"), save=False)
+    setThemeColor(QColor("#409eff"), save=False)
     ensure_ui_font()
     # Synthetic data belongs only to this isolated screenshot config, never production history.
     temp = tempfile.TemporaryDirectory()
@@ -53,7 +53,7 @@ def main() -> None:
     window.schedule_timer.stop()  # A fixture's enabled schedule must never submit work.
     window.settings_page.pool_timer.stop()  # Keep fixture countdown stable during capture.
     window.setWindowTitle('StoryboardVideoStudio · 本地截图示例（非真实生成结果）')
-    window.resize(1600, 1100)
+    window.resize(1600, 1200)
     window.show()
     QApplication.processEvents()
     wait_for_animation()
@@ -111,7 +111,7 @@ def main() -> None:
     wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 
-    window.resize(1600, 1100)
+    window.resize(1600, 1200)
     window.switchTo(window.workspace_page)
     wait_for_animation(350)
     QApplication.processEvents()

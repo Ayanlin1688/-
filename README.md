@@ -1,4 +1,4 @@
-# StoryboardVideoStudio · 阶段3 + 阶段2B
+# StoryboardVideoStudio · 阶段3 + 阶段2B + Fluent视觉升级
 
 Windows 桌面批量视频生成工具，使用 Python 3.12、PyQt5 和 QFluentWidgets。支持多参考图自动匹配、多模型调度、故障转移、自动重试、并发生成、产品子文件夹批处理、定时执行和私人 GitHub 仓库同步。
 
@@ -129,6 +129,12 @@ python -X utf8 scripts\sync_github.py --message-file temp\commit-message.txt
 
 图床 URL 从配置读取，multipart 字段为 `files`，边界由 requests 生成。默认图床使用 Bearer 和 `X-Upload-Token`，优先单独上传凭据。自定义图床不会自动收到主 API Key。上传响应兼容 `files[0].url`、`data.files[0].url`、`url`、`data.url`，超时为连接 15 秒/读取 60 秒。
 
+## Fluent 深色视觉
+
+界面保持深色主题：垂直渐变背景、半透明圆角卡片、缓存双层柔阴影、当前任务蓝色内光，以及按钮/卡片悬停、页面淡化、进度流光和生成状态呼吸动画。按钮动效200毫秒、页面切换300毫秒；开关继续使用Fluent自带滑动。
+
+卡片使用缓存的柔光渐变与颗粒模拟毛玻璃，不实时模糊桌面或文字。安装了Fluent可选Acrylic依赖时，展开导航和下拉菜单使用库自带Acrylic；否则使用半透明渐变。Windows 10默认使用模拟模式，Mica未启用。循环动效只刷新可见区域，切换到其他页面、滚出视野或最小化后暂停，恢复可见时继续；任务调度和后台生成不受影响。
+
 ## 项目结构
 
 ```text
@@ -137,6 +143,8 @@ requirements.txt           Python 依赖
 core/                      配置、匹配、任务、API、下载、定时、校时、Git同步
 ui/
   main_window.py           Fluent 主窗口
+  materials.py             缓存材质、双层阴影和统一色板
+  motion.py                交互动画、页面淡化和可见区域动效时钟
   pages/                   工作台、历史、设置
   widgets/                 队列、参数、数据源、当前任务、日志等
   components/              匹配详情与共用控件
@@ -154,6 +162,7 @@ python -m compileall -q core ui scripts tests main.py
 python scripts\check_startup.py
 python -X utf8 scripts\verify_stage3.py --wait-minute
 python -X utf8 scripts\verify_stage2b.py --native
+python -X utf8 scripts\verify_visuals.py --native
 python -X utf8 scripts\capture_screenshots.py
 ```
 
@@ -162,6 +171,8 @@ python -X utf8 scripts\capture_screenshots.py
 阶段2B验收同样仅使用本机HTTP接口，验证三模型轮询、故意错误模型故障转移、关闭本机端口后的5次重试、2并发5任务、冷却恢复及历史实际模型名。`--native`使用Windows原生窗口，省略则离屏执行。结果、日志及运行中界面证据位于`artifacts/stage2b/`，不调用收费平台，不读取用户API配置。
 
 截图脚本使用标明为示例的独立配置和本地绘制图片，更新 `screenshots/` 原六张 PNG 及 `screenshots.zip`。截图、真实素材和平台诊断产物均不上传 GitHub。
+
+视觉验收使用独立空白配置，不读取用户密钥、不提交视频。验证鼠标悬停/按下、快速导航、下拉选择、开关保存、动态行删除、进度/圆点可见性与最小化恢复，并记录同时运行5个呼吸圆点及进度动效时的GUI定时响应。报告保存到 `artifacts/visual-upgrade/verification.json`；其中响应间隔是本机抽样，不等同于屏幕帧率。
 
 需要真实服务商冒烟测试时，先填写本地配置：
 

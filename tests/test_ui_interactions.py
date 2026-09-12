@@ -210,4 +210,4 @@ class InteractionTests(unittest.TestCase):
         self.assertTrue(workspace.current_task.progress.isError())
         self.assertIn('待提交', workspace.current_task.details.text())
         self.assertIn('失败', workspace.current_task.title.text())
-        self.assertEqual(workspace.current_task.progress.darkBackgroundColor.name(), '#ef4444')
+        self.assertEqual(workspace.current_task.progress.darkBackgroundColor.name(), '#f56c6c')

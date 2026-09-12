@@ -14,7 +14,7 @@ from ..components.custom_widgets import ComboBox, PushButton, TextBrowser, Trans
 
 
 class LogDrawer(QWidget):
-    COLORS = {"debug": "#93c5fd", "info": "#a1a1aa", "success": "#22c55e", "warning": "#f59e0b", "error": "#ef4444"}
+    COLORS = {"debug": "#8db9dc", "info": "#9999a0", "success": "#8ab978", "warning": "#ccb080", "error": "#d79292"}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
