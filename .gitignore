@@ -1,5 +1,7 @@
 # Local configuration and credentials
 config.json
+models_cache.json
+models_cache.json.tmp
 config/
 .env
 .env.*

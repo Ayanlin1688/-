@@ -88,6 +88,7 @@ class PoolExecutionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.prompts = self.root / 'prompts'; self.prompts.mkdir()
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config['prompt_detection']['enabled'] = False
         self.config['paths'] = dict(prompts=str(self.prompts), images='', output=str(self.root / 'output'))
         self.config['workspace'].update(model='video-v3', duration=10, resolution='720p', poll_interval=.02)
         self.config['task_strategy'].update(auto_retry=True, max_retries=5, retry_interval=.01,

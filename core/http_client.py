@@ -36,7 +36,10 @@ class HttpClient:
             headers['Authorization'] = 'Bearer ' + self.api_key
         headers.update(kwargs.pop('headers', {}))
         try:
-            response = self.session.request(method, url, headers=headers, timeout=self.timeout, **kwargs)
+            # Callers may tighten a specific probe without changing the client's
+            # normal generation timeout contract.
+            timeout = kwargs.pop('timeout', self.timeout)
+            response = self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
             if check_status and not 200 <= response.status_code < 300:
                 body = self.redact(response.text)
                 error = RequestError(f'HTTP {response.status_code}: {body}', response.status_code, body)

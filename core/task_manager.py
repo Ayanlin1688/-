@@ -17,6 +17,7 @@ from .model_pool import ModelPool
 from .task_state import (ACTIVE, TERMINAL, STATUS_TEXT, TaskControl, stamp, resolve_output_directory,
                          parameters_for_model, task_signature)
 from .task_execution import TaskExecution
+from .prompt_detector import SOURCE_TEXT, annotate_tasks
 
 
 class TaskWorker(QThread):
@@ -38,13 +39,34 @@ class TaskWorker(QThread):
         self.previous = copy.deepcopy(previous)
         self.control = TaskControl()
         self.tasks = []
+        self._requested_consumed = set()
         self.index = -1
         self.lock = threading.RLock()
         self.debug_mode = bool(self.config.get('diagnostics', {}).get('debug_mode', False))
         self.max_concurrency = max(1, min(5, int(self.config['task_strategy'].get('max_concurrency', 1))))
-        self.pool = ModelPool(self.config['model_pool'], self.config['workspace']['model'],
+        pool_settings = copy.deepcopy(self.config['model_pool'])
+        catalog = self.config.get('_model_catalog')
+        if pool_settings.get('enabled') and isinstance(catalog, dict):
+            pool_settings['models'] = [
+                entry for entry in pool_settings.get('models', [])
+                if isinstance(entry, dict)
+                and isinstance(catalog.get(entry.get('name')), dict)
+                and catalog[entry['name']].get('available', True)
+                and catalog[entry['name']].get('kind') == 'video'
+                and catalog[entry['name']].get('protocol_known', False)
+            ]
+        self.pool = ModelPool(pool_settings, self.config['workspace']['model'],
                               failure_threshold=self.config['task_strategy'].get('failure_skip_threshold', 3),
                               log=self.log, on_change=self.pool_updated.emit)
+
+    @staticmethod
+    def _uses_task_model(task):
+        return task.get('model_source') in {'auto', 'manual', 'fallback'}
+
+    def _parameters(self, task, model):
+        return parameters_for_model(
+            model, self.config['workspace'], self.pool.enabled or self._uses_task_model(task),
+            len(task.get('images', [])), self.config.get('_model_catalog'))
 
     def redact(self, message):
         api = self.config['api']
@@ -86,25 +108,61 @@ class TaskWorker(QThread):
         self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
         matcher = StoryboardMatcher.from_config(self.config)
         self.tasks = matcher.scan_and_match(paths)
+        annotate_tasks(self.tasks, self.config)
         for warning in matcher.warnings:
             self.log(warning, 'warning')
         if self.config.get('_task_limit'):
             self.tasks = self.tasks[:int(self.config['_task_limit'])]
         previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous] if t.get('signature')}
         for sequence, task in enumerate(self.tasks, 1):
-            model = self.config['workspace']['model']
-            signature = task_signature(task, model, self.config['workspace'], self.config['api']['base_url'])
+            model = task.get('requested_model') or self.config['workspace']['model']
+            params = self._parameters(task, model)
+            signature = task_signature(task, model, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
             output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
             task.update(status='waiting', task_id='', model=model, retry_count=0, attempts=[], result_path='',
                         local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
                         api_base_url=self.config['api']['base_url'].rstrip('/'), output_dir=output_dir, sequence=sequence)
+            if task.get('model_locked'):
+                candidate_models = [model]
+            elif self._uses_task_model(task):
+                candidate_models = [model, *self.pool.names]
+            else:
+                candidate_models = list(self.pool.names)
             candidates = []
-            for candidate in self.pool.names:
+            for candidate in dict.fromkeys(candidate_models):
                 try:
-                    params = parameters_for_model(candidate, self.config['workspace'], self.pool.enabled, len(task['images']))
-                    key = task_signature(task, candidate, params, self.config['api']['base_url'])
+                    params = self._parameters(task, candidate)
+                    key = task_signature(task, candidate, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
                     old = previous.get(key)
                     if old and old.get('task_id'):
+                        candidates.append(old)
+                except ValueError:
+                    continue
+            # Delisting must never erase an existing paid task's identity.
+            # Recompute against its frozen capabilities, but honor changed inputs
+            # and an explicit new model choice.
+            for old in previous.values():
+                historical_model = old.get('model')
+                if not old.get('task_id') or old.get('prompt_path') != task['prompt_path']:
+                    continue
+                current_catalog = self.config.get('_model_catalog')
+                if not isinstance(current_catalog, dict):
+                    continue
+                current_record = current_catalog.get(historical_model)
+                if current_record and current_record.get('available', True):
+                    continue
+                if (task.get('model_locked') or (not self._uses_task_model(task) and not self.pool.enabled)) and historical_model != model:
+                    continue
+                if self._uses_task_model(task) and old.get('requested_model', model) != model:
+                    continue
+                record = old.get('submission_model')
+                historical_catalog = {historical_model: record} if isinstance(record, dict) else None
+                try:
+                    params = parameters_for_model(historical_model, self.config['workspace'],
+                                                  self.pool.enabled or self._uses_task_model(task),
+                                                  len(task['images']), historical_catalog)
+                    key = task_signature(task, historical_model, params, self.config['api']['base_url'], historical_catalog)
+                    if key == old.get('signature'):
                         candidates.append(old)
                 except ValueError:
                     continue
@@ -112,7 +170,10 @@ class TaskWorker(QThread):
             if old and not task.get('skip_reason'):
                 product_fields = {key: task[key] for key in ('product', 'product_index', 'product_total', 'product_task_index',
                                  'product_task_total', 'output_subdir', 'skip_reason', 'output_dir', 'sequence')}
-                task.update(copy.deepcopy(old)); task.update(product_fields)
+                decision_fields = {key: task[key] for key in (
+                    'detected_model', 'requested_model', 'model_source', 'model_locked', 'model_detection_error')
+                    if key in task}
+                task.update(copy.deepcopy(old)); task.update(product_fields); task.update(decision_fields)
                 if old['status'] != 'completed' or not Path(old.get('result_path', '')).is_file():
                     task.update(status='failed', error='已有远端任务ID，请从历史记录重新下载，避免重复提交')
         matched = sum(t['matched'] for t in self.tasks)
@@ -127,14 +188,27 @@ class TaskWorker(QThread):
         try:
             while True:
                 self.control.before_task()
-                model = self.pool.pick()
+                task = self.tasks[index]
+                requested = task.get('requested_model') or task.get('model') or self.config['workspace']['model']
+                # Per-prompt recognition/manual override gets first attempt. A
+                # manual override is permanently locked; automatic recognition
+                # may fall back to the pool after a failed attempt.
+                preferred = None
+                if self._uses_task_model(task) and index not in self._requested_consumed:
+                    if requested not in self.pool.names:
+                        self._requested_consumed.add(index)
+                        return requested
+                    preferred = requested
+                model = self.pool.pick(preferred=preferred)
                 if model is not None:
+                    if preferred is not None:
+                        self._requested_consumed.add(index)
                     return model
                 if not warned:
                     self.log('所有启用模型都在冷却，等待最快恢复的模型', 'warning'); warned = True
                     task = copy.deepcopy(self.tasks[index]); task['status'] = 'cooling'
                     self.update_task(index, task)
-                self.control.delay(min(.2, max(.01, self.pool.wait_seconds())))
+                self.control.delay(min(.2, max(.01, self.pool.wait_seconds(preferred=preferred))))
         except Cancelled:
             if self.control.cancelled:
                 raise
@@ -148,6 +222,10 @@ class TaskWorker(QThread):
 
     def _execute(self, index, model):
         task = copy.deepcopy(self.tasks[index])
+        source = task.get('model_source', 'workspace')
+        if source == 'workspace' and self.pool.enabled:
+            source = 'pool'
+        self.log(f'任务{index+1}使用模型 {model}（{SOURCE_TEXT.get(source, source)}）')
         task.update(model=model, status='queued')
         self.update_task(index, task)
         TaskExecution(self, index, task, model).run()
@@ -157,7 +235,7 @@ class TaskWorker(QThread):
             self._scan()
             if not self.tasks:
                 self.log('目录中没有 .txt 提示词', 'warning')
-            if not self.pool.names:
+            if not self.pool.names and any(not self._uses_task_model(task) for task in self.tasks):
                 raise ValueError('模型池没有启用的模型，请启用至少一个模型或关闭模型池')
             for product, rows in groupby(enumerate(self.tasks), key=lambda pair: pair[1].get('product', '')):
                 indices = [i for i, _ in rows]

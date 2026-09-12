@@ -12,6 +12,8 @@ from qfluentwidgets import (
     StrongBodyLabel, TransparentToolButton, FluentIcon as FIF, Theme,
 )
 from ..theme import style_controls, style_page
+from .model_selector import ModelComboBox, catalog_snapshot
+from core.prompt_detector import annotate_tasks
 
 
 class MatchDialog(FramelessDialog):
@@ -25,6 +27,10 @@ class MatchDialog(FramelessDialog):
         self.bindings = {t['prompt_path']: list(t['images']) for t in self.matches}
         self.automatic = {t['prompt_path']: list(t['images']) for t in automatic_matches or self.matches}
         self.dirty = set()
+        self.model_overrides = dict(config_manager.config.get('model_overrides', {})) if config_manager else {}
+        self.models_dirty = False
+        if config_manager:
+            annotate_tasks(self.matches, config_manager.config)
         self.setObjectName("matchDialog")
         self.setWindowTitle("图片-提示词匹配详情")
         self.resize(900, 650)
@@ -48,6 +54,11 @@ class MatchDialog(FramelessDialog):
         layout = QVBoxLayout(detail)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(StrongBodyLabel("图片绑定详情"))
+        self.detected_model_label = CaptionLabel('自动识别模型：未识别')
+        self.detected_model_label.setWordWrap(True)
+        layout.addWidget(self.detected_model_label)
+        self.model_combo = ModelComboBox()
+        layout.addWidget(self.model_combo)
         self.binding_summary = CaptionLabel('已绑定0张参考图')
         layout.addWidget(self.binding_summary)
         self.picture_list = ListWidget()
@@ -69,16 +80,19 @@ class MatchDialog(FramelessDialog):
         footer = QHBoxLayout()
         footer.addStretch(1)
         rematch = PushButton(FIF.SYNC, "重新自动匹配")
+        self.reset_models_button = PushButton(FIF.SYNC, '全部重置为自动识别')
+        self.reset_models_button.clicked.connect(self.reset_models)
         save = PrimaryPushButton(FIF.SAVE, "保存调整")
         close = PushButton("关闭")
         rematch.clicked.connect(self._rematch)
         save.clicked.connect(self._save)
         close.clicked.connect(self.accept)
-        for button in (rematch, save, close):
+        for button in (self.reset_models_button, rematch, save, close):
             footer.addWidget(button)
         root.addLayout(footer)
         self.prompt_list.currentRowChanged.connect(self._show_details)
         self.picture_list.model().rowsMoved.connect(self._remember)
+        self.model_combo.currentTextChanged.connect(self._model_changed)
         self.prompt_list.setCurrentRow(0)
         style_page(self)
         style_controls(self)
@@ -89,6 +103,12 @@ class MatchDialog(FramelessDialog):
         if row < 0:
             return
         key = self.matches[row]['prompt_path']
+        task = self.matches[row]
+        detected = task.get('detected_model') or '未识别（使用默认模型）'
+        self.detected_model_label.setText('自动识别模型：' + detected)
+        self.model_combo.set_models(catalog_snapshot(self.config_manager), self.model_overrides.get(key, ''),
+                                    automatic=True, keep_missing=True)
+        self.model_combo.setEnabled(bool(self.config_manager and self.config_manager.config.get('prompt_detection', {}).get('enabled', False)))
         paths = self.bindings.get(key, [])
         for path in paths:
             self._append_picture(path)
@@ -170,11 +190,30 @@ class MatchDialog(FramelessDialog):
                 if not self.config_manager.update(('match_overrides',), overrides):
                     self._notice('保存失败，请查看执行日志；本次修改仍保留在内存')
                     return
+                if self.models_dirty and not self.config_manager.update(('model_overrides',), dict(self.model_overrides)):
+                    self._notice('模型选择保存失败，请查看执行日志')
+                    return
             except Exception as error:
                 self._notice(f'保存失败：{error}')
                 return
         self.saved.emit()
         self._notice("匹配调整已保存")
+
+    def _model_changed(self, model):
+        row = self.prompt_list.currentRow()
+        if row < 0:
+            return
+        key = self.matches[row]['prompt_path']
+        if model:
+            self.model_overrides[key] = model
+        else:
+            self.model_overrides.pop(key, None)
+        self.models_dirty = True
+
+    def reset_models(self):
+        self.model_overrides.clear()
+        self.models_dirty = True
+        self._show_details(self.prompt_list.currentRow())
 
     def _rematch(self):
         self.bindings = copy.deepcopy(self.automatic)

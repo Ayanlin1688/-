@@ -3,13 +3,16 @@ from PyQt5.QtCore import QSignalBlocker
 from core.model_parameters import model_options
 
 
-def apply_model_options(model, ratio, resolution, duration, audio=None, seed=None):
-    options = model_options(model)
+def apply_model_options(model, ratio, resolution, duration, audio=None, seed=None, catalog=None):
+    options = model_options(model, catalog)
     for control, choices, preferred in ((ratio, options['ratios'], '16:9'),
                                         (resolution, options['resolutions'], '720p')):
         if not choices:
+            blocker = QSignalBlocker(control)
+            control.clear()
+            del blocker
             control.setEnabled(False)
-            control.setToolTip('此模型不发送分辨率参数')
+            control.setToolTip('此模型未提供此参数的可选值')
             continue
         current = control.currentText()
         if current not in choices:
@@ -24,7 +27,14 @@ def apply_model_options(model, ratio, resolution, duration, audio=None, seed=Non
         control.setEnabled(len(choices) > 1)
         control.setToolTip('支持：' + ' / '.join(choices))
     allowed = options['durations']
-    current = min(allowed, key=lambda value: abs(value - duration.value()))
+    allowed = sorted(allowed or [])
+    duration.setEnabled(bool(allowed))
+    if not allowed:
+        for control in (audio, seed):
+            if control is not None:
+                control.setEnabled(False)
+        return dict(aspect_ratio=ratio.currentText(), resolution=resolution.currentText(), duration=duration.value())
+    current = min(allowed, key=lambda value: (abs(value - duration.value()), -value))
     blocker = QSignalBlocker(duration)
     duration.setRange(allowed[0], allowed[-1])
     duration.setSingleStep(5 if len(allowed) == 3 else 1)

@@ -17,10 +17,11 @@ from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
 from .materials import ACCENT, background_brush
 from .motion import PageTransition
+from .model_catalog_controller import ModelCatalogController
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, config_manager: ConfigManager | None = None, network_time=True) -> None:
+    def __init__(self, config_manager: ConfigManager | None = None, network_time=True, model_sync=None) -> None:
         ensure_ui_font()
         apply_palette(QApplication.instance())
         setTheme(Theme.DARK, save=False)
@@ -30,6 +31,9 @@ class MainWindow(FluentWindow):
         self.setCustomBackgroundColor("#0a0a0b", "#0a0a0b")
         self.config_manager = config_manager or ConfigManager()
         self.config_manager.load_config()
+        self.model_catalog = ModelCatalogController(
+            self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
+            auto_sync=network_time if model_sync is None else model_sync)
         self.setWindowTitle("StoryboardVideoStudio")
         self.resize(1400, 900)
         self.setMinimumSize(1100, 750)
@@ -53,6 +57,15 @@ class MainWindow(FluentWindow):
             style_page(page)
         self._updateStackedBackground()
         style_controls(self)
+        self.model_catalog.changed.connect(self.workspace_page.refresh_catalog)
+        self.model_catalog.changed.connect(self.settings_page.refresh_catalog)
+        self.model_catalog.state_changed.connect(self.settings_page.refresh_sync_state)
+        self.model_catalog.sync_finished.connect(self.settings_page.model_sync_finished)
+        self.settings_page.sync_models_button.clicked.connect(self.model_catalog.refresh)
+        self.settings_page.base_url.textChanged.connect(self.model_catalog.credentials_changed)
+        self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
+        self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
+        QTimer.singleShot(0, self.model_catalog.start)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -142,10 +155,12 @@ class MainWindow(FluentWindow):
             QTimer.singleShot(100, self.close)
 
     def _background_busy(self):
-        return self.workspace_page.task_manager.is_running or self.workspace_page.jobs.busy or self.settings_page.jobs.busy
+        return (self.workspace_page.task_manager.is_running or self.workspace_page.jobs.busy
+                or self.settings_page.jobs.busy or self.model_catalog.jobs.busy)
 
     def closeEvent(self, event):
         self.schedule_timer.stop()
+        self.model_catalog.shutdown()
         if self._background_busy():
             event.ignore()
             if not self._closing:

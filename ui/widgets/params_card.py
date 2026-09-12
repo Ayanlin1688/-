@@ -6,6 +6,7 @@ from qfluentwidgets import FluentIcon as FIF, PushButton
 
 from ..components.custom_widgets import CaptionLabel, ComboBox, LineEdit, SpinBox, StrongBodyLabel, SwitchButton, make_card
 from ..components.model_options import apply_model_options
+from ..components.model_selector import ModelComboBox, catalog_snapshot
 from core.model_parameters import MODELS, H3, h3_size, model_options
 
 
@@ -33,7 +34,7 @@ class ParamsCard(QWidget):
 
         workspace = config_manager.config["workspace"]
         grid = QGridLayout()
-        self.model = ComboBox(); self.model.addItems(MODELS); self.model.setCurrentText(workspace["model"])
+        self.model = ModelComboBox(); self.model.set_models(catalog_snapshot(config_manager), workspace['model'])
         self.ratio = ComboBox(); self.ratio.addItems(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"]); self.ratio.setCurrentText(workspace["aspect_ratio"])
         self.resolution = ComboBox(); self.resolution.addItems(["480p", "720p", "768p", "1080p", "2K", "4K"]); self.resolution.setCurrentText(workspace["resolution"])
         self.duration = SpinBox(); self.duration.setRange(1, 30); self.duration.setValue(workspace["duration"])
@@ -113,9 +114,10 @@ class ParamsCard(QWidget):
 
     def _refresh_model_options(self):
         model = self.model.currentText()
+        catalog = catalog_snapshot(self.config_manager)
         workspace = self.config_manager.config['workspace']
         before = {key: workspace[key] for key in ('aspect_ratio', 'resolution', 'duration')}
-        values = apply_model_options(model, self.ratio, self.resolution, self.duration, self.audio, self.seed)
+        values = apply_model_options(model, self.ratio, self.resolution, self.duration, self.audio, self.seed, catalog)
         changes = []
         labels = {'aspect_ratio': '比例', 'resolution': '分辨率', 'duration': '时长'}
         for key, value in values.items():
@@ -128,13 +130,23 @@ class ParamsCard(QWidget):
         elif model == 'grok-imagine-1.5-video':
             hint = '多张参考图请选择 480p 或 720p'
         else:
-            durations = model_options(model)['durations']
-            hint = '支持时长：5 / 10 / 15 秒' if len(durations) == 3 else '分辨率固定为 720p'
+            options = model_options(model, catalog)
+            durations = options['durations'] or []
+            hint = ('支持时长：' + ' / '.join(map(str, durations)) + ' 秒' if len(durations) <= 3 and durations
+                    else f'支持时长：{min(durations)}–{max(durations)} 秒' if durations else '提交协议尚未确认')
         if changes:
             message = f'{model} 已调整不支持的选项：' + '；'.join(changes)
             self.parameters_adjusted.emit(message, 'warning')
             hint += '\n' + '；'.join(changes)
         self.size_hint.setText(hint)
+
+    def refresh_catalog(self, *_):
+        self.model.set_models(catalog_snapshot(self.config_manager), self.config_manager.config['workspace']['model'])
+        selected = self.model.currentText()
+        if selected and selected != self.config_manager.config['workspace']['model']:
+            self.config_manager.update(('workspace', 'model'), selected)
+            self.values_changed.emit('model', selected)
+        self._refresh_model_options()
 
     def toggle_advanced(self) -> None:
         self._advanced_animation.stop()

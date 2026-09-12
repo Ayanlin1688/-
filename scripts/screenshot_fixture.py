@@ -4,6 +4,7 @@ from PyQt5.QtGui import QColor, QFont, QImage, QPainter
 from PyQt5.QtCore import Qt, QRect
 from core.config_manager import ConfigManager
 from core.matcher import StoryboardMatcher
+from core.prompt_detector import annotate_tasks
 import time
 
 
@@ -17,7 +18,10 @@ def make_fixture(root):
         product = '玫瑰毯子' if n < 4 else '车载风扇'
         prompt_dir, image_dir = root / '提示词' / product, root / '参考图片' / product
         prompt_dir.mkdir(exist_ok=True); image_dir.mkdir(exist_ok=True)
-        (prompt_dir / f'{n%4+1:02d}_{name}.txt').write_text('<Picture 1> <Picture 2> <Picture 3> 产品展示', encoding='utf-8')
+        prompt = ['subject_definitions: product\n[Shot 1] <Picture 1> <Picture 2> <Picture 3>',
+                  '镜头1：展示@图1。镜头2：结合@图2、@图3展示细节。',
+                  '自然光下缓缓展示产品，镜头靠近表面纹理。'][n % 3]
+        (prompt_dir / f'{n%4+1:02d}_{name}.txt').write_text(prompt, encoding='utf-8')
         for k in range(3):
             image = QImage(320, 220, QImage.Format_RGB32); image.fill(QColor('#141416'))
             painter = QPainter(image); painter.setRenderHint(QPainter.Antialiasing)
@@ -39,9 +43,12 @@ def make_fixture(root):
         dict(name='seedance-2.5', enabled=True, status='健康')])
     manager.config['task_strategy'].update(max_concurrency=2, max_retries=5)
     tasks = StoryboardMatcher.from_config(manager.config).scan_and_match(manager.config['paths'])
+    annotate_tasks(tasks, manager.config)
+    tasks[2].update(model_source='manual', requested_model='video-v3', model='video-v3', model_locked=True)
+    manager.config['model_overrides'][tasks[2]['prompt_path']] = 'video-v3'
     states = ['completed', 'completed', 'failed', 'skipped', 'processing', 'retry_wait', 'waiting', 'waiting']
     for index, task in enumerate(tasks):
-        task.update(local_id=f'screenshot-{index}', status=states[index], model=['video-v2', 'video-v3', 'seedance-2.5'][index%3],
+        task.update(local_id=f'screenshot-{index}', status=states[index], model=task['requested_model'],
                     task_id=f'local_fixture_{index+1:03d}' if states[index] != 'waiting' else '',
                     created_at='2026-09-11T14:00:00', finished_at='2026-09-11T14:02:15' if states[index] == 'completed' else '',
                     result_path=str(root / '视频输出' / task['product'] / f'{task["product_task_index"]:03d}_{task["prompt_name"]}.mp4') if states[index] == 'completed' else '',

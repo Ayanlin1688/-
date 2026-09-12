@@ -28,7 +28,7 @@ def verify():
     evidence = ROOT / 'artifacts' / 'stage2b'; evidence.mkdir(parents=True, exist_ok=True)
     result = dict(kind='local HTTP + Qt UI', provider_requests=0, platform=os.environ['QT_QPA_PLATFORM'], scenarios=[])
     logs = []
-    cases = [('轮询三模型', 3), ('错误模型故障转移', 1), ('断网重试五次', 1), ('并发2跑5任务', 5), ('冷却恢复', 1)]
+    cases = [('轮询三模型', 3), ('提交错误故障转移', 1), ('断网重试五次', 1), ('并发2跑5任务', 5), ('冷却恢复', 1)]
     for name, count in cases:
         with tempfile.TemporaryDirectory(prefix='storyboard-stage2b-') as temp, PoolServer() as server:
             root = Path(temp)
@@ -39,14 +39,15 @@ def verify():
                 for k in (3, 1, 2):
                     (images / f'{n}({k}).png').write_bytes(connection_probe_png())
             config = ConfigManager(root / 'config.json'); config.load_config()
+            config.config['prompt_detection']['enabled'] = False
             config.config['paths'] = dict(prompts=str(prompts), images=str(images), output=str(root / '视频'))
             config.config['api'].update(base_url=server.base, api_key='local-fixture-only', upload_url=server.base+'/upload')
             config.config['workspace'].update(model='video-v3', duration=10, resolution='720p', poll_interval=3)
             config.config['model_pool'].update(enabled=True, cooldown=1,
                 models=[dict(name=m, enabled=True, status='健康') for m in ('video-v2', 'video-v2-fast', 'video-v3')])
             config.config['task_strategy'].update(retry_interval=1, max_retries=5, failure_skip_threshold=100)
-            if name == '错误模型故障转移':
-                config.config['model_pool']['models'][0]['name'] = 'invalid-model'
+            if name == '提交错误故障转移':
+                server.fail_models = {'video-v2'}
             elif name == '断网重试五次':
                 with socket.socket() as sock:
                     sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -81,7 +82,7 @@ def verify():
                 assert all(len(body['images']) == 3 for body in posts)
                 if name == '轮询三模型':
                     assert [t['model'] for t in tasks] == ['video-v2', 'video-v2-fast', 'video-v3']
-                if name == '错误模型故障转移':
+                if name == '提交错误故障转移':
                     assert tasks[0]['model'] == 'video-v2-fast' and tasks[0]['retry_count'] == 1
                     assert any(row['status'] == '冷却中' for snap in pool_states for row in snap)
                 if name == '断网重试五次':

@@ -4,6 +4,8 @@ Only the existing text/image generation flows are exposed. No upload behavior li
 """
 import re
 
+from .model_catalog import family_for, options_for
+
 V3_MODELS = {'video-v3', 'seedance-2.5', 'seedance2.5', 'sd-2.5', 'sd2.5'}
 GROK = 'grok-imagine-1.5-video'
 H3 = 'MiniMax-H3'
@@ -23,7 +25,7 @@ H3_RESOLUTIONS = ('480p', '768p', '1080p', '2K', '4K')
 BASE_RATIOS = ('16:9', '9:16', '1:1', '4:3', '3:4')
 
 
-def model_options(model):
+def legacy_model_options(model):
     if model == 'video-v1':
         return dict(ratios=BASE_RATIOS, resolutions=(), durations=(5, 10, 15), audio=False, seed=False, max_images=9)
     if model in {'video-v2', 'video-v2-fast'}:
@@ -37,20 +39,38 @@ def model_options(model):
     raise ValueError(f'不支持的模型：{model}')
 
 
+def model_options(model, catalog=None):
+    if catalog is None:
+        return legacy_model_options(model)
+    snapshot = catalog.snapshot() if hasattr(catalog, 'snapshot') else catalog
+    options = options_for(model, snapshot)
+    record = snapshot.get(model) if isinstance(snapshot, dict) else None
+    options['available'] = bool(isinstance(record, dict) and record.get('available', True))
+    options['kind'] = record.get('kind', 'unknown') if isinstance(record, dict) else 'unknown'
+    return options
+
+
 def h3_size(ratio, resolution):
     if ratio not in H3_SIZES or resolution not in H3_RESOLUTIONS:
         raise ValueError(f'H3 不支持比例/分辨率组合：{ratio} + {resolution}')
     return resolution if resolution in ('2K', '4K') else H3_SIZES[ratio][H3_RESOLUTIONS.index(resolution)]
 
 
-def generation_fields(model, params, image_count):
+def generation_fields(model, params, image_count, catalog=None):
     """Validate internal UI values and return only fields accepted by this model."""
-    options = model_options(model)
+    options = model_options(model, catalog)
+    if options.get('available') is False:
+        raise ValueError(f'模型 {model} 不在当前可用模型目录中')
+    if options.get('kind') not in (None, 'video'):
+        raise ValueError(f'模型 {model} 不是视频模型，无法提交视频任务')
+    if options.get('protocol_known') is False:
+        raise ValueError(f'模型 {model} 的提交协议尚未确认，无法安全提交')
+    family = family_for(model, catalog)
     duration = params.get('duration')
     ratio = params.get('aspect_ratio')
     resolution = params.get('resolution')
     if type(duration) is not int or duration not in options['durations']:
-        allowed = '5、10、15' if model in {'video-v1', 'video-v2', 'video-v2-fast'} else f"{options['durations'][0]}–{options['durations'][-1]}"
+        allowed = '5、10、15' if family in {'video-v1', 'video-v2'} else f"{options['durations'][0]}–{options['durations'][-1]}"
         raise ValueError(f'{model} duration/seconds 必须是 {allowed} 秒的整数，当前为 {duration!r}')
     if ratio not in options['ratios']:
         raise ValueError(f"{model} 比例必须为 {' / '.join(options['ratios'])}，当前为 {ratio!r}")
@@ -58,21 +78,26 @@ def generation_fields(model, params, image_count):
         raise ValueError(f"{model} 分辨率必须为 {' / '.join(options['resolutions'])}，当前为 {resolution!r}")
     if image_count > options['max_images']:
         raise ValueError(f"{model} 最多支持 {options['max_images']} 张参考图，当前为 {image_count} 张")
-    if model == GROK and image_count > 1 and resolution == '1080p':
+    if family == GROK and image_count > 1 and resolution == '1080p':
         raise ValueError('Grok 多图仅支持 480p / 720p，请修改分辨率')
     if options['audio'] and type(params.get('generate_audio')) is not bool:
         raise ValueError(f'{model} generate_audio 必须是布尔值 true/false')
-    if model == 'video-v1':
+    if family == 'video-v1':
         return dict(duration=duration, aspect_ratio=ratio)
-    if model in {'video-v2', 'video-v2-fast'}:
-        return dict(duration=duration, aspect_ratio=ratio, resolution=resolution, generate_audio=params['generate_audio'], videos=[], audios=[])
-    if model in V3_MODELS:
+    if family == 'video-v2':
+        fields = dict(duration=duration, aspect_ratio=ratio, resolution=resolution, videos=[], audios=[])
+        if options['audio']:
+            fields['generate_audio'] = params['generate_audio']
+        return fields
+    if family == 'video-v3':
         # The table marks bypass_face_check as required although the example omits it.
         # Send false explicitly; the application does not enable bypass behavior.
-        fields = dict(duration=duration, ratio=ratio, resolution=resolution, generate_audio=params['generate_audio'],
+        fields = dict(duration=duration, ratio=ratio, resolution=resolution,
                       bypass_face_check=False, videos=[], audios=[])
+        if options['audio']:
+            fields['generate_audio'] = params['generate_audio']
         seed = params.get('seed', '')
-        if seed is not None and seed != '':
+        if options['seed'] and seed is not None and seed != '':
             if type(seed) is int:
                 value = seed
             elif isinstance(seed, str) and re.fullmatch(r'[0-9]+', seed.strip()):
@@ -83,7 +108,7 @@ def generation_fields(model, params, image_count):
                 raise ValueError(f'{model} seed 必须是 0–4294967295 的整数或留空')
             fields['seed'] = value
         return fields
-    if model == H3:
+    if family == H3:
         fields = dict(workflow_id='multi-reference' if image_count else 'text-to-video', seconds=duration, size=h3_size(ratio, resolution))
         if resolution in ('2K', '4K'):
             fields['aspect_ratio'] = ratio
@@ -91,18 +116,18 @@ def generation_fields(model, params, image_count):
     return dict(aspect_ratio=ratio, seconds=str(duration), resolution=resolution)
 
 
-def validate_task_parameters(model, prompt, params, image_count):
+def validate_task_parameters(model, prompt, params, image_count, catalog=None):
     try:
-        fields = generation_fields(model, params, image_count)
-        if not isinstance(prompt, str) or (not prompt.strip() and not (model == 'video-v1' and image_count)):
+        fields = generation_fields(model, params, image_count, catalog)
+        if not isinstance(prompt, str) or (not prompt.strip() and not (family_for(model, catalog) == 'video-v1' and image_count)):
             raise ValueError('提示词必须是非空文本')
         return fields
     except ValueError as error:
         raise ValueError(f'参数校验失败：{error}') from error
 
 
-def model_prompt(model, prompt):
-    if model in {'video-v2', 'video-v2-fast'}:
+def model_prompt(model, prompt, catalog=None):
+    if family_for(model, catalog) == 'video-v2':
         labels = {'图': 'Image', '视频': 'Video', '音频': 'Audio'}
         return re.sub(r'@参考(图|视频|音频)(\d+)', lambda match: '@' + labels[match[1]] + match[2], prompt)
     return prompt

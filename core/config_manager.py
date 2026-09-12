@@ -60,6 +60,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "appearance": {"theme": "dark", "language": "简体中文"},
     "diagnostics": {"debug_mode": False},
+    "prompt_detection": {"enabled": True, "fallback_model": ""},
+    "model_overrides": {},
     "schedule": {
         "enabled": False, "time": "23:00", "mode": "once", "after_finish": "keep",
         "next_run": "", "last_run": "",

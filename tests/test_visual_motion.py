@@ -46,6 +46,9 @@ class VisualMotionTests(unittest.TestCase):
     def test_card_hover_reversal_never_accumulates_position_drift(self):
         from ui.components.custom_widgets import StudioCard
         card = self.window.workspace_page.data_source.findChild(StudioCard)
+        # A real Windows cursor may already have entered the newly shown card.
+        # Measure from its resting state, not a partially completed hover.
+        QApplication.sendEvent(card, QEvent(QEvent.Leave)); QTest.qWait(230)
         start = card.pos()
         for _ in range(3):
             QApplication.sendEvent(card, QEvent(QEvent.Enter)); QTest.qWait(230)

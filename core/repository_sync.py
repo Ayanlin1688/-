@@ -43,7 +43,7 @@ class RepositorySync:
     def _sensitive_path(name):
         path = Path(name)
         folders = {part.casefold() for part in path.parts}
-        return (path.name.casefold() == 'config.json' or path.name.startswith('.env') or
+        return (path.name.casefold() in {'config.json', 'models_cache.json', 'models_cache.json.tmp'} or path.name.startswith('.env') or
                 path.suffix.casefold() in {'.mp4', '.mov', '.avi', '.log', '.pyc', '.pyo', '.key', '.pem'} or
                 bool(folders & {'artifacts', 'screenshots', 'temp', 'tmp', '__pycache__', '.vscode', '.idea', '.venv', 'venv', '视频输出目录', '视频保存目录'}))
 
@@ -100,7 +100,7 @@ class RepositorySync:
                 raise GitSyncError('请先切换到main分支再同步')
             if self._git(['remote', 'get-url', 'origin']).rstrip('/') != self.expected_origin.rstrip('/'):
                 raise GitSyncError('origin与项目授权仓库不一致，停止同步')
-            for name in ('config.json', 'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
+            for name in ('config.json', 'models_cache.json', 'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
                 self._git(['check-ignore', '--no-index', name])
             self._check_snapshot()
             self._git(['add', '.'])

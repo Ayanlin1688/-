@@ -9,6 +9,7 @@ import time
 
 from .http_client import Cancelled
 from .model_parameters import GROK, V3_MODELS, model_options
+from .model_catalog import family_for
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'skipped'}
 ACTIVE = {'queued', 'uploading', 'submitting', 'processing', 'downloading', 'retry_wait', 'cooling', 'paused'}
@@ -40,36 +41,41 @@ def resolve_output_directory(output_root, output_subdir=''):
     return str(resolved)
 
 
-def parameters_for_model(model, values, pooled=False, image_count=0):
+def parameters_for_model(model, values, pooled=False, image_count=0, catalog=None):
     """Pool requests adapt supported UI dimensions; standalone requests stay strict."""
     params = dict(values)
     if not pooled:
         return params
-    options = model_options(model)
-    if type(params.get('duration')) is int and params['duration'] not in options['durations']:
+    options = model_options(model, catalog)
+    family = family_for(model, catalog)
+    if options['durations'] and type(params.get('duration')) is int and params['duration'] not in options['durations']:
         params['duration'] = min(options['durations'], key=lambda v: (abs(v-params['duration']), -v))
-    if params.get('aspect_ratio') not in options['ratios']:
+    if options['ratios'] and params.get('aspect_ratio') not in options['ratios']:
         params['aspect_ratio'] = options['ratios'][0]
     resolutions = options['resolutions']
     if resolutions and params.get('resolution') not in resolutions:
-        params['resolution'] = '768p' if model == 'MiniMax-H3' and params.get('resolution') == '720p' else ('720p' if '720p' in resolutions else resolutions[0])
-    if model == GROK and image_count > 1 and params.get('resolution') == '1080p':
+        if family == 'MiniMax-H3' and params.get('resolution') == '720p' and '768p' in resolutions:
+            params['resolution'] = '768p'
+        else:
+            params['resolution'] = '720p' if '720p' in resolutions else resolutions[0]
+    if family == GROK and image_count > 1 and params.get('resolution') == '1080p':
         params['resolution'] = '720p'
     return params
 
 
-def task_signature(task, model, params, base_url):
+def task_signature(task, model, params, base_url, catalog=None):
     inputs = [task['prompt_path'], *task['images']]
     stats = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) if Path(p).is_file() else (p, None, None) for p in inputs]
     effective = dict(model=model, duration=params.get('duration'), aspect_ratio=params.get('aspect_ratio'))
-    if model in V3_MODELS:
-        effective['resolution'] = '720p'
-    elif model != 'video-v1':
+    family = family_for(model, catalog)
+    if family == 'video-v3':
         effective['resolution'] = params.get('resolution')
-    if model in V3_MODELS or model in {'video-v2', 'video-v2-fast'}:
+    elif family != 'video-v1':
+        effective['resolution'] = params.get('resolution')
+    if family in {'video-v2', 'video-v3'} and model_options(model, catalog)['audio']:
         if params.get('generate_audio') is not True:
             effective['generate_audio'] = params.get('generate_audio')
-    if model in V3_MODELS and params.get('seed') not in ('', None):
+    if family == 'video-v3' and model_options(model, catalog)['seed'] and params.get('seed') not in ('', None):
         try:
             effective['seed'] = int(params['seed'])
         except (ValueError, TypeError):

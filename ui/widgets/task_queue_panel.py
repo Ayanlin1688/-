@@ -6,9 +6,12 @@ COLORS = {'已完成': '#67c23a', '生成中': '#409eff', '等待中': '#e6a23c'
           '重试中': '#e6a23c', '等待冷却': '#e6a23c',
           '已取消': '#92929b', '已跳过': '#e6a23c', '已暂停': '#e6a23c', '上传中': '#409eff', '提交中': '#409eff', '下载中': '#409eff'}
 from ..motion import StatusDot
+from core.prompt_detector import short_model_name, SOURCE_TEXT
+from core.model_catalog import builtin_models
+from ..components.model_selector import usable, model_label
 
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QGridLayout, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
-from qfluentwidgets import IconWidget, FluentIcon as FIF
+from qfluentwidgets import IconWidget, FluentIcon as FIF, RoundMenu, Action, PushButton
 
 from ..components.custom_widgets import BodyLabel, ComboBox, CaptionLabel, StrongBodyLabel, make_card
 
@@ -16,7 +19,7 @@ from ..components.custom_widgets import BodyLabel, ComboBox, CaptionLabel, Stron
 class TaskQueueRow(QWidget):
     """Fluent list row without a native checkbox or delegate text rendering."""
 
-    def __init__(self, number: int, name: str, status: str, color: str, parent=None) -> None:
+    def __init__(self, number: int, name: str, status: str, color: str, parent=None, model='', source='') -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -29,7 +32,17 @@ class TaskQueueRow(QWidget):
         self.title.setMinimumWidth(0)
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.title.setToolTip(name)
-        layout.addWidget(self.title, 1)
+        labels = QVBoxLayout()
+        labels.setSpacing(1)
+        labels.addWidget(self.title)
+        self.model_label = CaptionLabel(f'[{short_model_name(model)}]' + (f' · {source}' if source else '') if model else '')
+        self.model_label.setStyleSheet('font-size:11px;')
+        self.model_label.setMinimumWidth(0)
+        self.model_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.model_label.setToolTip(model + '\n' + source)
+        self.model_label.setVisible(bool(model))
+        labels.addWidget(self.model_label)
+        layout.addLayout(labels, 1)
         state = CaptionLabel(status)
         state.setTextColor(color, color)
         layout.addWidget(state)
@@ -52,10 +65,15 @@ class TaskGroupHeader(QWidget):
 
 class TaskQueuePanel(QWidget):
     task_selected = pyqtSignal(int)
+    model_override_requested = pyqtSignal(int, str)
+    reset_models_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._programmatic_selection = False
+        self._catalog = builtin_models()
+        self._default_model = ''
+        self.models_editable = True
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 8, 0)
         root.setSpacing(10)
@@ -63,6 +81,10 @@ class TaskQueuePanel(QWidget):
         self.filter_box = ComboBox()
         self.filter_box.addItems(["全部", "等待中", "生成中", "重试中", "等待冷却", "已完成", "失败", "已跳过", "已取消", "已暂停"])
         root.addWidget(self.filter_box)
+        self.reset_models_button = PushButton(FIF.SYNC, '重置模型识别')
+        self.reset_models_button.setToolTip('全部重置为自动识别')
+        self.reset_models_button.clicked.connect(self.reset_models_requested)
+        root.addWidget(self.reset_models_button)
         self.list = QListWidget()
         self.list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.list.setSelectionMode(QListWidget.SingleSelection)
@@ -75,6 +97,8 @@ class TaskQueuePanel(QWidget):
         self.list.currentItemChanged.connect(self._selection_color)
         self.list.currentItemChanged.connect(self._selected_task_changed)
         self.list.itemClicked.connect(self._item_clicked)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._show_model_menu)
         self.filter_box.currentTextChanged.connect(self._filter)
         root.addWidget(self.list, 1)
         self.current_product_label = CaptionLabel('当前产品 —')
@@ -145,7 +169,10 @@ class TaskQueuePanel(QWidget):
             item.setData(Qt.UserRole + 1, index)
             title = f'{product} / {task["prompt_name"]}' if product else task['prompt_name']
             number = task.get('product_task_index', index + 1) if product else index + 1
-            row = TaskQueueRow(number, title, status, COLORS[status])
+            model = task.get('model') or task.get('requested_model', '')
+            source = task.get('model_source', '')
+            source_label = '手动' if source == 'manual' else '自动' if source == 'auto' and model != self._default_model else ''
+            row = TaskQueueRow(number, title, status, COLORS[status], model=model, source=source_label)
             item.setToolTip(title + '\n' + task.get('error', ''))
             item.setSizeHint(row.sizeHint())
             self.list.setItemWidget(item, row)
@@ -169,6 +196,38 @@ class TaskQueuePanel(QWidget):
 
     def task_item(self, index):
         return self._task_items.get(index)
+
+    def set_model_catalog(self, catalog, default_model):
+        self._catalog = catalog
+        self._default_model = default_model
+
+    def set_models_editable(self, editable):
+        self.models_editable = bool(editable)
+        self.reset_models_button.setEnabled(editable)
+
+    def model_menu_for(self, index):
+        menu = RoundMenu('强制使用模型', self)
+        for model, record in self._catalog.items():
+            action = Action(model_label(record), menu)
+            action.setData(model)
+            action.setToolTip(record.get('description') or model)
+            action.setEnabled(self.models_editable and usable(record))
+            action.triggered.connect(lambda checked=False, value=model: self.model_override_requested.emit(index, value))
+            menu.addAction(action)
+        return menu
+
+    def _show_model_menu(self, position):
+        item = self.list.itemAt(position)
+        index = item.data(Qt.UserRole + 1) if item is not None else None
+        if not self.models_editable or not isinstance(index, int):
+            return
+        menu = RoundMenu(parent=self)
+        menu.addMenu(self.model_menu_for(index))
+        reset = Action('恢复自动识别', menu)
+        reset.triggered.connect(lambda: self.model_override_requested.emit(index, ''))
+        menu.addAction(reset)
+        menu.exec(self.list.mapToGlobal(position))
+        menu.deleteLater()
 
     def select_task(self, index):
         item = self._task_items.get(index)

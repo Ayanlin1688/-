@@ -68,13 +68,14 @@ def main() -> None:
     window.workspace_page.append_log("本地界面示例：玫瑰毯子队列结束，切换到车载风扇", "info")
     window.workspace_page.append_log("本地界面示例：模型 video-v2 失败，切换到 video-v3 重试，video-v2 进入冷却30秒", "warning")
     window.workspace_page.append_log("本地界面示例：第2次重试，剩余3次；最大并发2", "warning")
+    window.workspace_page.append_log("本地界面示例：提示词已分别识别为 MiniMax-H3 / video-v2 / video-v3", "info")
 
     # First view demonstrates two occupied slots and the empty recent panel.
     pending = copy.deepcopy(tasks)
     for task in pending:
         if task['status'] == 'completed':
             task.update(status='waiting', result_path='', task_id='')
-    pending[0].update(status='processing', model='video-v3', task_id='local_fixture_001', error='本地截图示例')
+    pending[0].update(status='processing', model='MiniMax-H3', task_id='local_fixture_001', error='本地截图示例')
     pending[1].update(status='retry_wait', model='video-v2', error='提交失败，正在重试（截图示例）')
     for task in pending[4:]:
         task.update(status='waiting', task_id='')
@@ -107,7 +108,7 @@ def main() -> None:
     wait_for_animation(350)
     scroll = window.settings_page.findChild(QScrollArea)
     if scroll is not None:
-        scroll.verticalScrollBar().setValue(window.settings_page.pool_group.y() - 15)
+        scroll.verticalScrollBar().setValue(0)
     wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 

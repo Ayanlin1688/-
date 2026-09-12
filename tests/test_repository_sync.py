@@ -48,6 +48,15 @@ class RepositorySyncTests(unittest.TestCase):
             self.sync.sync('fix: 阻止敏感文件')
         self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
 
+    def test_model_cache_never_reaches_remote_even_when_forced_into_index(self):
+        (self.root / 'models_cache.json').write_text('{"models":{}}', encoding='utf-8')
+        result = self.sync.sync('feat: 测试模型缓存排除')
+        self.assertNotIn('models_cache.json', self.git('ls-files').splitlines())
+        self.git('add', '-f', 'models_cache.json')
+        with self.assertRaises(GitSyncError):
+            self.sync.sync('fix: 阻止模型缓存强制暂存')
+        self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main').split()[0], result['commit'])
+
     def test_push_retries_twice_then_remote_matches(self):
         real = self.sync._git
         attempts = []

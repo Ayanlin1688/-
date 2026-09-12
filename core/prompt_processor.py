@@ -1,7 +1,7 @@
 """Normalize reference markers without changing the rest of the prompt."""
 import re
 
-_REFERENCE = re.compile(r'<\s*(?:Picture|图片)\s*(\d+)\s*>|@(?:Image|图片|参考图)\s*(\d+)', re.IGNORECASE)
+_REFERENCE = re.compile(r'<\s*(?:Picture|图片)\s*(\d+)\s*>|@(?:Image|图片|参考图|图)\s*(\d+)', re.IGNORECASE)
 
 
 def process_prompt(prompt_text):

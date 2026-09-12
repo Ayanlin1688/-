@@ -15,6 +15,8 @@ from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
 from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
 from ..components.model_options import apply_model_options
+from ..components.model_selector import ModelComboBox, catalog_snapshot, usable
+from datetime import datetime
 import copy
 import math
 import time
@@ -48,6 +50,7 @@ class SettingsPage(QWidget):
     debug_mode_changed = pyqtSignal(bool)
     schedule_changed = pyqtSignal()
     task_settings_changed = pyqtSignal()
+    detection_changed = pyqtSignal()
     def __init__(self, config_manager, log_callback, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPage")
@@ -138,6 +141,15 @@ class SettingsPage(QWidget):
         group.addSettingCard(CustomSettingCard(title, control))
         return control
 
+    def _model_combo(self, group, title, path, automatic=False):
+        combo = ModelComboBox()
+        combo.setMinimumWidth(240)
+        combo.setMaximumWidth(560)
+        combo.set_models(catalog_snapshot(self.config_manager), self._value(path), automatic=automatic)
+        combo.currentTextChanged.connect(lambda model: self.config_manager.update(path, model))
+        group.addSettingCard(CustomSettingCard(title, combo))
+        return combo
+
     def _switch(self, group, title, path, icon=FIF.SETTING):
         card = StudioSwitchSettingCard(icon, title)
         card.setChecked(self._value(path))
@@ -157,6 +169,14 @@ class SettingsPage(QWidget):
         self.debug_mode = self._switch(group, '调试模式', ('diagnostics', 'debug_mode'), FIF.INFO)
         self.debug_mode.setToolTip('记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式')
         self.debug_mode.checkedChanged.connect(self.debug_mode_changed)
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.last_model_sync = CaptionLabel('尚未同步')
+        self.sync_models_button = PushButton(FIF.SYNC, '同步上游模型')
+        row.addWidget(self.last_model_sync, 1)
+        row.addWidget(self.sync_models_button)
+        group.addSettingCard(CustomSettingCard('上游模型目录', host, FIF.SYNC))
 
     def _build_pool(self):
         group = self._group("模型池")
@@ -188,6 +208,10 @@ class SettingsPage(QWidget):
     def _build_task(self):
         group = self._group("任务策略")
         self.task_group = group
+        self.auto_detect = self._switch(group, '自动识别模型', ('prompt_detection', 'enabled'))
+        self.fallback_model = self._model_combo(group, '无法识别时使用', ('prompt_detection', 'fallback_model'), automatic=True)
+        self.auto_detect.checkedChanged.connect(lambda *_: self.detection_changed.emit())
+        self.fallback_model.currentIndexChanged.connect(lambda *_: self.detection_changed.emit())
         self.max_concurrency = self._spin(group, '最大并发数', ('task_strategy', 'max_concurrency'), 1, 5)
         self.max_concurrency.setToolTip('同一产品内最多同时处理的任务数；当前产品结束后切换下一产品')
         self.auto_retry = self._switch(group, "失败自动重试", ("task_strategy", "auto_retry"), FIF.SYNC)
@@ -203,7 +227,7 @@ class SettingsPage(QWidget):
 
     def _build_defaults(self):
         group = self._group("默认参数")
-        self.default_model = self._combo(group, "默认模型", ("defaults", "model"), MODELS)
+        self.default_model = self._model_combo(group, "默认模型", ("defaults", "model"))
         self.default_ratio = self._combo(group, "默认比例", ("defaults", "aspect_ratio"), ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"])
         self.default_resolution = self._combo(group, "默认分辨率", ("defaults", "resolution"), ["480p", "720p", "768p", "1080p", "2K", "4K"])
         self.default_duration = self._spin(group, "默认时长（秒）", ("defaults", "duration"), 1, 30)
@@ -213,7 +237,8 @@ class SettingsPage(QWidget):
         self._refresh_default_options()
 
     def _refresh_default_options(self, *_):
-        values = apply_model_options(self.default_model.currentText(), self.default_ratio, self.default_resolution, self.default_duration)
+        values = apply_model_options(self.default_model.currentText(), self.default_ratio, self.default_resolution, self.default_duration,
+                                     catalog=catalog_snapshot(self.config_manager))
         for key, value in values.items():
             if self.config_manager.config['defaults'][key] != value:
                 self.config_manager.update(('defaults', key), value)
@@ -285,11 +310,8 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(20, 10, 20, 10)
         check = CheckBox("启用")
         check.setChecked(enabled)
-        combo = ComboBox()
-        combo.addItems(MODELS)
-        if name not in MODELS:
-            combo.addItem(name)
-        combo.setCurrentText(name)
+        combo = ModelComboBox()
+        combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
         state = CaptionLabel(f"● {status}")
         color = "#67c23a" if status == "健康" else "#e6a23c"
         state.setTextColor(color, color)
@@ -354,13 +376,55 @@ class SettingsPage(QWidget):
         if changed:
             self.config_manager.update(('model_pool', 'models'), models)
         states = {model['name']: model for model in models}
-        for _, _, combo, label in self.model_rows:
+        catalog = catalog_snapshot(self.config_manager)
+        for _, check, combo, label in self.model_rows:
             model = states.get(combo.currentText(), {})
+            record = catalog.get(combo.currentText())
+            if record is None or not usable(record):
+                status = '已下架' if record is None else '非视频模型' if record.get('kind') != 'video' else '协议待确认'
+                label.setText('● ' + status)
+                label.setTextColor('#92929b', '#92929b')
+                check.setEnabled(False)
+                continue
+            check.setEnabled(True)
             cooling = model.get('status') == '冷却中'
             remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
             label.setText(f'● 冷却中 {remaining}秒' if cooling else '● 健康')
             color = '#e6a23c' if cooling else '#67c23a'
             label.setTextColor(color, color)
+
+    def refresh_catalog(self, *_):
+        catalog = catalog_snapshot(self.config_manager)
+        self.default_model.set_models(catalog, self._value(('defaults', 'model')))
+        if self.default_model.currentText():
+            self.config_manager.update(('defaults', 'model'), self.default_model.currentText())
+        self.fallback_model.set_models(catalog, self._value(('prompt_detection', 'fallback_model')), automatic=True)
+        self.config_manager.update(('prompt_detection', 'fallback_model'), self.fallback_model.currentText())
+        renamed = False
+        for _, _, combo, _ in self.model_rows:
+            old_name = combo.currentText()
+            combo.set_models(catalog, combo.currentText(), keep_missing=True)
+            renamed = renamed or old_name != combo.currentText()
+        if renamed:
+            self._persist_models()
+        self._refresh_default_options()
+        self.refresh_pool_state()
+        self.refresh_sync_state()
+
+    def refresh_sync_state(self):
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        if controller is None:
+            return
+        self.sync_models_button.setEnabled(not controller.syncing)
+        self.sync_models_button.setText('正在同步...' if controller.syncing else '同步上游模型')
+        fetched = controller.catalog.fetched_at
+        text = datetime.fromtimestamp(fetched).strftime('%Y-%m-%d %H:%M:%S') if fetched else '尚未同步'
+        self.last_model_sync.setText('上次同步：' + text)
+
+    def model_sync_finished(self, success, count, message):
+        from qfluentwidgets import InfoBar
+        (InfoBar.success if success else InfoBar.warning)('模型同步', message, parent=self, duration=4500)
+        self.refresh_sync_state()
 
     def refresh_task_settings(self, *_):
         for widget, key in ((self.max_retry, 'max_retries'), (self.fail_threshold, 'failure_skip_threshold')):

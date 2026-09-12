@@ -80,6 +80,11 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(process_prompt(' \n<Picture 1> <Picture2> <图片3> @Image4 @图片5\n原文  保留 '),
                          '@参考图1 @参考图2 @参考图3 @参考图4 @参考图5\n原文  保留')
 
+    def test_chinese_short_reference_markers_normalize_and_warn(self):
+        self.assertEqual(process_prompt('@图1 @图10 @图片2'), '@参考图1 @参考图10 @参考图2')
+        self.assertEqual(reference_warnings('@图5', 3),
+                         ['提示词引用了Picture 5，但只绑定了3张图，可能影响生成质量'])
+
     def test_safe_filename_and_placeholders(self):
         task = {'prompt_name': '../汽车:夜景', 'model': 'video-v3', 'task_id': 'abc'}
         name = build_filename('{序号}_{提示词名}_{模型}_{task_id}.mp4', task, 3)

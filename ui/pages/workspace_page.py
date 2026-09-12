@@ -9,6 +9,9 @@ from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, P
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
+from core.prompt_detector import annotate_tasks
+from ..model_catalog_controller import runtime_config
+from ..components.model_selector import catalog_snapshot, usable
 from core.api_client import ApiClient
 from core.http_client import Cancelled
 from core.video_downloader import VideoDownloader, build_filename
@@ -33,6 +36,7 @@ class WorkspacePage(QWidget):
         self.closing = threading.Event()
         self._scan_version = 0
         self._redownloading = False
+        self._catalog_pending = False
         self._build_ui()
         manager = self.task_manager
         self.start_button.clicked.connect(self.start_generation)
@@ -41,6 +45,8 @@ class WorkspacePage(QWidget):
         self.current_task.skip_button.clicked.connect(manager.skip_current)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
         self.queue_panel.task_selected.connect(manager.select_current)
+        self.queue_panel.model_override_requested.connect(self.force_task_model)
+        self.queue_panel.reset_models_requested.connect(self.reset_task_models)
         manager.task_list_updated.connect(self._tasks_updated)
         manager.current_task_changed.connect(self._current_changed)
         manager.task_progress.connect(self.current_task.update_progress)
@@ -52,6 +58,7 @@ class WorkspacePage(QWidget):
         self.jobs.log_message.connect(self.append_log)
         self.data_source.directories_changed.connect(self.scan_sources)
         self.data_source.overrides_changed.connect(self.scan_sources)
+        self.params_card.values_changed.connect(lambda key, value: self.scan_sources() if key == 'model' else None)
         self.recent_panel.update_history(config_manager.config['history'])
         self._running_changed(False)
         self.append_log('工作台已加载：支持模型池、自动重试和并发控制；关闭模型池时使用工作台所选模型', 'info')
@@ -111,7 +118,7 @@ class WorkspacePage(QWidget):
         version = self._scan_version
         if self.closing.is_set() or self.task_manager.is_running:
             return
-        config = copy.deepcopy(self.config_manager.config)
+        config = runtime_config(self.config_manager)
         if not config['paths']['prompts']:
             self.data_source.set_matches([], [])
             self._tasks_updated([])
@@ -120,6 +127,7 @@ class WorkspacePage(QWidget):
         def scan():
             matcher = StoryboardMatcher.from_config(config)
             matched = matcher.scan_and_match(config['paths'])
+            annotate_tasks(matched, config)
             automatic_matcher = StoryboardMatcher(matcher.recursive)
             automatic = automatic_matcher.scan_and_match(config['paths'])
             return matched, automatic, matcher.warnings
@@ -146,7 +154,7 @@ class WorkspacePage(QWidget):
         self.append_log('开始生成：检查配置并准备后台队列', 'info')
         try:
             self._scan_version += 1
-            self.task_manager.start_tasks(copy.deepcopy(self.config_manager.config))
+            self.task_manager.start_tasks(runtime_config(self.config_manager))
         except Exception as error:
             self.append_log(f'无法开始：{error}', 'error')
             InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
@@ -157,7 +165,42 @@ class WorkspacePage(QWidget):
         else:
             self.task_manager.pause_tasks()
 
+    def refresh_catalog(self, *_):
+        if self.task_manager.is_running:
+            self._catalog_pending = True
+            return
+        self.params_card.refresh_catalog()
+        self.scan_sources()
+
+    def force_task_model(self, index, model):
+        tasks = self.queue_panel._tasks
+        if self.task_manager.is_running or not 0 <= index < len(tasks):
+            return
+        if model and not usable(catalog_snapshot(self.config_manager).get(model, {})):
+            return
+        overrides = dict(self.config_manager.config.get('model_overrides', {}))
+        path = tasks[index]['prompt_path']
+        if model:
+            overrides[path] = model
+        else:
+            overrides.pop(path, None)
+        self.config_manager.update(('model_overrides',), overrides)
+        self.scan_sources()
+
+    def reset_task_models(self):
+        if not self.task_manager.is_running:
+            self.config_manager.update(('model_overrides',), {})
+            self.scan_sources()
+
     def _running_changed(self, running):
+        if not running and self._catalog_pending and not self.closing.is_set():
+            self._catalog_pending = False
+            # Refresh controls without replacing completed rows with a new scan.
+            blocker = self.params_card.blockSignals(True)
+            try:
+                self.params_card.refresh_catalog()
+            finally:
+                self.params_card.blockSignals(blocker)
         self.start_button.setEnabled(not running and not self._redownloading and not self.closing.is_set())
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
@@ -165,6 +208,7 @@ class WorkspacePage(QWidget):
         self.current_task.cancel_button.setEnabled(not running and not self._redownloading and bool(self.current_task.task_info.get('task_id')))
         self.params_card.setEnabled(not running)
         self.data_source.setEnabled(not running)
+        self.queue_panel.set_models_editable(not running)
 
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)
@@ -180,6 +224,7 @@ class WorkspacePage(QWidget):
         )
 
     def _tasks_updated(self, tasks):
+        self.queue_panel.set_model_catalog(catalog_snapshot(self.config_manager), self.config_manager.config['workspace']['model'])
         self.queue_panel.update_tasks(tasks)
         self.current_task.update_counts(sum(t.get('status') in ACTIVE for t in tasks),
                                         sum(t.get('status', 'waiting') == 'waiting' for t in tasks))

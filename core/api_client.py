@@ -5,8 +5,46 @@ import json
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from .http_client import HttpClient, RequestError, extract, objects
+from .model_catalog import family_for
 from .model_parameters import GROK, H3, V3_MODELS, validate_task_parameters, model_prompt
 from .log_redaction import redact_text, redact_structure
+
+
+_MODEL_FIELDS = {
+    'id', 'object', 'created', 'owned_by', 'name', 'display_name',
+    'description', 'kind', 'type', 'supported_endpoint_types',
+    'capabilities', 'aliases', 'pricing_text', 'price', 'pricing', 'cost',
+    'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images',
+}
+
+
+def _has_error_object(payload):
+    return isinstance(payload, dict) and isinstance(payload.get('error'), (dict, str))
+
+
+def _detail_object(payload):
+    if not isinstance(payload, dict) or _has_error_object(payload):
+        return None
+    data = payload.get('data')
+    return data if isinstance(data, dict) else payload if 'id' in payload else None
+
+
+def _clean_model_record(row, wire_id=None):
+    """Copy only documented model metadata and never provider credentials."""
+    result = {key: row[key] for key in _MODEL_FIELDS if key in row}
+    result['id'] = wire_id or str(row.get('id', '')).strip()
+    if 'capabilities' in result:
+        if not isinstance(result['capabilities'], dict):
+            result.pop('capabilities', None)
+        else:
+            # Capabilities are structured provider metadata; preserve only the
+            # fields consumed by the catalog and drop arbitrary nested values.
+            result['capabilities'] = {
+                key: result['capabilities'][key]
+                for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images')
+                if key in result['capabilities']
+            }
+    return result
 
 
 class ApiClient(HttpClient):
@@ -29,22 +67,23 @@ class ApiClient(HttpClient):
             sanitized = redact_structure(payload, self.redact)
             self.log('请求体: ' + json.dumps(sanitized, ensure_ascii=False), 'debug')
 
-    def create_task(self, model, prompt, image_urls, params):
-        endpoint = '/video/generations' if model == 'video-v1' else '/videos'
+    def create_task(self, model, prompt, image_urls, params, catalog=None):
+        family = family_for(model, catalog)
+        endpoint = '/video/generations' if family == 'video-v1' else '/videos'
         try:
-            references = params.get('image_paths', image_urls) if model == GROK else image_urls
+            references = params.get('image_paths', image_urls) if family == GROK else image_urls
             if not isinstance(references, (list, tuple)):
                 raise ValueError('参数校验失败：参考图必须是数组')
-            fields = validate_task_parameters(model, prompt, params, len(references))
-            if model != GROK:
+            fields = validate_task_parameters(model, prompt, params, len(references), catalog)
+            if family != GROK:
                 for url in references:
                     if not isinstance(url, str) or urlsplit(url).scheme not in ('http', 'https') or not urlsplit(url).hostname:
                         raise ValueError('参数校验失败：参考图必须是有效的 HTTP/HTTPS 图片 URL')
-            payload = dict(model=model, prompt=model_prompt(model, prompt), **fields)
-            if model != H3 or image_urls:
+            payload = dict(model=model, prompt=model_prompt(model, prompt, catalog), **fields)
+            if family != H3 or image_urls:
                 payload['images'] = image_urls
             with ExitStack() as stack:
-                if model == GROK:
+                if family == GROK:
                     # Grok requires real files: params.image_paths (or the third argument) holds local paths.
                     # Text-only fields use (None, value) to force multipart even with no images.
                     files = [(key, (None, value)) for key, value in dict(model=model, prompt=prompt, **fields).items()]
@@ -71,8 +110,8 @@ class ApiClient(HttpClient):
             self.log(f'提交失败：{self.redact(error)}', 'error')
             raise
 
-    def query_task(self, task_id, model):
-        endpoint = '/video/generations/' if model == 'video-v1' else '/videos/'
+    def query_task(self, task_id, model, catalog=None):
+        endpoint = '/video/generations/' if family_for(model, catalog) == 'video-v1' else '/videos/'
         with self.request('GET', self.base_url + endpoint + quote(str(task_id), safe='')) as response:
             raw = self.json(response)
         status = str(extract(raw, ('status', 'state')) or 'queued').lower()
@@ -106,3 +145,50 @@ class ApiClient(HttpClient):
             return video['ok']
         upload = uploader.test_connection()
         return dict(ok=video['ok'] and upload['ok'], video=video, upload=upload)
+
+    def fetch_models(self):
+        """Fetch and sanitize the provider model list.
+
+        Model detail endpoints are optional on the upstream service.  A detail
+        error means the endpoint is unsupported, so the current refresh stops
+        probing details while retaining the already fetched list.
+        """
+        endpoint = self.base_url + '/models'
+        with self.request('GET', endpoint, timeout=10) as response:
+            payload = self.json(response)
+        if _has_error_object(payload):
+            raise RequestError(f'HTTP {response.status_code}: 模型列表返回错误对象')
+        rows = payload.get('data') if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RequestError(f'HTTP {response.status_code}: 模型列表响应必须包含 data 数组')
+        if any(not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id'].strip()
+               for row in rows):
+            raise RequestError(f'HTTP {response.status_code}: 模型列表包含无效条目')
+        records = [_clean_model_record(row) for row in rows]
+
+        # A provider may advertise /models while not implementing model detail
+        # routes. Keep discovery bounded even when a large list is returned.
+        probes = 0
+        for record in records:
+            if probes >= 8:
+                break
+            if record.get('capabilities'):
+                continue
+            probes += 1
+            try:
+                detail_response = self.request(
+                    'GET', endpoint + '/' + quote(record['id'], safe=''),
+                    check_status=False, timeout=10)
+                try:
+                    detail_payload = self.json(detail_response)
+                finally:
+                    detail_response.close()
+            except RequestError:
+                break
+            if detail_response.status_code == 404 or _has_error_object(detail_payload):
+                break
+            detail = _detail_object(detail_payload)
+            if not isinstance(detail, dict):
+                break
+            record.update(_clean_model_record(detail, record['id']))
+        return records
