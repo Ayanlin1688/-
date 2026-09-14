@@ -1,0 +1,42 @@
+"""Compact workspace directory strip; the detailed cards remain in the tool dialog."""
+from pathlib import Path
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
+from qfluentwidgets import CardWidget, PushButton, TransparentToolButton, FluentIcon as FIF
+from .workspace_surface import ElidedLabel, label, style_button
+
+
+class DirectoryField(QWidget):
+    choose_requested = pyqtSignal()
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(7)
+        row.addWidget(label(title, 12, '#8b8b9e', True)); self.path = ElidedLabel('未选择')
+        self.path.setStyleSheet('background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:4px 8px;')
+        row.addWidget(self.path, 1); button = style_button(TransparentToolButton(FIF.FOLDER)); button.setFixedSize(28, 28)
+        button.clicked.connect(self.choose_requested); row.addWidget(button)
+
+    def set_value(self, text, suffix=''):
+        self.path.setFullText((str(text) if text else '未选择') + suffix)
+
+
+class WorkspaceDirectoryBar(CardWidget):
+    choose_requested = pyqtSignal(str)
+    match_requested = pyqtSignal()
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setBorderRadius(12); self.setProperty('studioStyled', True)
+        row = QHBoxLayout(self); row.setContentsMargins(14, 10, 14, 10); row.setSpacing(14)
+        self.fields = {}
+        for key, title in [('prompts', '提示词'), ('images', '参考图'), ('output', '保存至')]:
+            field = DirectoryField(title); field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k)); self.fields[key] = field
+            row.addWidget(field, 1)
+        self.match_status = label('✓ 已匹配 0/0', 12, '#22c55e', True); row.addWidget(self.match_status)
+        self.match_button = style_button(TransparentToolButton(FIF.RIGHT_ARROW)); self.match_button.setToolTip('匹配详情'); self.match_button.clicked.connect(self.match_requested)
+        row.addWidget(self.match_button)
+
+    def refresh(self, paths, tasks, metrics=None):
+        metrics = metrics or {}
+        self.fields['prompts'].set_value(paths.get('prompts'), f'  · {len(tasks)}条')
+        self.fields['images'].set_value(paths.get('images'), f'  · {metrics.get("images", 0)}张')
+        self.fields['output'].set_value(paths.get('output'), f'  · {metrics.get("videos", 0)}个 · {metrics.get("bytes", 0)/1024**3:.1f}GB')
+        matched = sum(bool(t.get('images')) for t in tasks); self.match_status.setText(f'✓ 已匹配 {matched}/{len(tasks)}')

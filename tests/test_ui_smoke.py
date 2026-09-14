@@ -57,6 +57,8 @@ class UiSmokeTests(unittest.TestCase):
         window = self.window
         window.show()
         QCoreApplication.processEvents()
+        window.workspace_page.open_controls()
+        QTest.qWait(50)
         card = window.workspace_page.params_card
         self.assertTrue(card.advanced.isVisible())
         card.toggle_advanced()

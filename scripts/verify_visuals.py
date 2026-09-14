@@ -49,10 +49,9 @@ def main():
         workspace = window.workspace_page
         workspace.params_card.toggle_advanced(); QTest.qWait(300)
         workspace.queue_panel.update_tasks([
-            dict(prompt_name=f'视觉测试{i+1}', status='processing', model='video-v3', images=[])
+            dict(prompt_name=f'视觉测试{i+1}', status='processing', model='video-v3', images=[], progress=55)
             for i in range(5)])
-        workspace.current_task.progress.setValue(55)
-        workspace.center_scroll.ensureWidgetVisible(workspace.current_task.progress)
+        workspace.queue_panel.list.scrollToTop()
         QTest.qWait(200)
         timer = QTimer(); timer.setInterval(16); timer.timeout.connect(heartbeat)
         previous = time.perf_counter(); timer.start()
@@ -83,7 +82,7 @@ def main():
         'heartbeat_max_ms': round(max(samples), 2),
         'measurement': '16ms GUI timer while 5 status dots, progress shimmer and button hover animate; not FPS',
     }
-    out = ROOT / 'artifacts' / 'visual-upgrade'
+    out = ROOT / 'artifacts' / 'workspace-dashboard'
     out.mkdir(parents=True, exist_ok=True)
     (out / 'verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(report, ensure_ascii=False, indent=2))

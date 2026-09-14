@@ -31,6 +31,7 @@ class VisualMotionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_button_hover_and_press_return_to_layout_without_duplicate_click(self):
+        self.window.workspace_page.open_controls(); QTest.qWait(60)
         button = self.window.workspace_page.params_card.expand_button
         start = button.geometry()
         QApplication.sendEvent(button, QEvent(QEvent.Enter)); QTest.qWait(230)
@@ -44,6 +45,7 @@ class VisualMotionTests(unittest.TestCase):
         self.assertEqual(button.geometry(), start)
 
     def test_card_hover_reversal_never_accumulates_position_drift(self):
+        self.window.workspace_page.open_controls(); QTest.qWait(60)
         from ui.components.custom_widgets import StudioCard
         card = self.window.workspace_page.data_source.findChild(StudioCard)
         # A real Windows cursor may already have entered the newly shown card.
@@ -57,8 +59,9 @@ class VisualMotionTests(unittest.TestCase):
             self.assertEqual(card.pos(), start)
 
     def test_shimmer_moves_and_stops_when_hidden_or_failed(self):
-        bar = self.window.workspace_page.current_task.progress
-        self.window.workspace_page.center_scroll.ensureWidgetVisible(bar, 0, 40)
+        page = self.window.workspace_page
+        page._tasks_updated([dict(prompt_name='进度示例', status='processing', model='video-v3', images=[], progress=55)])
+        bar = page.queue_panel.rows[0].progress
         bar.setValue(55); QTest.qWait(250)
         first = bar.grab().toImage()
         # The band deliberately leaves the filled segment each cycle. Compare
@@ -67,7 +70,7 @@ class VisualMotionTests(unittest.TestCase):
         self.window.switchTo(self.window.settings_page); QTest.qWait(400)
         self.assertFalse(bar.property('shimmerRunning'))
         self.window.switchTo(self.window.workspace_page); QTest.qWait(400)
-        self.window.workspace_page.center_scroll.ensureWidgetVisible(bar, 0, 40)
+        self.window.workspace_page.queue_panel.list.scrollToTop()
         QTest.qWait(100)
         self.assertTrue(bar.property('shimmerRunning'))
         bar.setError(True); QTest.qWait(100)
@@ -126,7 +129,7 @@ class VisualMotionTests(unittest.TestCase):
         self.assertFalse(self.window._visual_clock.timer.isActive())
         self.window.showNormal(); QTest.qWait(200)
         self.assertTrue(dot.property('pulseRunning'))
-        self.assertEqual(dot.color.name(), '#409eff')
+        self.assertEqual(dot.color.name(), '#3b82f6')
 
     def test_dynamic_model_row_button_has_motion_and_remains_clickable(self):
         settings = self.window.settings_page
@@ -183,6 +186,7 @@ class VisualMotionTests(unittest.TestCase):
         fade.finish()
 
     def test_long_press_near_original_edge_still_clicks_once(self):
+        self.window.workspace_page.open_controls(); QTest.qWait(60)
         button = self.window.workspace_page.params_card.expand_button
         global_press = button.mapToGlobal(QPoint(1, button.height()//2))
         QApplication.sendEvent(button, QEvent(QEvent.Enter)); QTest.qWait(230)

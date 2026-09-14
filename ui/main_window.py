@@ -61,6 +61,8 @@ class MainWindow(FluentWindow):
         self.model_catalog.changed.connect(self.settings_page.refresh_catalog)
         self.model_catalog.state_changed.connect(self.settings_page.refresh_sync_state)
         self.model_catalog.sync_finished.connect(self.settings_page.model_sync_finished)
+        self.model_catalog.sync_finished.connect(lambda ok, count, message: self.workspace_page.set_api_connection(ok, message))
+        self.model_catalog.state_changed.connect(self.workspace_page.refresh_api_state)
         self.settings_page.sync_models_button.clicked.connect(self.model_catalog.refresh)
         self.settings_page.base_url.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
@@ -88,6 +90,8 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.workspace_page, FIF.HOME, "工作台")
         self.addSubInterface(self.history_page, FIF.HISTORY, "任务历史")
         self.addSubInterface(self.settings_page, FIF.SETTING, "设置")
+        self.workspace_page.navigation_requested.connect(lambda route: self.switchTo({
+            'workspace': self.workspace_page, 'history': self.history_page, 'settings': self.settings_page}[route]))
         self.navigationInterface.addItem(
             routeKey="about",
             icon=FIF.INFO,
@@ -105,7 +109,7 @@ class MainWindow(FluentWindow):
         self.clock = NetworkClock()
         self.schedule_engine = ScheduleEngine(self.config_manager, now=self.clock.now, log=self.workspace_page.append_log)
         self.next_schedule_label = CaptionLabel(self.schedule_engine.next_text())
-        self.workspace_page.layout().insertWidget(1, self.next_schedule_label)
+        self.workspace_page.status_row.addWidget(self.next_schedule_label)
         self._scheduled_batch = False
         self.settings_page.schedule_changed.connect(self._schedule_changed)
         self.workspace_page.task_manager.all_finished.connect(self._scheduled_finished)

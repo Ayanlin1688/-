@@ -297,6 +297,8 @@ class ModelWorkflowTests(unittest.TestCase):
             root = Path(directory)
             (root / '1.txt').write_text('test', encoding='utf-8'); (root / '1.png').write_bytes(b'good-image')
             config = copy.deepcopy(DEFAULT_CONFIG)
+            config['_submission_ledger_path'] = str(root / 'submissions.sqlite3')
+            config['prompt_detection']['enabled'] = False
             config['paths'] = dict(prompts=directory, images=directory, output=str(root / 'output'))
             config['api'].update(base_url=server.base, upload_url=server.base + '/upload', api_key='test')
             config['workspace'].update(model='MiniMax-H3', resolution='1080p', aspect_ratio='16:9', poll_interval=.01)
@@ -311,6 +313,8 @@ class ModelWorkflowTests(unittest.TestCase):
             root = Path(directory)
             (root / '1.txt').write_text('text', encoding='utf-8'); (root / '1.png').write_bytes(b'good-image')
             config = copy.deepcopy(DEFAULT_CONFIG)
+            config['_submission_ledger_path'] = str(root / 'submissions.sqlite3')
+            config['prompt_detection']['enabled'] = False
             config['paths'] = dict(prompts=directory, images=directory, output=str(root / 'output'))
             config['api'].update(base_url=server.base, upload_url=server.base + '/upload', api_key='test')
             config['workspace'].update(resolution='720p', poll_interval=.01)

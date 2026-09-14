@@ -97,6 +97,7 @@ class InteractionTests(unittest.TestCase):
 
     def test_animation_reversal_and_logs_filter_export(self):
         workspace = self.window.workspace_page
+        workspace.open_controls(); QTest.qWait(60)
         params = workspace.params_card
         params.toggle_advanced()
         QTest.qWait(60)
@@ -104,6 +105,7 @@ class InteractionTests(unittest.TestCase):
         QTest.qWait(250)
         self.assertTrue(params.advanced.isVisible())
         self.assertGreaterEqual(params.seed.height(), 24)
+        workspace.controls_dialog.close()
         logs = workspace.log_drawer
         logs.toggle()
         QTest.qWait(230)
@@ -114,7 +116,7 @@ class InteractionTests(unittest.TestCase):
         logs.clear()
         workspace.start_button.click()
         logs.append_log("<bad> & literal", "error")
-        logs.filter_box.setCurrentText("错误")
+        logs.filter_box.setCurrentText("ERROR")
         self.assertIn("<bad> & literal", logs.browser.toPlainText())
         self.assertNotIn("开始生成", logs.browser.toPlainText())
         out = Path(self.temp.name) / "execution.log"
@@ -186,19 +188,16 @@ class InteractionTests(unittest.TestCase):
         finally:
             dialog.close(); dialog.deleteLater()
 
-    def test_side_by_side_layout_empty_recent_and_error_state(self):
+    def test_workspace_cards_and_parameter_dialog_preserve_error_state(self):
         workspace = self.window.workspace_page
         for width in (1400, 1100):
             self.window.resize(width, 900)
             QTest.qWait(50)
-            source = workspace.data_source.geometry()
-            params = workspace.params_card.geometry()
-            current = workspace.current_task.geometry()
-            self.assertEqual(source.y(), params.y())
-            self.assertLess(source.right(), params.x())
-            self.assertLessEqual(abs(source.width() - params.width()), 1)
-            self.assertGreater(current.y(), max(source.bottom(), params.bottom()))
-            self.assertEqual(workspace.center_scroll.horizontalScrollBar().maximum(), 0)
+            cards = workspace.summary.cards
+            self.assertLessEqual(max(c.width() for c in cards)-min(c.width() for c in cards), 1)
+            self.assertTrue(all(c.geometry().right() < cards[i+1].x() for i, c in enumerate(cards[:-1])))
+        workspace.open_controls(); QTest.qWait(60)
+        workspace.center_scroll.ensureWidgetVisible(workspace.recent_panel)
         self.assertTrue(workspace.recent_panel.empty_state.isVisible())
         self.assertFalse(workspace.recent_panel.list.isVisible())
         tasks = [dict(prompt_name='上传失败', status='failed', model='video-v3', images=[], task_id=''),

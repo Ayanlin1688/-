@@ -81,6 +81,8 @@ class ReferenceDebugTests(unittest.TestCase):
         self.prompt = self.root / '玫瑰毯子1.txt'
         self.prompt.write_text('<Picture 1 > <Picture2> @Image3 <Picture 5>', encoding='utf-8')
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config['_submission_ledger_path'] = str(self.root / 'submissions.sqlite3')
+        self.config['prompt_detection']['enabled'] = False  # Exercise H3 image diagnostics, not format detection.
         self.config['paths'] = dict(prompts=str(self.root), images=str(self.root), output=str(self.root / 'out'))
         self.config['api'].update(base_url=self.server.base, api_key='secret-video-key', upload_api_key='secret-upload-key', upload_url=self.server.base + '/upload')
         self.config['workspace'].update(model='MiniMax-H3', resolution='1080p', duration=8, poll_interval=.01)
@@ -212,7 +214,7 @@ class ReferenceDebugTests(unittest.TestCase):
             self.assertNotIn('hidden-detail', drawer.browser.toPlainText())
             window.settings_page.debug_mode.switchButton.setChecked(True)
             drawer.append_log('visible-detail', 'debug')
-            drawer.filter_box.setCurrentText('调试')
+            drawer.filter_box.setCurrentText('DEBUG')
             self.assertIn('visible-detail', drawer.browser.toPlainText())
             task = dict(prompt_name='example', model='MiniMax-H3', status='processing', images=self.paths, task_id='test-id', submitted_image_count=3)
             card = window.workspace_page.current_task; card.update_task(0, task)
