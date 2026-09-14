@@ -15,7 +15,7 @@ from .matcher import StoryboardMatcher
 from .log_redaction import redact_text
 from .model_pool import ModelPool
 from .task_state import (ACTIVE, TERMINAL, STATUS_TEXT, TaskControl, stamp, resolve_output_directory,
-                         parameters_for_model, task_signature, prompt_content, prompt_sha256)
+                         parameters_for_model, task_signature, prompt_content, prompt_sha256, submission_images)
 from .task_execution import TaskExecution
 from .prompt_detector import SOURCE_TEXT, annotate_tasks
 from .submission_ledger import SubmissionLedger, account_scope, ledger_path
@@ -71,7 +71,7 @@ class TaskWorker(QThread):
     def _parameters(self, task, model):
         return parameters_for_model(
             model, self.config['workspace'], self.pool.enabled or self._uses_task_model(task),
-            len(task.get('images', [])), self.config.get('_model_catalog'))
+            len(submission_images(task, model, self.config.get('_model_catalog'))), self.config.get('_model_catalog'))
 
     def redact(self, message):
         api = self.config['api']

@@ -15,34 +15,54 @@ def natural_path_key(path):
     return tokens, str(path).casefold(), str(path)
 
 
-def prefix_matches(stem, prefix):
-    if not stem.startswith(prefix):
+def _prefix_with_number_boundary(longer, shorter):
+    """Return whether *shorter* is a safe prefix of *longer*.
+
+    Numeric boundaries matter for series names: ``1`` may match ``1(2)`` but
+    must never absorb ``10``.  The check is kept symmetric by
+    :func:`prefix_matches`, since either the prompt or image filename can be
+    the shorter stem.
+    """
+    if not longer.startswith(shorter):
         return False
-    # A prompt ending in series 1 must never absorb series 10.
-    return not (prefix[-1:].isdecimal() and stem[len(prefix):len(prefix)+1].isdecimal())
+    return not (shorter[-1:].isdecimal() and
+                longer[len(shorter):len(shorter) + 1].isdecimal())
+
+
+def prefix_matches(stem, prefix):
+    """Match filename prefixes in either direction with numeric boundaries."""
+    return (_prefix_with_number_boundary(stem, prefix) or
+            _prefix_with_number_boundary(prefix, stem))
 
 
 def prompt_number(name, fallback):
-    match = re.search(r'(\d+)$', name) or re.match(r'(\d+)', name)
+    match = re.search(r'(\d+)$', name) or re.search(r'(\d+)', name)
     return int(match.group(1)) if match else fallback
 
 
 def image_series_number(stem):
-    # Numbered image series use the leading group, not the view number in (N).
+    # Numbered image series use the first numeric group, not a later view
+    # number in ``(N)``.  The first group also supports names such as
+    # ``图片2.jpg`` and ``玫瑰毯子1(3).jpg``.
     match = re.match(r'(\d+)', stem)
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    match = re.search(r'\d+', stem)
+    return int(match.group(0)) if match else None
 
 
 class StoryboardMatcher:
-    def __init__(self, recursive=True, overrides=None):
+    def __init__(self, recursive=True, overrides=None, unmatched_policy='跳过并警告'):
         self.recursive = recursive
         self.overrides = overrides or {}
         self.warnings = []
         self.products = []
+        self.unmatched_policy = unmatched_policy
 
     @classmethod
     def from_config(cls, config):
-        return cls(config.get('scan_settings', {}).get('recursive', True), config.get('match_overrides', {}))
+        return cls(config.get('scan_settings', {}).get('recursive', True), config.get('match_overrides', {}),
+                   config.get('task_strategy', {}).get('unmatched_prompt', '跳过并警告'))
 
     def scan_directories(self, prompt_dir, image_dir):
         def scan(directory, extensions):
@@ -80,6 +100,11 @@ class StoryboardMatcher:
                 normalized = normalized_name(name)
                 bound = [p for p in images if stems[p] == normalized]
                 method = '完全匹配'
+                if bound:
+                    # A base image and its numbered views belong to the same
+                    # exact series (01.jpg, 01(1).jpg, 01(2).png).
+                    bound = [p for p in images if stems[p] == normalized or
+                             re.fullmatch(re.escape(normalized) + r'\(\d+\)', stems[p])]
                 if not bound:
                     bound = [p for p in images if prefix_matches(stems[p], normalized)]
                     method = '前缀匹配'
@@ -144,12 +169,15 @@ class StoryboardMatcher:
         used_subdirs = set()
         for group_index, (product, _, group_image_root, prompts, direct_images) in enumerate(groups, 1):
             image_issue = ''
+            missing_directory = False
             if product and (group_image_root is None or not group_image_root.is_dir()):
                 image_issue = f'产品“{product}”缺少同名图片目录'
+                missing_directory = True
             elif product and not self._same_direct_child(group_image_root, image_root, product):
                 image_issue = f'产品“{product}”的同名图片目录是越界链接'
             if image_issue:
-                self.warnings.append(image_issue + '，已跳过该产品')
+                as_text = missing_directory and self.unmatched_policy == '仍提交文生视频'
+                self.warnings.append(image_issue + ('，按设置提交文生视频' if as_text else '，已跳过该产品'))
                 images = []
             elif group_image_root is None:
                 images = []
@@ -174,6 +202,8 @@ class StoryboardMatcher:
                 skip_reason = image_issue
                 if skip_reason:
                     task.update(images=[], matched=False, match_method='产品图片目录缺失')
+                    if missing_directory and self.unmatched_policy == '仍提交文生视频':
+                        skip_reason = ''
                 task.update(
                     product=product,
                     product_index=group_index,

@@ -55,7 +55,7 @@ class DataSourceCard(QWidget):
         layout.addLayout(status_row)
 
     def _choose(self, key: str, field: LineEdit) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "选择目录")
+        directory = QFileDialog.getExistingDirectory(self, "选择目录", self.config_manager.config['paths'].get(key, ''))
         if directory:
             directory = str(Path(directory).resolve())
             field.setText(directory)

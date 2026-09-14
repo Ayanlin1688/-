@@ -172,6 +172,21 @@ class PoolExecutionTests(unittest.TestCase):
             self.assertEqual({a['task_id'] for a in task['attempts']}, {task['task_id']})
             self.assertEqual({a['model'] for a in task['attempts']}, {'video-v2'})
 
+    def test_failover_restores_all_bound_images_for_model_with_larger_limit(self):
+        images = self.root / 'images'; images.mkdir()
+        for index in range(1, 11):
+            (images / f'1({index}).png').write_bytes(f'good-image-{index}'.encode())
+        self.config['paths']['images'] = str(images)
+        self.config['model_pool']['models'] = [dict(name=name, enabled=True) for name in ('MiniMax-H3', 'video-v3')]
+        with PoolServer() as server:
+            server.fail_models = {'MiniMax-H3'}
+            task = self.run_tasks(server)[0]
+            self.assertEqual(task['status'], 'completed')
+            payloads = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            self.assertEqual([len(p['images']) for p in payloads], [9, 10])
+            self.assertEqual(task['submitted_image_count'], 10)
+            self.assertEqual(len(task['images']), 10)
+
     def test_failover_off_retries_same_model_and_retry_off_stops_immediately(self):
         self.config['model_pool']['auto_failover'] = False
         self.config['task_strategy']['max_retries'] = 2

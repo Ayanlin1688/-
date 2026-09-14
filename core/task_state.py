@@ -72,13 +72,24 @@ def prompt_sha256(task):
     return hashlib.sha256(prompt_content(task).encode('utf-8')).hexdigest()
 
 
+def submission_images(task, model, catalog=None):
+    """Keep the user's binding order and apply the actual model's image cap."""
+    images = list(task.get('images') or [])
+    try:
+        limit = model_options(model, catalog).get('max_images')
+    except ValueError:
+        # Unknown models are rejected by submission validation as before.
+        return images
+    return images[:limit] if type(limit) is int and limit >= 0 else images
+
+
 def task_signature(task, model, params, base_url, catalog=None, *, legacy=False):
     inputs = [task['prompt_path'], *task['images']]
     if legacy:
         stats = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) if Path(p).is_file() else (p, None, None) for p in inputs]
     else:
         images = []
-        for value in task['images']:
+        for value in submission_images(task, model, catalog):
             path = Path(value)
             if path.is_file():
                 with path.open('rb') as stream:

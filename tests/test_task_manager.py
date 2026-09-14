@@ -123,7 +123,7 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(self.server.calls, [])
         self.manager.resume_tasks()
         wait_until(lambda: not self.manager.is_running)
-        self.assertEqual(self.manager.tasks[0]['status'], 'completed')
+        self.assertEqual(self.manager.tasks[0]['status'], 'completed', self.manager.tasks[0])
 
     def test_unmatched_skip_submits_nothing(self):
         self.config['paths']['images'] = ''
@@ -131,6 +131,38 @@ class TaskTests(unittest.TestCase):
         wait_until(lambda: not self.manager.is_running)
         self.assertEqual(self.server.calls, [])
         self.assertEqual([t['status'] for t in self.manager.tasks], ['skipped'] * 3)
+
+    def test_h3_truncates_reference_images_to_nine_and_logs_warning(self):
+        prompt_dir = Path(self.config['paths']['prompts'])
+        image_dir = Path(self.config['paths']['images'])
+        for path in prompt_dir.glob('*.txt'):
+            path.unlink()
+        for path in image_dir.glob('*'):
+            path.unlink()
+        prompt = prompt_dir / '玫瑰毯子1.txt'
+        prompt.write_text('玫瑰毯子商品展示', encoding='utf-8')
+        for index in range(1, 11):
+            (image_dir / f'1({index}).png').write_bytes(b'good-image')
+        self.config['prompt_detection']['enabled'] = False
+        self.config['workspace']['model'] = 'MiniMax-H3'
+        self.config['workspace']['resolution'] = '768p'
+        logs = []
+        self.manager.log_message.connect(lambda message, level: logs.append((message, level)))
+
+        self.manager.start_tasks(self.config)
+        wait_until(lambda: not self.manager.is_running)
+
+        self.assertEqual(self.manager.tasks[0]['status'], 'completed', repr(self.manager.tasks[0]))
+        self.assertEqual(self.manager.tasks[0]['submitted_image_count'], 9)
+        self.assertEqual(len([p for p, _, _ in self.server.calls if p == '/upload']), 9)
+        self.assertTrue(any('最多支持9张，已自动截取前9张' in message for message, _ in logs))
+        self.assertEqual(len(self.manager.tasks[0]['images']), 10)
+        count = len(self.server.calls)
+        self.manager = TaskManager()
+        self.manager.start_tasks(self.config)
+        wait_until(lambda: not self.manager.is_running)
+        self.assertEqual(self.manager.tasks[0]['status'], 'duplicate')
+        self.assertEqual(len(self.server.calls), count)
 
     def test_api_failure_continues_and_poll_timeout_preserves_ids(self):
         self.server.reject = True

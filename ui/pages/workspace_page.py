@@ -361,7 +361,8 @@ class WorkspacePage(QWidget):
             self._tasks_updated(matched)
             for warning in warnings:
                 self.append_log(warning, 'warning')
-            self.append_log(f'扫描匹配完成：{len(matched)}个提示词，{sum(t["matched"] for t in matched)}个已匹配', 'info')
+            count = sum(t['matched'] for t in matched)
+            self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
         def failed(message):
             if version == self._scan_version and not self.closing.is_set():
                 self.data_source.set_matches([], [])

@@ -13,7 +13,7 @@ from .model_parameters import GROK, validate_task_parameters, model_prompt
 from .prompt_processor import process_prompt, reference_warnings
 from .prompt_converter import convert_for_model, model_format
 from .reference_diagnostics import ReferenceDiagnostics, describe_image
-from .task_state import stamp, parameters_for_model, task_signature, resolve_output_directory
+from .task_state import stamp, parameters_for_model, task_signature, resolve_output_directory, submission_images
 from .video_downloader import VideoDownloader, build_filename
 
 
@@ -38,6 +38,7 @@ class TaskExecution:
         self.phase = 'validation'
         self.started = time.monotonic()
         self.urls = None
+        self.uploaded_paths = None
         self.intent_sent = bool(task.get('task_id'))
 
     def publish(self, record=False, **values):
@@ -206,12 +207,32 @@ class TaskExecution:
     def _attempt(self, original, client, uploader, downloader, diagnostics):
         task = self.task
         prefix = f'任务{self.index+1}/{len(self.owner.tasks)}'
+        # Keep a complete, stable per-task audit line immediately before any
+        # validation/upload/submission work.  This is also emitted for retry
+        # and recovery attempts so the log can be read without the task table.
+        prompt_name = Path(task.get('prompt_path', '')).name or task.get('prompt_name', '')
+        product = task.get('product') or '未分组'
+        image_paths = submission_images(task, self.model, self.config.get('_model_catalog'))
+        if not task.get('task_id') and len(image_paths) < len(task['images']):
+            limit = len(image_paths)
+            self.log(f'提示词{prompt_name}绑定了{len(task["images"])}张图，{self.model}最多支持{limit}张，已自动截取前{limit}张', 'warning')
+            for warning in reference_warnings(original, limit):
+                self.log(warning, 'warning')
+        if self.uploaded_paths != image_paths:
+            self.urls = None
+        image_names = ', '.join(Path(path).name for path in image_paths) or '无'
+        self.log(f'{prefix}：提示词={prompt_name}，产品={product}，模型={self.model}')
+        self.log(f'{prefix}：绑定参考图{len(image_paths)}张：{image_names}')
         if not task.get('task_id'):
             self.phase = 'validation'
             catalog = self.config.get('_model_catalog')
             task_specific = task.get('model_source') in {'auto', 'manual', 'fallback'}
             params = parameters_for_model(self.model, self.config['workspace'], self.pool.enabled or task_specific,
-                                          len(task['images']), catalog)
+                                          len(image_paths), catalog)
+            ratio = params.get('aspect_ratio', params.get('ratio', ''))
+            resolution = params.get('resolution', '')
+            duration = params.get('duration', params.get('seconds', ''))
+            self.log(f'{prefix}：参数=比例{ratio}，分辨率{resolution}，时长{duration}秒')
             conversion = self.config.get('prompt_conversion', {})
             result = convert_for_model(original, self.model, duration=params.get('duration'),
                                        enabled=conversion.get('enabled', True), catalog=catalog)
@@ -226,7 +247,7 @@ class TaskExecution:
             prompt = process_prompt(result.text)
             task.update(converted_prompt=result.text, source_format=result.source_format,
                         target_format=result.target_format, prompt_converted=result.converted)
-            fields = validate_task_parameters(self.model, prompt, params, len(task['images']), catalog)
+            fields = validate_task_parameters(self.model, prompt, params, len(image_paths), catalog)
             changed = {key: value for key, value in params.items() if self.config['workspace'].get(key) != value}
             if changed:
                 self.log(f'{self.model} 按支持范围调整参数：' + json.dumps(changed, ensure_ascii=False), 'warning')
@@ -268,19 +289,20 @@ class TaskExecution:
                     raise DuplicateSubmission(message)
                 task['ledger_id'] = saved['ledger_id']
             self.phase = 'upload'
-            originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(task['images'])] if self.owner.debug_mode else []
+            originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(image_paths)] if self.owner.debug_mode else []
+            self.log(f'{prefix}：上传图片{len(image_paths)}张...')
             if family_for(self.model, catalog) == GROK:
-                urls = task['images']
+                urls = image_paths
                 self.log(f'{prefix}：Grok 使用本地参考文件 {len(urls)} 张')
             else:
                 if self.urls is None:
-                    self.log(f"{prefix}：上传图片{len(task['images'])}张...")
-                    uploaded = uploader.upload_images(task['images'], self.control.check)
+                    uploaded = uploader.upload_images(image_paths, self.control.check)
                     if any(url is None for url in uploaded):
                         raise RuntimeError('图片上传失败，本次未提交视频任务')
                     self.urls = uploaded
+                    self.uploaded_paths = list(image_paths)
                     if self.owner.debug_mode:
-                        for i, (path, url) in enumerate(zip(task['images'], self.urls), 1):
+                        for i, (path, url) in enumerate(zip(image_paths, self.urls), 1):
                             if not self.owner.debug_mode:
                                 break
                             original = originals[i-1] if i <= len(originals) else diagnostics.inspect_local(path, i)

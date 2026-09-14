@@ -226,7 +226,9 @@ class SettingsPage(QWidget):
         self.fail_threshold = self._spin(group, "连续失败阈值", ("task_strategy", "failure_skip_threshold"), 1, 100)
         self.max_retry.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
         self.fail_threshold.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
-        self.unmatched = self._combo(group, "未匹配提示词处理", ("task_strategy", "unmatched_prompt"), ["跳过并警告", "仍提交文生视频", "暂停任务"])
+        self.unmatched = self._combo(group, "未匹配参考图时", ("task_strategy", "unmatched_prompt"),
+                                     ["跳过并警告", "仍提交文生视频", "暂停任务"],
+                                     ["跳过该任务", "仍提交为文生视频", "暂停任务"])
         self.naming = self._line(group, "下载命名规则", ("task_strategy", "naming_rule"))
         self.open_folder = self._switch(group, "下载完成自动打开", ("task_strategy", "open_folder_after_download"), FIF.FOLDER)
 

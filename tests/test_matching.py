@@ -52,7 +52,37 @@ class MatchingTests(unittest.TestCase):
             task = matcher.match_files([root / '产品1.txt'], images)[0]
             self.assertEqual([Path(p).name for p in task['images']], ['产品1(2).jpg', '产品1(10).jpg'])
             task = matcher.match_files([root / '产品1.txt'], images + [root / '产品1.jpg', root / '产品1.png'])[0]
-            self.assertEqual([Path(p).name for p in task['images']], ['产品1.jpg', '产品1.png'])
+        self.assertEqual([Path(p).name for p in task['images']],
+                         ['产品1(2).jpg', '产品1(10).jpg', '产品1.jpg', '产品1.png'])
+
+    def test_prefix_matches_when_image_stem_is_shorter_than_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = StoryboardMatcher().match_files(
+                [root / '产品1-夜景.txt'],
+                [root / '产品1.jpg', root / '产品10.jpg'],
+            )[0]
+            self.assertEqual([Path(path).name for path in task['images']], ['产品1.jpg'])
+
+    def test_number_matching_accepts_numeric_group_inside_image_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tasks = StoryboardMatcher().match_files(
+                [root / '玫瑰毯子2.txt'],
+                [root / '图片2.jpg', root / '图片20.jpg', root / '01（2）.jpg'],
+            )
+            self.assertEqual([Path(path).name for path in tasks[0]['images']], ['图片2.jpg'])
+
+    def test_exact_numbered_base_also_collects_its_numbered_views(self):
+        root = Path('fixture')
+        task = StoryboardMatcher().match_files([root / '01.txt'],
+            [root / name for name in ['01.jpg', '01(2).png', '01(1).jpg', '010.jpg', '图片1.jpg']])[0]
+        self.assertEqual(set(Path(p).name for p in task['images']), {'01.jpg', '01(1).jpg', '01(2).png'})
+
+    def test_prompt_number_can_be_inside_filename_without_using_row_position(self):
+        root = Path('fixture')
+        task = StoryboardMatcher().match_files([root / '玫瑰毯子02场景.txt'], [root / '图片2.jpg'])[0]
+        self.assertEqual([Path(p).name for p in task['images']], ['图片2.jpg'])
 
     def test_manual_order_and_explicit_empty_override_take_priority(self):
         with tempfile.TemporaryDirectory() as directory:
