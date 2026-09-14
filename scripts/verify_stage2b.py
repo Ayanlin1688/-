@@ -60,7 +60,7 @@ def verify():
                 config.config['model_pool']['models'] = [dict(name='video-v3', enabled=True, status='冷却中', cooldown_until=time.time()+2)]
             config.save_config()
             window = MainWindow(config, network_time=False)
-            window.setWindowTitle('StoryboardVideoStudio · 本机HTTP验收（无收费请求）')
+            window.setWindowTitle('Yanlin Smart-Creation Matrix · 本机HTTP验收（无收费请求）')
             window.resize(1600, 1100); window.show()
             page = window.workspace_page; manager = page.task_manager
             manager.log_message.connect(lambda text, level, case=name: logs.append((case, level, text)))

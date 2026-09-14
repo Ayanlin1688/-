@@ -49,7 +49,7 @@ def main():
         config.config['diagnostics']['debug_mode'] = True
         config.save_config()
         window = MainWindow(config, network_time=False)
-        window.setWindowTitle('StoryboardVideoStudio · 本地 HTTP 验证（非付费生成）')
+        window.setWindowTitle('Yanlin Smart-Creation Matrix · 本地 HTTP 验证（非付费生成）')
         window.show()
         page = window.workspace_page
         page.task_manager.log_message.connect(lambda text, level: logs.append((text, level)))

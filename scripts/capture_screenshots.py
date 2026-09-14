@@ -52,7 +52,7 @@ def main() -> None:
     window = MainWindow(config, network_time=False)
     window.schedule_timer.stop()  # A fixture's enabled schedule must never submit work.
     window.settings_page.pool_timer.stop()  # Keep fixture countdown stable during capture.
-    window.setWindowTitle('StoryboardVideoStudio · 本地截图示例（非真实生成结果）')
+    window.setWindowTitle('Yanlin Smart-Creation Matrix · 本地截图示例（非真实生成结果）')
     window.resize(1600, 1200)
     window.show()
     QApplication.processEvents()

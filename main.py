@@ -1,4 +1,4 @@
-"""StoryboardVideoStudio entry point."""
+"""Yanlin Smart-Creation Matrix entry point."""
 
 from __future__ import annotations
 

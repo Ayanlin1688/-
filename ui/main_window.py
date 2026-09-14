@@ -34,7 +34,7 @@ class MainWindow(FluentWindow):
         self.model_catalog = ModelCatalogController(
             self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
             auto_sync=network_time if model_sync is None else model_sync)
-        self.setWindowTitle("StoryboardVideoStudio")
+        self.setWindowTitle("Yanlin Smart-Creation Matrix")
         self.resize(1400, 900)
         self.setMinimumSize(1100, 750)
         self._setup_pages()
@@ -102,7 +102,7 @@ class MainWindow(FluentWindow):
         )
 
     def show_about(self) -> None:
-        dialog = Dialog('关于 StoryboardVideoStudio', '版本 v3.1\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
+        dialog = Dialog('关于 Yanlin Smart-Creation Matrix', '版本 v3.1\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
         dialog.exec_()
 
     def _setup_schedule(self, network_time):

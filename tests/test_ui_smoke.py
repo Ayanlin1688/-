@@ -31,7 +31,7 @@ class UiSmokeTests(unittest.TestCase):
 
     def test_window_contains_navigation_pages_and_workspace_controls(self):
         window = self.window
-        self.assertEqual(window.windowTitle(), "StoryboardVideoStudio")
+        self.assertEqual(window.windowTitle(), "Yanlin Smart-Creation Matrix")
         self.assertTrue(hasattr(window, "workspace_page"))
         self.assertTrue(hasattr(window, "history_page"))
         self.assertTrue(hasattr(window, "settings_page"))

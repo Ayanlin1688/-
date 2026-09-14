@@ -1,4 +1,4 @@
-# Project workflow
+# Yanlin Smart-Creation Matrix project workflow
 
 The user authorizes incremental work on `main` in this project and automatic pushes to the private repository `https://github.com/admin11044/StoryboardVideoStudio.git` after each completed, verified logical code change. Do not ask again for permission to perform those commits/pushes.
 

@@ -252,7 +252,7 @@ class SettingsPage(QWidget):
         group = self._group("外观")
         self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深色", "浅色", "跟随系统"])
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
-        self.root.addWidget(CaptionLabel('StoryboardVideoStudio v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
+        self.root.addWidget(CaptionLabel('Yanlin Smart-Creation Matrix v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
 
     def _build_schedule(self):
         group = self._group('定时执行')
@@ -287,7 +287,7 @@ class SettingsPage(QWidget):
         self.sync_button = PushButton(FIF.SYNC, '同步到GitHub')
         self.sync_button.setToolTip('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传')
         self.sync_button.clicked.connect(self.sync_github)
-        group.addSettingCard(CustomSettingCard('私人仓库：admin11044/StoryboardVideoStudio', self.sync_button, FIF.SYNC))
+        group.addSettingCard(CustomSettingCard('GitHub 私人仓库同步', self.sync_button, FIF.SYNC))
 
     def sync_github(self):
         self.sync_button.setEnabled(False)

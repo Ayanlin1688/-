@@ -92,7 +92,7 @@ class WorkspacePage(QWidget):
         self.toolbar = QWidget(); self.toolbar.setFixedHeight(48)
         header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
         logo = IconWidget(FIF.VIDEO); logo.setFixedSize(23, 23); header.addWidget(logo)
-        header.addWidget(label('StoryboardVideoStudio', 16, '#f5f5f5', True)); header.addStretch(1)
+        header.addWidget(label('Yanlin Smart-Creation Matrix', 16, '#f5f5f5', True)); header.addStretch(1)
         self.navigation_tabs = {}
         for key, text in [('workspace', '工作台'), ('history', '任务历史'), ('settings', '设置')]:
             button = PushButton(text); button.setProperty('studioStyled', True); button.setFixedSize(76, 44)

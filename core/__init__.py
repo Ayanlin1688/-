@@ -1,1 +1,1 @@
-"""Core services for StoryboardVideoStudio."""
+"""Core services for Yanlin Smart-Creation Matrix."""

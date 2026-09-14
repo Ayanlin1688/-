@@ -1,6 +1,6 @@
-# StoryboardVideoStudio · 阶段5
+# Yanlin Smart-Creation Matrix · 阶段5
 
-Windows 桌面批量视频生成工具，使用 Python 3.12、PyQt5 和 QFluentWidgets。支持持久化防重复提交、H3/V2提示词转换、模型识别、动态模型目录、多参考图自动匹配、模型池与并发、产品批处理、定时执行和私人 GitHub 仓库同步。
+Yanlin Smart-Creation Matrix 是一款 Windows 桌面批量视频生成工具，使用 Python 3.12、PyQt5 和 QFluentWidgets。支持持久化防重复提交、H3/V2提示词转换、模型识别、动态模型目录、多参考图自动匹配、模型池与并发、产品批处理、定时执行和私人 GitHub 仓库同步。
 
 ## 安装与启动
 

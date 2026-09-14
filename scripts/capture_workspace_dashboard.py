@@ -69,7 +69,7 @@ def main():
                 illustrate_reference(path, index)
         window = MainWindow(config, network_time=False)
         window.schedule_timer.stop(); window.settings_page.pool_timer.stop()
-        window.setWindowTitle('StoryboardVideoStudio · 本地界面验收示例（非真实生成结果）')
+        window.setWindowTitle('Yanlin Smart-Creation Matrix · 本地界面验收示例（非真实生成结果）')
         window.showMaximized(); QTest.qWait(300)
         page = window.workspace_page
         wait_until(lambda: not page.jobs.busy)
