@@ -116,9 +116,8 @@ def main() -> None:
     window.switchTo(window.settings_page)
     window.resize(1600, 1160)
     wait_for_animation(350)
-    scroll = window.settings_page.findChild(QScrollArea)
-    if scroll is not None:
-        scroll.verticalScrollBar().setValue(window.settings_page.auto_detect.mapTo(scroll.widget(), QPoint()).y() - 50)
+    # 设置页为多页结构：用滚动代理切到目标控件所在页并滚到它附近。
+    window.settings_page.scroll.ensureWidgetVisible(window.settings_page.auto_detect, 0, 60)
     wait_for_animation(350)
     capture(window, "screenshot_5_settings.png")
 
