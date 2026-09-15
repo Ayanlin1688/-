@@ -264,6 +264,10 @@ class MainWindow(FluentWindow):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
             QTimer.singleShot(0, self._sync_window_frame)
+            try:
+                self.titleBar.maxBtn.setMaxState(self.isMaximized())
+            except Exception:
+                pass
 
     def _apply_titlebar_tweak(self):
         """标题从导航徽标右侧开始（目标绝对 x=88），空白图标隐藏，标题 13px/600。"""
@@ -316,22 +320,54 @@ class MainWindow(FluentWindow):
             pass
 
     def _studio_toggle_maximized(self):
-        """最大化/还原切换：带一次状态校验重试，避免个别环境点击被系统动画吞掉。"""
+        """最大化/还原切换：带状态校验重试、代数防竞态、Win32 兜底与鼠标释放卫生。"""
         target_max = not self.isMaximized()
+        self._max_toggle_generation = getattr(self, '_max_toggle_generation', 0) + 1
+        generation = self._max_toggle_generation
         self._apply_max_state(target_max)
-        QTimer.singleShot(160, lambda target=target_max: self._verify_max_state(target))
+        self._release_titlebar_mouse()
+        QTimer.singleShot(160, lambda: self._verify_max_state(target_max, generation))
 
     def _apply_max_state(self, maximized: bool):
         if maximized:
             self.showMaximized()
         else:
             self.showNormal()
+        try:
+            self.titleBar.maxBtn.setMaxState(self.isMaximized())
+        except Exception:
+            pass
         self.update()
 
-    def _verify_max_state(self, target_max: bool):
+    def _verify_max_state(self, target_max: bool, generation=None):
         try:
+            if generation is not None and generation != getattr(self, '_max_toggle_generation', 0):
+                # 后续又发生了新的切换，旧校验不得推翻新的意图（快速连点竞态）。
+                return
             if self.isMaximized() != target_max:
                 self._apply_max_state(target_max)
+                if self.isMaximized() != target_max:
+                    self._force_max_state_win32(target_max)
+        except Exception:
+            pass
+
+    def _release_titlebar_mouse(self):
+        """点击最大化后主动释放左键状态（对齐 qframelesswindow 原处理，防后续点击被吞）。"""
+        try:
+            if sys.platform == 'win32':
+                from qframelesswindow.utils.win32_utils import releaseMouseLeftButton
+                releaseMouseLeftButton(self.winId())
+        except Exception:
+            pass
+
+    def _force_max_state_win32(self, maximized: bool):
+        """Win32 兜底：绕过 Qt 状态直接用系统命令最大化/还原。"""
+        try:
+            if sys.platform != 'win32':
+                return
+            import ctypes
+            sw = 3 if maximized else 9  # SW_MAXIMIZE / SW_RESTORE
+            ctypes.windll.user32.ShowWindow(int(self.winId()), sw)
         except Exception:
             pass
 
