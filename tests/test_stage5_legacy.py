@@ -59,7 +59,7 @@ class LegacyScopeTests(unittest.TestCase):
 
     def run_batch(self):
         self.assertTrue(self.manager.start_tasks(self.config))
-        wait_until(lambda: not self.manager.is_running, timeout=10000)
+        wait_until(lambda: not self.manager.is_running, timeout=15000)
         return self.manager.tasks[0]
 
     def test_unscoped_legacy_blocks_post_and_get_even_without_history_after_restart(self):

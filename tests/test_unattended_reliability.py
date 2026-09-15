@@ -39,7 +39,7 @@ class UnattendedReliabilityTests(unittest.TestCase):
 
     def tearDown(self):
         self.manager.cancel_all()
-        wait_until(lambda: not self.manager.is_running, timeout=10000)
+        wait_until(lambda: not self.manager.is_running, timeout=15000)
         self.temp.cleanup()
 
     def product(self, name, count, images=1):

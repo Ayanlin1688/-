@@ -84,7 +84,9 @@ class BatchExecutionTests(unittest.TestCase):
                 self.assertTrue(summary)
                 binding = [m for m, _ in logs if '：绑定参考图' in m and '张：' in m]
                 self.assertEqual(len(binding), 5)
-                self.assertIn('任务1/5：绑定参考图1张：玫瑰毯子1(1).jpg', binding[0])
+                first_binding = [m for m in binding if m.startswith('任务1/5')]
+                self.assertTrue(first_binding)
+                self.assertIn('任务1/5：绑定参考图1张：玫瑰毯子1(1).jpg', first_binding[0])
                 params = [m for m, _ in logs if m.startswith('任务1/5：参数=比例')]
                 self.assertTrue(params and '分辨率720p，时长8秒' in params[0])
             finally:

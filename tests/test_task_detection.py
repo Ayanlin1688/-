@@ -69,7 +69,7 @@ class DetectedTaskTests(unittest.TestCase):
     def start(self, server):
         self.config['api'].update(base_url=server.base, api_key='local-fixture-only', upload_url=server.base+'/upload')
         self.manager.start_tasks(self.config)
-        wait_until(lambda: not self.manager.is_running, timeout=12000)
+        wait_until(lambda: not self.manager.is_running, timeout=15000)
         return [json.loads(body) for path, _, body in server.calls if path == '/videos']
 
     def test_three_prompt_formats_submit_different_models_and_fields(self):

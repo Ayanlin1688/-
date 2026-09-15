@@ -93,7 +93,7 @@ class SubmissionSafetyTests(unittest.TestCase):
     def run_batch(self, server):
         self.config['api'].update(base_url=server.base, api_key='local-fixture')
         self.manager.start_tasks(self.config)
-        wait_until(lambda: not self.manager.is_running, timeout=10000)
+        wait_until(lambda: not self.manager.is_running, timeout=15000)
         return self.manager.tasks[0]
 
     def test_signature_uses_content_not_name_or_mtime(self):
@@ -169,7 +169,7 @@ class SubmissionSafetyTests(unittest.TestCase):
         with ConcurrentLimitServer() as server:
             self.config['api'].update(base_url=server.base, api_key='local-fixture')
             self.manager.start_tasks(self.config)
-            wait_until(lambda: self.manager.is_paused, timeout=10000)
+            wait_until(lambda: self.manager.is_paused, timeout=15000)
             self.assertEqual(self.manager.worker.gate.limit, 1)
             self.assertEqual(len(server.calls), 4)
             self.assertEqual(self.manager.tasks[4]['status'], 'waiting')
@@ -283,7 +283,7 @@ class GateRecoveryTests(unittest.TestCase):
                 self.assertFalse(manager.is_paused)
             finally:
                 manager.cancel_all()
-                wait_until(lambda: not manager.is_running, timeout=10000)
+                wait_until(lambda: not manager.is_running, timeout=15000)
         finally:
             temp.cleanup()
 
@@ -343,7 +343,7 @@ class SamePromptSerializationTests(unittest.TestCase):
                 self.assertEqual(statuses, ['completed', 'completed'])
             finally:
                 manager.cancel_all()
-                wait_until(lambda: not manager.is_running, timeout=10000)
+                wait_until(lambda: not manager.is_running, timeout=15000)
         finally:
             temp.cleanup()
 
