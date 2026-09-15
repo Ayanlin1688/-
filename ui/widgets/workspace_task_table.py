@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QLis
 from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF)
 from qfluentwidgets.common.config import isDarkTheme
 from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
+from core.i18n import tr
 from core.prompt_detector import short_model_name
 from .task_queue_panel import TaskQueuePanel
 from .workspace_surface import WorkspaceCard, BreathingDot, ReferenceStrip, label, style_button, BLUE, GREEN, RED, YELLOW, MUTED
@@ -114,7 +115,7 @@ class ExpandedTaskRow(QWidget):
         ph=QWidget(); pl=QHBoxLayout(ph); pl.setContentsMargins(0,0,0,0); pl.setSpacing(8); self.progress=TaskProgress(); self.percentage=label('0%',11,MUTED,mono=True); self.percentage.setFixedWidth(35); pl.addWidget(self.progress,1); pl.addWidget(self.percentage)
         self.timing=label('—',12,MUTED,mono=True)
         self.status_label=label('',11); self.status_label.setFixedHeight(22); self.status_label.setAlignment(Qt.AlignCenter)
-        self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip('更多操作'); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
+        self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip(tr('更多操作')); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
         cells=(number_box,self.title,self.product,self.model_label,self.ratio,self.resolution,self.duration,self.images_button,ph,self.timing,self.status_label,self.more_button)
         for column,cell in enumerate(cells):
             if column in (10,11):
@@ -146,10 +147,10 @@ class ExpandedTaskRow(QWidget):
         self.task=dict(t); s=t.get('status','waiting'); col=state_color(s); self.dot.active=s in ACTIVE; self.dot.setTextColor(col,col)
         name=Path(t.get('prompt_path','')).name or (t.get('prompt_name','')+'.txt'); self.title.setText(name)
         self.title.setToolTip(str(t.get('prompt_path','') or name))
-        self.product.setText(t.get('product') or '未分组')
-        model=t.get('model') or t.get('requested_model') or self.defaults.get('model',''); src=' · 手动' if t.get('model_source')=='manual' else ' · 自动' if t.get('model_source')=='auto' else ''; short='V2' if model=='video-v2' else 'V3' if model=='video-v3' else short_model_name(model)
+        self.product.setText(tr(t.get('product') or '未分组'))
+        model=t.get('model') or t.get('requested_model') or self.defaults.get('model',''); src=(' · '+tr('手动')) if t.get('model_source')=='manual' else (' · '+tr('自动')) if t.get('model_source')=='auto' else ''; short='V2' if model=='video-v2' else 'V3' if model=='video-v3' else short_model_name(model)
         self.model_label.setText(f'[{short}]'+src); self.model_label.setToolTip(model+src); self.model_label.setStyleSheet(self._model_chip_style(model))
-        text=STATUS_TEXT.get(s,s)
+        text=tr(STATUS_TEXT.get(s,s))
         chip=QColor(col)
         metrics=QFontMetrics(self.status_label.font())
         self.status_label.setFixedWidth(min(112, metrics.horizontalAdvance(text)+20))
@@ -204,19 +205,19 @@ class WorkspaceTaskTable(TaskQueuePanel):
         QWidget.__init__(self,parent); self.defaults=defaults; self._tasks=[]; self.rows=[]; self._catalog={}; self._default_model=''; self.models_editable=True; self.busy=False; self._task_items={}; self._collapsed=set(); self._widths=[]
         root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0); self.surface=WorkspaceCard(); lay=QVBoxLayout(self.surface); lay.setContentsMargins(1,1,1,1); lay.setSpacing(0)
         tools=QHBoxLayout(); tools.setContentsMargins(16,10,16,10); tools.setSpacing(8)
-        tools.addWidget(label('任务队列',16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label('0 个任务'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label('产品 0/0'); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
-        self.filter_box=ComboBox(); self.filter_box.addItems(['全部','等待中','生成中','上传中','提交中','重试中','等待冷却','已完成','失败','已跳过','已取消']); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
-        self.reset_models_button=style_button(PushButton('重置模型识别')); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested); tools.addWidget(self.reset_models_button, 0, Qt.AlignVCenter)
-        self.params_button=style_button(PushButton(FIF.SETTING,'生成参数')); self.params_button.setFixedHeight(32); tools.addWidget(self.params_button, 0, Qt.AlignVCenter)
-        self.match_button=style_button(PushButton(FIF.SEARCH,'匹配详情')); self.match_button.setFixedHeight(32); tools.addWidget(self.match_button, 0, Qt.AlignVCenter)
-        self.cancel_button=style_button(PushButton('取消全部')); self.cancel_button.setFixedHeight(32); tools.addWidget(self.cancel_button, 0, Qt.AlignVCenter)
+        tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
+        self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('重试中'),tr('等待冷却'),tr('已完成'),tr('失败'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
+        self.reset_models_button=style_button(PushButton(tr('重置模型识别'))); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested); tools.addWidget(self.reset_models_button, 0, Qt.AlignVCenter)
+        self.params_button=style_button(PushButton(FIF.SETTING,tr('生成参数'))); self.params_button.setFixedHeight(32); tools.addWidget(self.params_button, 0, Qt.AlignVCenter)
+        self.match_button=style_button(PushButton(FIF.SEARCH,tr('匹配详情'))); self.match_button.setFixedHeight(32); tools.addWidget(self.match_button, 0, Qt.AlignVCenter)
+        self.cancel_button=style_button(PushButton(tr('取消全部'))); self.cancel_button.setFixedHeight(32); tools.addWidget(self.cancel_button, 0, Qt.AlignVCenter)
         lay.addLayout(tools)
         self._header_host=QWidget(); self._header_host.setFixedHeight(34); self._header_grid=QGridLayout(self._header_host); self._header_grid.setContentsMargins(16,0,16,0); self._header_grid.setHorizontalSpacing(CELL_SPACING)
         self._apply_header_mode_style()
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_header_mode_style)
         for column,txt in enumerate(HEADERS):
-            head=label(txt,12,'#9AA6B8')
+            head=label(tr(txt),12,'#9AA6B8')
             font=head.font(); font.setLetterSpacing(QFont.AbsoluteSpacing,0.6); font.setWeight(QFont.Medium); head.setFont(font)
             if column==11:
                 self._header_grid.addWidget(head,0,column,Qt.AlignVCenter|Qt.AlignHCenter)
@@ -239,10 +240,10 @@ class WorkspaceTaskTable(TaskQueuePanel):
         icon_row=QHBoxLayout(); icon_row.addStretch(1)
         self.empty_icon=IconWidget(FIF.FOLDER, self.empty_panel); self.empty_icon.setFixedSize(48,48); icon_row.addWidget(self.empty_icon)
         icon_row.addStretch(1); ep.addLayout(icon_row)
-        self.empty_label=label('暂无任务',15,'#C7CCD6',True); self.empty_label.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_label)
-        self.empty_hint=label('选择分镜提示词目录后会自动扫描并匹配参考图',12); self.empty_hint.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_hint)
+        self.empty_label=label(tr('暂无任务'),15,'#C7CCD6',True); self.empty_label.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_label)
+        self.empty_hint=label(tr('选择分镜提示词目录后会自动扫描并匹配参考图'),12); self.empty_hint.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_hint)
         button_row=QHBoxLayout(); button_row.addStretch(1)
-        self.empty_button=style_button(PushButton(FIF.FOLDER,'选择目录')); self.empty_button.setFixedHeight(32); self.empty_button.clicked.connect(lambda *_: self.select_prompts_requested.emit()); button_row.addWidget(self.empty_button)
+        self.empty_button=style_button(PushButton(FIF.FOLDER,tr('选择目录'))); self.empty_button.setFixedHeight(32); self.empty_button.clicked.connect(lambda *_: self.select_prompts_requested.emit()); button_row.addWidget(self.empty_button)
         button_row.addStretch(1); ep.addLayout(button_row)
         self.empty_panel.setVisible(False)
         lay.addWidget(self.empty_panel,1)
@@ -310,18 +311,18 @@ class WorkspaceTaskTable(TaskQueuePanel):
                 item=self._task_items.get(i)
                 if item is not None:
                     item.setData(Qt.UserRole+1, i)
-                    item.setData(Qt.UserRole, STATUS_TEXT.get(task.get('status','waiting'), task.get('status','waiting')))
-            self.count_label.setText(f'{len(incoming)} 个任务')
+                    item.setData(Qt.UserRole, tr(STATUS_TEXT.get(task.get('status','waiting'), task.get('status','waiting'))))
+            self.count_label.setText(f'{len(incoming)} {tr("个任务")}')
             self.list.setVisible(bool(incoming)); self.empty_label.setVisible(not incoming)
             self._filter(self.filter_box.currentText())
             return
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
-            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting'))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,52)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
-        self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} 个任务'); products={t.get('product') or '未分组' for t in tasks}; done=sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组')==p) for p in products); self.product_progress_label.setText(f'产品 {done}/{len(products)}'); self._filter(self.filter_box.currentText()); self._apply_column_widths()
+            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,52)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
+        self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); products={t.get('product') or '未分组' for t in tasks}; done=sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组')==p) for p in products); self.product_progress_label.setText(f"{tr('产品')} {done}/{len(products)}"); self._filter(self.filter_box.currentText()); self._apply_column_widths()
     def _filter(self,s):
         for i,t in enumerate(self._tasks):
-            hidden=(s!='全部' and STATUS_TEXT.get(t.get('status','waiting'),'等待中')!=s and not(s=='生成中' and t.get('status') in ACTIVE))
+            hidden=(s!=tr('全部') and tr(STATUS_TEXT.get(t.get('status','waiting'),'等待中'))!=s and not(s==tr('生成中') and t.get('status') in ACTIVE))
             hidden=hidden or (t.get('product') or '未分组') in self._collapsed
             self._task_items[i].setHidden(hidden)
     def toggle_group(self,product):
@@ -342,10 +343,10 @@ class WorkspaceTaskTable(TaskQueuePanel):
     def action_menu(self,i):
         m=RoundMenu(parent=self)
         for text,a in [('重试','retry'),('跳过','skip'),('查看日志','logs'),('打开文件夹','folder'),('任务详情 / 确认提交','details')]:
-            x=Action(text,m); x.triggered.connect(lambda checked=False,v=a:self.action_requested.emit(i,v)); m.addAction(x)
+            x=Action(tr(text),m); x.triggered.connect(lambda checked=False,v=a:self.action_requested.emit(i,v)); m.addAction(x)
         return m
     def model_menu_for(self,i):
-        m=RoundMenu('强制使用模型',self)
+        m=RoundMenu(tr('强制使用模型'),self)
         for model in self._catalog:
             x=Action(model,m); x.setData(model); x.triggered.connect(lambda checked=False,v=model:self.model_override_requested.emit(i,v)); m.addAction(x)
-        x=Action('恢复自动识别',m); x.triggered.connect(lambda:self.model_override_requested.emit(i,'')); m.addAction(x); return m
+        x=Action(tr('恢复自动识别'),m); x.triggered.connect(lambda:self.model_override_requested.emit(i,'')); m.addAction(x); return m

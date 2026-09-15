@@ -17,6 +17,10 @@ from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
 from . import materials
 from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
+from core.i18n import tr
+
+# 状态标签颜色豁免表：这些文案保留语义色，不参与 Caption 次级灰化（按当前语言匹配）。
+_STATUS_TEXTS = {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}
 
 def _rgba_str(color, alpha):
     """把 #rrggbb 或 QColor 转成 rgba(...) 字符串供样式表使用。"""
@@ -296,7 +300,7 @@ def style_controls(root):
             _register_mode_widget(widget, 'switch')
         if isinstance(widget, CaptionLabel):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
-            if not widget.text().startswith('●') and widget.text() not in {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}:
+            if not widget.text().startswith('●') and widget.text() not in {tr(text) for text in _STATUS_TEXTS}:
                 widget.setTextColor(SECONDARY, SECONDARY)
                 _register_mode_widget(widget, 'caption2')
         elif isinstance(widget, StrongBodyLabel):

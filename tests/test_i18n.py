@@ -65,6 +65,50 @@ class I18nTests(unittest.TestCase):
         for source, target in expected.items():
             self.assertEqual(i18n.tr(source), target, source)
 
+    def test_history_and_task_table_batch_entries(self):
+        i18n.set_language('English')
+        expected = {
+            '任务队列': 'Task queue',
+            '生成参数': 'Parameters',
+            '个任务': 'tasks',
+            '重置模型识别': 'Reset model detection',
+            '取消全部': 'Cancel all',
+            '暂无任务': 'No tasks',
+            '更多操作': 'More actions',
+            '重试': 'Retry',
+            '跳过': 'Skip',
+            '查看日志': 'View logs',
+            '打开文件夹': 'Open folder',
+            '任务详情 / 确认提交': 'Task details / Confirm',
+            '强制使用模型': 'Force model',
+            '恢复自动识别': 'Restore auto detection',
+            '未分组': 'Ungrouped',
+            '全部': 'All',
+            '全部状态': 'All statuses',
+            '序号': 'No.',
+            '任务名': 'Task name',
+            '模型': 'Model',
+            '状态': 'Status',
+            '提交时间': 'Submitted',
+            '完成时间': 'Finished',
+            '文件大小': 'Size',
+            '操作': 'Actions',
+            '打开输出文件夹': 'Open output folder',
+            '打开文件': 'Open file',
+            '等待中': 'Waiting',
+            '生成中': 'Generating',
+            '已完成': 'Completed',
+            '失败': 'Failed',
+            '提交待确认': 'Unconfirmed',
+            '比例': 'Ratio',
+            '分辨率': 'Resolution',
+            '时长': 'Duration',
+            '进度': 'Progress',
+            '用时/剩余': 'Elapsed / Left',
+        }
+        for source, target in expected.items():
+            self.assertEqual(i18n.tr(source), target, source)
+
 
 class StartupLanguageTests(unittest.TestCase):
     """启动时语言必须先于界面构建生效：否则英文模式重启后部分界面仍显示中文。"""
