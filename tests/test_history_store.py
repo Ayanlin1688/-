@@ -67,7 +67,7 @@ class HistoryStoreTests(unittest.TestCase):
             elapsed = time.perf_counter() - start
             after = (path.stat().st_mtime_ns, path.stat().st_size)
             self.assertEqual(before, after)  # 配置零写入：写放大终结
-            self.assertLess(elapsed, 60.0)   # 宽松门槛：CI 共享磁盘上 1000 次单条事务可能慢数倍；写放大回归由上方 mtime 断言兜底
+            self.assertLess(elapsed, 180.0)   # 仅作病理性回归（写放大）的宽上限；CI 最慢观察值约 88s，真正的写放大回归由上方 mtime 断言兜底
             start = time.perf_counter()
             records = manager.history_records()
             read_cost = time.perf_counter() - start

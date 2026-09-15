@@ -275,7 +275,8 @@ class PoolExecutionTests(unittest.TestCase):
         self.make_prompts(5)
         self.config['task_strategy']['max_concurrency'] = 2
         with PoolServer() as server:
-            server.processing_seconds = .4
+            # 窗口放宽：保证 resume 后 cancel_all 能落在任务完成之前（CI 慢机上 0.4s 太短）。
+            server.processing_seconds = 2.0
             self.config['api'].update(base_url=server.base, api_key='local-fixture-only')
             self.manager.start_tasks(self.config)
             wait_until(lambda: len(server.calls) == 2)
@@ -343,7 +344,8 @@ class PoolExecutionTests(unittest.TestCase):
             for i in range(2):
                 (self.prompts / product / f'{i+1}.txt').write_text(f'{product} 场景{i+1}', encoding='utf-8')
         with PoolServer() as server:
-            server.processing_seconds = .5
+            # 窗口放宽：保证 4 个提交事件先于任何完成事件（CI 慢机上 0.5s 会被首个 done 抢先）。
+            server.processing_seconds = 3.0
             tasks = self.run_tasks(server, count=0)
             self.assertEqual([t['status'] for t in tasks], ['completed'] * 4)
             # 四个任务先全部提交（并发跨产品），完成后各自归档到所属产品目录。

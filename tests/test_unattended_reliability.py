@@ -63,7 +63,8 @@ class UnattendedReliabilityTests(unittest.TestCase):
             self.product(product, count)
         self.assertEqual(self.config['task_strategy']['max_concurrency'], 5)
         with PoolServer() as server:
-            server.processing_seconds = .5
+            # 窗口放宽：慢机日下更长的处理窗口可避免轮询/重试风暴造成的偶发失败。
+            server.processing_seconds = 2.0
             self.run_batch(server)
             self.assertEqual([t['status'] for t in self.manager.tasks], ['completed'] * 6)
             # 超过单产品规模（3）→ 确实跨产品并行，且峰值接近全队列上限。

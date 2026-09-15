@@ -14,8 +14,8 @@ from core.task_manager import TaskManager, TaskControl
 from test_http_clients import LocalServer
 
 
-def wait_until(predicate, timeout=15000):
-    # 默认超时面向 CI 共享运行器：本地最慢用例在负载尖峰下也可能超过 5 秒。
+def wait_until(predicate, timeout=30000):
+    # 默认超时面向 CI 共享运行器：慢机日（曾观察 15s 等待仍超时）需要更大余量。
     deadline = time.monotonic() + timeout / 1000
     while not predicate() and time.monotonic() < deadline:
         QTest.qWait(10)
