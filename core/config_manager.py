@@ -73,7 +73,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "history": [],
     "scan_settings": {"recursive": True},
     "download_settings": {"overwrite_existing": False, "naming_rule": "{序号}_{提示词名}.mp4"},
+    "prompts_dir": "",
+    "images_dir": "",
+    "output_dir": "",
 }
+
+# The three directory selectors persist under `paths`; these flat aliases keep
+# config.json compatible with the named fields prompts_dir/images_dir/output_dir.
+DIRECTORY_ALIASES = (('prompts', 'prompts_dir'), ('images', 'images_dir'), ('output', 'output_dir'))
 
 
 def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
@@ -105,6 +112,14 @@ class ConfigManager:
             self.config['task_strategy']['naming_rule'] = self.config['download_settings']['naming_rule']
             self.config['workspace']['max_retries'] = self.config['task_strategy']['max_retries']
             self.config['workspace']['skip_threshold'] = self.config['task_strategy']['failure_skip_threshold']
+            # Mirror the spec-named directory fields; old configs may carry the
+            # aliases instead of the canonical paths entries.
+            for key, alias in DIRECTORY_ALIASES:
+                value = self.config['paths'].get(key)
+                if value:
+                    self.config[alias] = value
+                elif self.config.get(alias):
+                    self.config['paths'][key] = self.config[alias]
             # Only migrate real Stage 1 bindings; synthetic demo entries never become production references.
             for name, images in raw.get('matching_order', {}).items():
                 if all(not p.startswith('demo:') for p in images) and self.config['paths']['prompts']:
@@ -117,6 +132,8 @@ class ConfigManager:
     def save_config(self, config: dict[str, Any] | None = None) -> None:
         if config is not None:
             self.config = _deep_merge(DEFAULT_CONFIG, config)
+        for key, alias in DIRECTORY_ALIASES:
+            self.config[alias] = self.config['paths'].get(key, '')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix='.config-', suffix='.tmp', dir=self.path.parent)
         try:
@@ -142,6 +159,11 @@ class ConfigManager:
                 target[key] = child
             target = child
         target[keys[-1]] = value
+        for key, alias in DIRECTORY_ALIASES:
+            if keys == ('paths', key):
+                self.config[alias] = value
+            elif keys == (alias,):
+                self.config['paths'][key] = value
         if keys in {('task_strategy', 'naming_rule'), ('download_settings', 'naming_rule')}:
             self.config['task_strategy']['naming_rule'] = value
             self.config['download_settings']['naming_rule'] = value

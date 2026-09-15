@@ -10,7 +10,7 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QLinearGradient, QPixmap
 from PyQt5.QtWidgets import QWidget, QApplication
 from qfluentwidgets import BodyLabel
 
-from .materials import SurfaceShadow, background_brush
+from .materials import SurfaceShadow, background_brush, paint_background
 
 
 class HoverWash(QWidget):
@@ -39,7 +39,7 @@ class WidgetMotion(QObject):
         self.animation = QPropertyAnimation(self, b'amount', self)
         self.press_animation = QPropertyAnimation(self, b'press', self)
         for animation in (self.animation, self.press_animation):
-            animation.setDuration(200); animation.setEasingCurve(QEasingCurve.OutCubic)
+            animation.setDuration(150); animation.setEasingCurve(QEasingCurve.OutCubic)
         self.wash = None if card else HoverWash(widget)
         if not card:
             original_hit = widget.hitButton
@@ -214,7 +214,8 @@ class Shimmer(QWidget):
         path = QPainterPath(); path.addRoundedRect(QRectF(0, 0, filled, self.height()), 3, 3)
         painter.setClipPath(path)
         band = min(130, self.width()*.25)
-        x = (time.monotonic() % 1.8)/1.8*(self.width()+2*band)-band
+        # 3 秒循环的流光从左到右扫过填充段（深空液态玻璃主题）。
+        x = (time.monotonic() % 3.0)/3.0*(self.width()+2*band)-band
         brush = QLinearGradient(x-band, 0, x+band, self.height())
         brush.setColorAt(0, QColor(255, 255, 255, 0)); brush.setColorAt(.5, QColor(255, 255, 255, 125)); brush.setColorAt(1, QColor(255, 255, 255, 0))
         painter.fillRect(self.rect(), brush)
@@ -314,7 +315,7 @@ class PageTransition(QWidget):
         painter = QPainter(snapshot)
         origin = self.mapTo(self.window(), QPoint())
         painter.save(); painter.translate(-origin)
-        painter.fillRect(self.window().rect(), background_brush(QRectF(self.window().rect())))
+        paint_background(painter, QRectF(self.window().rect()))
         painter.restore(); painter.drawPixmap(0, 0, page); painter.end()
         return snapshot
 

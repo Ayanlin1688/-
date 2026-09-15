@@ -26,9 +26,9 @@ def directory_metrics(paths):
 class StatBlock(QWidget):
     def __init__(self, title, value='0', accent=MUTED, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self); layout.setContentsMargins(14, 9, 14, 9); layout.setSpacing(3)
-        self.title = label(title, 11, '#8b8b9e'); layout.addWidget(self.title)
-        self.value = label(value, 18, accent, True, mono=title in {'运行时长', '用时/剩余'}); layout.addWidget(self.value)
+        layout = QVBoxLayout(self); layout.setContentsMargins(14, 7, 14, 7); layout.setSpacing(2)
+        self.title = label(title, 12, '#9CA3AF'); layout.addWidget(self.title)
+        self.value = label(value, 18, accent, True, mono=title in {'运行时长', '用时/剩余', '批量生成中'}); layout.addWidget(self.value)
         self.value.setTextFormat(Qt.RichText)
 
 
@@ -44,14 +44,14 @@ class WorkspaceSummary(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        self.metrics_card = WorkspaceCard(); self.metrics_card.setFixedHeight(78)
+        self.metrics_card = WorkspaceCard(); self.metrics_card.setFixedHeight(64)
         row = QHBoxLayout(self.metrics_card); row.setContentsMargins(2, 2, 2, 2); row.setSpacing(0)
         specs = [('批量生成中', '就绪', BLUE), ('产品进度', '0/0', '#f0f0f5'), ('任务进度', '0/0', '#f0f0f5'),
                  ('今日完成', '0', GREEN), ('待完成', '0', '#f0f0f5'), ('成功率', '—', '#f0f0f5'), ('失败', '0', RED), ('并发', '1', '#f0f0f5')]
         self.blocks = []
         for index, (title, value, accent) in enumerate(specs):
             if index:
-                separator = QFrame(); separator.setFrameShape(QFrame.VLine); separator.setFixedWidth(1); separator.setStyleSheet('color:rgba(255,255,255,0.08); background:rgba(255,255,255,0.08);')
+                separator = QFrame(); separator.setFrameShape(QFrame.VLine); separator.setFixedWidth(1); separator.setStyleSheet('color:rgba(255,255,255,0.06); background:rgba(255,255,255,0.06);')
                 row.addWidget(separator)
             block = StatBlock(title, value, accent); row.addWidget(block, 1); self.blocks.append(block)
         root.addWidget(self.metrics_card)
@@ -70,7 +70,11 @@ class WorkspaceSummary(QWidget):
         total = len(tasks); done = completed + failed
         groups = {t.get('product') or '未分组' for t in tasks}
         product_done = sum(all(t.get('status') in {'completed','failed','cancelled','skipped','duplicate','submission_unknown'} for t in tasks if (t.get('product') or '未分组') == group) for group in groups) if groups else 0
-        values = [('批量生成中', '批量生成中' if running else '就绪', BLUE), ('产品进度', f'{product_done}/{len(groups)}', '#f0f0f5'),
+        seconds = int(elapsed)
+        clock = f'{seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}'
+        first_value = (f'<span style="color:#5B8DEF">●</span> {clock}' if running
+                       else '<span style="color:#6B7280">●</span> 就绪')
+        values = [('批量生成中', first_value, BLUE), ('产品进度', f'{product_done}/{len(groups)}', '#f0f0f5'),
                   ('任务进度', f'{completed}/{total}', '#f0f0f5'), ('今日完成', str(sum(t.get('status') == 'completed' for t in history if str(t.get('finished_at','')).startswith(datetime.now().date().isoformat()))), GREEN),
                   ('待完成', str(pending), '#f0f0f5'), ('成功率', f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5'), ('失败', str(failed), RED),
                   ('并发', str(max(1, sum(t.get('status') in {'queued','uploading','submitting','processing','downloading'} for t in tasks))), '#f0f0f5')]

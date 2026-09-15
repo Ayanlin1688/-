@@ -4,8 +4,8 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, QMimeData, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QImageReader, QDrag, QLinearGradient
+from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, QPointF, QMimeData, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QImageReader, QDrag, QLinearGradient, QRadialGradient
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
 from qframelesswindow import FramelessDialog
 from qfluentwidgets import (CardWidget, CaptionLabel, StrongBodyLabel, ImageLabel,
@@ -15,8 +15,8 @@ from ..motion import StatusDot, WidgetMotion
 BLUE = '#3b82f6'
 GREEN = '#22c55e'
 RED = '#ef4444'
-YELLOW = '#eab308'
-MUTED = '#71717a'
+YELLOW = '#f59e0b'
+MUTED = '#9ca3af'
 
 
 def label(text='', size=12, color=MUTED, bold=False, mono=False):
@@ -32,17 +32,19 @@ def label(text='', size=12, color=MUTED, bold=False, mono=False):
 
 def style_button(button, primary=False):
     button.setProperty('studioStyled', True)
-    fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #2563eb,stop:1 #60a5fa)'
-            if primary else 'rgba(255,255,255,0.025)')
+    fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0)'
+            if primary else 'rgba(255,255,255,0.06)')
+    border = ('rgba(160,180,255,0.55)' if primary else 'rgba(255,255,255,0.12)')
+    hover = ('rgba(190,205,255,0.8)' if primary else 'rgba(255,255,255,0.22)')
     has_icon = not button.icon().isNull()
     padding = '5px 12px 5px 34px' if has_icon and button.text() else '5px 12px' if button.text() else '0px'
     button.setStyleSheet(f'''
-        QPushButton, QToolButton {{background:{fill}; color:#f5f5f5; border:1px solid rgba(255,255,255,0.08);
+        QPushButton, QToolButton {{background:{fill}; color:#f5f5f5; border:1px solid {border};
             border-radius:8px; padding:{padding}; font-size:12px;}}
-        QPushButton:hover, QToolButton:hover {{border-color:rgba(255,255,255,0.2);}}
+        QPushButton:hover, QToolButton:hover {{border-color:{hover};}}
         QPushButton:disabled, QToolButton:disabled {{color:#55555f; background:rgba(255,255,255,0.015);}}
     ''')
-    button._studio_motion = WidgetMotion(button)
+    button._studio_motion = WidgetMotion(button, primary=primary)
     return button
 
 
@@ -72,7 +74,7 @@ class WorkspaceCard(CardWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty('studioStyled', True)
-        self.setBorderRadius(16)
+        self.setBorderRadius(14)
         self._hover = False
 
     def enterEvent(self, event):
@@ -84,11 +86,17 @@ class WorkspaceCard(CardWidget):
     def paintEvent(self, event):
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
-        painter.setPen(QPen(QColor(255, 255, 255, 42 if self._hover else 20), 1))
-        painter.setBrush(QColor(255, 255, 255, 10)); painter.drawRoundedRect(rect, 16, 16)
+        painter.setPen(QPen(QColor(255, 255, 255, 46 if self._hover else 26), 1))
+        painter.setBrush(QColor(255, 255, 255, 13)); painter.drawRoundedRect(rect, 14, 14)
+        # 玻璃顶部内发光：只在上缘画 1px 低透明度亮线。
+        glow = QLinearGradient(rect.topLeft(), rect.topRight())
+        glow.setColorAt(0, QColor(255, 255, 255, 0))
+        glow.setColorAt(.5, QColor(255, 255, 255, 48))
+        glow.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.setPen(QPen(glow, 1)); painter.drawLine(QPointF(rect.left()+14, rect.top()+1), QPointF(rect.right()-14, rect.top()+1))
         sheen = QLinearGradient(rect.topLeft(), rect.bottomRight())
         sheen.setColorAt(0, QColor(150, 174, 218, 7)); sheen.setColorAt(1, QColor(150, 174, 218, 0))
-        painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 16, 16)
+        painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 14, 14)
 
 
 class BreathingDot(StatusDot):
@@ -97,7 +105,16 @@ class BreathingDot(StatusDot):
         if self.active and not self.property('pulseRunning') and not self.visibleRegion().isEmpty():
             clock_for(self).add(self)
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing); painter.setPen(Qt.NoPen)
-        painter.setOpacity(.7 + .3*math.cos(time.monotonic()*math.pi) if self.active else 1)
+        opacity = .7 + .3*math.cos(time.monotonic()*math.pi) if self.active else 1
+        if self.active:
+            # 4px 模糊光晕：径向渐变模拟柔光扩散。
+            glow = QRadialGradient(QPointF(7, 9), 8.5)
+            glow.setColorAt(0, QColor(self.color.red(), self.color.green(), self.color.blue(), round(90*opacity)))
+            glow.setColorAt(.55, QColor(self.color.red(), self.color.green(), self.color.blue(), round(35*opacity)))
+            glow.setColorAt(1, QColor(self.color.red(), self.color.green(), self.color.blue(), 0))
+            painter.setOpacity(1)
+            painter.setBrush(glow); painter.drawEllipse(QRectF(-1.5, .5, 17, 17))
+        painter.setOpacity(opacity)
         painter.setBrush(self.color); painter.drawEllipse(QRectF(3, 5, 8, 8))
 
 
@@ -135,7 +152,7 @@ class ReferenceThumbnail(ImageLabel):
         self.editable = False
         self.setProperty('studioStyled', True)
         self.setImage(thumbnail(path)); self.setFixedSize(120, 80) if large else self.setFixedSize(26, 26)
-        self.setBorderRadius(8, 8, 8, 8)
+        self.setBorderRadius(6, 6, 6, 6)
         self.setAcceptDrops(large)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(f'Picture {index+1} · {Path(path).name}\n点击放大；空闲时拖动调整顺序')
@@ -144,7 +161,7 @@ class ReferenceThumbnail(ImageLabel):
 
     def paintEvent(self, event):
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
-        rect = QRectF(self.rect()); clip = QPainterPath(); clip.addRoundedRect(rect, 8 if self.large else 6, 8 if self.large else 6)
+        rect = QRectF(self.rect()); clip = QPainterPath(); clip.addRoundedRect(rect, 6, 6)
         painter.setClipPath(clip); painter.fillRect(self.rect(), QColor('#20232b'))
         source = self.pixmap()
         if source and not source.isNull():

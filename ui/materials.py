@@ -6,19 +6,42 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap, QLinearGradient, QRadialGradient, QPen
 from PyQt5.QtWidgets import QGraphicsEffect
 
-ACCENT = '#409eff'
-SUCCESS = '#67c23a'
-WARNING = '#e6a23c'
+ACCENT = '#5B8DEF'
+BRAND_START = '#5B8DEF'
+BRAND_END = '#7C6CF0'
+SUCCESS = '#22c55e'
+WARNING = '#f59e0b'
 ERROR = '#f56c6c'
-SECONDARY = QColor(255, 255, 255, 153)
-TERTIARY = QColor(255, 255, 255, 102)
+SECONDARY = QColor('#9CA3AF')
+TERTIARY = QColor('#6B7280')
+TEXT_PRIMARY = '#F4F5F7'
+BG_BASE = '#0A0B12'
 
 
 def background_brush(rect):
     gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    gradient.setColorAt(0, QColor('#0a0a0b'))
-    gradient.setColorAt(1, QColor('#141418'))
+    gradient.setColorAt(0, QColor(BG_BASE))
+    gradient.setColorAt(1, QColor('#10111C'))
     return gradient
+
+
+def paint_background(painter, rect, opaque=True):
+    """Deep-space base with the two ambient radial washes."""
+    if opaque:
+        painter.fillRect(rect, QColor(BG_BASE))
+    else:
+        # Native Mica/Acrylic shows through the tinted glass layer.
+        tint = QColor(BG_BASE); tint.setAlpha(200)
+        painter.fillRect(rect, tint)
+    span = max(rect.width(), rect.height())
+    blue = QRadialGradient(rect.topLeft(), span * 1.3)
+    blue.setColorAt(0, QColor(91, 141, 239, 16))
+    blue.setColorAt(1, QColor(91, 141, 239, 0))
+    painter.fillRect(rect, blue)
+    purple = QRadialGradient(rect.bottomRight(), span * 1.3)
+    purple.setColorAt(0, QColor(124, 108, 240, 14))
+    purple.setColorAt(1, QColor(124, 108, 240, 0))
+    painter.fillRect(rect, purple)
 
 
 @lru_cache(maxsize=1)
@@ -41,21 +64,22 @@ def frost_texture():
 def paint_surface(widget, painter, elevated=False, hover=0):
     painter.setRenderHint(QPainter.Antialiasing)
     rect = QRectF(widget.rect()).adjusted(1, 1, -1, -1)
-    path = QPainterPath(); path.addRoundedRect(rect, 12, 12)
+    path = QPainterPath(); path.addRoundedRect(rect, 14, 14)
     painter.save(); painter.setClipPath(path)
-    painter.fillPath(path, QColor(255, 255, 255, 10 + round(5*hover)))
+    painter.fillPath(path, QColor(255, 255, 255, 13 + round(8*hover)))
     painter.drawPixmap(rect, frost_texture(), QRectF(0, 0, 256, 256))
     if elevated:
         # Qt QSS has no inset box-shadow. Paint a soft 20px inset explicitly.
         for inset in range(20, 0, -1):
             alpha = round(26 * math.exp(-inset/5))
-            painter.setPen(QPen(QColor(64, 158, 255, alpha), 1))
+            painter.setPen(QPen(QColor(91, 141, 239, alpha), 1))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 12, 12)
+            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 14, 14)
     painter.restore()
     painter.setBrush(Qt.NoBrush)
-    painter.setPen(QPen(QColor(64, 158, 255, 77) if elevated else QColor(255, 255, 255, 20), 1))
-    painter.drawRoundedRect(rect, 12, 12)
+    border = QColor(150, 168, 255, 128) if elevated else QColor(255, 255, 255, round(26 + 20*hover))
+    painter.setPen(QPen(border, 1))
+    painter.drawRoundedRect(rect, 14, 14)
     # A fine upper highlight gives the translucent surface a lit edge.
     highlight = QLinearGradient(rect.topLeft(), rect.topRight())
     highlight.setColorAt(0, QColor(255, 255, 255, 0))
@@ -78,7 +102,7 @@ def shadow_tile(hover=False, primary=False):
             weight = math.exp(-.5 * (spread / max(1, radius/2))**2)
             color = QColor(0, 0, 0, round(alpha * weight / max(1, radius/2)))
             if primary:
-                color = QColor(64, 158, 255, round(18*weight / max(1, radius/3)))
+                color = QColor(91, 141, 239, round(18*weight / max(1, radius/3)))
             if hover:
                 color.setAlpha(min(255, round(color.alpha()*1.7)))
             painter.setBrush(color)

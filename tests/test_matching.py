@@ -124,5 +124,60 @@ class MatchingTests(unittest.TestCase):
         self.assertTrue(name.endswith('_video-v3_abc.mp4'))
 
 
+    def test_spec_prefix_series_and_embedded_number_examples(self):
+        """需求示例：前缃匹配/序号匹配（含“图片2.jpg”这种内嵌序号）。"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # 前缃：玫瑰毯子1 ↔ 玫瑰毯子1(1..3)
+            tasks = StoryboardMatcher().match_files(
+                [root / '玫瑰毯子1.txt'],
+                [root / name for name in ['玫瑰毯子1(1).jpg', '玫瑰毯子1(2).jpg', '玫瑰毯子1(3).jpg']])
+            self.assertEqual([Path(p).name for p in tasks[0]['images']],
+                             ['玫瑰毯子1(1).jpg', '玫瑰毯子1(2).jpg', '玫瑰毯子1(3).jpg'])
+            self.assertIn('前缀匹配', tasks[0]['match_method'])
+            # 前缃：01 ↔ 01(1).jpg、01(2).png（按自然排序）
+            tasks = StoryboardMatcher().match_files([root / '01.txt'],
+                                                    [root / n for n in ['01(1).jpg', '01(2).png']])
+            self.assertEqual([Path(p).name for p in tasks[0]['images']], ['01(1).jpg', '01(2).png'])
+            # 序号：玫瑰毯子1 ↔ 1(1..3)
+            tasks = StoryboardMatcher().match_files(
+                [root / '玫瑰毯子1.txt'],
+                [root / name for name in ['1(1).jpg', '1(2).jpg', '1(3).jpg']])
+            self.assertEqual([Path(p).name for p in tasks[0]['images']], ['1(1).jpg', '1(2).jpg', '1(3).jpg'])
+            self.assertIn('序号匹配', tasks[0]['match_method'])
+            # 序号：02 ↔ 2.jpg、2(1).png、图片2.jpg
+            tasks = StoryboardMatcher().match_files(
+                [root / '02.txt'],
+                [root / name for name in ['2.jpg', '2(1).png', '图片2.jpg']])
+            self.assertEqual(sorted(Path(p).name for p in tasks[0]['images']),
+                             sorted(['2.jpg', '2(1).png', '图片2.jpg']))
+            self.assertIn('序号匹配', tasks[0]['match_method'])
+
+    def test_five_prompts_all_match_with_mixed_naming_schemes(self):
+        """回归：5 个提示词在混合命名下必须全部匹配到图片。"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prompts = [root / f'玫瑰毯子{i}.txt' for i in range(1, 6)]
+            images = [root / name for name in
+                      ['玫瑰毯子1(1).jpg', '玫瑰毯子1(2).jpg', '2(1).png', '3.jpg', '图片4.png', '5(1).webp']]
+            tasks = StoryboardMatcher().match_files(prompts, images)
+            self.assertTrue(all(task['matched'] for task in tasks))
+            self.assertEqual([Path(p).name for p in tasks[0]['images']], ['玫瑰毯子1(1).jpg', '玫瑰毯子1(2).jpg'])
+            self.assertEqual([Path(p).name for p in tasks[1]['images']], ['2(1).png'])
+            self.assertEqual([Path(p).name for p in tasks[2]['images']], ['3.jpg'])
+            self.assertEqual([Path(p).name for p in tasks[3]['images']], ['图片4.png'])
+            self.assertEqual([Path(p).name for p in tasks[4]['images']], ['5(1).webp'])
+
+    def test_reverse_prefix_and_series_boundary_protection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # 图片名是提示词名的前缀：玫瑰毯子1 ↔ 玫瑰毯子1特写
+            tasks = StoryboardMatcher().match_files([root / '玫瑰毯子1特写.txt'], [root / '玫瑰毯子1.jpg'])
+            self.assertEqual([Path(p).name for p in tasks[0]['images']], ['玫瑰毯子1.jpg'])
+            # 系列保护：玫瑰毯子10 不得吸附玫瑰毯子1.jpg
+            tasks = StoryboardMatcher().match_files([root / '玫瑰毯子10.txt'], [root / '玫瑰毯子1.jpg'])
+            self.assertFalse(tasks[0]['matched'])
+
+
 if __name__ == '__main__':
     unittest.main()

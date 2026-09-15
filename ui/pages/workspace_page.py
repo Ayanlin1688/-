@@ -88,28 +88,28 @@ class WorkspacePage(QWidget):
         QTimer.singleShot(0, self.refresh_metrics)
 
     def _build_ui(self):
-        root = QVBoxLayout(self); root.setContentsMargins(20, 0, 20, 12); root.setSpacing(16)
-        self.toolbar = QWidget(); self.toolbar.setFixedHeight(48)
+        root = QVBoxLayout(self); root.setContentsMargins(24, 8, 24, 16); root.setSpacing(16)
+        self.toolbar = QWidget(); self.toolbar.setFixedHeight(56)
         header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
-        logo = IconWidget(FIF.VIDEO); logo.setFixedSize(23, 23); header.addWidget(logo)
-        header.addWidget(label('Yanlin Smart-Creation Matrix', 16, '#f5f5f5', True)); header.addStretch(1)
+        header.addWidget(label('工作台', 16, '#F4F5F7', True))
         self.navigation_tabs = {}
         for key, text in [('workspace', '工作台'), ('history', '任务历史'), ('settings', '设置')]:
             button = PushButton(text); button.setProperty('studioStyled', True); button.setFixedSize(76, 44)
             button.setStyleSheet('QPushButton {color:' + ('#f5f5f5' if key == 'workspace' else '#71717a') +
-                                 '; background:transparent; border:0; border-bottom:' + ('2px solid #3b82f6' if key == 'workspace' else '2px solid transparent') + '; font-size:12px;} QPushButton:hover {color:white;}')
+                                 '; background:transparent; border:0; border-bottom:' + ('2px solid #5B8DEF' if key == 'workspace' else '2px solid transparent') + '; font-size:12px;} QPushButton:hover {color:white;}')
             button.clicked.connect(lambda checked=False, route=key: self.navigation_requested.emit(route))
             self.navigation_tabs[key] = button; header.addWidget(button)
         for button in self.navigation_tabs.values():
             button.hide()
-        self.status_line = QHBoxLayout(); self.status_line.setSpacing(12)
+        self.status_line = QHBoxLayout(); self.status_line.setSpacing(7)
         self.status_dot = BreathingDot(BLUE, active=False); self.status_dot.setFixedSize(14, 18)
-        self.status_text = label('就绪', 12, '#8b8b9e', True)
+        self.status_text = label('就绪', 12, '#9CA3AF', True)
         self.status_line.addWidget(self.status_dot); self.status_line.addWidget(self.status_text)
-        self.product_status = label('产品 0/0', 12, '#8b8b9e'); self.task_status = label('任务 0/0', 12, '#8b8b9e')
-        self.concurrent_status = label('并发 1', 12, '#8b8b9e'); self.elapsed_status = label('已运行 00:00:00', 12, '#8b8b9e', mono=True)
+        self.product_status = label('产品 0/0', 12, '#9CA3AF'); self.task_status = label('任务 0/0', 12, '#9CA3AF')
+        self.concurrent_status = label('并发 1', 12, '#9CA3AF'); self.elapsed_status = label('已运行 00:00:00', 12, '#9CA3AF', mono=True)
         for widget in (self.product_status, self.task_status, self.concurrent_status, self.elapsed_status):
-            self.status_line.addWidget(widget)
+            separator = label('·', 12, '#4B5563')
+            self.status_line.addWidget(separator); self.status_line.addWidget(widget)
         header.insertLayout(1, self.status_line)
         header.addStretch(1)
         self.api_dot = BreathingDot(MUTED); self.api_status = label('未检测', 11)
@@ -122,8 +122,8 @@ class WorkspacePage(QWidget):
         header.addWidget(label('自动保存', 11)); header.addWidget(self.auto_save)
         self.start_button = style_button(PrimaryPushButton(FIF.PLAY, '开始生成'), primary=True)
         self.pause_button = style_button(PushButton(FIF.PAUSE, '暂停'))
-        for button in (self.start_button, self.pause_button):
-            button.setFixedHeight(34); header.addWidget(button)
+        for button in (self.pause_button, self.start_button):
+            button.setFixedHeight(36); header.addWidget(button)
         root.addWidget(self.toolbar)
         self.summary = WorkspaceSummary(); self.summary.update_paths(self.config_manager.config['paths'])
         self.summary.directory_requested.connect(self.choose_directory); root.addWidget(self.summary)
@@ -186,8 +186,8 @@ class WorkspacePage(QWidget):
         self.params_card.parameters_adjusted.connect(self.append_log)
 
     def paintEvent(self, event):
-        from PyQt5.QtGui import QPainter, QColor
-        painter = QPainter(self); painter.fillRect(self.rect(), QColor('#0d0d10'))
+        # 页面保持透明，让窗口的深空渐变背景透出。
+        pass
 
     def open_controls(self):
         self.controls_dialog.show(); self.controls_dialog.raise_(); self.controls_dialog.activateWindow()
@@ -253,7 +253,26 @@ class WorkspacePage(QWidget):
 
     def _update_summary(self):
         elapsed = time.monotonic()-self._started_at if self._started_at is not None else self._elapsed
-        self.summary.update_tasks(self.queue_panel._tasks, self.config_manager.config['history'], elapsed, self.task_manager.is_running)
+        tasks = self.queue_panel._tasks
+        running = self.task_manager.is_running
+        self.summary.update_tasks(tasks, self.config_manager.config['history'], elapsed, running)
+        self._update_status_strip(tasks, elapsed, running)
+
+    def _update_status_strip(self, tasks, elapsed, running):
+        """顶栏实时状态：批量生成中 · 产品 x/y · 任务 a/b · 并发 n · 已运行 hh:mm:ss"""
+        self.status_dot.active = running
+        self.status_dot.update()
+        self.status_text.setText('批量生成中' if running else '就绪')
+        groups = {t.get('product') or '未分组' for t in tasks}
+        product_done = sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组') == group)
+                           for group in groups) if groups else 0
+        self.product_status.setText(f'产品 {product_done}/{len(groups)}')
+        finished = sum(t.get('status') == 'completed' for t in tasks)
+        self.task_status.setText(f'任务 {finished}/{len(tasks)}')
+        active = sum(t.get('status') in {'queued', 'uploading', 'submitting', 'processing', 'downloading'} for t in tasks)
+        self.concurrent_status.setText(f'并发 {max(1, active)}')
+        seconds = int(elapsed)
+        self.elapsed_status.setText(f'已运行 {seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}')
 
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks
@@ -456,6 +475,16 @@ class WorkspacePage(QWidget):
         self.queue_panel._tasks[index].update(progress=value, elapsed=elapsed, eta=eta)
         row.progress.setValue(max(0, min(100, int(value))))
         row.percentage.setText(f'{value:.0f}%')
+        row.timing.setText(self._format_timing(elapsed, eta))
+
+    @staticmethod
+    def _format_timing(elapsed, eta):
+        def clock(seconds):
+            seconds = max(0, int(seconds))
+            return f'{seconds//60:02d}:{seconds%60:02d}'
+        if eta is None or eta < 0:
+            return clock(elapsed)
+        return f'{clock(elapsed)} / {clock(eta)}'
 
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)

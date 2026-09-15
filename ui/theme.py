@@ -35,10 +35,10 @@ def studio_combo_menu(combo):
     else:
         menu = ComboBoxMenu(combo)
     rules = """
-    QListWidget {background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 rgba(36,39,47,0.97),stop:1 rgba(20,20,24,0.97));
+    QListWidget {background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 rgba(24,26,38,0.97),stop:1 rgba(14,15,24,0.97));
                  color:white; border:1px solid rgba(255,255,255,0.08); border-radius:12px;}
     QListWidget::item {border-radius:8px; padding:4px;}
-    QListWidget::item:hover, QListWidget::item:selected {background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(64,158,255,0.24),stop:1 rgba(102,177,255,0.08));}
+    QListWidget::item:hover, QListWidget::item:selected {background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(91,141,239,0.24),stop:1 rgba(124,108,240,0.12));}
     """ + SCROLL_STYLE
     setCustomStyleSheet(menu.view, rules, rules)
     return menu
@@ -68,16 +68,17 @@ def style_controls(root):
         widget.setProperty('studioStyled', True)
         rules = ""
         if isinstance(widget, PrimaryPushButton):
-            rules = """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #409eff,stop:1 #66b1ff);
-                color:white; border:1px solid rgba(171,214,255,0.6); border-radius:8px;}
-                PrimaryPushButton:disabled {background:rgba(64,158,255,0.16); color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);}"""
+            rules = """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
+                color:white; border:1px solid rgba(160,180,255,0.55); border-radius:8px;}
+                PrimaryPushButton:hover {border-color:rgba(190,205,255,0.8); background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #6996f2,stop:1 #8A7BF3);}
+                PrimaryPushButton:disabled {background:rgba(91,141,239,0.16); color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);}"""
         elif isinstance(widget, PushButton):
-            rules = "PushButton {border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); color:white;} PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}"
+            rules = "PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;} PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);} PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}"
         elif isinstance(widget, (LineEdit, SpinBox, ComboBox)):
-            rules = """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.04); color:white; border:1px solid rgba(255,255,255,0.08);}
-                LineEdit:focus, SpinBox:focus {border-bottom:2px solid #409eff;}
+            rules = """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}
+                LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.08);}
                 LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}
-                SpinBox QToolButton:hover {background:rgba(64,158,255,0.18); border-radius:6px;}"""
+                SpinBox QToolButton:hover {background:rgba(91,141,239,0.18); border-radius:6px;}"""
         elif isinstance(widget, SettingCard):
             rules = "SettingCard {background:transparent; border:0; border-radius:12px;}"
         elif isinstance(widget, TextBrowser):
@@ -114,7 +115,7 @@ def style_controls(root):
                 if not control.isEnabled():
                     return color
                 fraction = max(0, min(1, (control.sliderX-5)/20))
-                return QColor(64,158,255,round(255*fraction)) if fraction > 0 else color
+                return QColor(91, 141, 239, round(255*fraction)) if fraction > 0 else color
             indicator._backgroundColor = MethodType(sliding_color, indicator)
         if isinstance(widget, CaptionLabel):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
@@ -140,7 +141,7 @@ def style_page(page):
     # Child pages inherit the main window material. A separate frameless dialog
     # needs its own opaque backing; otherwise text and buttons composite against
     # an unpainted transparent native surface.
-    background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0a0a0b,stop:1 #141418)' if page.isWindow() else 'transparent'
+    background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0A0B12,stop:1 #12131F)' if page.isWindow() else 'transparent'
     page.setStyleSheet(
         f"#{page.objectName()} {{background:{background};}}"
         "QScrollArea, #settingsContent {background:transparent; border:0;}"

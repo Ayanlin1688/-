@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PyQt5.QtGui import QColor, QPainter
-from PyQt5.QtCore import QTimer, QRectF
+import sys
+
+from PyQt5.QtGui import QColor, QLinearGradient, QPainter
+from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -15,7 +17,7 @@ from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
-from .materials import ACCENT, background_brush
+from .materials import ACCENT, paint_background
 from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
 
@@ -27,8 +29,9 @@ class MainWindow(FluentWindow):
         setTheme(Theme.DARK, save=False)
         setThemeColor(QColor(ACCENT), save=False)
         super().__init__()
+        self._glass_material = 'gradient'
         self.setMicaEffectEnabled(False)
-        self.setCustomBackgroundColor("#0a0a0b", "#0a0a0b")
+        self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
         self.config_manager = config_manager or ConfigManager()
         self.config_manager.load_config()
         self.model_catalog = ModelCatalogController(
@@ -45,8 +48,9 @@ class MainWindow(FluentWindow):
         from qfluentwidgets import setCustomStyleSheet
         from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
         self.navigationInterface.panel.setAcrylicEnabled(isAcrylicAvailable)
-        navigation_style = 'NavigationPanel {background:rgba(0,0,0,0.3); border:0;}'
+        navigation_style = 'NavigationPanel {background:rgba(10,11,18,0.45); border:0;}'
         setCustomStyleSheet(self.navigationInterface.panel, navigation_style, navigation_style)
+        self._setup_navigation_chrome()
         self.config_manager.error_callback = self.workspace_page.append_log
         self._closing = False
         self._close_timer = QTimer(self)
@@ -68,10 +72,100 @@ class MainWindow(FluentWindow):
         self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
         QTimer.singleShot(0, self.model_catalog.start)
+        QTimer.singleShot(0, self._apply_windows_material)
+
+    def _setup_navigation_chrome(self) -> None:
+        """64px icon rail: brand logo on top, user avatar pinned at the bottom."""
+        from .components.brand_widgets import BrandLogo, UserAvatar
+        panel = self.navigationInterface.panel
+        panel.setFixedWidth(64)
+        panel.menuButton.hide()
+        return_button = getattr(panel, 'returnButton', None)
+        if return_button is not None:
+            return_button.hide()
+        self.brand_logo = BrandLogo(self)
+        self.navigationInterface.insertWidget(0, 'brandLogo', self.brand_logo,
+                                              onClick=lambda: self.switchTo(self.workspace_page),
+                                              position=NavigationItemPosition.TOP,
+                                              tooltip='Yanlin Smart-Creation Matrix')
+        self.user_avatar = UserAvatar(self)
+        self.navigationInterface.addWidget('userAvatar', self.user_avatar, onClick=self.show_about,
+                                           position=NavigationItemPosition.BOTTOM,
+                                           tooltip='当前用户 · 版本信息')
+        routes = [self.workspace_page.objectName(), self.history_page.objectName(),
+                  self.settings_page.objectName(), 'about']
+        for route in routes:
+            try:
+                item = self.navigationInterface.widget(route)
+            except Exception:
+                continue
+            item.setFixedSize(56, 40)
+            inner = getattr(item, 'itemWidget', item)
+            inner.setFixedSize(56, 40)
+            original = inner._margins
+            inner._margins = lambda original=original: self._rail_margins(original())
+            setter = getattr(inner, 'setIndicatorColor', None)
+            if setter:
+                setter('#5B8DEF', '#7C6CF0')
+            self._decorate_rail_item(inner)
+        # 关于入口由底部头像承担，导航栏保持纯图标三入口。
+        try:
+            self.navigationInterface.widget('about').hide()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _decorate_rail_item(inner) -> None:
+        """Selected chip background + the 3px blue/purple gradient indicator bar."""
+        original = inner.paintEvent
+
+        def paint(event, inner=inner, original=original):
+            if inner.isSelected or inner.isEnter:
+                painter = QPainter(inner)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 255, 255, 12))
+                painter.drawRoundedRect(QRectF(inner.rect()), 8, 8)
+                painter.end()
+            original(event)
+            if inner.isSelected:
+                painter = QPainter(inner)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(Qt.NoPen)
+                gradient = QLinearGradient(8, 10, 8, 26)
+                gradient.setColorAt(0, QColor('#5B8DEF'))
+                gradient.setColorAt(1, QColor('#7C6CF0'))
+                painter.setBrush(gradient)
+                painter.drawRoundedRect(QRectF(8, 10, 3, 16), 1.5, 1.5)
+                painter.end()
+
+        inner.paintEvent = paint
+
+    @staticmethod
+    def _rail_margins(margins: QMargins) -> QMargins:
+        # Centre the compact icon inside the 56px rail button.
+        return QMargins(margins.left() + 8, margins.top(), margins.right(), margins.bottom())
+
+    def _apply_windows_material(self) -> str:
+        """Detect Win11 Mica / Win10 Acrylic, falling back to the painted gradient."""
+        if sys.platform != 'win32' or QApplication.platformName() == 'offscreen':
+            return self._glass_material
+        try:
+            from qframelesswindow.utils.win32_utils import isGreaterEqualWin11, isGreaterEqualWin10
+            if isGreaterEqualWin11():
+                self.setMicaEffectEnabled(True)
+                self._glass_material = 'mica'
+            elif isGreaterEqualWin10():
+                self.windowEffect.setAcrylicEffect(int(self.winId()), '0A0B12B4', False)
+                self._glass_material = 'acrylic'
+        except Exception:
+            self._glass_material = 'gradient'
+        self.update()
+        return self._glass_material
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), background_brush(QRectF(self.rect())))
+        paint_background(painter, QRectF(self.rect()), opaque=self._glass_material == 'gradient')
 
     def _setup_pages(self) -> None:
         self.workspace_page = WorkspacePage(self.config_manager)
