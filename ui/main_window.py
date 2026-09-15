@@ -76,8 +76,35 @@ class MainWindow(FluentWindow):
         self.settings_page.base_url.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
+        self.settings_page.appearance_changed.connect(self.apply_appearance)
         QTimer.singleShot(0, self.model_catalog.start)
         QTimer.singleShot(0, self._sync_window_frame)
+        QTimer.singleShot(80, self.apply_appearance)
+
+    def apply_appearance(self):
+        """应用外观设置（主题模式 / 高斯模糊），切换立即生效。"""
+        config = self.settings_page.config_manager.config.get('appearance', {})
+        try:
+            from .theme import apply_ui_mode
+            apply_ui_mode(config.get('theme', 'dark'))
+        except Exception:
+            pass
+        self._apply_blur_setting(config)
+
+    def _apply_blur_setting(self, config=None):
+        config = config if config is not None else self.settings_page.config_manager.config.get('appearance', {})
+        enabled = bool(config.get('blur', False))
+        try:
+            hwnd = int(self.winId())
+            if enabled:
+                from . import materials
+                tint = 'F3F6FCA8' if materials.is_light() else '12141CA8'
+                self.windowEffect.setAcrylicEffect(hwnd, tint, True)
+            else:
+                self.windowEffect.removeBackgroundEffect(hwnd)
+        except Exception:
+            pass
+        self.update()
 
     def _setup_navigation_chrome(self) -> None:
         """64px icon rail: brand logo on top, user avatar pinned at the bottom."""
@@ -154,7 +181,8 @@ class MainWindow(FluentWindow):
                 painter = QPainter(inner)
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255, 12))
+                from .materials import ink
+                painter.setBrush(ink(12))
                 painter.drawRoundedRect(QRectF(inner.rect()), 8, 8)
                 painter.end()
             original(event)
@@ -211,7 +239,7 @@ class MainWindow(FluentWindow):
             QTimer.singleShot(0, self._sync_window_frame)
 
     def _apply_titlebar_tweak(self):
-        """图标与标题之间留出 10px 呼吸位，标题字号统一为 13px/600。"""
+        """标题从导航徽标右侧开始（目标绝对 x=88），空白图标隐藏，标题 13px/600。"""
         try:
             title_bar = self.titleBar
             if getattr(title_bar, '_studio_gap', False):
@@ -236,9 +264,25 @@ class MainWindow(FluentWindow):
                         break
             if title_widget is None:
                 return
-            index = layout.indexOf(title_widget)
-            if index >= 0:
-                layout.insertSpacing(index, 14)
+            # 空白的标题图标隐藏，避免与导航徽标争抢左侧区域。
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                widget = item.widget() if item is not None else None
+                if (widget is not None and widget is not title_widget
+                        and hasattr(widget, 'text') and callable(getattr(widget, 'text', None))
+                        and not widget.text()):
+                    widget.hide()
+            # 标题移到徽标右侧：目标 titlebar 坐标 x=80（绝对 88 × 徽标右缘 ~62 + 26px 间距）。
+            target_x = 80
+            for _ in range(2):
+                try:
+                    layout.activate()
+                except Exception:
+                    pass
+                extra = target_x - title_widget.x()
+                if extra <= 0:
+                    break
+                layout.insertSpacing(layout.indexOf(title_widget), extra)
             title_widget.setStyleSheet('font-size:13px; font-weight:600; background:transparent;')
             title_bar._studio_gap = True
         except Exception:
@@ -277,7 +321,8 @@ class MainWindow(FluentWindow):
         painter.setClipping(False)
         if margin:
             # 1px 高光描边，让圆角边缘在深色桌面上有物理厚度感。
-            painter.setPen(QColor(255, 255, 255, 26))
+            from .materials import is_light
+            painter.setPen(QColor(15, 26, 52, 46) if is_light() else QColor(255, 255, 255, 26))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 

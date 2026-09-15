@@ -19,13 +19,17 @@ WINDOW_MARGIN = 8
 
 def dialog_label(text='', size=13, color='#F4F5F7', bold=False):
     """轻量标签（弹窗内使用，避免与 workspace_surface 形成循环依赖）。"""
+    from ..materials import map_text_color, register_label
     widget = StrongBodyLabel(text) if bold else CaptionLabel(text)
     font = widget.font()
     font.setPixelSize(size)
     font.setBold(bold)
     widget.setFont(font)
-    widget.setTextColor(color, color)
-    widget.setStyleSheet(f'background:transparent; color:{color};')
+    display = map_text_color(color)
+    name = display.name() if isinstance(display, QColor) else str(display)
+    widget.setTextColor(QColor(name), QColor(name))
+    widget.setStyleSheet(f'background:transparent; color:{name};')
+    register_label(widget, color)
     return widget
 
 
@@ -107,14 +111,18 @@ class StudioDialogBase:
         path = QPainterPath()
         path.addRoundedRect(rect, WINDOW_RADIUS, WINDOW_RADIUS)
         painter.setClipPath(path)
-        painter.fillRect(rect, QColor('#0E1017'))
+        from ..materials import is_light
+        if is_light():
+            painter.fillRect(rect, QColor('#F6F8FC'))
+        else:
+            painter.fillRect(rect, QColor('#0E1017'))
         # 顶部一点冷色渐变，与主窗口的深空质感一致。
         wash = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        wash.setColorAt(0, QColor(91, 141, 239, 16))
+        wash.setColorAt(0, QColor(91, 141, 239, 26 if is_light() else 16))
         wash.setColorAt(1, QColor(124, 108, 240, 0))
         painter.fillRect(rect, wash)
         painter.setClipping(False)
-        painter.setPen(QColor(255, 255, 255, 30))
+        painter.setPen(QColor(15, 26, 52, 46) if is_light() else QColor(255, 255, 255, 30))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), WINDOW_RADIUS, WINDOW_RADIUS)
 

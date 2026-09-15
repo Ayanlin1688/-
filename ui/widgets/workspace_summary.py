@@ -49,13 +49,27 @@ class WorkspaceSummary(QWidget):
         specs = [('批量生成中', '就绪', BLUE), ('产品进度', '0/0', '#f0f0f5'), ('任务进度', '0/0', '#f0f0f5'),
                  ('今日完成', '0', GREEN), ('待完成', '0', '#f0f0f5'), ('成功率', '—', '#f0f0f5'), ('失败', '0', RED), ('并发', '1', '#f0f0f5')]
         self.blocks = []
+        self._separators = []
         for index, (title, value, accent) in enumerate(specs):
             if index:
-                separator = QFrame(); separator.setFrameShape(QFrame.VLine); separator.setFixedWidth(1); separator.setStyleSheet('color:rgba(255,255,255,0.06); background:rgba(255,255,255,0.06);')
+                separator = QFrame(); separator.setFrameShape(QFrame.VLine); separator.setFixedWidth(1)
+                self._separators.append(separator)
                 row.addWidget(separator)
             block = StatBlock(title, value, accent); row.addWidget(block, 1); self.blocks.append(block)
         root.addWidget(self.metrics_card)
         self.cards = [_CompatCard(self) for _ in range(4)]
+        from ..materials import register_theme_callback
+        register_theme_callback(self._apply_mode_style)
+        self._apply_mode_style()
+
+    def _apply_mode_style(self):
+        try:
+            from ..materials import is_light
+            color = 'rgba(15,26,52,0.10)' if is_light() else 'rgba(255,255,255,0.06)'
+            for separator in self._separators:
+                separator.setStyleSheet(f'color:{color}; background:{color};')
+        except RuntimeError:
+            pass
 
     def update_paths(self, paths):
         self._paths = dict(paths)
@@ -78,8 +92,11 @@ class WorkspaceSummary(QWidget):
                   ('任务进度', f'{completed}/{total}', '#f0f0f5'), ('今日完成', str(sum(t.get('status') == 'completed' for t in history if str(t.get('finished_at','')).startswith(datetime.now().date().isoformat()))), GREEN),
                   ('待完成', str(pending), '#f0f0f5'), ('成功率', f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5'), ('失败', str(failed), RED),
                   ('并发', str(max(1, sum(t.get('status') in {'queued','uploading','submitting','processing','downloading'} for t in tasks))), '#f0f0f5')]
+        from ..materials import map_text_color
         for block, (title, value, accent) in zip(self.blocks, values):
-            block.title.setText(title); block.value.setText(value); block.value.setTextColor(accent, accent)
+            block.title.setText(title); block.value.setText(value)
+            mapped = map_text_color(accent)
+            block.value.setTextColor(mapped, mapped)
         self.cards[0].number.setText(str(total))
         matched = sum(bool(t.get('images')) for t in tasks)
         self.cards[0].detail.setText(f'✓ {matched} 已匹配 · ⚠ {total-matched} 未匹配')

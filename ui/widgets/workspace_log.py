@@ -70,12 +70,19 @@ class FilterTabs(QWidget):
             self.setCurrentText('全部')
 
     def _apply(self):
+        from ..materials import is_light
+        light = is_light()
         for name, chip in self._buttons.items():
             if name == self._current:
                 chip.setStyleSheet(
                     'QPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);'
                     ' color:#FFFFFF; border:0; border-radius:6px; padding:0 10px; font-size:11px; font-weight:500;}'
                     ' QPushButton:hover {padding:0 10px;}')
+            elif light:
+                chip.setStyleSheet(
+                    'QPushButton {background:rgba(15,26,52,0.05); color:#5A6271; border:1px solid rgba(15,26,52,0.12);'
+                    ' border-radius:6px; padding:0 10px; font-size:11px;}'
+                    ' QPushButton:hover {color:#1A1D24; background:rgba(15,26,52,0.09);}')
             else:
                 chip.setStyleSheet(
                     'QPushButton {background:rgba(255,255,255,0.06); color:#9CA3AF; border:1px solid rgba(255,255,255,0.10);'
@@ -86,6 +93,7 @@ class FilterTabs(QWidget):
 class WorkspaceLog(LogDrawer):
     view_changed = pyqtSignal()
     COLORS = {'debug': '#AE9CD6', 'info': '#8FB4EE', 'success': '#7CC79A', 'warning': '#E0C16B', 'error': '#E39A9A'}
+    COLORS_LIGHT = {'debug': '#7C6BC0', 'info': '#3E6FD1', 'success': '#2E8B57', 'warning': '#B07D1A', 'error': '#C0483F'}
     DISPLAY_LIMIT = 200
 
     def _build_ui(self):
@@ -119,6 +127,23 @@ class WorkspaceLog(LogDrawer):
         self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(180)
         self._animation.finished.connect(self._toggle_finished)
         self._saved_height = 140
+        from ..materials import register_theme_callback
+        register_theme_callback(self._apply_mode_style)
+        self._apply_mode_style()
+
+    def _apply_mode_style(self):
+        try:
+            from ..materials import is_light
+            if is_light():
+                self.setStyleSheet('#workspaceLog {background:rgba(255,255,255,0.66); border:1px solid rgba(15,26,52,0.12); border-top-left-radius:14px; border-top-right-radius:14px;}')
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
+            else:
+                self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
+            # 已渲染的日志需要按当前主题重排颜色。
+            self._render()
+        except RuntimeError:
+            pass
 
     def _update_count(self):
         self.count_label.setText(f'本次运行 {len(self.entries)} 条')
@@ -143,15 +168,21 @@ class WorkspaceLog(LogDrawer):
         self._render()
 
     def _append_entry(self, timestamp, message, level):
-        color = self.COLORS.get(level, self.COLORS['info'])
+        from ..materials import map_text_color, is_light
+        palette = self.COLORS_LIGHT if is_light() else self.COLORS
+        color = palette.get(level, palette['info'])
+        ts_color = map_text_color('#6B7280')
+        body_color = map_text_color('#E5E7EB')
+        ts_name = ts_color.name() if isinstance(ts_color, QColor) else str(ts_color)
+        body_name = body_color.name() if isinstance(body_color, QColor) else str(body_color)
         text = str(message)
         # 超长行（如长路径）仅截断展示，完整内容仍保留在导出中，避免撑乱面板行距。
         if len(text) > self.DISPLAY_LIMIT:
             text = text[:self.DISPLAY_LIMIT - 1] + '…'
         self.browser.append(
-            f'<div class="logline"><span style="color:#6B7280">{escape(timestamp)}</span>'
+            f'<div class="logline"><span style="color:{ts_name}">{escape(timestamp)}</span>'
             f' &nbsp;<span style="color:{color}">[{escape(level.upper())}]</span>'
-            f' &nbsp;<span style="color:#E5E7EB">{escape(text)}</span></div>')
+            f' &nbsp;<span style="color:{body_name}">{escape(text)}</span></div>')
         self.browser.moveCursor(QTextCursor.End)
         if self.isVisible() and self._expanded:
             rect = self.browser.cursorRect(); rect.setLeft(0); rect.setWidth(self.browser.viewport().width()); rect.setHeight(18)

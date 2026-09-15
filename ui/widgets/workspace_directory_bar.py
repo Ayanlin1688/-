@@ -35,12 +35,31 @@ class WorkspaceDirectoryBar(CardWidget):
             row.addWidget(field, 1)
         self.match_status = label('✓ 已匹配 0/0', 12, '#22C55E', True); row.addWidget(self.match_status)
         self.match_button = PushButton('匹配详情')
-        self.match_button.setStyleSheet('QPushButton {background:transparent; border:0; color:#8AB4F8; font-size:12px; padding:2px 6px;}'
-                                        ' QPushButton:hover {color:#BFD2FF; background:rgba(255,255,255,0.06); border-radius:6px;}'
-                                        ' QPushButton:disabled {color:#55555f;}')
         self.match_button.setToolTip('查看图片与提示词的匹配详情')
         self.match_button.clicked.connect(self.match_requested)
         row.addWidget(self.match_button)
+        from ..materials import register_theme_callback
+        register_theme_callback(self._apply_mode_style)
+        self._apply_mode_style()
+
+    def _apply_mode_style(self):
+        try:
+            from ..materials import is_light
+            if is_light():
+                chip = 'background:rgba(15,26,52,0.05); border:1px solid rgba(15,26,52,0.12); border-radius:8px; padding:4px 8px;'
+                button_style = ('QPushButton {background:transparent; border:0; color:#3E6FD1; font-size:12px; padding:2px 6px;}'
+                                ' QPushButton:hover {color:#2A55AE; background:rgba(15,26,52,0.06); border-radius:6px;}'
+                                ' QPushButton:disabled {color:rgba(15,26,52,0.35);}')
+            else:
+                chip = 'background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10); border-radius:8px; padding:4px 8px;'
+                button_style = ('QPushButton {background:transparent; border:0; color:#8AB4F8; font-size:12px; padding:2px 6px;}'
+                                ' QPushButton:hover {color:#BFD2FF; background:rgba(255,255,255,0.06); border-radius:6px;}'
+                                ' QPushButton:disabled {color:#55555f;}')
+            for field in self.fields.values():
+                field.path.setStyleSheet(chip)
+            self.match_button.setStyleSheet(button_style)
+        except RuntimeError:
+            pass
 
     def refresh(self, paths, tasks, metrics=None):
         metrics = metrics or {}

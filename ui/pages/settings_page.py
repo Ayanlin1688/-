@@ -1,7 +1,7 @@
 """Fluent setting cards backed by the application's JSON config."""
 
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTime, QSignalBlocker, QTimer
-from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy
+from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
@@ -52,6 +52,42 @@ class SettingsPage(QWidget):
     schedule_changed = pyqtSignal()
     task_settings_changed = pyqtSignal()
     detection_changed = pyqtSignal()
+    appearance_changed = pyqtSignal()
+
+    class _SettingsScrollProxy:
+        """滚动代理：保持旧接口（ensureWidgetVisible / verticalScrollBar / widget），
+        并在目标控件不在当前页时自动切换到它所在的页。"""
+        def __init__(self, page):
+            self._page = page
+
+        def ensureWidgetVisible(self, widget, x=0, y=0):
+            key = self._page._page_key_for_widget(widget)
+            if key is None:
+                return
+            try:
+                self._page.page_stack.setCurrentIndex(self._page._page_order.index(key))
+            except Exception:
+                return
+            area = self._page._pages[key][0]
+            try:
+                area.ensureWidgetVisible(widget, x, y)
+            except Exception:
+                pass
+
+        def verticalScrollBar(self):
+            try:
+                key = self._page._current_page_key()
+                return self._page._pages[key][0].verticalScrollBar()
+            except Exception:
+                return None
+
+        def widget(self):
+            try:
+                key = self._page._current_page_key()
+                return self._page._pages[key][1]
+            except Exception:
+                return None
+
     def __init__(self, config_manager, log_callback, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPage")
@@ -61,39 +97,119 @@ class SettingsPage(QWidget):
         self.jobs.log_message.connect(self.log_callback)
         self.model_rows = []
         self.groups = []
-        page = QWidget()
-        page.setObjectName("settingsContent")
-        self.root = QVBoxLayout(page)
-        self.root.setContentsMargins(28, 22, 28, 30)
-        self.root.setSpacing(16)
-        self.root.addWidget(TitleLabel("设置"))
-        self.root.addWidget(CaptionLabel("中转站、连接配置、模型池与任务偏好 · 修改后自动保存"))
+        self._pages = {}
+        self._page_order = []
+        self._rail_buttons = {}
+        self._page_buttons = {}
+        self._station_nav_buttons = {}
+        self.page_stack = QStackedWidget()
+        # —— 服务线路页 ——
+        self.root = self._make_page('stations')
+        self._page_title(self.root, '中转站', '每个中转站独立成一页；左侧导航可直达；「设为当前」后任务走该线路')
         self._build_stations()
-        self._build_api()
-        self._build_pool()
-        self._build_task()
-        self._build_defaults()
-        self._build_schedule()
-        self._build_sync()
-        self._build_appearance()
         self.root.addStretch(1)
-        self.scroll = ScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QScrollArea.NoFrame)
-        self.scroll.setWidget(page)
+        # —— 新增中转站页（共用编辑器） ——
+        self.root = self._make_page('station-new')
+        self._page_title(self.root, '新增中转站', '填写后保存即可；也可从「中转站管理」一键保存当前 API 配置')
+        self._build_station_editor_page()
+        self.root.addStretch(1)
+        # —— 设置各分类页 ——
+        self.root = self._make_page('api')
+        self._page_title(self.root, '当前线路', '任务提交使用此线路；切换中转站后自动同步')
+        self._build_api(); self.root.addStretch(1)
+        self.root = self._make_page('pool')
+        self._page_title(self.root, '模型池', '多模型调度、故障转移与健康状态')
+        self._build_pool(); self.root.addStretch(1)
+        self.root = self._make_page('task')
+        self._page_title(self.root, '任务策略', '重试、并发、未匹配策略与命名规则')
+        self._build_task(); self.root.addStretch(1)
+        self.root = self._make_page('defaults')
+        self._page_title(self.root, '默认参数', '新任务的默认模型与生成参数')
+        self._build_defaults(); self.root.addStretch(1)
+        self.root = self._make_page('schedule')
+        self._page_title(self.root, '定时执行', '按时间自动开始任务队列')
+        self._build_schedule(); self.root.addStretch(1)
+        self.root = self._make_page('appearance')
+        self._page_title(self.root, '外观与语言', '主题、玻璃质感、背景与界面语言')
+        self._build_appearance(); self.root.addStretch(1)
+        self.root = self._make_page('sync')
+        self._page_title(self.root, 'GitHub 同步', '把代码改动同步到你的私人仓库')
+        self._build_sync(); self.root.addStretch(1)
+        self.scroll = self._SettingsScrollProxy(self)
         self._rail_buttons = {}
         self.rail = self._build_rail()
         shell = QHBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
         shell.addWidget(self.rail)
-        shell.addWidget(self.scroll, 1)
-        self.scroll.verticalScrollBar().valueChanged.connect(self._sync_rail_on_scroll)
+        shell.addWidget(self.page_stack, 1)
+        self._switch_page('stations', highlight=True)
         self.pool_timer = QTimer(self)
         self.pool_timer.setInterval(1000)
         self.pool_timer.timeout.connect(self.refresh_pool_state)
         self.pool_timer.start()
         self.refresh_pool_state()
+
+    # ------------------------------------------------------------------
+    # 分页基建
+    # ------------------------------------------------------------------
+    def _make_page(self, key):
+        content = QWidget(); content.setObjectName('settingsContent')
+        layout = QVBoxLayout(content); layout.setContentsMargins(28, 22, 28, 30); layout.setSpacing(16)
+        area = ScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.NoFrame)
+        area.setWidget(content)
+        try:
+            area.verticalScrollBar().valueChanged.connect(self._sync_rail_on_scroll)
+        except Exception:
+            pass
+        self.page_stack.addWidget(area)
+        self._pages[key] = (area, content)
+        if key not in self._page_order:
+            self._page_order.append(key)
+        return layout
+
+    @staticmethod
+    def _page_title(layout, title, subtitle):
+        layout.addWidget(TitleLabel(title))
+        caption = CaptionLabel(subtitle)
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
+    def _current_page_key(self):
+        index = self.page_stack.currentIndex()
+        if 0 <= index < len(self._page_order):
+            return self._page_order[index]
+        return 'stations'
+
+    def _switch_page(self, key, highlight=True):
+        if key not in self._page_order:
+            return
+        self.page_stack.setCurrentIndex(self._page_order.index(key))
+        if highlight:
+            self._highlight_rail(key)
+
+    def _highlight_rail(self, key):
+        button = self._page_buttons.get(key)
+        candidates = list(getattr(self, '_rail_buttons', {}).values())
+        candidates += list(getattr(self, '_station_nav_buttons', {}).values())
+        if hasattr(self, '_station_nav_add'):
+            candidates.append(self._station_nav_add)
+        for candidate in candidates:
+            try:
+                active = candidate is button
+                candidate.setProperty('railActive', active)
+                candidate.style().unpolish(candidate); candidate.style().polish(candidate)
+            except Exception:
+                pass
+
+    def _page_key_for_widget(self, widget):
+        w = widget
+        while w is not None:
+            for key, (_area, content) in self._pages.items():
+                if w is content:
+                    return key
+            w = w.parentWidget()
+        return None
 
     def _group(self, title):
         group = SettingCardGroup(title)
@@ -114,18 +230,24 @@ class SettingsPage(QWidget):
             '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
             '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
         layout = QVBoxLayout(rail); layout.setContentsMargins(16, 22, 14, 26); layout.setSpacing(4)
-        # —— 服务线路：中转站管理 + 每个中转站一条（一等分类，不再小字缩进）——
+        # —— 服务线路：中转站管理 + 每个中转站一条（一等分类）——
         service_head = CaptionLabel('服务线路')
         service_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
         layout.addWidget(service_head); layout.addSpacing(2)
-        self._rail_targets = {}
-        manage = QPushButton('中转站管理')
-        manage.setCursor(Qt.PointingHandCursor)
-        manage.setMinimumHeight(32)
-        manage.clicked.connect(lambda checked=False, g=getattr(self, 'stations_group', None), b=manage: self._jump_to_group(g, b))
-        layout.addWidget(manage)
-        self._rail_buttons['中转站管理'] = manage
-        self._rail_targets[manage] = getattr(self, 'stations_group', None)
+        self._rail_buttons = {}
+        self._page_buttons = {}
+
+        def add_entry(text, key):
+            button = QPushButton(text)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(32)
+            button.clicked.connect(lambda checked=False, k=key, b=button: self._jump_to_group(k, b))
+            layout.addWidget(button)
+            self._rail_buttons[text] = button
+            self._page_buttons[key] = button
+            return button
+
+        add_entry('中转站管理', 'stations')
         self._station_nav_layout = QVBoxLayout(); self._station_nav_layout.setSpacing(4)
         layout.addLayout(self._station_nav_layout)
         self._station_nav_add = QPushButton('+ 新增中转站')
@@ -134,6 +256,7 @@ class SettingsPage(QWidget):
         self._station_nav_add.setMinimumHeight(32)
         self._station_nav_add.clicked.connect(lambda: self._open_station_editor(None))
         layout.addWidget(self._station_nav_add)
+        self._page_buttons['station-new'] = self._station_nav_add
         self._station_nav_buttons = {}
         self._sync_station_nav()
         layout.addSpacing(14)
@@ -141,38 +264,30 @@ class SettingsPage(QWidget):
         app_head = CaptionLabel('设置')
         app_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
         layout.addWidget(app_head); layout.addSpacing(2)
-        targets = [(getattr(self, 'api_group', None), '当前线路'),
-                   (getattr(self, 'pool_group', None), '模型池'),
-                   (getattr(self, 'task_group', None), '任务策略'),
-                   (getattr(self, 'defaults_group', None), '默认参数'),
-                   (getattr(self, 'schedule_group', None), '定时执行'),
-                   (getattr(self, 'appearance_group', None), '外观与语言'),
-                   (getattr(self, 'sync_group', None), 'GitHub 同步')]
-        for group, text in targets:
-            if group is None:
-                continue
-            button = QPushButton(text)
-            button.setCursor(Qt.PointingHandCursor)
-            button.setMinimumHeight(32)
-            button.clicked.connect(lambda checked=False, g=group, b=button: self._jump_to_group(g, b))
-            layout.addWidget(button)
-            self._rail_buttons[text] = button
-            self._rail_targets[button] = group
+        for key, text in (('api', '当前线路'), ('pool', '模型池'), ('task', '任务策略'),
+                          ('defaults', '默认参数'), ('schedule', '定时执行'),
+                          ('appearance', '外观与语言'), ('sync', 'GitHub 同步')):
+            add_entry(text, key)
         layout.addStretch(1)
         return rail
 
-    def _jump_to_group(self, group, button):
-        try:
-            self.scroll.ensureWidgetVisible(group, 0, 28)
-        except Exception:
-            pass
-        for candidate in self._rail_buttons.values():
-            active = candidate is button
-            candidate.setProperty('railActive', active)
-            candidate.style().unpolish(candidate); candidate.style().polish(candidate)
-        for station_button in getattr(self, '_station_nav_buttons', {}).values():
-            station_button.setProperty('railActive', False)
-            station_button.style().unpolish(station_button); station_button.style().polish(station_button)
+    def _jump_to_group(self, target, button=None):
+        key = target if isinstance(target, str) else self._page_key_for_widget(target)
+        if key is None or key not in self._page_order:
+            return
+        self.page_stack.setCurrentIndex(self._page_order.index(key))
+        active_button = button or self._page_buttons.get(key)
+        candidates = list(getattr(self, '_rail_buttons', {}).values())
+        candidates += list(getattr(self, '_station_nav_buttons', {}).values())
+        if hasattr(self, '_station_nav_add'):
+            candidates.append(self._station_nav_add)
+        for candidate in candidates:
+            try:
+                active = candidate is active_button
+                candidate.setProperty('railActive', active)
+                candidate.style().unpolish(candidate); candidate.style().polish(candidate)
+            except Exception:
+                pass
 
     def _sync_station_nav(self):
         layout = getattr(self, '_station_nav_layout', None)
@@ -184,10 +299,12 @@ class SettingsPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self._station_nav_buttons = {}
+        for key in [k for k in list(getattr(self, '_page_buttons', {})) if k.startswith('station:')]:
+            self._page_buttons.pop(key, None)
         active = self.config_manager.config.get('stations_active', '')
         stations = self._stations()
         if not stations:
-            hint = CaptionLabel('（暂无 · 先用下方按钮创建）')
+            hint = CaptionLabel('（暂无 · 点「+ 新增中转站」创建）')
             hint.setWordWrap(True)
             hint.setStyleSheet('color:rgba(237,237,240,0.30); font-size:11px; padding-left:8px;')
             layout.addWidget(hint)
@@ -201,57 +318,114 @@ class SettingsPage(QWidget):
             button.clicked.connect(lambda checked=False, s=sid, b=button: self._focus_station(s, b))
             layout.addWidget(button)
             self._station_nav_buttons[sid] = button
+            self._page_buttons[f'station:{sid}'] = button
 
     def _focus_station(self, station_id, button=None):
-        entry = next(((row, s) for row, s in self.station_rows if s.get('id') == station_id), None)
-        if entry is None:
-            return
-        row, _station = entry
-        try:
-            self.scroll.ensureWidgetVisible(row, 0, 60)
-        except Exception:
-            pass
-        try:
-            for candidate in self._station_nav_buttons.values():
-                candidate.setProperty('railActive', candidate is button)
-                candidate.style().unpolish(candidate); candidate.style().polish(candidate)
-            for candidate in self._rail_buttons.values():
-                candidate.setProperty('railActive', False)
-                candidate.style().unpolish(candidate); candidate.style().polish(candidate)
-        except Exception:
-            pass
-        name = getattr(row, '_studio_name_label', None)
-        if name is not None:
+        key = f'station:{station_id}'
+        if key in self._page_order:
+            self.page_stack.setCurrentIndex(self._page_order.index(key))
+        active_button = button or self._page_buttons.get(key)
+        candidates = list(getattr(self, '_rail_buttons', {}).values())
+        candidates += list(getattr(self, '_station_nav_buttons', {}).values())
+        if hasattr(self, '_station_nav_add'):
+            candidates.append(self._station_nav_add)
+        for candidate in candidates:
             try:
-                name.setTextColor('#5B8DEF', '#5B8DEF')
-                QTimer.singleShot(1500, lambda n=name: self._restore_station_name(n))
+                active = candidate is active_button
+                candidate.setProperty('railActive', active)
+                candidate.style().unpolish(candidate); candidate.style().polish(candidate)
             except Exception:
                 pass
 
-    def _restore_station_name(self, name):
-        try:
-            name.setTextColor('#F4F5F7', '#F4F5F7')
-        except RuntimeError:
-            pass
-
     def _sync_rail_on_scroll(self, *_):
         try:
-            value = self.scroll.verticalScrollBar().value()
-            container = self.scroll.widget()
-            best = None; best_pos = -1
-            for button, group in getattr(self, '_rail_targets', {}).items():
-                position = group.mapTo(container, QPoint(0, 0)).y()
-                if position <= value + 80 and position > best_pos:
-                    best = button; best_pos = position
-            if best is not None and not best.property('railActive'):
-                for candidate in self._rail_buttons.values():
-                    candidate.setProperty('railActive', candidate is best)
-                    candidate.style().unpolish(candidate); candidate.style().polish(candidate)
-                for station_button in getattr(self, '_station_nav_buttons', {}).values():
-                    station_button.setProperty('railActive', False)
-                    station_button.style().unpolish(station_button); station_button.style().polish(station_button)
+            key = self._current_page_key()
+            button = self._page_buttons.get(key)
+            if button is not None and not button.property('railActive'):
+                self._highlight_rail(key)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # 中转站分页（每站一页 + 新增页 + 总览卡）
+    # ------------------------------------------------------------------
+    def _render_station_pages(self):
+        previous_root = getattr(self, 'root', None)
+        current = self._current_page_key()
+        for key in [k for k in list(self._pages) if k.startswith('station:')]:
+            area, content = self._pages.pop(key)
+            if key in self._page_order:
+                self._page_order.remove(key)
+            self.page_stack.removeWidget(area)
+            area.deleteLater()
+            self._page_buttons.pop(key, None)
+        for station in self._stations():
+            key = f"station:{station.get('id')}"
+            self.root = self._make_page(key)
+            self._build_station_page(station)
+            self.root.addStretch(1)
+            try:
+                style_controls(self._pages[key][1])
+            except Exception:
+                pass
+        self.root = previous_root
+        target = current if current in self._page_order else 'stations'
+        self._switch_page(target, highlight=True); 
+
+    def _build_station_page(self, station):
+        sid = station.get('id')
+        self.root.addWidget(TitleLabel(station.get('name') or '未命名中转站'))
+        caption = CaptionLabel('中转站 ID：' + str(sid) + ' · 修改后点击「保存修改」')
+        caption.setWordWrap(True)
+        self.root.addWidget(caption)
+        card = make_card()
+        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        name = LineEdit(); name.setText(station.get('name', '')); name.setPlaceholderText('名称，例如：主线路 · 国内')
+        base = LineEdit(); base.setText(station.get('base_url', '')); base.setPlaceholderText('API Base URL')
+        key_edit = LineEdit(); key_edit.setText(station.get('api_key', '')); key_edit.setEchoMode(LineEdit.Password); key_edit.setPlaceholderText('API Key')
+        upload = LineEdit(); upload.setText(station.get('upload_url', '')); upload.setPlaceholderText('上传接口 URL（可留空）')
+        upload_key = LineEdit(); upload_key.setText(station.get('upload_api_key', '')); upload_key.setEchoMode(LineEdit.Password); upload_key.setPlaceholderText('上传 Token（可留空）')
+        for caption_text, field in (('名称', name), ('API Base URL', base), ('API Key', key_edit),
+                                    ('上传接口 URL', upload), ('上传 Token', upload_key)):
+            row = QHBoxLayout(); row.setSpacing(10)
+            lbl = CaptionLabel(caption_text); lbl.setFixedWidth(110)
+            field.setFixedHeight(32)
+            row.addWidget(lbl, 0, Qt.AlignVCenter); row.addWidget(field, 1)
+            layout.addLayout(row)
+        caps = QHBoxLayout(); caps.setSpacing(14)
+        caps_label = CaptionLabel('能力标签'); caps_label.setFixedWidth(110)
+        caps.addWidget(caps_label, 0, Qt.AlignVCenter)
+        boxes = {}
+        for key2, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
+            box = CheckBox(text); box.setChecked(key2 in (station.get('capabilities') or []))
+            boxes[key2] = box; caps.addWidget(box)
+        caps.addStretch(1); layout.addLayout(caps)
+        buttons = QHBoxLayout(); buttons.setSpacing(8)
+        save = PushButton('保存修改'); use = PushButton('设为当前'); remove = PushButton('删除该中转站')
+        save.setFixedHeight(32); use.setFixedHeight(32); remove.setFixedHeight(32)
+        buttons.addWidget(save); buttons.addWidget(use); buttons.addStretch(1); buttons.addWidget(remove)
+        layout.addLayout(buttons)
+        self.root.addWidget(card)
+        save.clicked.connect(lambda checked=False, s=sid, n=name, b=base, k=key_edit, u=upload, uk=upload_key, bx=boxes:
+                             self._save_station_page(s, n, b, k, u, uk, bx))
+        use.clicked.connect(lambda checked=False, s=sid: self._set_current_station(s))
+        remove.clicked.connect(lambda checked=False, s=sid: self._delete_station(s))
+
+    def _save_station_page(self, sid, name, base, key_edit, upload, upload_key, boxes):
+        name_text = name.text().strip()
+        if not name_text:
+            self.log_callback('中转站名称不能为空', 'warning')
+            return
+        stations = self._stations()
+        for station in stations:
+            if station.get('id') == sid:
+                station.update(name=name_text, base_url=base.text().strip(), api_key=key_edit.text().strip(),
+                               upload_url=upload.text().strip(), upload_api_key=upload_key.text().strip(),
+                               capabilities=[k for k, b in boxes.items() if b.isChecked()])
+        self._persist_stations(stations)
+        self._render_stations()
+        self._switch_page(f'station:{sid}', highlight=True)
+        self.log_callback(f'中转站已更新：{name_text}', 'success')
 
     # ------------------------------------------------------------------
     # 中转站：每个中转站一个分类（命名 / 配置 / 测试 / 切换）
@@ -280,8 +454,17 @@ class SettingsPage(QWidget):
         self.capture_station_button.clicked.connect(self._capture_current_station)
         buttons.addWidget(self.add_station_button); buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
         layout.addLayout(buttons)
-        self.station_editor_host = QWidget(); self.station_editor_host.hide()
-        editor = QVBoxLayout(self.station_editor_host); editor.setContentsMargins(0, 6, 0, 0); editor.setSpacing(8)
+        group.addSettingCard(card)
+        self.station_rows = []
+        self._editing_station_id = ''
+        self._render_stations()
+
+    def _build_station_editor_page(self):
+        """新增中转站页：保留共用编辑器字段（与旧版完全一致）。"""
+        card = make_card()
+        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        self.station_editor_host = QWidget()
+        editor = QVBoxLayout(self.station_editor_host); editor.setContentsMargins(0, 0, 0, 0); editor.setSpacing(8)
         self.station_editor_title = CaptionLabel('新增中转站'); editor.addWidget(self.station_editor_title)
         self.station_name = LineEdit(); self.station_name.setPlaceholderText('名称，例如：主线路 · 国内'); editor.addWidget(self.station_name)
         self.station_base = LineEdit(); self.station_base.setPlaceholderText('API Base URL'); editor.addWidget(self.station_base)
@@ -301,10 +484,7 @@ class SettingsPage(QWidget):
         editor_buttons.addWidget(save); editor_buttons.addWidget(cancel); editor_buttons.addStretch(1)
         editor.addLayout(editor_buttons)
         layout.addWidget(self.station_editor_host)
-        group.addSettingCard(card)
-        self.station_rows = []
-        self._editing_station_id = ''
-        self._render_stations()
+        self.root.addWidget(card)
 
     def _fit_stations_card(self):
         try:
@@ -331,6 +511,7 @@ class SettingsPage(QWidget):
             self._fit_stations_card()
             self._sync_station_nav()
             self._refresh_api_group_title()
+            self._render_station_pages()
             return
         cap_texts = {'video': '视频', 'llm': '语言', 'image': '生图'}
         for station in stations:
@@ -371,30 +552,26 @@ class SettingsPage(QWidget):
         self._fit_stations_card()
         self._sync_station_nav()
         self._refresh_api_group_title()
+        self._render_station_pages()
 
     def _open_station_editor(self, station_id):
-        station = next((s for s in self._stations() if s.get('id') == station_id), None) if station_id else None
-        self._editing_station_id = station.get('id', '') if station else ''
-        self.station_editor_title.setText('编辑中转站' if station else '新增中转站')
-        self.station_name.setText(station.get('name', '') if station else '')
-        self.station_base.setText(station.get('base_url', '') if station else '')
-        self.station_key.setText(station.get('api_key', '') if station else '')
-        self.station_upload.setText(station.get('upload_url', '') if station else '')
-        self.station_upload_key.setText(station.get('upload_api_key', '') if station else '')
-        caps = station.get('capabilities', ['video']) if station else ['video']
+        self._editing_station_id = ''
+        if station_id and station_id in {s.get('id') for s in self._stations()}:
+            self._switch_page(f'station:{station_id}', highlight=True)
+            return
+        self.station_editor_title.setText('新增中转站')
+        self.station_name.setText('')
+        self.station_base.setText('')
+        self.station_key.setText('')
+        self.station_upload.setText('')
+        self.station_upload_key.setText('')
         for key, box in self.station_caps.items():
-            box.setChecked(key in caps)
-        self.station_editor_host.show()
-        self._fit_stations_card()
-        try:
-            self.scroll.ensureWidgetVisible(self.station_editor_host, 0, 40)
-        except Exception:
-            pass
+            box.setChecked(key == 'video')
+        self._switch_page('station-new', highlight=True)
 
     def _close_station_editor(self):
-        self.station_editor_host.hide()
         self._editing_station_id = ''
-        self._fit_stations_card()
+        self._switch_page('stations', highlight=True)
 
     def _save_station_editor(self):
         name = self.station_name.text().strip()
@@ -414,8 +591,9 @@ class SettingsPage(QWidget):
             payload['id'] = f'st-{int(time.time()*1000)}'
             stations.append(payload)
         self._persist_stations(stations)
-        self._close_station_editor()
+        self._editing_station_id = ''
         self._render_stations()
+        self._switch_page('stations', highlight=True)
         self.log_callback(f'中转站已保存：{name}', 'success')
 
     def _set_current_station(self, station_id):
@@ -438,6 +616,7 @@ class SettingsPage(QWidget):
         active = self.config_manager.config.get('stations_active', '')
         self._persist_stations(stations, '' if active == station_id else None)
         self._render_stations()
+        self._switch_page('stations', highlight=True)
 
     def _capture_current_station(self):
         api = dict(self.config_manager.config.get('api', {}))
@@ -648,8 +827,13 @@ class SettingsPage(QWidget):
     def _build_appearance(self):
         group = self._group("外观")
         self.appearance_group = group
-        self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深色", "浅色", "跟随系统"])
+        self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深空（深色）", "白玉（浅色）", "跟随系统"])
+        self.theme.setToolTip("切换后界面立即生效；白玉模式为浅色玻璃主题")
+        self.blur = self._switch(group, "高斯模糊玻璃", ("appearance", "blur"), FIF.CLOUD)
+        self.blur.setToolTip("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）")
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
+        self.theme.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
+        self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
         self.root.addWidget(CaptionLabel('Yanlin Smart-Creation Matrix v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
 
     def _build_schedule(self):
@@ -688,7 +872,6 @@ class SettingsPage(QWidget):
         self.sync_button.setToolTip('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传')
         self.sync_button.clicked.connect(self.sync_github)
         group.addSettingCard(CustomSettingCard('GitHub 私人仓库同步', self.sync_button, FIF.SYNC))
-
     def sync_github(self):
         self.sync_button.setEnabled(False)
         self.sync_button.setText('正在同步...')

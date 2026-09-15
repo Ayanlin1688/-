@@ -1,17 +1,19 @@
 """Shared dark Fluent palette, materials and non-invasive visual installation."""
 
+import weakref
 from types import MethodType
 from PyQt5.QtCore import Qt, QEvent, QObject, QSize
 from PyQt5.QtGui import QPalette, QColor, QPainter
-from PyQt5.QtWidgets import QWidget, QAbstractScrollArea
+from PyQt5.QtWidgets import QWidget, QAbstractScrollArea, QApplication
 from qframelesswindow.titlebar.title_bar_buttons import TitleBarButton
 from qfluentwidgets import (
     PrimaryPushButton, PushButton, LineEdit, SpinBox, ComboBox, SettingCard,
     TextBrowser, setCustomStyleSheet, CardWidget, CaptionLabel, StrongBodyLabel,
-    TitleLabel, SwitchButton, ProgressBar, ToolButton, SettingCardGroup,
+    TitleLabel, SwitchButton, ProgressBar, ToolButton, SettingCardGroup, Theme, setTheme,
 )
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
+from . import materials
 from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
 
@@ -44,14 +46,127 @@ def studio_combo_menu(combo):
     return menu
 
 
-def apply_palette(app):
+def apply_palette(app, light=False):
     palette = app.palette()
-    for role, color in ((QPalette.Window, "#0a0a0b"), (QPalette.Base, "#141418"),
-                        (QPalette.AlternateBase, "#19191e"), (QPalette.Text, "#f4f4f5"),
-                        (QPalette.WindowText, "#f4f4f5"), (QPalette.ButtonText, "#f4f4f5"),
-                        (QPalette.Highlight, ACCENT), (QPalette.HighlightedText, "#ffffff")):
+    if light:
+        colors = ((QPalette.Window, "#F4F6FB"), (QPalette.Base, "#FFFFFF"),
+                  (QPalette.AlternateBase, "#EEF1F8"), (QPalette.Text, "#1A1D24"),
+                  (QPalette.WindowText, "#1A1D24"), (QPalette.ButtonText, "#1A1D24"),
+                  (QPalette.Highlight, ACCENT), (QPalette.HighlightedText, "#ffffff"))
+    else:
+        colors = ((QPalette.Window, "#0a0a0b"), (QPalette.Base, "#141418"),
+                  (QPalette.AlternateBase, "#19191e"), (QPalette.Text, "#f4f4f5"),
+                  (QPalette.WindowText, "#f4f4f5"), (QPalette.ButtonText, "#f4f4f5"),
+                  (QPalette.Highlight, ACCENT), (QPalette.HighlightedText, "#ffffff"))
+    for role, color in colors:
         palette.setColor(role, QColor(color))
     app.setPalette(palette)
+
+
+# ---------------------------------------------------------------------------
+# 主题模式：控件样式注册表 + 整体应用/刷新
+_MODE_STYLED = []
+
+
+def _dark_rules(kind):
+    return {
+        'primary': """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
+            color:white; border:1px solid rgba(160,180,255,0.55); border-radius:8px;}
+            PrimaryPushButton:hover {border-color:rgba(190,205,255,0.8); background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #6996f2,stop:1 #8A7BF3);}
+            PrimaryPushButton:disabled {background:rgba(91,141,239,0.16); color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);}""",
+        'push': "PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;} PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);} PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}",
+        'input': """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}
+            LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.08);}
+            LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}
+            SpinBox QToolButton:hover {background:rgba(91,141,239,0.18); border-radius:6px;}""",
+        'card': "SettingCard {background:transparent; border:0; border-radius:12px;}",
+        'browser': "TextBrowser {background:rgba(0,0,0,0.4); color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.08); border-radius:12px;}",
+    }.get(kind, '')
+
+
+def _light_rules(kind):
+    return {
+        'primary': """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
+            color:white; border:1px solid rgba(130,150,235,0.6); border-radius:8px;}
+            PrimaryPushButton:hover {border-color:rgba(150,170,250,0.9);}
+            PrimaryPushButton:disabled {background:rgba(91,141,239,0.28); color:rgba(255,255,255,0.75); border-color:rgba(130,150,235,0.3);}""",
+        'push': "PushButton {border-radius:8px; background:rgba(15,26,52,0.06); border:1px solid rgba(15,26,52,0.16); color:#16233B;} PushButton:hover {background:rgba(15,26,52,0.1); border-color:rgba(15,26,52,0.3);} PushButton:disabled {color:rgba(15,26,52,0.35); background:rgba(15,26,52,0.04);}",
+        'input': """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.78); color:#1A1D24; border:1px solid rgba(15,26,52,0.16);}
+            LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.96);}
+            LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(15,26,52,0.4);}
+            SpinBox QToolButton:hover {background:rgba(91,141,239,0.16); border-radius:6px;}""",
+        'card': "SettingCard {background:transparent; border:0; border-radius:12px;}",
+        'browser': "TextBrowser {background:rgba(255,255,255,0.55); color:#2A2F3A; border:1px solid rgba(15,26,52,0.12); border-radius:12px;}",
+    }.get(kind, '')
+
+
+def _set_control_rules(widget, kind):
+    rules = _light_rules(kind) if materials.is_light() else _dark_rules(kind)
+    if rules:
+        setCustomStyleSheet(widget, rules, rules)
+
+
+def _register_mode_widget(widget, kind):
+    _MODE_STYLED.append((weakref.ref(widget), kind))
+
+
+def refresh_mode_styles():
+    light = materials.is_light()
+    for ref, kind in list(_MODE_STYLED):
+        widget = ref()
+        if widget is None:
+            continue
+        try:
+            if kind == 'group':
+                widget.titleLabel.setStyleSheet('color:#1A1D24; font-size:18px; font-weight:600;' if light
+                                                else 'color:#ffffff; font-size:18px; font-weight:600;')
+            elif kind == 'caption2':
+                color = QColor('#5A6271') if light else SECONDARY
+                widget.setTextColor(color, color)
+            else:
+                _set_control_rules(widget, kind)
+        except RuntimeError:
+            continue
+
+
+def _system_prefers_light():
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+        value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+        return bool(value)
+    except Exception:
+        return False
+
+
+def apply_ui_mode(mode='dark'):
+    """切换深空 / 白玉主题：全局材料、Fluent 主题、注册控件与窗口重绘。"""
+    if mode == 'system':
+        light = _system_prefers_light()
+    else:
+        light = (mode == 'light')
+    materials.set_light_mode(light)
+    try:
+        setTheme(Theme.LIGHT if light else Theme.DARK, save=False)
+    except Exception:
+        pass
+    app = QApplication.instance()
+    if app is not None:
+        apply_palette(app, light)
+    materials.apply_theme_to_labels()
+    try:
+        materials.restyle_theme_buttons()
+    except Exception:
+        pass
+    refresh_mode_styles()
+    materials.run_theme_callbacks()
+    if app is not None:
+        for widget in app.topLevelWidgets():
+            try:
+                widget.update()
+            except Exception:
+                pass
 
 
 class SettingSurface:
@@ -66,31 +181,27 @@ def style_controls(root):
         if widget.property('studioStyled'):
             continue
         widget.setProperty('studioStyled', True)
-        rules = ""
+        kind = None
         if isinstance(widget, PrimaryPushButton):
-            rules = """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
-                color:white; border:1px solid rgba(160,180,255,0.55); border-radius:8px;}
-                PrimaryPushButton:hover {border-color:rgba(190,205,255,0.8); background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #6996f2,stop:1 #8A7BF3);}
-                PrimaryPushButton:disabled {background:rgba(91,141,239,0.16); color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);}"""
+            kind = 'primary'
         elif isinstance(widget, PushButton):
-            rules = "PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;} PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);} PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}"
+            kind = 'push'
         elif isinstance(widget, (LineEdit, SpinBox, ComboBox)):
-            rules = """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}
-                LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.08);}
-                LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}
-                SpinBox QToolButton:hover {background:rgba(91,141,239,0.18); border-radius:6px;}"""
+            kind = 'input'
         elif isinstance(widget, SettingCard):
-            rules = "SettingCard {background:transparent; border:0; border-radius:12px;}"
+            kind = 'card'
         elif isinstance(widget, TextBrowser):
-            rules = "TextBrowser {background:rgba(0,0,0,0.4); color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.08); border-radius:12px;}"
-        if rules:
-            setCustomStyleSheet(widget, rules, rules)
+            kind = 'browser'
+        if kind:
+            _set_control_rules(widget, kind)
+            _register_mode_widget(widget, kind)
         if isinstance(widget, TitleBarButton):
             widget.setNormalColor(QColor('#ffffff'))
             widget.setHoverColor(QColor('#ffffff'))
             widget.setPressedColor(QColor('#ffffff'))
         if isinstance(widget, SettingCardGroup):
             widget.titleLabel.setStyleSheet('color:#ffffff; font-size:18px; font-weight:600;')
+            _register_mode_widget(widget, 'group')
         if isinstance(widget, ComboBox):
             widget._createComboMenu = MethodType(studio_combo_menu, widget)
         if isinstance(widget, (PushButton, ToolButton, ComboBox)) and widget.__class__.__name__ != 'Indicator':
@@ -121,6 +232,7 @@ def style_controls(root):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
             if not widget.text().startswith('●') and widget.text() not in {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}:
                 widget.setTextColor(SECONDARY, SECONDARY)
+                _register_mode_widget(widget, 'caption2')
         elif isinstance(widget, StrongBodyLabel):
             font = widget.font(); font.setPixelSize(14 if widget.parentWidget().__class__.__name__ in ('TaskQueueRow', 'TaskGroupHeader', 'RecentCompletedRow') else 18)
             font.setBold(True); widget.setFont(font)

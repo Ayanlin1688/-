@@ -27,7 +27,8 @@ class BrandLogo(_RailWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         size = 34.0
-        rect = QRectF((self.width()-size)/2, (self.height()-size)/2, size, size)
+        # 磁贴锚定在组件顶部，与标题栏文字垂直居中对齐。
+        rect = QRectF((self.width()-size)/2, 1.0, size, size)
         center = rect.center()
         halo = QRadialGradient(center, size*0.95)
         halo.setColorAt(0, QColor(124, 108, 240, 66))

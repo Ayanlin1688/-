@@ -20,22 +20,28 @@ MUTED = '#9ca3af'
 
 
 def label(text='', size=12, color=MUTED, bold=False, mono=False):
+    from ..materials import map_text_color, register_label
     widget = StrongBodyLabel(text) if bold else CaptionLabel(text)
     widget.setProperty('studioStyled', True)
     font = widget.font(); font.setPixelSize(size); font.setBold(bold)
     if mono:
         font.setFamily('Cascadia Mono')
-    widget.setFont(font); widget.setTextColor(color, color)
-    widget.setStyleSheet(f'background:transparent; color:{color};')
+    widget.setFont(font)
+    display = map_text_color(color)
+    name = display.name() if isinstance(display, QColor) else str(display)
+    widget.setTextColor(QColor(name), QColor(name))
+    widget.setStyleSheet(f'background:transparent; color:{name};')
+    register_label(widget, color)
     return widget
 
 
-def style_button(button, primary=False):
-    button.setProperty('studioStyled', True)
+def _apply_button_style(button, primary=False):
+    from ..materials import is_light
+    light = is_light()
     fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0)'
-            if primary else 'rgba(255,255,255,0.06)')
-    border = ('rgba(160,180,255,0.55)' if primary else 'rgba(255,255,255,0.12)')
-    hover = ('rgba(190,205,255,0.8)' if primary else 'rgba(255,255,255,0.22)')
+            if primary else ('rgba(15,26,52,0.06)' if light else 'rgba(255,255,255,0.06)'))
+    border = ('rgba(130,150,235,0.6)' if primary else ('rgba(15,26,52,0.16)' if light else 'rgba(255,255,255,0.12)'))
+    hover = ('rgba(150,170,250,0.85)' if primary else ('rgba(15,26,52,0.28)' if light else 'rgba(255,255,255,0.22)'))
     has_icon = not button.icon().isNull()
     if has_icon and button.text():
         padding = '0 12px 0 32px'
@@ -43,14 +49,37 @@ def style_button(button, primary=False):
         padding = '0 12px'
     else:
         padding = '0'
+    text_color = '#16233B' if light else '#f5f5f5'
+    disabled_color = 'rgba(15,26,52,0.35)' if light else 'rgba(255,255,255,0.42)'
+    disabled_bg = 'rgba(15,26,52,0.04)' if light else 'rgba(255,255,255,0.03)'
+    disabled_border = 'rgba(15,26,52,0.08)' if light else 'rgba(255,255,255,0.06)'
     button.setStyleSheet(f'''
-        QPushButton, QToolButton {{background:{fill}; color:#f5f5f5; border:1px solid {border};
+        QPushButton, QToolButton {{background:{fill}; color:{text_color}; border:1px solid {border};
             border-radius:8px; padding:{padding}; font-size:12px;}}
         QPushButton:hover, QToolButton:hover {{border-color:{hover};}}
-        QPushButton:disabled, QToolButton:disabled {{color:rgba(255,255,255,0.42); background:rgba(255,255,255,0.03); border-color:rgba(255,255,255,0.06);}}
+        QPushButton:disabled, QToolButton:disabled {{color:{disabled_color}; background:{disabled_bg}; border-color:{disabled_border};}}
     ''')
+
+
+def style_button(button, primary=False):
+    from ..materials import register_button
+    button.setProperty('studioStyled', True)
+    register_button(button, primary)
+    _apply_button_style(button, primary)
     button._studio_motion = WidgetMotion(button, primary=primary)
     return button
+
+
+def restyle_buttons():
+    from ..materials import _BUTTON_REGISTRY
+    for ref, primary in list(_BUTTON_REGISTRY):
+        button = ref()
+        if button is None:
+            continue
+        try:
+            _apply_button_style(button, primary)
+        except RuntimeError:
+            continue
 
 
 class ElidedLabel(CaptionLabel):
@@ -89,18 +118,20 @@ class WorkspaceCard(CardWidget):
         self._hover = False; self.update(); super().leaveEvent(event)
 
     def paintEvent(self, event):
+        from ..materials import ink, surface_fill, is_light
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
-        painter.setPen(QPen(QColor(255, 255, 255, 46 if self._hover else 26), 1))
-        painter.setBrush(QColor(255, 255, 255, 13)); painter.drawRoundedRect(rect, 14, 14)
+        painter.setPen(QPen(ink(58 if self._hover else 30), 1))
+        painter.setBrush(surface_fill(.6 if self._hover else 0))
+        painter.drawRoundedRect(rect, 14, 14)
         # 玻璃顶部内发光：只在上缘画 1px 低透明度亮线。
         glow = QLinearGradient(rect.topLeft(), rect.topRight())
         glow.setColorAt(0, QColor(255, 255, 255, 0))
-        glow.setColorAt(.5, QColor(255, 255, 255, 48))
+        glow.setColorAt(.5, QColor(255, 255, 255, 175 if is_light() else 48))
         glow.setColorAt(1, QColor(255, 255, 255, 0))
         painter.setPen(QPen(glow, 1)); painter.drawLine(QPointF(rect.left()+14, rect.top()+1), QPointF(rect.right()-14, rect.top()+1))
         sheen = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        sheen.setColorAt(0, QColor(150, 174, 218, 7)); sheen.setColorAt(1, QColor(150, 174, 218, 0))
+        sheen.setColorAt(0, QColor(150, 174, 218, 8)); sheen.setColorAt(1, QColor(150, 174, 218, 0))
         painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 14, 14)
 
 

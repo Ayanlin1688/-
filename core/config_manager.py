@@ -59,7 +59,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "poll_interval": 5,
     },
-    "appearance": {"theme": "dark", "language": "简体中文"},
+    "appearance": {"theme": "dark", "language": "简体中文", "blur": False},
     "diagnostics": {"debug_mode": False},
     "prompt_detection": {"enabled": True, "fallback_model": ""},
     "prompt_conversion": {"enabled": True, "preserve_original": True, "prefer_same_format": True},

@@ -185,7 +185,8 @@ class ExpandedTaskRow(QWidget):
         elif s=='failed':
             tint=QLinearGradient(0,0,self.width(),0); tint.setColorAt(0,QColor(239,68,68,16)); tint.setColorAt(1,QColor(239,68,68,4)); p.fillRect(self.rect(),tint)
         elif self._hover:
-            p.fillRect(self.rect(),QColor(255,255,255,5))
+            from ..materials import is_light
+            p.fillRect(self.rect(), QColor(15,26,52,6) if is_light() else QColor(255,255,255,5))
         if s in ACTIVE or s=='failed':
             bar=QLinearGradient(0,0,0,self.height())
             if s=='failed':
@@ -193,7 +194,8 @@ class ExpandedTaskRow(QWidget):
             else:
                 bar.setColorAt(0,QColor('#5B8DEF')); bar.setColorAt(1,QColor('#7C6CF0'))
             p.setPen(Qt.NoPen); p.setBrush(bar); p.drawRoundedRect(QRectF(0,1,3,self.height()-2),1.5,1.5)
-        p.setPen(QPen(QColor(255,255,255,10),1)); p.drawLine(0,self.height()-1,self.width(),self.height()-1)
+        from ..materials import is_light as _is_light_row
+        p.setPen(QPen(QColor(15,26,52,14) if _is_light_row() else QColor(255,255,255,10),1)); p.drawLine(0,self.height()-1,self.width(),self.height()-1)
 
 
 class WorkspaceTaskTable(TaskQueuePanel):
@@ -210,7 +212,9 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self.cancel_button=style_button(PushButton('取消全部')); self.cancel_button.setFixedHeight(32); tools.addWidget(self.cancel_button, 0, Qt.AlignVCenter)
         lay.addLayout(tools)
         self._header_host=QWidget(); self._header_host.setFixedHeight(34); self._header_grid=QGridLayout(self._header_host); self._header_grid.setContentsMargins(16,0,16,0); self._header_grid.setHorizontalSpacing(CELL_SPACING)
-        self._header_host.setStyleSheet('background:rgba(0,0,0,0.18);border-bottom:1px solid rgba(255,255,255,0.08);')
+        self._apply_header_mode_style()
+        from ..materials import register_theme_callback
+        register_theme_callback(self._apply_header_mode_style)
         for column,txt in enumerate(HEADERS):
             head=label(txt,11,'#9AA6B8')
             font=head.font(); font.setLetterSpacing(QFont.AbsoluteSpacing,0.6); font.setWeight(QFont.Medium); head.setFont(font)
@@ -243,6 +247,16 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self.empty_panel.setVisible(False)
         lay.addWidget(self.empty_panel,1)
         self._apply_column_widths()
+
+    def _apply_header_mode_style(self):
+        try:
+            from ..materials import is_light
+            if is_light():
+                self._header_host.setStyleSheet('background:rgba(15,26,52,0.05);border-bottom:1px solid rgba(15,26,52,0.12);')
+            else:
+                self._header_host.setStyleSheet('background:rgba(0,0,0,0.18);border-bottom:1px solid rgba(255,255,255,0.08);')
+        except RuntimeError:
+            pass
 
     # ------------------------------------------------------------------
     def eventFilter(self, obj, event):

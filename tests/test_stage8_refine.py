@@ -102,7 +102,9 @@ class Round2RefineTests(unittest.TestCase):
         settings._station_nav_buttons[station_id].click()
         QTest.qWait(120)
         self.assertTrue(settings._station_nav_buttons[station_id].property('railActive'))
-        # 滚动联动不应崩溃且能高亮某个分类
+        # 滚动联动不应崩溃且能高亮某个分类（切到长页面后滚动）
+        settings._switch_page('task')
+        QTest.qWait(80)
         settings.scroll.verticalScrollBar().setValue(600)
         QTest.qWait(120)
         active = [b for b in settings._rail_buttons.values() if b.property('railActive')]
