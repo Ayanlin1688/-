@@ -26,9 +26,9 @@ def directory_metrics(paths):
 class StatBlock(QWidget):
     def __init__(self, title, value='0', accent=MUTED, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self); layout.setContentsMargins(14, 7, 14, 7); layout.setSpacing(2)
-        self.title = label(title, 12, '#9CA3AF'); layout.addWidget(self.title)
-        self.value = label(value, 18, accent, True, mono=title in {'运行时长', '用时/剩余', '批量生成中'}); layout.addWidget(self.value)
+        layout = QVBoxLayout(self); layout.setContentsMargins(16, 9, 16, 9); layout.setSpacing(3)
+        self.title = label(title, 11, '#8B93A3'); layout.addWidget(self.title)
+        self.value = label(value, 17, accent, True, mono=True); layout.addWidget(self.value)
         self.value.setTextFormat(Qt.RichText)
 
 

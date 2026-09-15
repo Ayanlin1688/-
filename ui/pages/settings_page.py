@@ -1,13 +1,14 @@
 """Fluent setting cards backed by the application's JSON config."""
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTime, QSignalBlocker, QTimer
-from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
     SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel, TransparentToolButton, ScrollArea, TimePicker,
 )
 from ..components.custom_widgets import make_card
+from ..widgets.workspace_surface import label
 from ..theme import SettingSurface, style_controls
 from core.background import BackgroundJobs
 from core.api_client import ApiClient
@@ -63,10 +64,11 @@ class SettingsPage(QWidget):
         page = QWidget()
         page.setObjectName("settingsContent")
         self.root = QVBoxLayout(page)
-        self.root.setContentsMargins(24, 22, 24, 30)
+        self.root.setContentsMargins(28, 22, 28, 30)
         self.root.setSpacing(16)
         self.root.addWidget(TitleLabel("设置"))
-        self.root.addWidget(CaptionLabel("连接配置、模型池与任务偏好 · 修改后自动保存"))
+        self.root.addWidget(CaptionLabel("中转站、连接配置、模型池与任务偏好 · 修改后自动保存"))
+        self._build_stations()
         self._build_api()
         self._build_pool()
         self._build_task()
@@ -79,9 +81,13 @@ class SettingsPage(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
         self.scroll.setWidget(page)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.scroll)
+        self._rail_buttons = {}
+        self.rail = self._build_rail()
+        shell = QHBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        shell.addWidget(self.rail)
+        shell.addWidget(self.scroll, 1)
         self.pool_timer = QTimer(self)
         self.pool_timer.setInterval(1000)
         self.pool_timer.timeout.connect(self.refresh_pool_state)
@@ -94,6 +100,262 @@ class SettingsPage(QWidget):
         self.root.addWidget(group)
         self.groups.append(group)
         return group
+
+    # ------------------------------------------------------------------
+    # 左侧分类导航（滚动锚点）
+    # ------------------------------------------------------------------
+    def _build_rail(self):
+        rail = QWidget(); rail.setObjectName('settingsRail'); rail.setFixedWidth(184)
+        rail.setStyleSheet(
+            '#settingsRail {background:transparent; border-right:1px solid rgba(255,255,255,0.07);}'
+            '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:7px 12px;'
+            ' color:#9CA3AF; font-size:13px; background:transparent;}'
+            '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
+            '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
+        layout = QVBoxLayout(rail); layout.setContentsMargins(16, 26, 14, 26); layout.setSpacing(4)
+        head = CaptionLabel('设置分类')
+        layout.addWidget(head); layout.addSpacing(8)
+        targets = [(getattr(self, 'stations_group', None), '服务与中转站'),
+                   (getattr(self, 'api_group', None), 'API 连接'),
+                   (getattr(self, 'pool_group', None), '模型池'),
+                   (getattr(self, 'task_group', None), '任务策略'),
+                   (getattr(self, 'defaults_group', None), '默认参数'),
+                   (getattr(self, 'schedule_group', None), '定时执行'),
+                   (getattr(self, 'appearance_group', None), '外观与语言'),
+                   (getattr(self, 'sync_group', None), 'GitHub 同步')]
+        for group, text in targets:
+            if group is None:
+                continue
+            button = QPushButton(text)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(32)
+            button.clicked.connect(lambda checked=False, g=group, b=button: self._jump_to_group(g, b))
+            layout.addWidget(button)
+            self._rail_buttons[text] = button
+        layout.addStretch(1)
+        return rail
+
+    def _jump_to_group(self, group, button):
+        try:
+            self.scroll.ensureWidgetVisible(group, 0, 28)
+        except Exception:
+            pass
+        for candidate in self._rail_buttons.values():
+            active = candidate is button
+            candidate.setProperty('railActive', active)
+            candidate.style().unpolish(candidate); candidate.style().polish(candidate)
+
+    # ------------------------------------------------------------------
+    # 中转站：每个中转站一个分类（命名 / 配置 / 测试 / 切换）
+    # ------------------------------------------------------------------
+    def _stations(self):
+        return list(self.config_manager.config.get('stations', []) or [])
+
+    def _persist_stations(self, stations, active=None):
+        self.config_manager.update(('stations',), stations)
+        if active is not None:
+            self.config_manager.update(('stations_active',), active)
+
+    def _build_stations(self):
+        group = self._group('服务与中转站')
+        self.stations_group = group
+        card = make_card(); self.stations_card = card
+        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        hint = CaptionLabel('每个中转站一个分类：命名、填写线路信息后「设为当前」，任务即走该线路；可标记视频 / 语言 / 生图能力，为后续模型接入预留。')
+        hint.setWordWrap(True); layout.addWidget(hint)
+        self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
+        holder = QWidget(); holder.setLayout(self.station_list); layout.addWidget(holder)
+        buttons = QHBoxLayout(); buttons.setSpacing(8)
+        self.add_station_button = PushButton(FIF.ADD, '新增中转站')
+        self.add_station_button.clicked.connect(lambda: self._open_station_editor(None))
+        self.capture_station_button = PushButton(FIF.SAVE, '把当前 API 配置保存为中转站')
+        self.capture_station_button.clicked.connect(self._capture_current_station)
+        buttons.addWidget(self.add_station_button); buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
+        layout.addLayout(buttons)
+        self.station_editor_host = QWidget(); self.station_editor_host.hide()
+        editor = QVBoxLayout(self.station_editor_host); editor.setContentsMargins(0, 6, 0, 0); editor.setSpacing(8)
+        self.station_editor_title = CaptionLabel('新增中转站'); editor.addWidget(self.station_editor_title)
+        self.station_name = LineEdit(); self.station_name.setPlaceholderText('名称，例如：主线路 · 国内'); editor.addWidget(self.station_name)
+        self.station_base = LineEdit(); self.station_base.setPlaceholderText('API Base URL'); editor.addWidget(self.station_base)
+        self.station_key = LineEdit(); self.station_key.setPlaceholderText('API Key')
+        self.station_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_key)
+        self.station_upload = LineEdit(); self.station_upload.setPlaceholderText('上传接口 URL（可留空沿用默认）'); editor.addWidget(self.station_upload)
+        self.station_upload_key = LineEdit(); self.station_upload_key.setPlaceholderText('上传 Token（可留空）')
+        self.station_upload_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_upload_key)
+        caps = QHBoxLayout(); caps.setSpacing(14)
+        self.station_caps = {}
+        for key, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
+            box = CheckBox(text); self.station_caps[key] = box; caps.addWidget(box)
+        caps.addStretch(1); editor.addLayout(caps)
+        editor_buttons = QHBoxLayout(); editor_buttons.setSpacing(8)
+        save = PushButton('保存'); save.clicked.connect(self._save_station_editor)
+        cancel = PushButton('取消'); cancel.clicked.connect(self._close_station_editor)
+        editor_buttons.addWidget(save); editor_buttons.addWidget(cancel); editor_buttons.addStretch(1)
+        editor.addLayout(editor_buttons)
+        layout.addWidget(self.station_editor_host)
+        group.addSettingCard(card)
+        self.station_rows = []
+        self._editing_station_id = ''
+        self._render_stations()
+
+    def _fit_stations_card(self):
+        try:
+            self.stations_card.setFixedHeight(self.stations_card.layout().sizeHint().height() + 4)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _station_host_text(station):
+        return str(station.get('base_url') or '未填写地址')
+
+    def _render_stations(self):
+        while self.station_list.count():
+            item = self.station_list.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.station_rows = []
+        stations = self._stations()
+        active = self.config_manager.config.get('stations_active', '')
+        if not stations:
+            empty = CaptionLabel('还没有中转站 · 点击「把当前 API 配置保存为中转站」一键创建，或「新增中转站」手动填写')
+            empty.setWordWrap(True); self.station_list.addWidget(empty)
+            self._fit_stations_card()
+            return
+        cap_texts = {'video': '视频', 'llm': '语言', 'image': '生图'}
+        for station in stations:
+            row = make_card()
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(14, 8, 14, 8); row_layout.setSpacing(10)
+            is_active = station.get('id') == active and bool(active)
+            dot = label('●', 11, '#5B8DEF' if is_active else '#454B5A')
+            row_layout.addWidget(dot)
+            name = label(station.get('name') or '未命名中转站', 13, '#F4F5F7', True)
+            name.setToolTip(station.get('name') or '')
+            row_layout.addWidget(name)
+            host = label(self._station_host_text(station), 11, '#6B7280', mono=True)
+            host.setToolTip(station.get('base_url', ''))
+            host.setMinimumWidth(0)
+            host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            row_layout.addWidget(host, 1)
+            for cap in station.get('capabilities', []):
+                row_layout.addWidget(label(cap_texts.get(cap, cap), 10, '#8B93A3'))
+            if is_active:
+                badge = label('当前使用中', 10, '#7CC79A')
+                row_layout.addWidget(badge)
+            else:
+                use = PushButton('设为当前'); use.setFixedHeight(28); use.setCursor(Qt.PointingHandCursor)
+                use.clicked.connect(lambda checked=False, sid=station.get('id'): self._set_current_station(sid))
+                row_layout.addWidget(use)
+            edit = PushButton('编辑'); edit.setFixedHeight(28); edit.setCursor(Qt.PointingHandCursor)
+            edit.clicked.connect(lambda checked=False, sid=station.get('id'): self._open_station_editor(sid))
+            row_layout.addWidget(edit)
+            remove = TransparentToolButton(FIF.DELETE); remove.setToolTip('删除该中转站')
+            remove.clicked.connect(lambda checked=False, sid=station.get('id'): self._delete_station(sid))
+            row_layout.addWidget(remove)
+            self.station_list.addWidget(row)
+            self.station_rows.append((row, station))
+        self._fit_stations_card()
+
+    def _open_station_editor(self, station_id):
+        station = next((s for s in self._stations() if s.get('id') == station_id), None) if station_id else None
+        self._editing_station_id = station.get('id', '') if station else ''
+        self.station_editor_title.setText('编辑中转站' if station else '新增中转站')
+        self.station_name.setText(station.get('name', '') if station else '')
+        self.station_base.setText(station.get('base_url', '') if station else '')
+        self.station_key.setText(station.get('api_key', '') if station else '')
+        self.station_upload.setText(station.get('upload_url', '') if station else '')
+        self.station_upload_key.setText(station.get('upload_api_key', '') if station else '')
+        caps = station.get('capabilities', ['video']) if station else ['video']
+        for key, box in self.station_caps.items():
+            box.setChecked(key in caps)
+        self.station_editor_host.show()
+        self._fit_stations_card()
+        try:
+            self.scroll.ensureWidgetVisible(self.station_editor_host, 0, 40)
+        except Exception:
+            pass
+
+    def _close_station_editor(self):
+        self.station_editor_host.hide()
+        self._editing_station_id = ''
+        self._fit_stations_card()
+
+    def _save_station_editor(self):
+        name = self.station_name.text().strip()
+        if not name:
+            self.log_callback('中转站名称不能为空', 'warning')
+            return
+        capabilities = [key for key, box in self.station_caps.items() if box.isChecked()]
+        payload = dict(name=name, base_url=self.station_base.text().strip(), api_key=self.station_key.text().strip(),
+                       upload_url=self.station_upload.text().strip(), upload_api_key=self.station_upload_key.text().strip(),
+                       capabilities=capabilities, enabled=True)
+        stations = self._stations()
+        if self._editing_station_id:
+            for station in stations:
+                if station.get('id') == self._editing_station_id:
+                    station.update(payload)
+        else:
+            payload['id'] = f'st-{int(time.time()*1000)}'
+            stations.append(payload)
+        self._persist_stations(stations)
+        self._close_station_editor()
+        self._render_stations()
+        self.log_callback(f'中转站已保存：{name}', 'success')
+
+    def _set_current_station(self, station_id):
+        target = next((s for s in self._stations() if s.get('id') == station_id), None)
+        if target is None:
+            return
+        self.config_manager.update(('stations_active',), station_id)
+        for key, edit in (('base_url', self.base_url), ('api_key', self.api_key),
+                          ('upload_url', self.upload_url), ('upload_api_key', self.upload_key)):
+            value = target.get(key, '') or ''
+            blocker = QSignalBlocker(edit)
+            edit.setText(value)
+            del blocker
+            self.config_manager.update(('api', key), value)
+        self._render_stations()
+        self.log_callback(f'已切换到中转站：{target.get("name", "")}', 'success')
+
+    def _delete_station(self, station_id):
+        stations = [s for s in self._stations() if s.get('id') != station_id]
+        active = self.config_manager.config.get('stations_active', '')
+        self._persist_stations(stations, '' if active == station_id else None)
+        self._render_stations()
+
+    def _capture_current_station(self):
+        api = dict(self.config_manager.config.get('api', {}))
+        stations = self._stations()
+        host = str(api.get('base_url', '')).split('//')[-1].split('/')[0].strip()
+        name = host or f'中转站 {len(stations) + 1}'
+        taken = {s.get('name') for s in stations}
+        candidate, index = name, 2
+        while candidate in taken:
+            candidate = f'{name} ·{index}'; index += 1
+        station = dict(id=f'st-{int(time.time()*1000)}', name=candidate, base_url=api.get('base_url', ''),
+                       api_key=api.get('api_key', ''), upload_url=api.get('upload_url', ''),
+                       upload_api_key=api.get('upload_api_key', ''), capabilities=['video'], enabled=True)
+        stations.append(station)
+        active = self.config_manager.config.get('stations_active', '') or station['id']
+        self._persist_stations(stations, active)
+        self._render_stations()
+        self.log_callback(f'已保存中转站：{candidate}', 'success')
+
+    def _mirror_api_to_station(self, *_args):
+        active = self.config_manager.config.get('stations_active', '')
+        if not active:
+            return
+        stations = self._stations(); changed = False
+        api = self.config_manager.config.get('api', {})
+        for station in stations:
+            if station.get('id') != active:
+                continue
+            for key in ('base_url', 'api_key', 'upload_url', 'upload_api_key'):
+                value = api.get(key, '')
+                if station.get(key, '') != value:
+                    station[key] = value; changed = True
+        if changed:
+            self.config_manager.update(('stations',), stations)
 
     def _value(self, path):
         return self.config_manager.config[path[0]][path[1]]
@@ -158,13 +420,16 @@ class SettingsPage(QWidget):
         return card
 
     def _build_api(self):
-        group = self._group("API 配置")
+        group = self._group("API 连接")
+        self.api_group = group
         self.base_url = self._line(group, "API Base URL", ("api", "base_url"))
         self.api_key = self._line(group, "API Key", ("api", "api_key"), True)
         self.upload_url = self._line(group, "图床上传 URL", ("api", "upload_url"))
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
         self.upload_key.setPlaceholderText('服务商签发的素材上传 Token')
         self.upload_key.setToolTip('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限')
+        for field in (self.base_url, self.api_key, self.upload_url, self.upload_key):
+            field.textChanged.connect(self._mirror_api_to_station)
         self.auto_upload = self._switch(group, "自动上传缺失图片", ("api", "auto_upload_missing"), FIF.CLOUD)
         self.debug_mode = self._switch(group, '调试模式', ('diagnostics', 'debug_mode'), FIF.INFO)
         self.debug_mode.setToolTip('记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式')
@@ -234,6 +499,7 @@ class SettingsPage(QWidget):
 
     def _build_defaults(self):
         group = self._group("默认参数")
+        self.defaults_group = group
         self.default_model = self._model_combo(group, "默认模型", ("defaults", "model"))
         self.default_ratio = self._combo(group, "默认比例", ("defaults", "aspect_ratio"), ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"])
         self.default_resolution = self._combo(group, "默认分辨率", ("defaults", "resolution"), ["480p", "720p", "768p", "1080p", "2K", "4K"])
@@ -252,12 +518,14 @@ class SettingsPage(QWidget):
 
     def _build_appearance(self):
         group = self._group("外观")
+        self.appearance_group = group
         self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深色", "浅色", "跟随系统"])
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
         self.root.addWidget(CaptionLabel('Yanlin Smart-Creation Matrix v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
 
     def _build_schedule(self):
         group = self._group('定时执行')
+        self.schedule_group = group
         self.schedule_enabled = self._switch(group, '启用定时执行', ('schedule', 'enabled'), FIF.PLAY)
         self.schedule_time = TimePicker(showSeconds=False)
         self.schedule_time.setTime(QTime.fromString(self._value(('schedule', 'time')), 'HH:mm'))
@@ -286,6 +554,7 @@ class SettingsPage(QWidget):
 
     def _build_sync(self):
         group = self._group('GitHub代码同步')
+        self.sync_group = group
         self.sync_button = PushButton(FIF.SYNC, '同步到GitHub')
         self.sync_button.setToolTip('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传')
         self.sync_button.clicked.connect(self.sync_github)

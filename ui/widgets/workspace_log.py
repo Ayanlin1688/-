@@ -85,16 +85,17 @@ class FilterTabs(QWidget):
 
 class WorkspaceLog(LogDrawer):
     view_changed = pyqtSignal()
-    COLORS = {'debug': '#9b8ac4', 'info': '#79a4e8', 'success': '#70bc8e', 'warning': '#d4bb64', 'error': '#dc8585'}
+    COLORS = {'debug': '#AE9CD6', 'info': '#8FB4EE', 'success': '#7CC79A', 'warning': '#E0C16B', 'error': '#E39A9A'}
+    DISPLAY_LIMIT = 200
 
     def _build_ui(self):
         self.setObjectName('workspaceLog')
         self.setAttribute(Qt.WA_StyledBackground)
         self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
-        root = QVBoxLayout(self); root.setContentsMargins(16, 6, 16, 8); root.setSpacing(4)
+        root = QVBoxLayout(self); root.setContentsMargins(16, 8, 16, 8); root.setSpacing(6)
         header = QHBoxLayout(); self.header = header
         header.addWidget(label('执行日志', 13, '#F4F5F7', True))
-        self.count_label = label('本次运行 0 条', 11, '#6B7280')
+        self.count_label = label('本次运行 0 条', 11, '#7A8294', mono=True)
         header.addWidget(self.count_label)
         header.addStretch(1)
         self.search_label = label(''); header.addWidget(self.search_label)
@@ -110,6 +111,7 @@ class WorkspaceLog(LogDrawer):
         header.addWidget(self.toggle_button); root.addLayout(header)
         self.browser = TextBrowser(); self.browser.setProperty('studioStyled', True)
         self.browser.setOpenExternalLinks(False); self.browser.setMinimumHeight(0)
+        self.browser.document().setDefaultStyleSheet('div.logline {font-family:"Cascadia Mono","Consolas"; font-size:11px; line-height:160%; margin:1px 0;}')
         self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
         root.addWidget(self.browser, 1)
         self.highlight = LogHighlight(self.browser.viewport())
@@ -141,10 +143,17 @@ class WorkspaceLog(LogDrawer):
 
     def _append_entry(self, timestamp, message, level):
         color = self.COLORS.get(level, self.COLORS['info'])
-        self.browser.append(f'<span style="color:#6B7280">{escape(timestamp)}</span> &nbsp; <span style="color:{color}">[{escape(level.upper())}]</span> &nbsp; <span style="color:#E5E7EB">{escape(str(message))}</span>')
+        text = str(message)
+        # 超长行（如长路径）仅截断展示，完整内容仍保留在导出中，避免撑乱面板行距。
+        if len(text) > self.DISPLAY_LIMIT:
+            text = text[:self.DISPLAY_LIMIT - 1] + '…'
+        self.browser.append(
+            f'<div class="logline"><span style="color:#6B7280">{escape(timestamp)}</span>'
+            f' &nbsp;<span style="color:{color}">[{escape(level.upper())}]</span>'
+            f' &nbsp;<span style="color:#E5E7EB">{escape(text)}</span></div>')
         self.browser.moveCursor(QTextCursor.End)
         if self.isVisible() and self._expanded:
-            rect = self.browser.cursorRect(); rect.setLeft(0); rect.setWidth(self.browser.viewport().width()); rect.setHeight(17)
+            rect = self.browser.cursorRect(); rect.setLeft(0); rect.setWidth(self.browser.viewport().width()); rect.setHeight(18)
             self.highlight.flash(rect)
 
     def focus_task(self, name):

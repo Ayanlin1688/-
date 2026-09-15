@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter
-from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF
+from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
+from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -29,6 +29,11 @@ class MainWindow(FluentWindow):
         setTheme(Theme.DARK, save=False)
         setThemeColor(QColor(ACCENT), save=False)
         super().__init__()
+        # 自绘圆角窗口：无边框 + 透明外圈，在 Win10 上也能获得一致的 12px 圆角与高光描边。
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._window_margin = 8
+        self._window_radius = 12
+        self._frame_margin = None
         self._glass_material = 'gradient'
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
@@ -72,7 +77,7 @@ class MainWindow(FluentWindow):
         self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
         QTimer.singleShot(0, self.model_catalog.start)
-        QTimer.singleShot(0, self._apply_windows_material)
+        QTimer.singleShot(0, self._sync_window_frame)
 
     def _setup_navigation_chrome(self) -> None:
         """64px icon rail: brand logo on top, user avatar pinned at the bottom."""
@@ -99,15 +104,28 @@ class MainWindow(FluentWindow):
                 item = self.navigationInterface.widget(route)
             except Exception:
                 continue
-            item.setFixedSize(56, 40)
+            item.setFixedSize(56, 44)
             inner = getattr(item, 'itemWidget', item)
-            inner.setFixedSize(56, 40)
+            inner.setFixedSize(56, 44)
             original = inner._margins
             inner._margins = lambda original=original: self._rail_margins(original())
             setter = getattr(inner, 'setIndicatorColor', None)
             if setter:
                 setter('#5B8DEF', '#7C6CF0')
             self._decorate_rail_item(inner)
+        # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。
+        panel = self.navigationInterface.panel
+        for layout_name, spacing in (('topLayout', 6),):
+            layout = getattr(panel, layout_name, None)
+            try:
+                if layout is not None:
+                    layout.setSpacing(spacing)
+            except Exception:
+                pass
+        try:
+            panel.bottomLayout.setContentsMargins(0, 0, 0, 10)
+        except Exception:
+            pass
         # 关于入口由底部头像承担，导航栏保持纯图标三入口。
         try:
             self.navigationInterface.widget('about').hide()
@@ -132,11 +150,12 @@ class MainWindow(FluentWindow):
                 painter = QPainter(inner)
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(Qt.NoPen)
-                gradient = QLinearGradient(8, 10, 8, 26)
+                bar_y = (inner.height() - 16) / 2
+                gradient = QLinearGradient(8, bar_y, 8, bar_y + 16)
                 gradient.setColorAt(0, QColor('#5B8DEF'))
                 gradient.setColorAt(1, QColor('#7C6CF0'))
                 painter.setBrush(gradient)
-                painter.drawRoundedRect(QRectF(8, 10, 3, 16), 1.5, 1.5)
+                painter.drawRoundedRect(QRectF(8, bar_y, 3, 16), 1.5, 1.5)
                 painter.end()
 
         inner.paintEvent = paint
@@ -147,25 +166,54 @@ class MainWindow(FluentWindow):
         return QMargins(margins.left() + 8, margins.top(), margins.right(), margins.bottom())
 
     def _apply_windows_material(self) -> str:
-        """Detect Win11 Mica / Win10 Acrylic, falling back to the painted gradient."""
-        if sys.platform != 'win32' or QApplication.platformName() == 'offscreen':
-            return self._glass_material
-        try:
-            from qframelesswindow.utils.win32_utils import isGreaterEqualWin11, isGreaterEqualWin10
-            if isGreaterEqualWin11():
-                self.setMicaEffectEnabled(True)
-                self._glass_material = 'mica'
-            elif isGreaterEqualWin10():
-                self.windowEffect.setAcrylicEffect(int(self.winId()), '0A0B12B4', False)
-                self._glass_material = 'acrylic'
-        except Exception:
-            self._glass_material = 'gradient'
+        """系统 Acrylic/Mica 与自绘圆角相互冲突，统一由自绘材质接管。"""
+        self._glass_material = 'gradient'
         self.update()
         return self._glass_material
 
+    def _window_margins_px(self):
+        return 0 if (self.isMaximized() or self.isFullScreen()) else self._window_margin
+
+    def _sync_window_frame(self) -> None:
+        """把标题栏与内容同步到圆角内缩区，并在最大化时放大到整屏。"""
+        margin = self._window_margins_px()
+        if self._frame_margin != margin:
+            self._frame_margin = margin
+            try:
+                self.hBoxLayout.setContentsMargins(margin, margin, margin, margin)
+            except Exception:
+                pass
+        try:
+            self.titleBar.setGeometry(margin, margin, max(0, self.width() - 2 * margin), self.titleBar.height())
+        except Exception:
+            pass
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_window_frame()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            QTimer.singleShot(0, self._sync_window_frame)
+
     def paintEvent(self, event):
         painter = QPainter(self)
-        paint_background(painter, QRectF(self.rect()), opaque=self._glass_material == 'gradient')
+        painter.setRenderHint(QPainter.Antialiasing)
+        margin = self._window_margins_px()
+        radius = self._window_radius if margin else 0
+        rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(path)
+        paint_background(painter, rect, opaque=True)
+        painter.setClipping(False)
+        if margin:
+            # 1px 高光描边，让圆角边缘在深色桌面上有物理厚度感。
+            painter.setPen(QColor(255, 255, 255, 26))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
     def _setup_pages(self) -> None:
         self.workspace_page = WorkspacePage(self.config_manager)

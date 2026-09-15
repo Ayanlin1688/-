@@ -73,6 +73,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "history": [],
     "scan_settings": {"recursive": True},
     "download_settings": {"overwrite_existing": False, "naming_rule": "{序号}_{提示词名}.mp4"},
+    "stations": [],
+    "stations_active": "",
     "prompts_dir": "",
     "images_dir": "",
     "output_dir": "",
