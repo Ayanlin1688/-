@@ -77,9 +77,9 @@ class FilterTabs(QWidget):
         for name, chip in self._buttons.items():
             if name == self._current:
                 chip.setStyleSheet(
-                    ('QPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s);'
+                    ('QPushButton {background:%s;'
                      ' color:#FFFFFF; border:0; border-radius:6px; padding:0 10px; font-size:12px; font-weight:500;}'
-                     ' QPushButton:hover {padding:0 10px;}') % (th['accent'], th['accent2']))
+                     ' QPushButton:hover {padding:0 10px;}') % (th['accent'],))
             elif light:
                 chip.setStyleSheet(
                     'QPushButton {background:rgba(15,26,52,0.05); color:#4F586A; border:1px solid rgba(15,26,52,0.14);'

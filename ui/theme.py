@@ -57,12 +57,11 @@ def studio_combo_menu(combo):
     fg = th['text1'] if th['light'] else '#ffffff'
     border = _rgba_str(th['text1'], 0.12) if th['light'] else 'rgba(255,255,255,0.08)'
     ar, ag, ab = th['accent_rgb']
-    br, bv, bb = th['accent2_rgb']
     rules = f"""
     QListWidget {{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 {top},stop:1 {bottom});
                  color:{fg}; border:1px solid {border}; border-radius:12px;}}
     QListWidget::item {{border-radius:8px; padding:4px;}}
-    QListWidget::item:hover, QListWidget::item:selected {{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba({ar},{ag},{ab},0.24),stop:1 rgba({br},{bv},{bb},0.12));}}
+    QListWidget::item:hover, QListWidget::item:selected {{background:rgba({ar},{ag},{ab},0.2);}}
     """ + scroll_style()
     setCustomStyleSheet(menu.view, rules, rules)
     return menu
@@ -114,10 +113,10 @@ def _theme_rules(kind):
         else:
             disabled = ('background:%s; color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);'
                         % rgba(ar, ag, ab, '0.16'))
-        return ('PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s);'
+        return ('PrimaryPushButton {background:%s;'
                 ' color:white; border:1px solid %s; border-radius:8px;}'
                 ' PrimaryPushButton:hover {border-color:%s;}'
-                ' PrimaryPushButton:disabled {%s}') % (th['accent'], th['accent2'], border, hover, disabled)
+                ' PrimaryPushButton:disabled {%s}') % (th['accent'], border, hover, disabled)
     if kind == 'push':
         if light:
             return ('PushButton {border-radius:8px; background:%s; border:1px solid %s; color:%s;}'

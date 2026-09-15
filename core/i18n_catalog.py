@@ -199,4 +199,5 @@ EN = {
     '自动识别 / 工作台默认': 'Auto detect / Workspace default',
     '暂无可提交模型': 'No submittable model',
     '关闭（Esc）': 'Close (Esc)',
+    '展开 / 收起导航': 'Expand / collapse navigation',
 }

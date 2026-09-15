@@ -89,12 +89,11 @@ class TaskProgress(ProgressBar):
         if width <= 0:
             return
         painter.setPen(Qt.NoPen)
-        gradient = QLinearGradient(0, 0, max(width, 1), 0)
         if self.isError():
-            gradient.setColorAt(0, QColor('#EF4444')); gradient.setColorAt(1, QColor('#DC2626'))
+            painter.setBrush(QColor('#EF4444'))
         else:
-            gradient.setColorAt(0, QColor('#5B8DEF')); gradient.setColorAt(1, QColor('#7C6CF0'))
-        painter.setBrush(gradient)
+            from ..materials import palette
+            painter.setBrush(QColor(palette()['accent']))
         radius = self.height() / 2
         painter.drawRoundedRect(QRectF(0, 0, width, self.height()), radius, radius)
 
@@ -165,12 +164,12 @@ class ExpandedTaskRow(QWidget):
     @staticmethod
     def _model_chip_style(model):
         if 'H3' in model:
-            start, end = '#3B82F6', '#2563EB'
+            color = '#2563EB'
         elif 'v2' in model.lower() or 'seedance' in model.lower():
-            start, end = '#8B5CF6', '#7C3AED'
+            color = '#7C3AED'
         else:
-            start, end = '#10B981', '#059669'
-        return (f'color:#FFFFFF;background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {start},stop:1 {end});'
+            color = '#059669'
+        return (f'color:#FFFFFF;background:{color};'
                 'border-radius:6px;padding:2px 7px;')
 
     def enterEvent(self, event):
@@ -189,12 +188,12 @@ class ExpandedTaskRow(QWidget):
             from ..materials import is_light
             p.fillRect(self.rect(), QColor(15,26,52,6) if is_light() else QColor(255,255,255,5))
         if s in ACTIVE or s=='failed':
-            bar=QLinearGradient(0,0,0,self.height())
             if s=='failed':
-                bar.setColorAt(0,QColor('#EF4444')); bar.setColorAt(1,QColor('#DC2626'))
+                p.setBrush(QColor('#EF4444'))
             else:
-                bar.setColorAt(0,QColor('#5B8DEF')); bar.setColorAt(1,QColor('#7C6CF0'))
-            p.setPen(Qt.NoPen); p.setBrush(bar); p.drawRoundedRect(QRectF(0,1,3,self.height()-2),1.5,1.5)
+                from ..materials import palette
+                p.setBrush(QColor(palette()['accent']))
+            p.setPen(Qt.NoPen); p.drawRoundedRect(QRectF(0,1,3,self.height()-2),1.5,1.5)
         from ..materials import is_light as _is_light_row
         p.setPen(QPen(QColor(15,26,52,14) if _is_light_row() else QColor(255,255,255,10),1)); p.drawLine(0,self.height()-1,self.width(),self.height()-1)
 

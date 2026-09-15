@@ -174,7 +174,7 @@ class MainWindow(FluentWindow):
             for setter in self._rail_indicator_setters:
                 try:
                     th = materials.palette()
-                    setter(th['accent'], th['accent2'])
+                    setter(th['accent'], th['accent'])
                 except Exception:
                     pass
         except Exception:
@@ -248,7 +248,7 @@ class MainWindow(FluentWindow):
             if setter:
                 from . import materials
                 th = materials.palette()
-                setter(th['accent'], th['accent2'])
+                setter(th['accent'], th['accent'])
                 self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
         # 分组：在「设置」前插入分隔符（创作 / 系统 两组）。
@@ -261,6 +261,12 @@ class MainWindow(FluentWindow):
             pass
         # 应用初始折叠样式。
         self._sync_nav_pane(True)
+        # 恢复上次的展开状态（记忆化）。
+        try:
+            if self.config_manager.config.get('appearance', {}).get('nav_expanded'):
+                QTimer.singleShot(120, self._toggle_navigation)
+        except Exception:
+            pass
         # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。
         panel = self.navigationInterface.panel
         for layout_name, spacing in (('topLayout', design.SPACE['sm']),):
@@ -295,12 +301,17 @@ class MainWindow(FluentWindow):
     def _toggle_navigation(self) -> None:
         """菜单按钮：两态切换（展开前先释放折叠态的固定宽度，保证过渡动画）。"""
         panel = self.navigationInterface.panel
+        expanding = panel.isCollapsed()
         try:
-            if panel.isCollapsed():
+            if expanding:
                 self._sync_nav_pane(False)
                 panel.expand()
             else:
                 panel.collapse()
+        except Exception:
+            pass
+        try:
+            self.config_manager.update(('appearance', 'nav_expanded'), bool(expanding))
         except Exception:
             pass
         # 动画结束后再落一次样式，避免被原生 setCompacted 的固定尺寸覆盖。
@@ -341,6 +352,10 @@ class MainWindow(FluentWindow):
                 inner.updateGeometry()
             except Exception:
                 pass
+        try:
+            panel.menuButton.setToolTip(tr('展开 / 收起导航'))
+        except Exception:
+            pass
 
     @staticmethod
     def _decorate_rail_item(inner) -> None:
