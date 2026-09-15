@@ -57,6 +57,7 @@ class WorkspacePage(QWidget):
         self._watch_timer.timeout.connect(self._watch_fired)
         self._watch_seen = None
         self._watch_pending_scan = False
+        self._watch_retry = 0
         self._build_ui()
         manager = self.task_manager
         self.start_button.clicked.connect(self.start_generation)
@@ -84,7 +85,7 @@ class WorkspacePage(QWidget):
         self.data_source.overrides_changed.connect(self.scan_sources)
         self.params_card.values_changed.connect(lambda key, value: self.scan_sources() if key == 'model' else None)
         self.params_card.values_changed.connect(lambda *_: self._refresh_row_parameters())
-        self.recent_panel.update_history(config_manager.config['history'])
+        self.recent_panel.update_history(config_manager.history_records())
         self._running_changed(False)
         self.append_log('工作台已加载：支持模型池、自动重试和并发控制；关闭模型池时使用工作台所选模型', 'info')
         QTimer.singleShot(0, self.scan_sources)
@@ -267,7 +268,7 @@ class WorkspacePage(QWidget):
         elapsed = time.monotonic()-self._started_at if self._started_at is not None else self._elapsed
         tasks = self.queue_panel._tasks
         running = self.task_manager.is_running
-        self.summary.update_tasks(tasks, self.config_manager.config['history'], elapsed, running)
+        self.summary.update_tasks(tasks, self.config_manager.history_records(), elapsed, running)
         self._update_status_strip(tasks, elapsed, running)
 
     def _update_status_strip(self, tasks, elapsed, running):
@@ -379,8 +380,12 @@ class WorkspacePage(QWidget):
         self.refresh_metrics()
         config = runtime_config(self.config_manager)
         if not config['paths']['prompts']:
+            from_watch = self._watch_pending_scan
+            self._watch_pending_scan = False
             self.data_source.set_matches([], [])
             self._tasks_updated([])
+            if from_watch:
+                self._arm_watch()
             return
         self.data_source.status_label.setText('正在扫描匹配...')
         def scan():
@@ -393,6 +398,7 @@ class WorkspacePage(QWidget):
         def done(result):
             from_watch = self._watch_pending_scan
             self._watch_pending_scan = False
+            self._watch_retry = 0
             if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
                 return
             matched, automatic, warnings = result
@@ -404,11 +410,25 @@ class WorkspacePage(QWidget):
             self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
             self._watch_note_scan(matched, from_watch)
         def failed(message):
+            self._watch_pending_scan = False
             if version == self._scan_version and not self.closing.is_set():
                 self.data_source.set_matches([], [])
                 self._tasks_updated([])
                 self.data_source.status_label.setText('扫描失败，请检查目录')
                 self.append_log(message, 'error')
+            if self.closing.is_set() or self.task_manager.is_running:
+                return
+            # 无人值守监听：一次扫描失败不能让挂机静默停摆，按退避重挂。
+            try:
+                interval = int(self.config_manager.config['task_strategy'].get('watch_interval', 0) or 0)
+            except (TypeError, ValueError):
+                interval = 0
+            if interval <= 0:
+                return
+            self._watch_retry = min(self._watch_retry + 1, 5)
+            delay = min(300, 30 * 2 ** (self._watch_retry - 1))
+            self._watch_timer.start(delay * 1000)
+            self.append_log(f'无人值守监听：本次重扫失败，{delay} 秒后自动重试（第 {self._watch_retry} 次）', 'warning')
         self.jobs.start(scan, done, failed)
 
     def start_generation(self):
@@ -543,16 +563,11 @@ class WorkspacePage(QWidget):
         self._update_summary()
 
     def _record(self, record):
-        history = copy.deepcopy(self.config_manager.config['history'])
-        existing = next((i for i, item in enumerate(history) if item.get('local_id') == record['local_id']), None)
-        if existing is None:
-            history.append(record)
-        else:
-            history[existing] = record
         try:
-            self.config_manager.update(('history',), history)
+            self.config_manager.history_upsert(record)
         except Exception as error:
-            self.append_log(f'历史记录写入失败（本次仍保留在内存）：{error}', 'error')
+            self.append_log(f'历史记录写入失败：{error}', 'error')
+        history = self.config_manager.history_records()
         self.history_changed.emit(history)
         self.recent_panel.update_history(history)
         self._update_summary()
@@ -743,7 +758,7 @@ class WorkspacePage(QWidget):
                 folder = task.get('output_dir') or config['paths']['output']
                 if not folder:
                     raise ValueError('请先选择视频保存目录')
-                index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(config['history']) if row.get('local_id') == task.get('local_id')), 1)
+                index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(self.config_manager.history_records()) if row.get('local_id') == task.get('local_id')), 1)
                 filename = task.get('filename') or build_filename(config['download_settings']['naming_rule'], task, index)
                 task['result_path'] = downloader.download_video(result['result_url'], folder, filename)
                 task.update(status='completed', result_url=result['result_url'], error='', finished_at=stamp(),

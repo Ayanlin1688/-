@@ -12,6 +12,7 @@ import unittest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication
 from core.config_manager import DEFAULT_CONFIG
+from core.submission_safety import SubmissionGate
 from core.task_manager import TaskManager
 from core.task_state import task_signature
 from test_http_clients import LocalServer, FixtureHandler
@@ -179,6 +180,112 @@ class SubmissionSafetyTests(unittest.TestCase):
             self.assertEqual(len(server.calls), 4)
             self.manager.cancel_all()
             wait_until(lambda: not self.manager.is_running)
+
+
+class RateLimitRecoveryHandler(FixtureHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self.server.calls.append((self.path, dict(self.headers), body))
+        if self.path == '/upload':
+            return self.respond({'data': {'files': [{'url': self.server.base + '/image.png'}]}})
+        posts = sum(1 for path, _, _ in self.server.calls if path != '/upload')
+        if posts <= self.server.limit_until:
+            return self.respond({'error': 'too many requests'}, 429)
+        return self.respond({'data': {'task_id': 'recovered-%d' % posts}})
+
+
+class RateLimitRecoveryServer(LocalServer):
+    def __enter__(self):
+        server = super().__enter__()
+        server.RequestHandlerClass = RateLimitRecoveryHandler
+        server.limit_until = 0
+        return server
+
+
+class GateRecoveryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_gate_pause_auto_recovers_and_escalates(self):
+        clock = [0.0]
+        gate = SubmissionGate(4, now=lambda: clock[0], probe_seconds=10)
+        for _ in range(3):
+            gate.failed(429)
+        self.assertTrue(gate.paused)
+        self.assertEqual(gate.limit, 1)
+        self.assertAlmostEqual(gate.pause_remaining(), 10.0)
+        clock[0] = 10.0
+        self.assertTrue(gate.auto_resume())
+        self.assertFalse(gate.paused)
+        gate.failed(429)  # 试探失败 → 再次暂停，冷却翻倍
+        self.assertTrue(gate.paused)
+        self.assertAlmostEqual(gate.pause_remaining(), 20.0)
+        clock[0] += 20.0
+        self.assertTrue(gate.auto_resume())
+        gate.succeeded()
+        self.assertEqual(gate.limit, 2)
+
+    def test_gate_wait_returns_after_probe_due(self):
+        clock = [0.0]
+        gate = SubmissionGate(2, now=lambda: clock[0], probe_seconds=5)
+
+        class Control:
+            def __init__(self):
+                self.delays = 0
+
+            def check(self):
+                pass
+
+            def delay(self, seconds):
+                self.delays += 1
+                clock[0] += max(.02, min(seconds, .25))
+
+        for _ in range(3):
+            gate.failed(429)
+        control = Control()
+        resumed = []
+        gate.on_recover = lambda: resumed.append(clock[0])
+        gate.wait(control)
+        self.assertFalse(gate.paused)
+        self.assertEqual(len(resumed), 1)
+        self.assertGreaterEqual(resumed[0], 5.0)
+        self.assertGreater(control.delays, 0)
+
+    def test_rate_limited_queue_auto_recovers_without_manual_resume(self):
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            prompts = root / 'prompts'
+            prompts.mkdir()
+            for index in range(1, 8):
+                (prompts / f'{index}.txt').write_text(f'Recovery task {index}', encoding='utf-8')
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            config['prompt_detection']['enabled'] = False
+            config['paths'].update(prompts=str(prompts), output=str(root / 'out'))
+            config['workspace'].update(poll_interval=.01, duration=8)
+            config['task_strategy'].update(unmatched_prompt='仍提交文生视频', retry_interval=.01, max_concurrency=2)
+            config['_submission_ledger_path'] = str(root / 'submissions.sqlite3')
+            config['_submission_probe_seconds'] = .2
+            manager = TaskManager()
+            logs = []
+            manager.log_message.connect(lambda message, level: logs.append((level, message)))
+            try:
+                with RateLimitRecoveryServer() as server:
+                    server.limit_until = 3
+                    config['api'].update(base_url=server.base, api_key='***')
+                    self.assertTrue(manager.start_tasks(config))
+                    wait_until(lambda: not manager.is_running, timeout=30000)
+                statuses = [t['status'] for t in manager.tasks]
+                self.assertGreaterEqual(statuses.count('completed'), 2)
+                self.assertGreaterEqual(statuses.count('submission_unknown'), 3)
+                self.assertTrue(any('自动恢复提交' in message for _, message in logs))
+                self.assertFalse(manager.is_paused)
+            finally:
+                manager.cancel_all()
+                wait_until(lambda: not manager.is_running, timeout=10000)
+        finally:
+            temp.cleanup()
 
 
 if __name__ == '__main__':

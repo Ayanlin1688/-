@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from .history_store import HistoryStore
+
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "paths": {"prompts": "", "images": "", "output": ""},
@@ -105,6 +107,7 @@ class ConfigManager:
         self.path = Path(path) if path else Path(__file__).resolve().parent.parent / "config.json"
         self.config: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self.error_callback = None
+        self._history_store: HistoryStore | None = None
 
     def load_config(self) -> dict[str, Any]:
         try:
@@ -135,6 +138,25 @@ class ConfigManager:
                         self.save_config()
                     except Exception:
                         pass
+            # 历史记录迁移：config.json 大数组 → SQLite 历史库（终结写放大）。
+            migrations = self.config.get('migrations')
+            if not isinstance(migrations, dict) or not migrations.get('history_to_sqlite'):
+                stored = self.config.get('history')
+                if isinstance(stored, list) and stored:
+                    try:
+                        store = self.history_store()
+                        imported = store.upsert_many(stored)
+                        if imported >= len(stored) or store.count() >= len(stored):
+                            self.config['migrations'] = dict(self.config.get('migrations') or {}, history_to_sqlite=True)
+                            self.config['history'] = []
+                            try:
+                                self.save_config()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass  # 迁移失败保持原状，下次启动重试
+                else:
+                    self.config['migrations'] = dict(migrations or {}, history_to_sqlite=True)
             # Mirror the spec-named directory fields; old configs may carry the
             # aliases instead of the canonical paths entries.
             for key, alias in DIRECTORY_ALIASES:
@@ -205,3 +227,16 @@ class ConfigManager:
                 else:
                     raise
         return True
+
+    # —— 历史记录（SQLite 历史库；写放大治理） ——
+    def history_store(self) -> HistoryStore:
+        """懒加载历史记录库，路径与 config.json 同目录。"""
+        if self._history_store is None:
+            self._history_store = HistoryStore(self.path.with_name('history.sqlite3'))
+        return self._history_store
+
+    def history_records(self, limit=None):
+        return self.history_store().records(limit)
+
+    def history_upsert(self, record):
+        return self.history_store().upsert(record)

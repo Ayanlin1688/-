@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import sys
 import subprocess
+from pathlib import Path
+
+from core.crash_reporter import install_default
 
 try:
     from qfluentwidgets import Theme, setTheme
@@ -18,6 +21,8 @@ from ui.components.custom_widgets import ensure_ui_font
 
 
 def main() -> int:
+    # 无人值守兜底：任何未捕获异常先落盘留痕，不让进程静默退出。
+    install_default(Path(__file__).resolve().parent / 'logs')
     app = QApplication(sys.argv)
     setTheme(Theme.DARK, save=False)
     ensure_ui_font()

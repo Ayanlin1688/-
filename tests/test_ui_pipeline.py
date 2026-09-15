@@ -42,7 +42,7 @@ class PipelineUiTests(unittest.TestCase):
             self.assertEqual(window.history_page.table.rowCount(), 1)
             self.assertEqual(window.history_page.table.item(0, 4).text(), '已完成')
             self.assertEqual(workspace.recent_panel.list.count(), 1)
-            record = manager.config['history'][0]
+            record = manager.history_records()[0]
             target = Path(record['result_path'])
             self.assertTrue(target.is_file())
             with patch('os.startfile') as opened:
@@ -53,14 +53,14 @@ class PipelineUiTests(unittest.TestCase):
             reopened = MainWindow(ConfigManager(root / 'config.json'), network_time=False); reopened.show()
             wait_until(lambda: not reopened.workspace_page.jobs.busy)
             self.assertEqual(reopened.history_page.table.rowCount(), 1)
-            self.assertEqual(reopened.config_manager.config['history'][0]['task_id'], record['task_id'])
+            self.assertEqual(reopened.config_manager.history_records()[0]['task_id'], record['task_id'])
             target.unlink()
             post_count = len(server.calls)
             reopened.workspace_page.redownload(record)
             wait_until(lambda: not reopened.workspace_page.jobs.busy)
             self.assertTrue(target.exists())
             self.assertEqual(len(server.calls), post_count)
-            self.assertEqual(reopened.config_manager.config['history'][0]['filename'], target.name)
+            self.assertEqual(reopened.config_manager.history_records()[0]['filename'], target.name)
             # Changed prompt is a new job. Closing during polling waits for the worker to stop.
             prompt.write_text('changed text', encoding='utf-8')
             server.always_processing = True
@@ -69,5 +69,5 @@ class PipelineUiTests(unittest.TestCase):
             reopened.close()
             self.assertTrue(reopened._closing)
             wait_until(lambda: not reopened.workspace_page.task_manager.is_running and not reopened.isVisible())
-            self.assertEqual(reopened.config_manager.config['history'][-1]['status'], 'cancelled')
+            self.assertEqual(reopened.config_manager.history_records()[-1]['status'], 'cancelled')
             reopened.deleteLater(); QTest.qWait(40)

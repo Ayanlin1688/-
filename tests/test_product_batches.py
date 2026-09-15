@@ -358,7 +358,7 @@ class ProductUiTests(unittest.TestCase):
                 task['api_scope'] = account_scope(self.manager.config)
                 window.workspace_page.redownload(task)
                 wait_until(lambda: not window.workspace_page.jobs.busy)
-                saved = self.manager.config['history'][0]
+                saved = self.manager.history_records()[0]
                 self.assertEqual(saved['filename'], '001_分镜1.mp4')
                 self.assertTrue((output / '001_分镜1.mp4').is_file())
                 self.assertEqual(server.calls, [])

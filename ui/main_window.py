@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
 
 from core.config_manager import ConfigManager
+from core.crash_reporter import set_notify
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
 from .components.custom_widgets import ensure_ui_font
@@ -79,6 +80,23 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(0, self.model_catalog.start)
         QTimer.singleShot(0, self._sync_window_frame)
         QTimer.singleShot(80, self.apply_appearance)
+        set_notify(self._uncaught_exception)
+
+    def _uncaught_exception(self, exc_type, exc, path):
+        """未捕获异常：写入口志；主线程内同时提示 UI（子线程只落盘）。"""
+        message = f'未捕获异常已拦截：{exc_type.__name__}: {exc}；现场文件：{path or "logs 目录"}'
+        try:
+            from PyQt5.QtCore import QThread
+            page = getattr(self, 'workspace_page', None)
+            if page is None:
+                return
+            app = QApplication.instance()
+            if app is not None and QThread.currentThread() is app.thread():
+                page.append_log(message, 'error')
+            else:
+                page.run_log.write(message, 'error')
+        except Exception:
+            pass
 
     def apply_appearance(self):
         """应用外观设置（主题 / 高斯模糊），切换立即生效；主题未变化时不重复全量刷新。"""

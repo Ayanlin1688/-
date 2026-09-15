@@ -9,6 +9,9 @@ from core.model_catalog import ModelCatalog
 def runtime_config(config_manager):
     result = copy.deepcopy(config_manager.config)
     result['_submission_ledger_path'] = str(config_manager.path.with_name('submissions.sqlite3'))
+    history = getattr(config_manager, 'history_records', None)
+    if callable(history):
+        result['history'] = history()
     controller = getattr(config_manager, 'model_catalog_controller', None)
     if controller is not None:
         result['_model_catalog'] = controller.snapshot()

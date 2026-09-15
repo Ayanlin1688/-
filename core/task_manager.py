@@ -48,7 +48,12 @@ class TaskWorker(QThread):
         self.lock = threading.RLock()
         self.debug_mode = bool(self.config.get('diagnostics', {}).get('debug_mode', False))
         self.max_concurrency = max(1, min(5, int(self.config['task_strategy'].get('max_concurrency', 1))))
-        self.gate = SubmissionGate(self.max_concurrency)
+        try:
+            probe_seconds = float(self.config.get('_submission_probe_seconds') or 60)
+        except (TypeError, ValueError):
+            probe_seconds = 60.0
+        self.gate = SubmissionGate(self.max_concurrency, probe_seconds=probe_seconds)
+        self.gate.on_recover = self._gate_recovered
         self.ledger = None
         self.scope = account_scope(self.config)
         pool_settings = copy.deepcopy(self.config['model_pool'])
@@ -99,12 +104,17 @@ class TaskWorker(QThread):
             self.index = index
             self.publish(record)
 
+    def _gate_recovered(self):
+        """限流冷却到点：自动试探恢复，不再要求人工点击。"""
+        self.log(f'限流冷却结束：自动恢复提交（当前并发上限 {self.gate.limit}）', 'info')
+        self.pause_changed.emit(False)
+
     def submission_error(self, status_code):
         seconds = self.gate.failed(status_code)
         if seconds:
             self.log(f'HTTP {status_code}：新提交退避{seconds}秒，当前并发上限{self.gate.limit}；已有任务继续轮询', 'warning')
         if self.gate.paused:
-            self.log('API限流，已暂停新任务提交', 'warning')
+            self.log(f'API限流：已暂停新任务提交，约 {max(1, int(self.gate.pause_remaining()))} 秒后自动试探恢复（无需人工操作）', 'warning')
             self.pause_changed.emit(True)
         return seconds
 
@@ -409,7 +419,11 @@ class TaskWorker(QThread):
                         future.result()
                 elif not exhausted:
                     self.control.before_task()
-                    self.control.delay(.05)
+                    if self.gate.paused or self.gate.remaining() > 0:
+                        # 限流暂停 / 退避期间按冷却时钟等待；到点自动试探恢复（可被取消/跳过打断）。
+                        self.gate.wait(self.control)
+                    else:
+                        self.control.delay(.05)
 
 
 class TaskManager(QObject):

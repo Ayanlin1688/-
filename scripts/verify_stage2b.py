@@ -92,7 +92,9 @@ def verify():
                 if name == '冷却恢复':
                     assert any('恢复可用' in text for case, _, text in logs if case == name)
                     assert window.settings_page.model_rows[0][3].text() == '● 健康'
-                stored = ConfigManager(config.path).load_config()['history']
+                verify_manager = ConfigManager(config.path)
+                verify_manager.load_config()
+                stored = verify_manager.history_records()
                 assert {t['local_id']: (t['model'], t['status']) for t in stored} == {t['local_id']: (t['model'], t['status']) for t in tasks}
                 assert window.history_page.table.rowCount() == count
                 assert sorted(window.history_page.table.item(i, 3).text() for i in range(count)) == sorted(t['model'] for t in tasks)

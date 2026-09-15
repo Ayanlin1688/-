@@ -29,7 +29,7 @@ class HistoryPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setDefaultSectionSize(48)
         root.addWidget(self.table, 1)
         self.filter_box.currentTextChanged.connect(self._filter)
-        self.update_history(config_manager.config['history'])
+        self.update_history(config_manager.history_records())
 
     def update_history(self, records):
         self.records = list(reversed(records))

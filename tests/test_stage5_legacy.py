@@ -157,7 +157,7 @@ class LegacyScopeTests(unittest.TestCase):
                 self.assertEqual(defaults, [(0, '')])
                 self.assertEqual(server.calls, [])
                 self.assertEqual(server.gets, [])
-                recovered = next(record for record in manager.config['history'] if record.get('ledger_id') == pending['ledger_id'])
+                recovered = next(record for record in manager.history_records() if record.get('ledger_id') == pending['ledger_id'])
                 server.polls['current-account-confirmed-id'] = 1
                 page.redownload(recovered)
                 wait_until(lambda: not page.jobs.busy)

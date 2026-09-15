@@ -4,6 +4,7 @@ models_cache.json
 models_cache.json.tmp
 submissions.sqlite3*
 .storyboard-submissions.sqlite3*
+history.sqlite3*
 config/
 .env
 .env.*
