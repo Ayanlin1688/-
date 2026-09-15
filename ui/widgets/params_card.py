@@ -24,6 +24,7 @@ class ParamsCard(QWidget):
         outer.addWidget(card)
         root = QVBoxLayout(card)
         root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(8)
         title_row = QHBoxLayout()
         title_row.addWidget(StrongBodyLabel("生成参数"))
         title_row.addStretch(1)
@@ -33,15 +34,17 @@ class ParamsCard(QWidget):
         root.addLayout(title_row)
 
         workspace = config_manager.config["workspace"]
-        grid = QGridLayout()
+        grid = QGridLayout(); grid.setContentsMargins(0, 6, 0, 0); grid.setHorizontalSpacing(16); grid.setVerticalSpacing(6)
         self.model = ModelComboBox(); self.model.set_models(catalog_snapshot(config_manager), workspace['model'])
         self.ratio = ComboBox(); self.ratio.addItems(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"]); self.ratio.setCurrentText(workspace["aspect_ratio"])
         self.resolution = ComboBox(); self.resolution.addItems(["480p", "720p", "768p", "1080p", "2K", "4K"]); self.resolution.setCurrentText(workspace["resolution"])
         self.duration = SpinBox(); self.duration.setRange(1, 30); self.duration.setValue(workspace["duration"])
         fields = [("模型", self.model), ("比例", self.ratio), ("分辨率", self.resolution), ("时长（秒）", self.duration)]
         for index, (text, control) in enumerate(fields):
-            control.setMinimumWidth(0)
-            control.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            control.setMinimumWidth(150)
+            control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            if not isinstance(control, SwitchButton):
+                control.setFixedHeight(32)
             grid.addWidget(CaptionLabel(text), (index // 2) * 2, index % 2)
             grid.addWidget(control, (index // 2) * 2 + 1, index % 2)
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
@@ -57,7 +60,7 @@ class ParamsCard(QWidget):
         self.advanced = QWidget()
         advanced_form = QGridLayout(self.advanced)
         advanced_form.setContentsMargins(0, 10, 0, 0)
-        advanced_form.setHorizontalSpacing(10)
+        advanced_form.setHorizontalSpacing(16)
         advanced_form.setVerticalSpacing(6)
         self.audio = SwitchButton(); self.audio.setChecked(workspace["generate_audio"])
         self.poll = SpinBox(); self.poll.setRange(3, 60); self.poll.setValue(workspace["poll_interval"])
@@ -67,8 +70,10 @@ class ParamsCard(QWidget):
         advanced_fields = [("生成音频", self.audio), ("轮询间隔（秒）", self.poll), ("最大重试次数", self.retries), ("模型连续失败阈值", self.threshold)]
         for index, (text, control) in enumerate(advanced_fields):
             row, pair = divmod(index, 2)
-            control.setMinimumWidth(0)
-            control.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            control.setMinimumWidth(150)
+            control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            if not isinstance(control, SwitchButton):
+                control.setFixedHeight(32)
             advanced_form.addWidget(CaptionLabel(text), row * 2, pair)
             advanced_form.addWidget(control, row * 2 + 1, pair)
         advanced_form.setColumnStretch(0, 1); advanced_form.setColumnStretch(1, 1)

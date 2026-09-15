@@ -5,8 +5,7 @@ from PyQt5.QtCore import Qt, QSize, pyqtSignal
 import copy
 from PyQt5.QtGui import QColor, QPainter, QPixmap
 from PyQt5.QtWidgets import QListWidgetItem, QSplitter, QVBoxLayout, QHBoxLayout, QWidget, QFileDialog
-# 1.11.3 does not export FramelessDialog; use its frameless-window dependency.
-from qframelesswindow import FramelessDialog
+from .studio_dialog import StudioDialog
 from qfluentwidgets import (
     CaptionLabel, ImageLabel, ListWidget, PrimaryPushButton, PushButton,
     StrongBodyLabel, TransparentToolButton, FluentIcon as FIF, Theme,
@@ -19,11 +18,11 @@ from core.prompt_converter import convert_for_model
 from core.task_state import parameters_for_model
 
 
-class MatchDialog(FramelessDialog):
+class MatchDialog(StudioDialog):
     saved = pyqtSignal()
 
     def __init__(self, parent=None, log_callback=None, config_manager=None, matches=None, automatic_matches=None):
-        super().__init__(parent)
+        super().__init__(parent, '图片与提示词匹配详情')
         self.log_callback = log_callback or (lambda *args: None)
         self.config_manager = config_manager
         self.matches = copy.deepcopy(matches or [])
@@ -36,11 +35,8 @@ class MatchDialog(FramelessDialog):
             annotate_tasks(self.matches, config_manager.config)
         self.setObjectName("matchDialog")
         self.setWindowTitle("图片-提示词匹配详情")
-        self.resize(900, 650)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 40, 20, 20)
-        root.setSpacing(16)
-        root.addWidget(StrongBodyLabel("图片与提示词匹配详情"))
+        self.resize(1000, 680)
+        root = self.body_layout
         root.addWidget(CaptionLabel('拖动图片行调整 @参考图1/2/3 的顺序；修改后点击保存调整'))
         splitter = QSplitter(Qt.Horizontal)
         self.prompt_list = ListWidget()
@@ -111,7 +107,7 @@ class MatchDialog(FramelessDialog):
         self.picture_list.model().rowsMoved.connect(self._remember)
         self.model_combo.currentTextChanged.connect(self._model_changed)
         self.prompt_list.setCurrentRow(0)
-        style_page(self)
+        style_page(self, opaque_window=False)
         style_controls(self)
 
     def _show_details(self, row):

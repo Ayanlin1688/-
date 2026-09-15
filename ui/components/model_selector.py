@@ -25,6 +25,18 @@ def model_label(record):
     return ' · '.join(part for part in parts if part)
 
 
+def compact_model_label(record):
+    """收起状态下只显示「模型 · 主分辨率」，完整信息留在下拉菜单与悬停提示里。"""
+    resolutions = record.get('resolutions') or ()
+    primary = resolutions[0] if resolutions else ''
+    label = f"{record['id']} · {primary}" if primary else str(record['id'])
+    if record.get('kind') != 'video':
+        label += ' · 非视频'
+    elif not record.get('protocol_known'):
+        label += ' · 协议待确认'
+    return label
+
+
 class _ModelMenu(ComboBoxMenu):
     def addAction(self, action):
         owner = self.parent()
@@ -38,6 +50,7 @@ class ModelComboBox(ComboBox):
     def __init__(self, parent=None):
         self.descriptions = {}
         self._display_text = ''
+        self._compact = {}
         super().__init__(parent)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -62,7 +75,8 @@ class ModelComboBox(ComboBox):
 
     def setText(self, text):
         self._display_text = text
-        super().setText(self.fontMetrics().elidedText(text, Qt.ElideRight, max(30, self.width()-42)))
+        compact = self._compact.get(text, text)
+        super().setText(self.fontMetrics().elidedText(compact, Qt.ElideRight, max(30, self.width()-42)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -82,10 +96,12 @@ class ModelComboBox(ComboBox):
         self._closeComboMenu()
         self.clear()
         self.descriptions = {}
+        self._compact = {}
         if automatic:
             self.addItem('自动识别 / 工作台默认', userData='')
         for model, record in records.items():
             label = model_label(record)
+            self._compact[label] = compact_model_label(record)
             self.descriptions[label] = record.get('description') or record.get('display_name') or model
             self.addItem(label, userData=model)
             self.setItemEnabled(self.count()-1, usable(record))

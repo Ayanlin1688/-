@@ -1,7 +1,7 @@
 """Data source directories card."""
 
 from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from pathlib import Path
 
 from ..components.custom_widgets import CaptionLabel, LineEdit, PushButton, StrongBodyLabel, TransparentToolButton, make_card
@@ -25,25 +25,31 @@ class DataSourceCard(QWidget):
         root.addWidget(card)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(9)
+        layout.setSpacing(10)
         layout.addWidget(StrongBodyLabel("数据源"))
         labels = [("prompts", "分镜提示词目录"), ("images", "参考图片目录"), ("output", "视频保存目录")]
         for key, text in labels:
-            layout.addWidget(CaptionLabel(text))
-            row = QHBoxLayout()
+            row = QHBoxLayout(); row.setSpacing(10)
+            caption_widget = CaptionLabel(text)
+            caption_widget.setFixedWidth(104)
+            row.addWidget(caption_widget, 0, Qt.AlignVCenter)
             field = LineEdit()
             field.setReadOnly(True)
             field.setPlaceholderText("尚未选择目录")
             field.setText(config_manager.config["paths"].get(key, ""))
-            field.setMinimumWidth(0)
-            field.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            field.setMinimumWidth(200)
+            field.setFixedHeight(32)
+            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             field.setToolTip(field.text())
             self.fields[key] = field
             row.addWidget(field, 1)
             choose = PushButton(FIF.FOLDER, "选择")
+            choose.setFixedHeight(32)
             choose.clicked.connect(lambda _=False, k=key, f=field: self._choose(k, f))
-            row.addWidget(choose)
+            row.addWidget(choose, 0, Qt.AlignVCenter)
             layout.addLayout(row)
+        divider = QWidget(); divider.setFixedHeight(1); divider.setStyleSheet('background:rgba(255,255,255,0.08);')
+        layout.addSpacing(2); layout.addWidget(divider); layout.addSpacing(2)
         status_row = QHBoxLayout()
         self.status_label = CaptionLabel('请选择提示词与图片目录')
         self.status_label.setWordWrap(True)

@@ -126,6 +126,8 @@ class MainWindow(FluentWindow):
             panel.bottomLayout.setContentsMargins(0, 0, 0, 10)
         except Exception:
             pass
+        # 标题栏呼吸位：等窗口标题写入后再应用图标/标题间距。
+        QTimer.singleShot(30, self._apply_titlebar_tweak)
         # 关于入口由底部头像承担，导航栏保持纯图标三入口。
         try:
             self.navigationInterface.widget('about').hide()
@@ -197,6 +199,40 @@ class MainWindow(FluentWindow):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
             QTimer.singleShot(0, self._sync_window_frame)
+
+    def _apply_titlebar_tweak(self):
+        """图标与标题之间留出 10px 呼吸位，标题字号统一为 13px/600。"""
+        try:
+            title_bar = self.titleBar
+            if getattr(title_bar, '_studio_gap', False):
+                return
+            layout = getattr(title_bar, 'hBoxLayout', None) or title_bar.layout()
+            if layout is None:
+                return
+            title_widget = None
+            want = self.windowTitle()
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                widget = item.widget() if item is not None else None
+                if widget is not None and hasattr(widget, 'text') and callable(getattr(widget, 'text', None)) and widget.text() == want:
+                    title_widget = widget
+                    break
+            if title_widget is None:
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    widget = item.widget() if item is not None else None
+                    if widget is not None and hasattr(widget, 'text') and callable(getattr(widget, 'text', None)) and widget.text():
+                        title_widget = widget
+                        break
+            if title_widget is None:
+                return
+            index = layout.indexOf(title_widget)
+            if index >= 0:
+                layout.insertSpacing(index, 10)
+            title_widget.setStyleSheet('font-size:13px; font-weight:600; background:transparent;')
+            title_bar._studio_gap = True
+        except Exception:
+            pass
 
     def paintEvent(self, event):
         painter = QPainter(self)

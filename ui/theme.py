@@ -136,12 +136,14 @@ def style_controls(root):
             widget._studio_scroll_hover = ScrollHover(widget)
 
 
-def style_page(page):
+def style_page(page, opaque_window=None):
     page.setAttribute(Qt.WA_StyledBackground, True)
-    # Child pages inherit the main window material. A separate frameless dialog
-    # needs its own opaque backing; otherwise text and buttons composite against
-    # an unpainted transparent native surface.
-    background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0A0B12,stop:1 #12131F)' if page.isWindow() else 'transparent'
+    # Child pages inherit the main window material. Standalone frameless dialogs
+    # (now rounded via StudioDialog) should stay transparent so their own
+    # rounded backing shows through.
+    if opaque_window is None:
+        opaque_window = page.isWindow()
+    background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0A0B12,stop:1 #12131F)' if opaque_window else 'transparent'
     page.setStyleSheet(
         f"#{page.objectName()} {{background:{background};}}"
         "QScrollArea, #settingsContent {background:transparent; border:0;}"

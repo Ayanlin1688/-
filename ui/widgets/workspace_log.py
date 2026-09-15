@@ -40,12 +40,12 @@ class FilterTabs(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(4)
+        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(6)
         self._buttons = {}
         for name in self.LEVELS:
             chip = PushButton(name)
             chip.setProperty('studioStyled', True)
-            chip.setFixedHeight(24)
+            chip.setFixedHeight(26)
             chip.setCursor(Qt.PointingHandCursor)
             chip.clicked.connect(lambda checked=False, n=name: self.setCurrentText(n))
             self._buttons[name] = chip
@@ -102,6 +102,7 @@ class WorkspaceLog(LogDrawer):
         self.filter_box = FilterTabs()
         self.filter_box.currentTextChanged.connect(self._render)
         header.addWidget(self.filter_box)
+        header.addSpacing(12)
         self.export_button = style_button(PushButton('导出')); self.export_button.clicked.connect(self.export)
         self.clear_button = style_button(PushButton('清空')); self.clear_button.clicked.connect(self.clear)
         self.toggle_button = style_button(TransparentToolButton(FIF.UP)); self.toggle_button.setFixedSize(28, 24)

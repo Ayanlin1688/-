@@ -7,7 +7,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, QPointF, QMimeData, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QImageReader, QDrag, QLinearGradient, QRadialGradient
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
-from qframelesswindow import FramelessDialog
+from ..components.studio_dialog import StudioDialog
 from qfluentwidgets import (CardWidget, CaptionLabel, StrongBodyLabel, ImageLabel,
                             PushButton, TransparentToolButton, ScrollArea, FluentIcon as FIF, Theme)
 from ..motion import StatusDot, WidgetMotion
@@ -37,12 +37,17 @@ def style_button(button, primary=False):
     border = ('rgba(160,180,255,0.55)' if primary else 'rgba(255,255,255,0.12)')
     hover = ('rgba(190,205,255,0.8)' if primary else 'rgba(255,255,255,0.22)')
     has_icon = not button.icon().isNull()
-    padding = '5px 12px 5px 34px' if has_icon and button.text() else '5px 12px' if button.text() else '0px'
+    if has_icon and button.text():
+        padding = '0 12px 0 32px'
+    elif button.text():
+        padding = '0 12px'
+    else:
+        padding = '0'
     button.setStyleSheet(f'''
         QPushButton, QToolButton {{background:{fill}; color:#f5f5f5; border:1px solid {border};
             border-radius:8px; padding:{padding}; font-size:12px;}}
         QPushButton:hover, QToolButton:hover {{border-color:{hover};}}
-        QPushButton:disabled, QToolButton:disabled {{color:#55555f; background:rgba(255,255,255,0.015);}}
+        QPushButton:disabled, QToolButton:disabled {{color:rgba(255,255,255,0.42); background:rgba(255,255,255,0.03); border-color:rgba(255,255,255,0.06);}}
     ''')
     button._studio_motion = WidgetMotion(button, primary=primary)
     return button
@@ -255,21 +260,20 @@ class ReferenceStrip(ScrollArea):
             widget.editable = editable; widget.update()
 
 
-class ImagePreview(FramelessDialog):
+class ImagePreview(StudioDialog):
     def __init__(self, path, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, '参考图查看器')
         self.path = path
         reader = QImageReader(path); reader.setAutoTransform(True)
         self.original = QPixmap.fromImage(reader.read())
-        self.setObjectName('workspaceImagePreview'); self.setWindowTitle('参考图查看器')
+        self.setObjectName('workspaceImagePreview')
         self.resize(980, 720)
-        self.setStyleSheet('#workspaceImagePreview {background:#111116;}')
-        layout = QVBoxLayout(self); layout.setContentsMargins(24, 42, 24, 20); layout.setSpacing(16)
-        heading = QHBoxLayout(); heading.addWidget(label('参考图查看器', 18, '#f5f5f5', True)); heading.addStretch(1)
+        layout = self.body_layout
+        heading = QHBoxLayout(); heading.addStretch(1)
         self.size_label = label(f'{self.original.width()} × {self.original.height()}  ·  原始图片', 12)
         heading.addWidget(self.size_label); layout.addLayout(heading)
         self.area = ScrollArea(); self.area.setWidgetResizable(False)
-        self.area.setStyleSheet('QScrollArea {background:#0d0d10; border:1px solid rgba(255,255,255,0.08); border-radius:12px;}')
+        self.area.setStyleSheet('QScrollArea {background:#0c0e14; border:1px solid rgba(255,255,255,0.08); border-radius:10px;}')
         self.area.setAlignment(Qt.AlignCenter)
         self.image = ImageLabel(); self.image.setBorderRadius(8, 8, 8, 8)
         self.area.setWidget(self.image); layout.addWidget(self.area, 1)
@@ -277,11 +281,10 @@ class ImagePreview(FramelessDialog):
         self.image.setImage(self.original if not self.original.isNull() else thumbnail(path))
         footer = QHBoxLayout(); name = ElidedLabel(str(Path(path).name)); footer.addWidget(name, 1)
         for text, callback in [('−', lambda: self.zoom(.8)), ('适应窗口', self.fit), ('+', lambda: self.zoom(1.25)), ('关闭', self.accept)]:
-            button = style_button(PushButton(text)); button.clicked.connect(callback); footer.addWidget(button)
+            button = style_button(PushButton(text)); button.setFixedHeight(30); button.clicked.connect(callback); footer.addWidget(button)
         layout.addLayout(footer)
         if self.original.isNull():
             self.size_label.setText('图片不可读或文件已移动')
-        self.titleBar.closeBtn.setNormalColor(QColor('#a1a1aa'))
 
     def showEvent(self, event):
         super().showEvent(event); self.fit()

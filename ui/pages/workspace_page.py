@@ -8,7 +8,7 @@ import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget
-from qframelesswindow import FramelessDialog
+from ..components.studio_dialog import StudioDialog
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
@@ -153,35 +153,31 @@ class WorkspacePage(QWidget):
         self.log_drawer.view_changed.connect(self._log_toggled)
         # Existing parameter, matching and submission recovery controls remain
         # accessible in a workspace tool dialog, without occupying table space.
-        self.controls_dialog = FramelessDialog(self)
-        self.controls_dialog.setObjectName('workspaceControls'); self.controls_dialog.setWindowTitle('生成参数与任务详情')
-        self.controls_dialog.resize(900, 760)
-        dialog_layout = QVBoxLayout(self.controls_dialog); dialog_layout.setContentsMargins(20, 40, 20, 20)
-        center = QWidget(); center_layout = QVBoxLayout(center); center_layout.setContentsMargins(8, 8, 8, 8); center_layout.setSpacing(16)
+        self.controls_dialog = StudioDialog(self, '生成参数与任务详情')
+        self.controls_dialog.setObjectName('workspaceControls')
+        self.controls_dialog.resize(980, 820)
+        dialog_layout = self.controls_dialog.body_layout
+        center = QWidget(); center_layout = QVBoxLayout(center); center_layout.setContentsMargins(4, 4, 4, 4); center_layout.setSpacing(16)
         self.data_source = DataSourceCard(self.config_manager, self.append_log); self.params_card = ParamsCard(self.config_manager); self.current_task = CurrentTaskCard(self.append_log)
         # Wire the match-details action only after the data source card exists.
         self.directory_bar.match_requested.connect(self.data_source.open_match_dialog)
-        self.config_row = QHBoxLayout()
-        self.config_row.setSpacing(16)
-        self.config_row.addWidget(self.data_source, 1, Qt.AlignTop)
-        self.config_row.addWidget(self.params_card, 1, Qt.AlignTop)
-        center_layout.addLayout(self.config_row)
-        center_layout.addWidget(self.current_task)
         for card in (self.data_source, self.params_card, self.current_task):
             card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        center_layout.addStretch(1)
-        center_layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
+        center_layout.addWidget(self.data_source)
+        center_layout.addWidget(self.params_card)
+        center_layout.addWidget(self.current_task)
         self.center_scroll = ScrollArea()
         self.center_scroll.setFrameShape(QScrollArea.NoFrame)
         self.center_scroll.setWidgetResizable(True)
         self.center_scroll.setWidget(center)
         self.recent_panel = RecentCompletedPanel(self.append_log)
         center_layout.addWidget(self.recent_panel)
-        dialog_layout.addWidget(self.center_scroll)
-        close = style_button(PushButton('关闭')); close.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(close, 0, Qt.AlignRight)
-        self.controls_dialog.setStyleSheet('#workspaceControls {background:#101014;}')
+        center_layout.addStretch(1)
+        dialog_layout.addWidget(self.center_scroll, 1)
+        close = style_button(PushButton('关闭')); close.setFixedHeight(32); close.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(close, 0, Qt.AlignRight)
         self.queue_panel.params_button.clicked.connect(self.open_controls)
         self.queue_panel.match_button.clicked.connect(self.data_source.open_match_dialog)
+        self.queue_panel.select_prompts_requested.connect(lambda: self.choose_directory('prompts'))
         self.set_debug_mode(self.config_manager.config.get('diagnostics', {}).get('debug_mode', False))
         self.params_card.parameters_adjusted.connect(self.append_log)
 
