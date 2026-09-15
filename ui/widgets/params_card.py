@@ -8,6 +8,7 @@ from ..components.custom_widgets import CaptionLabel, ComboBox, LineEdit, SpinBo
 from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, catalog_snapshot
 from core.model_parameters import MODELS, H3, h3_size, model_options
+from core.i18n import tr
 
 
 class ParamsCard(QWidget):
@@ -26,9 +27,9 @@ class ParamsCard(QWidget):
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(8)
         title_row = QHBoxLayout()
-        title_row.addWidget(StrongBodyLabel("生成参数"))
+        title_row.addWidget(StrongBodyLabel(tr("生成参数")))
         title_row.addStretch(1)
-        self.expand_button = PushButton(FIF.UP, "高级参数")
+        self.expand_button = PushButton(FIF.UP, tr("高级参数"))
         self.expand_button.clicked.connect(self.toggle_advanced)
         title_row.addWidget(self.expand_button)
         root.addLayout(title_row)
@@ -39,7 +40,7 @@ class ParamsCard(QWidget):
         self.ratio = ComboBox(); self.ratio.addItems(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"]); self.ratio.setCurrentText(workspace["aspect_ratio"])
         self.resolution = ComboBox(); self.resolution.addItems(["480p", "720p", "768p", "1080p", "2K", "4K"]); self.resolution.setCurrentText(workspace["resolution"])
         self.duration = SpinBox(); self.duration.setRange(1, 30); self.duration.setValue(workspace["duration"])
-        fields = [("模型", self.model), ("比例", self.ratio), ("分辨率", self.resolution), ("时长（秒）", self.duration)]
+        fields = [(tr("模型"), self.model), (tr("比例"), self.ratio), (tr("分辨率"), self.resolution), (tr("时长（秒）"), self.duration)]
         for index, (text, control) in enumerate(fields):
             control.setMinimumWidth(150)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -66,8 +67,8 @@ class ParamsCard(QWidget):
         self.poll = SpinBox(); self.poll.setRange(3, 60); self.poll.setValue(workspace["poll_interval"])
         self.retries = SpinBox(); self.retries.setRange(0, 20); self.retries.setValue(workspace["max_retries"])
         self.threshold = SpinBox(); self.threshold.setRange(1, 100); self.threshold.setValue(workspace["skip_threshold"])
-        self.seed = LineEdit(); self.seed.setText(workspace["seed"]); self.seed.setPlaceholderText("留空则随机")
-        advanced_fields = [("生成音频", self.audio), ("轮询间隔（秒）", self.poll), ("最大重试次数", self.retries), ("模型连续失败阈值", self.threshold)]
+        self.seed = LineEdit(); self.seed.setText(workspace["seed"]); self.seed.setPlaceholderText(tr("留空则随机"))
+        advanced_fields = [(tr("生成音频"), self.audio), (tr("轮询间隔（秒）"), self.poll), (tr("最大重试次数"), self.retries), (tr("模型连续失败阈值"), self.threshold)]
         for index, (text, control) in enumerate(advanced_fields):
             row, pair = divmod(index, 2)
             control.setMinimumWidth(150)
@@ -77,7 +78,7 @@ class ParamsCard(QWidget):
             advanced_form.addWidget(CaptionLabel(text), row * 2, pair)
             advanced_form.addWidget(control, row * 2 + 1, pair)
         advanced_form.setColumnStretch(0, 1); advanced_form.setColumnStretch(1, 1)
-        advanced_form.addWidget(CaptionLabel("随机种子"), 4, 0)
+        advanced_form.addWidget(CaptionLabel(tr("随机种子")), 4, 0)
         advanced_form.addWidget(self.seed, 5, 0, 1, 2)
         root.addWidget(self.advanced)
         self._advanced_height = max(1, self.advanced.sizeHint().height())
@@ -108,7 +109,7 @@ class ParamsCard(QWidget):
 
     def refresh_pool_hint(self, *_):
         pool = self.config_manager.config['model_pool']
-        self.pool_hint.setText(f'已启用模型池 · {pool["strategy"]}；实际模型见当前任务，参数按模型适配' if pool.get('enabled') else '')
+        self.pool_hint.setText(f"{tr('已启用模型池')} · {tr(pool['strategy'])}；" + tr('实际模型见当前任务，参数按模型适配') if pool.get('enabled') else '')
         self.pool_hint.setVisible(bool(pool.get('enabled')))
 
     def _save(self, key: str, value) -> None:
@@ -124,21 +125,21 @@ class ParamsCard(QWidget):
         before = {key: workspace[key] for key in ('aspect_ratio', 'resolution', 'duration')}
         values = apply_model_options(model, self.ratio, self.resolution, self.duration, self.audio, self.seed, catalog)
         changes = []
-        labels = {'aspect_ratio': '比例', 'resolution': '分辨率', 'duration': '时长'}
+        labels = {'aspect_ratio': tr('比例'), 'resolution': tr('分辨率'), 'duration': tr('时长')}
         for key, value in values.items():
             if value != before[key]:
                 self.config_manager.update(('workspace', key), value)
                 self.values_changed.emit(key, value)
                 changes.append(f'{labels[key]} {before[key]} → {value}')
         if model == H3:
-            hint = f"输出尺寸：{h3_size(values['aspect_ratio'], values['resolution'])} · {values['aspect_ratio']}"
+            hint = f"{tr('输出尺寸')}：{h3_size(values['aspect_ratio'], values['resolution'])} · {values['aspect_ratio']}"
         elif model == 'grok-imagine-1.5-video':
-            hint = '多张参考图请选择 480p 或 720p'
+            hint = tr('多张参考图请选择 480p 或 720p')
         else:
             options = model_options(model, catalog)
             durations = options['durations'] or []
-            hint = ('支持时长：' + ' / '.join(map(str, durations)) + ' 秒' if len(durations) <= 3 and durations
-                    else f'支持时长：{min(durations)}–{max(durations)} 秒' if durations else '提交协议尚未确认')
+            hint = (f"{tr('支持时长')}：" + ' / '.join(map(str, durations)) + f" {tr('秒')}" if len(durations) <= 3 and durations
+                    else f"{tr('支持时长')}：{min(durations)}–{max(durations)} {tr('秒')}" if durations else tr('提交协议尚未确认'))
         if changes:
             message = f'{model} 已调整不支持的选项：' + '；'.join(changes)
             self.parameters_adjusted.emit(message, 'warning')

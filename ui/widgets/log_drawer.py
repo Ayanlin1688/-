@@ -11,6 +11,7 @@ from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QHBoxLayout, QFileDialog
 
 from ..components.custom_widgets import ComboBox, PushButton, TextBrowser, TransparentToolButton, CaptionLabel
+from core.i18n import tr
 
 
 class LogDrawer(QWidget):
@@ -95,7 +96,7 @@ class LogDrawer(QWidget):
         self.browser.clear()
 
     def export(self):
-        path, _ = QFileDialog.getSaveFileName(self, "导出日志", "execution.log", "日志 (*.log *.txt)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("导出日志"), "execution.log", tr("日志 (*.log *.txt)"))
         if not path:
             return
         try:

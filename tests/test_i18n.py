@@ -109,6 +109,49 @@ class I18nTests(unittest.TestCase):
         for source, target in expected.items():
             self.assertEqual(i18n.tr(source), target, source)
 
+    def test_logs_task_card_and_dialogs_batch_entries(self):
+        i18n.set_language('English')
+        expected = {
+            '执行日志': 'Execution log',
+            '本次运行': 'This session',
+            '条': 'entries',
+            '导出': 'Export',
+            '清空': 'Clear',
+            '高级参数': 'Advanced parameters',
+            '时长（秒）': 'Duration (s)',
+            '留空则随机': 'Leave empty for random',
+            '生成音频': 'Generate audio',
+            '轮询间隔（秒）': 'Poll interval (s)',
+            '最大重试次数': 'Max retries',
+            '随机种子': 'Random seed',
+            '轮询': 'Round robin',
+            '随机': 'Random',
+            '优先级': 'Priority',
+            '秒': 's',
+            '当前任务': 'Current task',
+            '尚未开始任务': 'No task started yet',
+            '已用': 'Elapsed',
+            '预计剩余': 'ETA',
+            '跳过当前': 'Skip current',
+            '重新下载': 'Redownload',
+            '处理待确认': 'Resolve unconfirmed',
+            '最近完成': 'Recently completed',
+            '参考图查看器': 'Reference viewer',
+            '适应窗口': 'Fit window',
+            '确认提交结果': 'Confirm submission result',
+            '保持待确认': 'Keep unconfirmed',
+            '保存确认结果': 'Save confirmation',
+            '暂不处理': 'Not now',
+            '计费未提供': 'Pricing unavailable',
+            '非视频模型': 'Not a video model',
+            '协议待确认': 'Protocol unverified',
+            '已下架': 'Delisted',
+            '暂无可提交模型': 'No submittable model',
+            '关闭（Esc）': 'Close (Esc)',
+        }
+        for source, target in expected.items():
+            self.assertEqual(i18n.tr(source), target, source)
+
 
 class StartupLanguageTests(unittest.TestCase):
     """启动时语言必须先于界面构建生效：否则英文模式重启后部分界面仍显示中文。"""

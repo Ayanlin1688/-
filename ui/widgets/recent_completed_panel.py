@@ -1,6 +1,7 @@
 """Recently downloaded files from persisted history."""
 from pathlib import Path
 from ..file_actions import open_local
+from core.i18n import tr
 
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QVBoxLayout, QWidget, QHBoxLayout, QSizePolicy
 from PyQt5.QtCore import Qt
@@ -25,7 +26,7 @@ class RecentCompletedRow(QWidget):
         text.addWidget(detail)
         layout.addLayout(text, 1)
         open_button = TransparentToolButton(FIF.FOLDER)
-        open_button.setToolTip("打开")
+        open_button.setToolTip(tr("打开"))
         open_button.clicked.connect(lambda: open_local(path, log_callback))
         layout.addWidget(open_button)
 
@@ -35,7 +36,7 @@ class RecentCompletedPanel(QWidget):
         super().__init__(parent)
         self.log_callback = log_callback
         root = QVBoxLayout(self); root.setContentsMargins(8, 0, 0, 0); root.setSpacing(10)
-        root.addWidget(StrongBodyLabel("最近完成"))
+        root.addWidget(StrongBodyLabel(tr("最近完成")))
         self.list = QListWidget()
         self.list.setSpacing(2)
         self.list.setStyleSheet(
@@ -51,7 +52,7 @@ class RecentCompletedPanel(QWidget):
         empty.addStretch(1)
         icon = IconWidget(FIF.VIDEO); icon.setFixedSize(38, 38)
         empty.addWidget(icon, 0, Qt.AlignHCenter)
-        label = CaptionLabel('暂无完成的视频'); label.setAlignment(Qt.AlignCenter); label.setWordWrap(True)
+        label = CaptionLabel(tr('暂无完成的视频')); label.setAlignment(Qt.AlignCenter); label.setWordWrap(True)
         empty.addWidget(label)
         empty.addStretch(1)
         root.addWidget(self.empty_state, 1)

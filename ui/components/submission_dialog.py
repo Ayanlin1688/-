@@ -1,22 +1,23 @@
 """Default-cancel recovery; no UI action silently authorizes another POST."""
 from qfluentwidgets import MessageBoxBase, SubtitleLabel, CaptionLabel, LineEdit, ComboBox
+from core.i18n import tr
 
 
 class SubmissionRecoveryDialog(MessageBoxBase):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.viewLayout.addWidget(SubtitleLabel('确认提交结果'))
-        hint = CaptionLabel('请先在服务商后台核对该任务。无法确认时关闭此窗口，软件会继续阻止重新提交。')
+        self.viewLayout.addWidget(SubtitleLabel(tr('确认提交结果')))
+        hint = CaptionLabel(tr('请先在服务商后台核对该任务。无法确认时关闭此窗口，软件会继续阻止重新提交。'))
         hint.setWordWrap(True)
         self.viewLayout.addWidget(hint)
         self.action = ComboBox()
-        self.action.addItems(['保持待确认', '填写已创建的任务ID', '我已确认服务端未创建任务'])
+        self.action.addItems([tr('保持待确认'), tr('填写已创建的任务ID'), tr('我已确认服务端未创建任务')])
         self.viewLayout.addWidget(self.action)
         self.task_id = LineEdit()
-        self.task_id.setPlaceholderText('服务商返回的 task_id')
+        self.task_id.setPlaceholderText(tr('服务商返回的 task_id'))
         self.viewLayout.addWidget(self.task_id)
-        self.yesButton.setText('保存确认结果')
-        self.cancelButton.setText('暂不处理')
+        self.yesButton.setText(tr('保存确认结果'))
+        self.cancelButton.setText(tr('暂不处理'))
         self.action.currentIndexChanged.connect(self._changed)
         self.task_id.textChanged.connect(self._changed)
         self.cancelButton.setFocus()

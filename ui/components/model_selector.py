@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import QSizePolicy
 from qfluentwidgets import ComboBox
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from core.model_catalog import builtin_models, resolve_model_id
+from core.i18n import tr
 
 
 def catalog_snapshot(config_manager):
@@ -17,11 +18,11 @@ def usable(record):
 
 
 def model_label(record):
-    parts = [record['id'], ' / '.join(record.get('resolutions', ())), record.get('pricing_text') or '计费未提供']
+    parts = [record['id'], ' / '.join(record.get('resolutions', ())), record.get('pricing_text') or tr('计费未提供')]
     if record.get('kind') != 'video':
-        parts.append('非视频模型')
+        parts.append(tr('非视频模型'))
     elif not record.get('protocol_known'):
-        parts.append('协议待确认')
+        parts.append(tr('协议待确认'))
     return ' · '.join(part for part in parts if part)
 
 
@@ -31,9 +32,9 @@ def compact_model_label(record):
     primary = resolutions[0] if resolutions else ''
     label = f"{record['id']} · {primary}" if primary else str(record['id'])
     if record.get('kind') != 'video':
-        label += ' · 非视频'
+        label += ' · ' + tr('非视频')
     elif not record.get('protocol_known'):
-        label += ' · 协议待确认'
+        label += ' · ' + tr('协议待确认')
     return label
 
 
@@ -98,7 +99,7 @@ class ModelComboBox(ComboBox):
         self.descriptions = {}
         self._compact = {}
         if automatic:
-            self.addItem('自动识别 / 工作台默认', userData='')
+            self.addItem(tr('自动识别 / 工作台默认'), userData='')
         for model, record in records.items():
             label = model_label(record)
             self._compact[label] = compact_model_label(record)
@@ -106,13 +107,13 @@ class ModelComboBox(ComboBox):
             self.addItem(label, userData=model)
             self.setItemEnabled(self.count()-1, usable(record))
         if selected and selected not in records and keep_missing:
-            self.addItem(selected + ' · 已下架', userData=selected)
+            self.addItem(selected + ' · ' + tr('已下架'), userData=selected)
             self.setItemEnabled(self.count()-1, False)
         index = self.findData(selected)
         if index < 0 or (not keep_missing and not self.items[index].isEnabled):
             index = next((i for i, item in enumerate(self.items) if item.isEnabled), -1)
         self.setCurrentIndex(index)
         if index < 0:
-            self.setText('暂无可提交模型')
+            self.setText(tr('暂无可提交模型'))
         del blocker
         self._update_tooltip()

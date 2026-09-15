@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, QPointF, QMimeData, pyqtSign
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QImageReader, QDrag, QLinearGradient, QRadialGradient
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
 from ..components.studio_dialog import StudioDialog
+from core.i18n import tr
 from qfluentwidgets import (CardWidget, CaptionLabel, StrongBodyLabel, ImageLabel,
                             PushButton, TransparentToolButton, ScrollArea, FluentIcon as FIF, Theme)
 from ..motion import StatusDot, WidgetMotion
@@ -216,9 +217,9 @@ class ReferenceThumbnail(ImageLabel):
         self.setBorderRadius(6, 6, 6, 6)
         self.setAcceptDrops(large)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(f'Picture {index+1} · {Path(path).name}\n点击放大；空闲时拖动调整顺序')
+        self.setToolTip(f'Picture {index+1} · {Path(path).name}\n' + tr('点击放大；空闲时拖动调整顺序'))
         self.setFocusPolicy(Qt.StrongFocus if large else Qt.NoFocus)
-        self.setAccessibleName(f'查看 Picture {index+1}：{Path(path).name}')
+        self.setAccessibleName(tr('查看') + f' Picture {index+1}：{Path(path).name}')
 
     def paintEvent(self, event):
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
@@ -301,7 +302,7 @@ class ReferenceStrip(ScrollArea):
             widget.moved.connect(self.move_reference)
             self.thumbnails.append(widget); self.row.addWidget(widget)
         if not paths:
-            self.row.addWidget(label('暂无参考图 · 请在匹配详情中绑定', 12))
+            self.row.addWidget(label(tr('暂无参考图 · 请在匹配详情中绑定'), 12))
         self.row.addStretch(1)
 
     def move_reference(self, source, target):
@@ -318,7 +319,7 @@ class ReferenceStrip(ScrollArea):
 
 class ImagePreview(StudioDialog):
     def __init__(self, path, parent=None):
-        super().__init__(parent, '参考图查看器')
+        super().__init__(parent, tr('参考图查看器'))
         self.path = path
         reader = QImageReader(path); reader.setAutoTransform(True)
         self.original = QPixmap.fromImage(reader.read())
@@ -326,7 +327,7 @@ class ImagePreview(StudioDialog):
         self.resize(980, 720)
         layout = self.body_layout
         heading = QHBoxLayout(); heading.addStretch(1)
-        self.size_label = label(f'{self.original.width()} × {self.original.height()}  ·  原始图片', 12)
+        self.size_label = label(f'{self.original.width()} × {self.original.height()}  ·  ' + tr('原始图片'), 12)
         heading.addWidget(self.size_label); layout.addLayout(heading)
         self.area = ScrollArea(); self.area.setWidgetResizable(False)
         self.area.setStyleSheet('QScrollArea {background:#0c0e14; border:1px solid rgba(255,255,255,0.08); border-radius:10px;}')
@@ -336,11 +337,11 @@ class ImagePreview(StudioDialog):
         self.scale = 1.
         self.image.setImage(self.original if not self.original.isNull() else thumbnail(path))
         footer = QHBoxLayout(); name = ElidedLabel(str(Path(path).name)); footer.addWidget(name, 1)
-        for text, callback in [('−', lambda: self.zoom(.8)), ('适应窗口', self.fit), ('+', lambda: self.zoom(1.25)), ('关闭', self.accept)]:
+        for text, callback in [('−', lambda: self.zoom(.8)), (tr('适应窗口'), self.fit), ('+', lambda: self.zoom(1.25)), (tr('关闭'), self.accept)]:
             button = style_button(PushButton(text)); button.setFixedHeight(30); button.clicked.connect(callback); footer.addWidget(button)
         layout.addLayout(footer)
         if self.original.isNull():
-            self.size_label.setText('图片不可读或文件已移动')
+            self.size_label.setText(tr('图片不可读或文件已移动'))
 
     def showEvent(self, event):
         super().showEvent(event); self.fit()

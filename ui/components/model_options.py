@@ -1,6 +1,7 @@
 """Bind existing Fluent controls to the same options used by submission validation."""
 from PyQt5.QtCore import QSignalBlocker
 from core.model_parameters import model_options
+from core.i18n import tr
 
 
 def apply_model_options(model, ratio, resolution, duration, audio=None, seed=None, catalog=None):
@@ -12,7 +13,7 @@ def apply_model_options(model, ratio, resolution, duration, audio=None, seed=Non
             control.clear()
             del blocker
             control.setEnabled(False)
-            control.setToolTip('此模型未提供此参数的可选值')
+            control.setToolTip(tr('此模型未提供此参数的可选值'))
             continue
         current = control.currentText()
         if current not in choices:
@@ -25,7 +26,7 @@ def apply_model_options(model, ratio, resolution, duration, audio=None, seed=Non
         control.setCurrentText(current)
         del blocker
         control.setEnabled(len(choices) > 1)
-        control.setToolTip('支持：' + ' / '.join(choices))
+        control.setToolTip(tr('支持') + '：' + ' / '.join(choices))
     allowed = options['durations']
     allowed = sorted(allowed or [])
     duration.setEnabled(bool(allowed))
@@ -40,10 +41,10 @@ def apply_model_options(model, ratio, resolution, duration, audio=None, seed=Non
     duration.setSingleStep(5 if len(allowed) == 3 else 1)
     duration.setKeyboardTracking(False)
     duration.setValue(current)
-    duration.setToolTip('仅支持 5 / 10 / 15 秒' if len(allowed) == 3 else f'{allowed[0]}–{allowed[-1]} 秒')
+    duration.setToolTip((f"{tr('仅支持')} 5 / 10 / 15 {tr('秒')}") if len(allowed) == 3 else f'{allowed[0]}–{allowed[-1]} {tr("秒")}')
     del blocker
     for control, supported in ((audio, options['audio']), (seed, options['seed'])):
         if control is not None:
             control.setEnabled(supported)
-            control.setToolTip('' if supported else '此模型不支持此参数，不会发送')
+            control.setToolTip('' if supported else tr('此模型不支持此参数，不会发送'))
     return dict(aspect_ratio=ratio.currentText(), resolution=resolution.currentText(), duration=duration.value())

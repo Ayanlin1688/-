@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel, FluentIcon as FIF, StrongBodyLabel, TransparentToolButton,
 )
+from core.i18n import tr
 
 WINDOW_RADIUS = 12
 WINDOW_MARGIN = 8
@@ -49,7 +50,7 @@ class DialogHeader(QWidget):
         layout.addStretch(1)
         self.close_button = TransparentToolButton(FIF.CLOSE)
         self.close_button.setFixedSize(32, 32)
-        self.close_button.setToolTip('关闭（Esc）')
+        self.close_button.setToolTip(tr('关闭（Esc）'))
         self.close_button.clicked.connect(self.dialog.reject)
         layout.addWidget(self.close_button)
 

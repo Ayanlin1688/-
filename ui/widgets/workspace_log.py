@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt, QPropertyAnimation, pyqtProperty, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QTextCursor
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from qfluentwidgets import ComboBox, PushButton, TransparentToolButton, TextBrowser, FluentIcon as FIF
+from core.i18n import tr
 from .log_drawer import LogDrawer
 from .workspace_surface import label, style_button
 
@@ -43,7 +44,7 @@ class FilterTabs(QWidget):
         row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(6)
         self._buttons = {}
         for name in self.LEVELS:
-            chip = PushButton(name)
+            chip = PushButton(tr(name))
             chip.setProperty('studioStyled', True)
             chip.setFixedHeight(26)
             chip.setCursor(Qt.PointingHandCursor)
@@ -103,8 +104,8 @@ class WorkspaceLog(LogDrawer):
         self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
         root = QVBoxLayout(self); root.setContentsMargins(16, 8, 16, 8); root.setSpacing(6)
         header = QHBoxLayout(); self.header = header
-        header.addWidget(label('执行日志', 13, '#F4F5F7', True))
-        self.count_label = label('本次运行 0 条', 11, '#7A8294', mono=True)
+        header.addWidget(label(tr('执行日志'), 13, '#F4F5F7', True))
+        self.count_label = label(f'{tr("本次运行")} 0 {tr("条")}', 11, '#7A8294', mono=True)
         header.addWidget(self.count_label)
         header.addStretch(1)
         self.search_label = label(''); header.addWidget(self.search_label)
@@ -112,10 +113,10 @@ class WorkspaceLog(LogDrawer):
         self.filter_box.currentTextChanged.connect(self._render)
         header.addWidget(self.filter_box)
         header.addSpacing(18)
-        self.export_button = style_button(PushButton('导出')); self.export_button.clicked.connect(self.export)
-        self.clear_button = style_button(PushButton('清空')); self.clear_button.clicked.connect(self.clear)
+        self.export_button = style_button(PushButton(tr('导出'))); self.export_button.clicked.connect(self.export)
+        self.clear_button = style_button(PushButton(tr('清空'))); self.clear_button.clicked.connect(self.clear)
         self.toggle_button = style_button(TransparentToolButton(FIF.UP)); self.toggle_button.setFixedSize(28, 24)
-        self.toggle_button.setToolTip('折叠 / 展开日志'); self.toggle_button.clicked.connect(self.toggle)
+        self.toggle_button.setToolTip(tr('折叠 / 展开日志')); self.toggle_button.clicked.connect(self.toggle)
         for button in (self.clear_button, self.export_button):
             button.setFixedHeight(24); header.addWidget(button)
         header.addWidget(self.toggle_button); root.addLayout(header)
@@ -153,7 +154,7 @@ class WorkspaceLog(LogDrawer):
             pass
 
     def _update_count(self):
-        self.count_label.setText(f'本次运行 {len(self.entries)} 条')
+        self.count_label.setText(f'{tr("本次运行")} {len(self.entries)} {tr("条")}')
 
     def append_log(self, message, level='info'):
         super().append_log(message, level)
@@ -197,10 +198,10 @@ class WorkspaceLog(LogDrawer):
 
     def focus_task(self, name):
         self.filter_box.setCurrentText('全部')
-        self.search_label.setText(f'查找：{name}')
+        self.search_label.setText(f'{tr("查找")}：{name}')
         self.browser.moveCursor(QTextCursor.Start)
         if not self.browser.find(name):
-            self.search_label.setText(f'暂无该任务日志：{name}')
+            self.search_label.setText(f'{tr("暂无该任务日志")}：{name}')
         if not self._expanded:
             self.toggle()
 
