@@ -12,6 +12,7 @@ from PyQt5.QtCore import QCoreApplication
 from PyQt5.QtTest import QTest
 
 from ui.main_window import MainWindow
+from test_task_manager import wait_until
 
 
 class UiSmokeTests(unittest.TestCase):
@@ -62,10 +63,10 @@ class UiSmokeTests(unittest.TestCase):
         card = window.workspace_page.params_card
         self.assertTrue(card.advanced.isVisible())
         card.toggle_advanced()
-        QTest.qWait(220)
+        wait_until(lambda: not card.advanced.isVisible(), timeout=5000)
         self.assertFalse(card.advanced.isVisible())
         card.toggle_advanced()
-        QTest.qWait(220)
+        wait_until(lambda: card.advanced.isVisible(), timeout=5000)
         self.assertTrue(card.advanced.isVisible())
         window.close()
 

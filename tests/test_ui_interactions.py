@@ -17,6 +17,7 @@ from core.config_manager import ConfigManager
 from core.matcher import StoryboardMatcher
 from ui.main_window import MainWindow
 from ui.components.match_dialog import MatchDialog
+from test_task_manager import wait_until
 
 
 class InteractionTests(unittest.TestCase):
@@ -102,16 +103,16 @@ class InteractionTests(unittest.TestCase):
         params.toggle_advanced()
         QTest.qWait(60)
         params.toggle_advanced()
-        QTest.qWait(250)
+        wait_until(lambda: params.advanced.isVisible(), timeout=5000)
         self.assertTrue(params.advanced.isVisible())
         self.assertGreaterEqual(params.seed.height(), 24)
         workspace.controls_dialog.close()
         logs = workspace.log_drawer
         logs.toggle()
-        QTest.qWait(230)
+        wait_until(lambda: logs.browser.isHidden(), timeout=5000)
         self.assertTrue(logs.browser.isHidden())
         logs.toggle()
-        QTest.qWait(230)
+        wait_until(lambda: logs.browser.isVisible(), timeout=5000)
         self.assertTrue(logs.browser.isVisible())
         logs.clear()
         workspace.start_button.click()

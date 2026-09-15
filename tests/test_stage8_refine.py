@@ -58,7 +58,7 @@ class Round2RefineTests(unittest.TestCase):
 
         page = self.window.workspace_page
         page.open_controls()
-        QTest.qWait(300)
+        wait_until(lambda: page.controls_dialog.isVisible(), timeout=5000)
         dlg = page.controls_dialog
         self.assertIsInstance(dlg, StudioDialog)
         self.assertEqual(dlg.header.title_label.text(), '生成参数与任务详情')
