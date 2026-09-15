@@ -22,6 +22,7 @@ def _hex(value: str) -> str:
 #   surface(_add)    玻璃表面填充 rgba 基值 / 悬停增量
 #   border(_add)     发丝描边 rgba 基值 / 悬停增量
 #   border_elev      悬浮卡片的提亮描边
+#   line             控件发丝线（浅色主题与主色同族；缺省回退 ink）
 #   ink              叠加墨色（深色主题用白、浅色主题用深蓝）
 #   highlight        玻璃上缘高光透明度
 #   text1/2/3        主 / 次 / 弱文字色
@@ -123,8 +124,9 @@ THEMES: dict[str, dict] = {
         'bg1': '#F7F9FE', 'bg2': '#E8EDF8',
         'glow1': (91, 141, 239, 30), 'glow2': (124, 108, 240, 24),
         'surface': (255, 255, 255, 158), 'surface_add': 24,
-        'border': (15, 26, 52, 34), 'border_add': 26,
-        'border_elev': (15, 26, 52, 44),
+        'border': (60, 76, 165, 40), 'border_add': 26,
+        'border_elev': (70, 90, 190, 52),
+        'line': (60, 76, 165),
         'ink': (15, 26, 52), 'highlight': 150,
         'text1': '#1A1D24', 'text2': '#4F586A', 'text3': '#566070',
         'accent': '#5B8DEF', 'accent2': '#7C6CF0',

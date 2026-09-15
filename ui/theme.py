@@ -96,6 +96,7 @@ def _theme_rules(kind):
     ir, ig, ib = th['ink']
     ar, ag, ab = th['accent_rgb']
     t1 = th['text1']
+    lr, lg, lb = th.get('line', th['ink'])
 
     def rgba(r, g, b, a):
         return 'rgba(%d,%d,%d,%s)' % (r, g, b, a)
@@ -118,8 +119,8 @@ def _theme_rules(kind):
             return ('PushButton {border-radius:8px; background:%s; border:1px solid %s; color:%s;}'
                     ' PushButton:hover {background:%s; border-color:%s;}'
                     ' PushButton:disabled {color:%s; background:%s;}') % (
-                rgba(ir, ig, ib, '0.06'), rgba(ir, ig, ib, '0.16'), t1,
-                rgba(ir, ig, ib, '0.1'), rgba(ir, ig, ib, '0.3'),
+                rgba(lr, lg, lb, '0.06'), rgba(lr, lg, lb, '0.16'), t1,
+                rgba(lr, lg, lb, '0.1'), rgba(lr, lg, lb, '0.3'),
                 rgba(ir, ig, ib, '0.35'), rgba(ir, ig, ib, '0.04'))
         return ('PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;}'
                 ' PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);}'
@@ -131,7 +132,7 @@ def _theme_rules(kind):
                     ' LineEdit:focus, SpinBox:focus {border:1px solid %s; background:rgba(255,255,255,0.96);}'
                     ' LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:%s;}'
                     ' SpinBox QToolButton:hover {background:%s; border-radius:6px;}') % (
-                t1, rgba(ir, ig, ib, '0.16'), focus, rgba(ir, ig, ib, '0.4'), rgba(ar, ag, ab, '0.16'))
+                t1, rgba(lr, lg, lb, '0.16'), focus, rgba(ir, ig, ib, '0.4'), rgba(ar, ag, ab, '0.16'))
         return ('LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}'
                 ' LineEdit:focus, SpinBox:focus {border:1px solid %s; background:rgba(255,255,255,0.08);}'
                 ' LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}'
@@ -141,7 +142,7 @@ def _theme_rules(kind):
     if kind == 'browser':
         if light:
             return ('TextBrowser {background:rgba(255,255,255,0.55); color:%s; border:1px solid %s; border-radius:12px;}'
-                    % (th['text2'], rgba(ir, ig, ib, '0.12')))
+                    % (th['text2'], rgba(lr, lg, lb, '0.12')))
         return 'TextBrowser {background:rgba(0,0,0,0.38); color:rgba(255,255,255,0.72); border:1px solid rgba(255,255,255,0.08); border-radius:12px;}'
     return ''
 
