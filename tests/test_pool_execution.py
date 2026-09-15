@@ -242,7 +242,8 @@ class PoolExecutionTests(unittest.TestCase):
     def test_two_workers_overlap_without_exceeding_limit_for_five_tasks(self):
         self.config['task_strategy']['max_concurrency'] = 2
         with PoolServer() as server:
-            server.processing_seconds = .25
+            # 处理窗口放宽：CI 慢机上 0.25s 可能不足以让两个工作线程的请求窗口重叠（曾致 maximum=1）。
+            server.processing_seconds = 1.2
             tasks = self.run_tasks(server, 5)
             self.assertEqual(server.maximum, 2)
             self.assertEqual([t['status'] for t in tasks], ['completed'] * 5)
