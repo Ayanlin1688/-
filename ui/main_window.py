@@ -42,6 +42,8 @@ class MainWindow(FluentWindow):
         self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
         self.config_manager = config_manager or ConfigManager(migrate=True)
         self.config_manager.load_config()
+        # 语言须在界面构建前生效：否则构建期 tr() 拿不到配置语言（重启后英文也显示中文）。
+        set_language(self.config_manager.config.get('appearance', {}).get('language', '简体中文'))
         self.model_catalog = ModelCatalogController(
             self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
             auto_sync=network_time if model_sync is None else model_sync)

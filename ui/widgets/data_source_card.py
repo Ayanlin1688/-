@@ -5,6 +5,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from pathlib import Path
 
 from ..components.custom_widgets import CaptionLabel, LineEdit, PushButton, StrongBodyLabel, TransparentToolButton, make_card
+from core.i18n import tr
 from qfluentwidgets import FluentIcon as FIF
 from ..components.match_dialog import MatchDialog
 
@@ -26,8 +27,8 @@ class DataSourceCard(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
-        layout.addWidget(StrongBodyLabel("数据源"))
-        labels = [("prompts", "分镜提示词目录"), ("images", "参考图片目录"), ("output", "视频保存目录")]
+        layout.addWidget(StrongBodyLabel(tr('数据源')))
+        labels = [("prompts", tr('分镜提示词目录')), ("images", tr('参考图片目录')), ("output", tr('视频保存目录'))]
         for key, text in labels:
             row = QHBoxLayout(); row.setSpacing(10)
             caption_widget = CaptionLabel(text)
@@ -35,7 +36,7 @@ class DataSourceCard(QWidget):
             row.addWidget(caption_widget, 0, Qt.AlignVCenter)
             field = LineEdit()
             field.setReadOnly(True)
-            field.setPlaceholderText("尚未选择目录")
+            field.setPlaceholderText(tr('尚未选择目录'))
             field.setText(config_manager.config["paths"].get(key, ""))
             field.setMinimumWidth(200)
             field.setFixedHeight(32)
@@ -43,7 +44,7 @@ class DataSourceCard(QWidget):
             field.setToolTip(field.text())
             self.fields[key] = field
             row.addWidget(field, 1)
-            choose = PushButton(FIF.FOLDER, "选择")
+            choose = PushButton(FIF.FOLDER, tr('选择'))
             choose.setFixedHeight(32)
             choose.clicked.connect(lambda _=False, k=key, f=field: self._choose(k, f))
             row.addWidget(choose, 0, Qt.AlignVCenter)
@@ -51,17 +52,17 @@ class DataSourceCard(QWidget):
         divider = QWidget(); divider.setFixedHeight(1); divider.setStyleSheet('background:rgba(255,255,255,0.08);')
         layout.addSpacing(2); layout.addWidget(divider); layout.addSpacing(2)
         status_row = QHBoxLayout()
-        self.status_label = CaptionLabel('请选择提示词与图片目录')
+        self.status_label = CaptionLabel(tr('请选择提示词与图片目录'))
         self.status_label.setWordWrap(True)
         status_row.addWidget(self.status_label, 1)
         match_button = TransparentToolButton(FIF.SEARCH)
-        match_button.setToolTip("匹配详情")
+        match_button.setToolTip(tr('匹配详情'))
         match_button.clicked.connect(self.open_match_dialog)
         status_row.addWidget(match_button)
         layout.addLayout(status_row)
 
     def _choose(self, key: str, field: LineEdit) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "选择目录", self.config_manager.config['paths'].get(key, ''))
+        directory = QFileDialog.getExistingDirectory(self, tr('选择目录'), self.config_manager.config['paths'].get(key, ''))
         if directory:
             directory = str(Path(directory).resolve())
             field.setText(directory)

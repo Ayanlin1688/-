@@ -22,6 +22,7 @@ from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
 from ..components.submission_dialog import SubmissionRecoveryDialog
 from core.video_downloader import VideoDownloader, build_filename
 from core.licensing import gate_block
+from core.i18n import tr
 from ..file_actions import open_local
 
 from ..widgets.current_task_card import CurrentTaskCard
@@ -79,7 +80,7 @@ class WorkspacePage(QWidget):
         manager.log_message.connect(self.append_log)
         manager.record_updated.connect(self._record)
         manager.running_changed.connect(self._running_changed)
-        manager.pause_changed.connect(lambda paused: self.pause_button.setText('继续' if paused else '暂停'))
+        manager.pause_changed.connect(lambda paused: self.pause_button.setText(tr('继续') if paused else tr('暂停')))
         manager.all_finished.connect(self._finished)
         self.jobs.log_message.connect(self.append_log)
         self.data_source.directories_changed.connect(self.scan_sources)
@@ -102,9 +103,9 @@ class WorkspacePage(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(24, 8, 24, 16); root.setSpacing(16)
         self.toolbar = QWidget(); self.toolbar.setFixedHeight(56)
         header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
-        header.addWidget(label('工作台', 16, '#F4F5F7', True))
+        header.addWidget(label(tr('工作台'), 16, '#F4F5F7', True))
         self.navigation_tabs = {}
-        for key, text in [('workspace', '工作台'), ('history', '任务历史'), ('settings', '设置')]:
+        for key, text in [('workspace', tr('工作台')), ('history', tr('任务历史')), ('settings', tr('设置'))]:
             button = PushButton(text); button.setProperty('studioStyled', True); button.setFixedSize(76, 44)
             button.setStyleSheet('QPushButton {color:' + ('#f5f5f5' if key == 'workspace' else '#71717a') +
                                  '; background:transparent; border:0; border-bottom:' + ('2px solid #5B8DEF' if key == 'workspace' else '2px solid transparent') + '; font-size:12px;} QPushButton:hover {color:white;}')
@@ -114,25 +115,25 @@ class WorkspacePage(QWidget):
             button.hide()
         self.status_line = QHBoxLayout(); self.status_line.setSpacing(7)
         self.status_dot = BreathingDot(BLUE, active=False); self.status_dot.setFixedSize(14, 18)
-        self.status_text = label('就绪', 12, '#9CA3AF', True)
+        self.status_text = label(tr('就绪'), 12, '#9CA3AF', True)
         self.status_line.addWidget(self.status_dot); self.status_line.addWidget(self.status_text)
-        self.product_status = label('产品 0/0', 12, '#9CA3AF'); self.task_status = label('任务 0/0', 12, '#9CA3AF')
-        self.concurrent_status = label('并发 0', 12, '#9CA3AF'); self.elapsed_status = label('已运行 00:00:00', 12, '#9CA3AF', mono=True)
+        self.product_status = label(f"{tr('产品')} 0/0", 12, '#9CA3AF'); self.task_status = label(f"{tr('任务')} 0/0", 12, '#9CA3AF')
+        self.concurrent_status = label(f"{tr('并发')} 0", 12, '#9CA3AF'); self.elapsed_status = label(f"{tr('已运行')} 00:00:00", 12, '#9CA3AF', mono=True)
         for widget in (self.product_status, self.task_status, self.concurrent_status, self.elapsed_status):
             separator = label('·', 12, '#4B5563')
             self.status_line.addWidget(separator); self.status_line.addWidget(widget)
         header.insertLayout(1, self.status_line)
         header.addStretch(1)
-        self.api_dot = BreathingDot(MUTED); self.api_status = label('未检测', 11)
-        self.api_status.setToolTip('连接状态来自本次上游模型同步结果；上传鉴权请在设置中测试')
+        self.api_dot = BreathingDot(MUTED); self.api_status = label(tr('未检测'), 11)
+        self.api_status.setToolTip(tr('连接状态来自本次上游模型同步结果；上传鉴权请在设置中测试'))
         header.addWidget(self.api_dot); header.addWidget(self.api_status)
         self.auto_save = SwitchButton(); self.auto_save.setOnText(''); self.auto_save.setOffText('')
         view = self.config_manager.config.get('workspace_view', {})
         self.auto_save.setChecked(view.get('auto_save', True))
-        self.auto_save.setToolTip('自动保存日志高度与任务筛选；参考图顺序、生成参数和任务记录始终即时保存')
-        header.addWidget(label('自动保存', 11)); header.addWidget(self.auto_save)
-        self.start_button = style_button(PrimaryPushButton(FIF.PLAY, '开始生成'), primary=True)
-        self.pause_button = style_button(PushButton(FIF.PAUSE, '暂停'))
+        self.auto_save.setToolTip(tr('自动保存日志高度与任务筛选；参考图顺序、生成参数和任务记录始终即时保存'))
+        header.addWidget(label(tr('自动保存'), 11)); header.addWidget(self.auto_save)
+        self.start_button = style_button(PrimaryPushButton(FIF.PLAY, tr('开始生成')), primary=True)
+        self.pause_button = style_button(PushButton(FIF.PAUSE, tr('暂停')))
         for button in (self.pause_button, self.start_button):
             button.setFixedHeight(36); header.addWidget(button)
         root.addWidget(self.toolbar)
@@ -164,7 +165,7 @@ class WorkspacePage(QWidget):
         self.log_drawer.view_changed.connect(self._log_toggled)
         # Existing parameter, matching and submission recovery controls remain
         # accessible in a workspace tool dialog, without occupying table space.
-        self.controls_dialog = StudioDialog(self, '生成参数与任务详情')
+        self.controls_dialog = StudioDialog(self, tr('生成参数与任务详情'))
         self.controls_dialog.setObjectName('workspaceControls')
         self.controls_dialog.resize(980, 820)
         dialog_layout = self.controls_dialog.body_layout
@@ -185,7 +186,7 @@ class WorkspacePage(QWidget):
         center_layout.addWidget(self.recent_panel)
         center_layout.addStretch(1)
         dialog_layout.addWidget(self.center_scroll, 1)
-        close = style_button(PushButton('关闭')); close.setFixedHeight(32); close.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(close, 0, Qt.AlignRight)
+        close = style_button(PushButton(tr('关闭'))); close.setFixedHeight(32); close.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(close, 0, Qt.AlignRight)
         self.queue_panel.params_button.clicked.connect(self.open_controls)
         self.queue_panel.match_button.clicked.connect(self.data_source.open_match_dialog)
         self.queue_panel.select_prompts_requested.connect(lambda: self.choose_directory('prompts'))
@@ -221,8 +222,8 @@ class WorkspacePage(QWidget):
     def set_api_connection(self, connected, message=''):
         color = GREEN if connected else RED
         self.api_dot.setTextColor(color, color)
-        self.api_status.setText('已连接' if connected else '离线缓存')
-        self.api_status.setToolTip(message or '已验证模型列表接口；上传鉴权请在设置中测试')
+        self.api_status.setText(tr('已连接') if connected else tr('离线缓存'))
+        self.api_status.setToolTip(message or tr('已验证模型列表接口；上传鉴权请在设置中测试'))
 
     def refresh_api_state(self):
         controller = getattr(self.config_manager, 'model_catalog_controller', None)
@@ -235,11 +236,11 @@ class WorkspacePage(QWidget):
             # 状态语义区分：未配置=橙色预警，未检测=灰色。
             raw = MUTED if configured else ('#A9770F' if is_light() else '#D9A94E')
             color = QColor(raw)
-            self.api_status.setText('未检测' if configured else '未配置')
+            self.api_status.setText(tr('未检测') if configured else tr('未配置'))
             self.api_status.setTextColor(color, color)
             self.api_dot.setTextColor(color, color)
         if controller and controller.syncing:
-            self.api_status.setText('检测中')
+            self.api_status.setText(tr('检测中'))
 
     def _refresh_row_parameters(self):
         for row in self.queue_panel.rows:
@@ -276,17 +277,17 @@ class WorkspacePage(QWidget):
         """顶栏实时状态：批量生成中 · 产品 x/y · 任务 a/b · 并发 n · 已运行 hh:mm:ss"""
         self.status_dot.active = running
         self.status_dot.update()
-        self.status_text.setText('批量生成中' if running else '就绪')
+        self.status_text.setText(tr('批量生成中') if running else tr('就绪'))
         groups = {t.get('product') or '未分组' for t in tasks}
         product_done = sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组') == group)
                            for group in groups) if groups else 0
-        self.product_status.setText(f'产品 {product_done}/{len(groups)}')
+        self.product_status.setText(f"{tr('产品')} {product_done}/{len(groups)}")
         finished = sum(t.get('status') == 'completed' for t in tasks)
-        self.task_status.setText(f'任务 {finished}/{len(tasks)}')
+        self.task_status.setText(f"{tr('任务')} {finished}/{len(tasks)}")
         active = sum(t.get('status') in {'queued', 'uploading', 'submitting', 'processing', 'downloading'} for t in tasks)
-        self.concurrent_status.setText(f'并发 {active}')
+        self.concurrent_status.setText(f"{tr('并发')} {active}")
         seconds = int(elapsed)
-        self.elapsed_status.setText(f'已运行 {seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}')
+        self.elapsed_status.setText(f"{tr('已运行')} {seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}")
 
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks

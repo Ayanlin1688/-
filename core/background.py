@@ -1,4 +1,5 @@
 """Retained QThreads for short background jobs; never destroy a running thread."""
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 
@@ -39,7 +40,17 @@ class BackgroundJobs(QObject):
         return worker
 
     def _finished(self, worker):
-        self.workers.remove(worker)
-        worker.deleteLater()
-        if not self.workers:
+        # 竞态兜底：窗口销毁收尾时，回调可能晚于 C++ 对象释放送达；对已失效的
+        # 对象调用 deleteLater/emit 会抛 RuntimeError，并被 PyQt 升级为 qFatal
+        # 直接终止进程（表现为偶发的 0xC0000409 崩溃）。
+        removed = True
+        try:
+            self.workers.remove(worker)
+        except ValueError:
+            removed = False
+        if sip.isdeleted(self):
+            return
+        if not sip.isdeleted(worker):
+            worker.deleteLater()
+        if removed and not self.workers:
             self.idle.emit()

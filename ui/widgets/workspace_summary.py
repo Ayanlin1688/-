@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy
+from core.i18n import tr
 from .workspace_surface import WorkspaceCard, label, MUTED, BLUE, GREEN, RED
 
 
@@ -52,8 +53,8 @@ class WorkspaceSummary(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
         self.metrics_card = WorkspaceCard(); self.metrics_card.setFixedHeight(64)
         row = QHBoxLayout(self.metrics_card); row.setContentsMargins(2, 2, 2, 2); row.setSpacing(0)
-        specs = [('批量生成中', '就绪', BLUE), ('产品进度', '0/0', '#f0f0f5'), ('任务进度', '0/0', '#f0f0f5'),
-                 ('今日完成', '0', GREEN), ('待完成', '0', '#f0f0f5'), ('成功率', '—', '#f0f0f5'), ('失败', '0', RED), ('并发', '1', '#f0f0f5')]
+        specs = [(tr('批量生成中'), tr('就绪'), BLUE), (tr('产品进度'), '0/0', '#f0f0f5'), (tr('任务进度'), '0/0', '#f0f0f5'),
+                 (tr('今日完成'), '0', GREEN), (tr('待完成'), '0', '#f0f0f5'), (tr('成功率'), '—', '#f0f0f5'), (tr('失败'), '0', RED), (tr('并发'), '1', '#f0f0f5')]
         self.blocks = []
         self._separators = []
         for index, (title, value, accent) in enumerate(specs):
@@ -97,7 +98,7 @@ class WorkspaceSummary(QWidget):
         run_color = '#3E6FD1' if light else '#5B8DEF'
         ready_color = '#2E8B57' if light else '#7CC79A'
         first_value = (f'<span style="color:{run_color}">{clock}</span>' if running
-                       else f'<span style="color:{ready_color}">就绪</span>')
+                       else f'<span style="color:{ready_color}">{tr("就绪")}</span>')
         active = sum(t.get('status') in {'queued','uploading','submitting','processing','downloading'} for t in tasks)
         today = sum(t.get('status') == 'completed' for t in history if str(t.get('finished_at','')).startswith(datetime.now().date().isoformat()))
 
@@ -106,14 +107,14 @@ class WorkspaceSummary(QWidget):
 
         dim = '#8B93A3'
         values = [
-            ('批量生成中', first_value, None),
-            ('产品进度', f'{product_done}/{len(groups)}', dim if zeroish(f'{product_done}/{len(groups)}') else '#f0f0f5'),
-            ('任务进度', f'{completed}/{total}', dim if zeroish(f'{completed}/{total}') else '#f0f0f5'),
-            ('今日完成', str(today), GREEN if today else dim),
-            ('待完成', str(pending), '#f0f0f5' if pending else dim),
-            ('成功率', f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5' if done else dim),
-            ('失败', str(failed), RED if failed else dim),
-            ('并发', str(active), '#f0f0f5' if active else dim),
+            (tr('批量生成中'), first_value, None),
+            (tr('产品进度'), f'{product_done}/{len(groups)}', dim if zeroish(f'{product_done}/{len(groups)}') else '#f0f0f5'),
+            (tr('任务进度'), f'{completed}/{total}', dim if zeroish(f'{completed}/{total}') else '#f0f0f5'),
+            (tr('今日完成'), str(today), GREEN if today else dim),
+            (tr('待完成'), str(pending), '#f0f0f5' if pending else dim),
+            (tr('成功率'), f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5' if done else dim),
+            (tr('失败'), str(failed), RED if failed else dim),
+            (tr('并发'), str(active), '#f0f0f5' if active else dim),
         ]
         for block, (title, value, accent) in zip(self.blocks, values):
             block.title.setText(title); block.value.setText(value)
@@ -122,4 +123,4 @@ class WorkspaceSummary(QWidget):
                 block.value.setTextColor(mapped, mapped)
         self.cards[0].number.setText(str(total))
         matched = sum(bool(t.get('images')) for t in tasks)
-        self.cards[0].detail.setText(f'✓ {matched} 已匹配 · ⚠ {total-matched} 未匹配')
+        self.cards[0].detail.setText(f'✓ {matched} {tr("已匹配")} · ⚠ {total-matched} {tr("未匹配")}')
