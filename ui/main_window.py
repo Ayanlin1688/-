@@ -128,6 +128,16 @@ class MainWindow(FluentWindow):
             pass
         # 标题栏呼吸位：等窗口标题写入后再应用图标/标题间距。
         QTimer.singleShot(30, self._apply_titlebar_tweak)
+        # 最大化按钮：接管为带校验重试的切换，避免个别环境下点击被系统动画吞掉。
+        try:
+            max_button = self.titleBar.maxBtn
+            try:
+                max_button.clicked.disconnect()
+            except Exception:
+                pass
+            max_button.clicked.connect(self._studio_toggle_maximized)
+        except Exception:
+            pass
         # 关于入口由底部头像承担，导航栏保持纯图标三入口。
         try:
             self.navigationInterface.widget('about').hide()
@@ -228,9 +238,29 @@ class MainWindow(FluentWindow):
                 return
             index = layout.indexOf(title_widget)
             if index >= 0:
-                layout.insertSpacing(index, 10)
+                layout.insertSpacing(index, 14)
             title_widget.setStyleSheet('font-size:13px; font-weight:600; background:transparent;')
             title_bar._studio_gap = True
+        except Exception:
+            pass
+
+    def _studio_toggle_maximized(self):
+        """最大化/还原切换：带一次状态校验重试，避免个别环境点击被系统动画吞掉。"""
+        target_max = not self.isMaximized()
+        self._apply_max_state(target_max)
+        QTimer.singleShot(160, lambda target=target_max: self._verify_max_state(target))
+
+    def _apply_max_state(self, maximized: bool):
+        if maximized:
+            self.showMaximized()
+        else:
+            self.showNormal()
+        self.update()
+
+    def _verify_max_state(self, target_max: bool):
+        try:
+            if self.isMaximized() != target_max:
+                self._apply_max_state(target_max)
         except Exception:
             pass
 

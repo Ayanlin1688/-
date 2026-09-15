@@ -112,21 +112,42 @@ class SettingsPage(QWidget):
             '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:7px 12px;'
             ' color:#9CA3AF; font-size:13px; background:transparent;}'
             '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
-            '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}'
-            '#settingsRail QPushButton#stationNavButton {font-size:12px; padding:5px 10px 5px 22px; color:rgba(237,237,240,0.58);}'
-            '#settingsRail QPushButton#stationNavButton[railActive="true"] {background:rgba(91,141,239,0.12); color:#FFFFFF;}')
-        layout = QVBoxLayout(rail); layout.setContentsMargins(16, 26, 14, 26); layout.setSpacing(4)
-        head = CaptionLabel('设置分类')
-        layout.addWidget(head); layout.addSpacing(8)
-        targets = [(getattr(self, 'stations_group', None), '服务与中转站'),
-                   (getattr(self, 'api_group', None), 'API 连接'),
+            '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
+        layout = QVBoxLayout(rail); layout.setContentsMargins(16, 22, 14, 26); layout.setSpacing(4)
+        # —— 服务线路：中转站管理 + 每个中转站一条（一等分类，不再小字缩进）——
+        service_head = CaptionLabel('服务线路')
+        service_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
+        layout.addWidget(service_head); layout.addSpacing(2)
+        self._rail_targets = {}
+        manage = QPushButton('中转站管理')
+        manage.setCursor(Qt.PointingHandCursor)
+        manage.setMinimumHeight(32)
+        manage.clicked.connect(lambda checked=False, g=getattr(self, 'stations_group', None), b=manage: self._jump_to_group(g, b))
+        layout.addWidget(manage)
+        self._rail_buttons['中转站管理'] = manage
+        self._rail_targets[manage] = getattr(self, 'stations_group', None)
+        self._station_nav_layout = QVBoxLayout(); self._station_nav_layout.setSpacing(4)
+        layout.addLayout(self._station_nav_layout)
+        self._station_nav_add = QPushButton('+ 新增中转站')
+        self._station_nav_add.setObjectName('stationNavButton')
+        self._station_nav_add.setCursor(Qt.PointingHandCursor)
+        self._station_nav_add.setMinimumHeight(32)
+        self._station_nav_add.clicked.connect(lambda: self._open_station_editor(None))
+        layout.addWidget(self._station_nav_add)
+        self._station_nav_buttons = {}
+        self._sync_station_nav()
+        layout.addSpacing(14)
+        # —— 设置 ——
+        app_head = CaptionLabel('设置')
+        app_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
+        layout.addWidget(app_head); layout.addSpacing(2)
+        targets = [(getattr(self, 'api_group', None), '当前线路'),
                    (getattr(self, 'pool_group', None), '模型池'),
                    (getattr(self, 'task_group', None), '任务策略'),
                    (getattr(self, 'defaults_group', None), '默认参数'),
                    (getattr(self, 'schedule_group', None), '定时执行'),
                    (getattr(self, 'appearance_group', None), '外观与语言'),
                    (getattr(self, 'sync_group', None), 'GitHub 同步')]
-        self._rail_targets = {}
         for group, text in targets:
             if group is None:
                 continue
@@ -137,20 +158,6 @@ class SettingsPage(QWidget):
             layout.addWidget(button)
             self._rail_buttons[text] = button
             self._rail_targets[button] = group
-        layout.addSpacing(16)
-        section = CaptionLabel('中转站')
-        section.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
-        layout.addWidget(section)
-        self._station_nav_layout = QVBoxLayout(); self._station_nav_layout.setSpacing(2)
-        layout.addLayout(self._station_nav_layout)
-        self._station_nav_add = QPushButton('+ 新增中转站')
-        self._station_nav_add.setObjectName('stationNavButton')
-        self._station_nav_add.setCursor(Qt.PointingHandCursor)
-        self._station_nav_add.setMinimumHeight(30)
-        self._station_nav_add.clicked.connect(lambda: self._open_station_editor(None))
-        layout.addWidget(self._station_nav_add)
-        self._station_nav_buttons = {}
-        self._sync_station_nav()
         layout.addStretch(1)
         return rail
 
@@ -190,7 +197,7 @@ class SettingsPage(QWidget):
             button = QPushButton(('● ' if sid == active and active else '○ ') + (station.get('name') or '未命名'))
             button.setObjectName('stationNavButton')
             button.setCursor(Qt.PointingHandCursor)
-            button.setMinimumHeight(30)
+            button.setMinimumHeight(32)
             button.clicked.connect(lambda checked=False, s=sid, b=button: self._focus_station(s, b))
             layout.addWidget(button)
             self._station_nav_buttons[sid] = button
@@ -258,11 +265,11 @@ class SettingsPage(QWidget):
             self.config_manager.update(('stations_active',), active)
 
     def _build_stations(self):
-        group = self._group('服务与中转站')
+        group = self._group('中转站')
         self.stations_group = group
         card = make_card(); self.stations_card = card
         layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
-        hint = CaptionLabel('每个中转站一个分类：命名、填写线路信息后「设为当前」，任务即走该线路；可标记视频 / 语言 / 生图能力，为后续模型接入预留。')
+        hint = CaptionLabel('每个中转站独立成一项（左侧导航可直达）；「设为当前」后任务走该线路；可标记视频 / 语言 / 生图能力。')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
         holder = QWidget(); holder.setLayout(self.station_list); layout.addWidget(holder)
