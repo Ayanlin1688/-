@@ -50,6 +50,13 @@ class WorkspacePage(QWidget):
         self._started_at = None
         self._elapsed = 0
         self._metrics_busy = False
+        from core.run_log import RunLog
+        self.run_log = RunLog(Path(self.config_manager.path).parent / 'logs')
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setSingleShot(True)
+        self._watch_timer.timeout.connect(self._watch_fired)
+        self._watch_seen = None
+        self._watch_pending_scan = False
         self._build_ui()
         manager = self.task_manager
         self.start_button.clicked.connect(self.start_generation)
@@ -86,6 +93,8 @@ class WorkspacePage(QWidget):
         self.metrics_timer = QTimer(self); self.metrics_timer.setInterval(15000)
         self.metrics_timer.timeout.connect(self.refresh_metrics); self.metrics_timer.start()
         QTimer.singleShot(0, self.refresh_metrics)
+        QTimer.singleShot(1500, self._startup_disk_cleanup)
+        QTimer.singleShot(2500, self._arm_watch)
 
     def _build_ui(self):
         root = QVBoxLayout(self); root.setContentsMargins(24, 8, 24, 16); root.setSpacing(16)
@@ -106,7 +115,7 @@ class WorkspacePage(QWidget):
         self.status_text = label('就绪', 12, '#9CA3AF', True)
         self.status_line.addWidget(self.status_dot); self.status_line.addWidget(self.status_text)
         self.product_status = label('产品 0/0', 12, '#9CA3AF'); self.task_status = label('任务 0/0', 12, '#9CA3AF')
-        self.concurrent_status = label('并发 1', 12, '#9CA3AF'); self.elapsed_status = label('已运行 00:00:00', 12, '#9CA3AF', mono=True)
+        self.concurrent_status = label('并发 0', 12, '#9CA3AF'); self.elapsed_status = label('已运行 00:00:00', 12, '#9CA3AF', mono=True)
         for widget in (self.product_status, self.task_status, self.concurrent_status, self.elapsed_status):
             separator = label('·', 12, '#4B5563')
             self.status_line.addWidget(separator); self.status_line.addWidget(widget)
@@ -218,8 +227,15 @@ class WorkspacePage(QWidget):
         identity = controller.identity() if controller else None
         if identity != getattr(self, '_api_identity', None):
             self._api_identity = identity
-            self.api_status.setText('未检测' if identity and identity[1] else '未配置')
-            self.api_dot.setTextColor(MUTED, MUTED)
+            configured = bool(identity and identity[1])
+            from PyQt5.QtGui import QColor
+            from ..materials import is_light
+            # 状态语义区分：未配置=橙色预警，未检测=灰色。
+            raw = MUTED if configured else ('#A9770F' if is_light() else '#D9A94E')
+            color = QColor(raw)
+            self.api_status.setText('未检测' if configured else '未配置')
+            self.api_status.setTextColor(color, color)
+            self.api_dot.setTextColor(color, color)
         if controller and controller.syncing:
             self.api_status.setText('检测中')
 
@@ -266,7 +282,7 @@ class WorkspacePage(QWidget):
         finished = sum(t.get('status') == 'completed' for t in tasks)
         self.task_status.setText(f'任务 {finished}/{len(tasks)}')
         active = sum(t.get('status') in {'queued', 'uploading', 'submitting', 'processing', 'downloading'} for t in tasks)
-        self.concurrent_status.setText(f'并发 {max(1, active)}')
+        self.concurrent_status.setText(f'并发 {active}')
         seconds = int(elapsed)
         self.elapsed_status.setText(f'已运行 {seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}')
 
@@ -341,6 +357,12 @@ class WorkspacePage(QWidget):
 
     def append_log(self, message: str, level: str = "info"):
         self.log_drawer.append_log(message, level)
+        run_log = getattr(self, 'run_log', None)
+        if run_log is not None:
+            try:
+                run_log.write(message, level)
+            except Exception:
+                pass
 
     def set_debug_mode(self, enabled):
         self.log_drawer.set_debug_mode(enabled)
@@ -369,6 +391,8 @@ class WorkspacePage(QWidget):
             automatic = automatic_matcher.scan_and_match(config['paths'])
             return matched, automatic, matcher.warnings
         def done(result):
+            from_watch = self._watch_pending_scan
+            self._watch_pending_scan = False
             if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
                 return
             matched, automatic, warnings = result
@@ -378,6 +402,7 @@ class WorkspacePage(QWidget):
                 self.append_log(warning, 'warning')
             count = sum(t['matched'] for t in matched)
             self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
+            self._watch_note_scan(matched, from_watch)
         def failed(message):
             if version == self._scan_version and not self.closing.is_set():
                 self.data_source.set_matches([], [])
@@ -548,6 +573,75 @@ class WorkspacePage(QWidget):
                 InfoBar.warning('防重复提交', f'已跳过{duplicates}个重复任务，避免重复扣费', parent=self, duration=6000)
             if uncertain:
                 InfoBar.warning('提交待确认', '提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。', parent=self, duration=8000)
+        self._arm_watch()
+
+    def _arm_watch(self):
+        """无人值守监听：队列结束后定时重扫目录，发现新任务自动开始。"""
+        try:
+            interval = int(self.config_manager.config['task_strategy'].get('watch_interval', 0) or 0)
+        except (TypeError, ValueError):
+            interval = 0
+        if interval <= 0 or self.closing.is_set():
+            return
+        self._watch_timer.start(max(5, interval) * 1000)
+        self.append_log(f'无人值守监听已开启：{max(5, interval)} 秒后自动重扫目录，发现新任务将自动开始', 'info')
+
+    def _watch_fired(self):
+        if self.closing.is_set():
+            return
+        if self.task_manager.is_running or self._redownloading:
+            self._arm_watch()
+            return
+        self._watch_pending_scan = True
+        self.append_log('无人值守监听：正在重扫目录...', 'info')
+        self.scan_sources()
+
+    def _watch_note_scan(self, tasks, from_watch):
+        paths = {str(t.get('prompt_path')) for t in tasks}
+        seen = self._watch_seen
+        if seen is None:
+            self._watch_seen = paths
+            if from_watch:
+                self.append_log('无人值守监听：基线已建立，等待新任务', 'info')
+                self._arm_watch()
+            return
+        fresh = [t for t in tasks if str(t.get('prompt_path')) not in seen] if from_watch else []
+        self._watch_seen = seen | paths
+        if not from_watch:
+            return
+        if fresh:
+            self.append_log(f'无人值守监听：发现 {len(fresh)} 个新任务，自动开始生成', 'info')
+            self.start_generation()
+            if not self.task_manager.is_running:
+                self._arm_watch()
+        else:
+            self.append_log('无人值守监听：未发现新任务，继续监听', 'info')
+            self._arm_watch()
+
+    def _startup_disk_cleanup(self):
+        """启动时的磁盘自检：清理过期临时文件并在空间不足时预警。"""
+        if self.closing.is_set() or self.jobs.busy or self.task_manager.is_running:
+            return
+        paths = dict(self.config_manager.config['paths'])
+        strategy = self.config_manager.config.get('task_strategy', {})
+        try:
+            retention = int(strategy.get('disk_cleanup_days', 7) or 7)
+            min_free = float(strategy.get('disk_min_free_gb', 2) or 2)
+        except (TypeError, ValueError):
+            retention, min_free = 7, 2.0
+
+        def task():
+            from core.disk_guard import cleanup_disk
+            records = []
+            cleanup_disk(paths, lambda message, level='info': records.append((message, level)),
+                         retention_days=retention, min_free_gb=min_free)
+            return records
+
+        def done(records):
+            for message, level in records:
+                self.append_log(message, level)
+
+        self.jobs.start(task, done, lambda message: self.append_log('磁盘清理自检未完成：' + message, 'warning'))
 
     def resolve_submission(self, record):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
@@ -678,6 +772,7 @@ class WorkspacePage(QWidget):
     def shutdown(self):
         self.closing.set()
         self.stats_timer.stop(); self.metrics_timer.stop()
+        self._watch_timer.stop()
         self.controls_dialog.close()
         if hasattr(self, 'image_preview'):
             self.image_preview.close()

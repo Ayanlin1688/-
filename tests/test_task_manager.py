@@ -54,6 +54,8 @@ class TaskTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_end_to_end_pause_after_current_resume_no_duplicate_submission(self):
+        # “暂停在当前任务之后”是串行语义；全队列并发由专项测试覆盖。
+        self.config['task_strategy']['max_concurrency'] = 1
         ticks = []; timer = QTimer(); timer.setInterval(5); timer.timeout.connect(lambda: ticks.append(1)); timer.start()
         paused = [False]
         def pause(index, task):
@@ -104,6 +106,8 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(len([row for row in self.server.calls if row[0] == '/videos']), 2)
 
     def test_skip_current_then_cancel_marks_remaining(self):
+        # “跳过当前、推进到下一个”是串行语义；全队列并发由专项测试覆盖。
+        self.config['task_strategy']['max_concurrency'] = 1
         self.server.always_processing = True
         self.manager.start_tasks(self.config)
         wait_until(lambda: self.manager.tasks and self.manager.tasks[0]['status'] == 'processing')

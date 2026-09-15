@@ -73,6 +73,8 @@ class DetectedTaskTests(unittest.TestCase):
         return [json.loads(body) for path, _, body in server.calls if path == '/videos']
 
     def test_three_prompt_formats_submit_different_models_and_fields(self):
+        # 本用例按扫描顺序逐个校验三种格式的提交字段（串行语义）；全队列并发由专项测试覆盖。
+        self.config['task_strategy']['max_concurrency'] = 1
         texts = ['subject_definitions: blanket\n[Shot 1] <Picture 1>',
                  '镜头1：展示@图1。镜头2：面料特写。', '自然光照亮桌上的玫瑰毯子。']
         for i, text in enumerate(texts, 1):

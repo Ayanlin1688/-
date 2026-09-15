@@ -39,6 +39,8 @@ tmp/
 screenshots/
 screenshots.zip
 screenshot_*.png
+logs/
+.cluster/
 artifacts/
 live-smoke-result.json
 *-diagnostics.json

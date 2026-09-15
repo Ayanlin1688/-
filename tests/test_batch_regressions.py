@@ -34,6 +34,9 @@ class BatchRegressionTests(unittest.TestCase):
         self.config['workspace'].update(model='MiniMax-H3', resolution='768p', poll_interval=.02)
         self.config['prompt_detection']['enabled'] = False
         self.config['task_strategy'].update(auto_retry=False)
+        # 本文件验证串行（逐产品推进）语义与跨产品日志边界；全队列并发由
+        # test_unattended_reliability 的专项测试覆盖。
+        self.config['task_strategy']['max_concurrency'] = 1
         self.manager = TaskManager()
         self.logs = []
         self.manager.log_message.connect(lambda text, level: self.logs.append(text))

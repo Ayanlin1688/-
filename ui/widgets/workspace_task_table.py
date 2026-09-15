@@ -235,9 +235,9 @@ class WorkspaceTaskTable(TaskQueuePanel):
             pass
         lay.addWidget(self.list,1); root.addWidget(self.surface,1)
         # 空状态：卡片内居中引导（图标 + 主文案 + 提示 + 选择目录按钮）。
-        self.empty_panel=QWidget(); ep=QVBoxLayout(self.empty_panel); ep.setContentsMargins(24,30,24,30); ep.setSpacing(10); ep.setAlignment(Qt.AlignCenter)
+        self.empty_panel=QWidget(); ep=QVBoxLayout(self.empty_panel); ep.setContentsMargins(24,14,24,50); ep.setSpacing(10); ep.setAlignment(Qt.AlignCenter)
         icon_row=QHBoxLayout(); icon_row.addStretch(1)
-        self.empty_icon=IconWidget(FIF.FOLDER, self.empty_panel); self.empty_icon.setFixedSize(56,56); icon_row.addWidget(self.empty_icon)
+        self.empty_icon=IconWidget(FIF.FOLDER, self.empty_panel); self.empty_icon.setFixedSize(48,48); icon_row.addWidget(self.empty_icon)
         icon_row.addStretch(1); ep.addLayout(icon_row)
         self.empty_label=label('暂无任务',15,'#C7CCD6',True); self.empty_label.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_label)
         self.empty_hint=label('选择分镜提示词目录后会自动扫描并匹配参考图',12); self.empty_hint.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_hint)

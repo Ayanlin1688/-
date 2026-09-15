@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "generate_audio": True,
         "poll_interval": 5,
-        "max_retries": 5,
+        "max_retries": 3,
         "skip_threshold": 3,
         "seed": "",
     },
@@ -43,14 +43,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "task_strategy": {
         "prevent_duplicates": True,
-        "max_concurrency": 1,
+        "max_concurrency": 5,
         "auto_retry": True,
-        "max_retries": 5,
+        "max_retries": 3,
         "retry_interval": 3,
         "failure_skip_threshold": 3,
         "unmatched_prompt": "跳过并警告",
         "naming_rule": "{序号}_{提示词名}.mp4",
         "open_folder_after_download": False,
+        "watch_interval": 0,
+        "disk_cleanup_days": 7,
+        "disk_min_free_gb": 2,
     },
     "defaults": {
         "model": "video-v3",
@@ -114,6 +117,24 @@ class ConfigManager:
             self.config['task_strategy']['naming_rule'] = self.config['download_settings']['naming_rule']
             self.config['workspace']['max_retries'] = self.config['task_strategy']['max_retries']
             self.config['workspace']['skip_threshold'] = self.config['task_strategy']['failure_skip_threshold']
+            # 一次性迁移：旧版默认值（并发 1、重试 5）升级为无人值守新默认（全队列并发 5、重试 3）。
+            migrations = raw.get('migrations')
+            if not isinstance(migrations, dict) or not migrations.get('r6_unattended_defaults'):
+                strategy = self.config['task_strategy']
+                upgraded = False
+                if strategy.get('max_concurrency') == 1:
+                    strategy['max_concurrency'] = DEFAULT_CONFIG['task_strategy']['max_concurrency']
+                    upgraded = True
+                if strategy.get('max_retries') == 5:
+                    strategy['max_retries'] = DEFAULT_CONFIG['task_strategy']['max_retries']
+                    self.config['workspace']['max_retries'] = strategy['max_retries']
+                    upgraded = True
+                self.config['migrations'] = dict(migrations or {}, r6_unattended_defaults=True)
+                if upgraded:
+                    try:
+                        self.save_config()
+                    except Exception:
+                        pass
             # Mirror the spec-named directory fields; old configs may carry the
             # aliases instead of the canonical paths entries.
             for key, alias in DIRECTORY_ALIASES:

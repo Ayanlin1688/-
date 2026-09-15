@@ -2,7 +2,7 @@
 from datetime import datetime
 from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame
+from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy
 from .workspace_surface import WorkspaceCard, label, MUTED, BLUE, GREEN, RED
 
 
@@ -27,9 +27,15 @@ class StatBlock(QWidget):
     def __init__(self, title, value='0', accent=MUTED, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 9, 16, 9); layout.setSpacing(3)
-        self.title = label(title, 12, '#8B93A3'); layout.addWidget(self.title)
-        self.value = label(value, 17, accent, True, mono=True); layout.addWidget(self.value)
+        self.title = label(title, 12, '#8B93A3')
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addWidget(self.title)
+        # 卡片数值降到 15px（页面标题保持第一层级）；Ignored 宽度策略让 8 张卡严格均分。
+        self.value = label(value, 15, accent, True, mono=True)
+        self.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addWidget(self.value)
         self.value.setTextFormat(Qt.RichText)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
 
 class _CompatCard(QWidget):
@@ -86,17 +92,34 @@ class WorkspaceSummary(QWidget):
         product_done = sum(all(t.get('status') in {'completed','failed','cancelled','skipped','duplicate','submission_unknown'} for t in tasks if (t.get('product') or '未分组') == group) for group in groups) if groups else 0
         seconds = int(elapsed)
         clock = f'{seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}'
-        first_value = (f'<span style="color:#5B8DEF">●</span> {clock}' if running
-                       else '<span style="color:#6B7280">●</span> 就绪')
-        values = [('批量生成中', first_value, BLUE), ('产品进度', f'{product_done}/{len(groups)}', '#f0f0f5'),
-                  ('任务进度', f'{completed}/{total}', '#f0f0f5'), ('今日完成', str(sum(t.get('status') == 'completed' for t in history if str(t.get('finished_at','')).startswith(datetime.now().date().isoformat()))), GREEN),
-                  ('待完成', str(pending), '#f0f0f5'), ('成功率', f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5'), ('失败', str(failed), RED),
-                  ('并发', str(max(1, sum(t.get('status') in {'queued','uploading','submitting','processing','downloading'} for t in tasks))), '#f0f0f5')]
-        from ..materials import map_text_color
+        from ..materials import map_text_color, is_light
+        light = is_light()
+        run_color = '#3E6FD1' if light else '#5B8DEF'
+        ready_color = '#2E8B57' if light else '#7CC79A'
+        first_value = (f'<span style="color:{run_color}">{clock}</span>' if running
+                       else f'<span style="color:{ready_color}">就绪</span>')
+        active = sum(t.get('status') in {'queued','uploading','submitting','processing','downloading'} for t in tasks)
+        today = sum(t.get('status') == 'completed' for t in history if str(t.get('finished_at','')).startswith(datetime.now().date().isoformat()))
+
+        def zeroish(text):
+            return set(str(text)) <= set('0/— ')
+
+        dim = '#8B93A3'
+        values = [
+            ('批量生成中', first_value, None),
+            ('产品进度', f'{product_done}/{len(groups)}', dim if zeroish(f'{product_done}/{len(groups)}') else '#f0f0f5'),
+            ('任务进度', f'{completed}/{total}', dim if zeroish(f'{completed}/{total}') else '#f0f0f5'),
+            ('今日完成', str(today), GREEN if today else dim),
+            ('待完成', str(pending), '#f0f0f5' if pending else dim),
+            ('成功率', f'{completed/done*100:.0f}%' if done else '—', '#f0f0f5' if done else dim),
+            ('失败', str(failed), RED if failed else dim),
+            ('并发', str(active), '#f0f0f5' if active else dim),
+        ]
         for block, (title, value, accent) in zip(self.blocks, values):
             block.title.setText(title); block.value.setText(value)
-            mapped = map_text_color(accent)
-            block.value.setTextColor(mapped, mapped)
+            if accent is not None:
+                mapped = map_text_color(accent)
+                block.value.setTextColor(mapped, mapped)
         self.cards[0].number.setText(str(total))
         matched = sum(bool(t.get('images')) for t in tasks)
         self.cards[0].detail.setText(f'✓ {matched} 已匹配 · ⚠ {total-matched} 未匹配')

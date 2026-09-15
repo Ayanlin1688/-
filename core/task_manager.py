@@ -18,8 +18,10 @@ from .task_state import (ACTIVE, TERMINAL, STATUS_TEXT, TaskControl, stamp, reso
                          parameters_for_model, task_signature, prompt_content, prompt_sha256, submission_images)
 from .task_execution import TaskExecution
 from .prompt_detector import SOURCE_TEXT, annotate_tasks
+from .prompt_processor import reference_warnings
 from .submission_ledger import SubmissionLedger, account_scope, ledger_path
 from .submission_safety import SubmissionGate
+from .disk_guard import cleanup_disk
 
 
 class TaskWorker(QThread):
@@ -141,6 +143,16 @@ class TaskWorker(QThread):
             self.record_updated.emit({key: value for key, value in record.items() if not key.startswith('_')})
         return record
 
+    def _cleanup_disk(self):
+        """无人值守磁盘自检：清理过期临时文件并在空间不足时预警。"""
+        try:
+            strategy = self.config.get('task_strategy', {})
+            cleanup_disk(self.config.get('paths', {}), self.log,
+                         retention_days=int(strategy.get('disk_cleanup_days', 7) or 7),
+                         min_free_gb=float(strategy.get('disk_min_free_gb', 2) or 2))
+        except Exception as error:
+            self.log(f'磁盘清理自检未完成：{error}', 'warning')
+
     def _scan(self):
         paths = self.config['paths']
         self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
@@ -246,6 +258,25 @@ class TaskWorker(QThread):
                     task.update(status='queued', error='')
         matched = sum(t['matched'] for t in self.tasks)
         self.log(f'匹配完成：共{len(self.tasks)}个提示词，{matched}个已匹配，{len(self.tasks)-matched}个未匹配')
+        misses = []
+        for index, task in enumerate(self.tasks, 1):
+            missing = []
+            if not task.get('images'):
+                missing.append('未匹配到参考图')
+            else:
+                try:
+                    missing.extend(reference_warnings(task.get('_original_prompt') or '', len(task['images'])))
+                except (TypeError, ValueError, OSError):
+                    pass
+            if missing:
+                task['asset_missing'] = missing
+                misses.append((index, Path(task.get('prompt_path', '')).name or task.get('prompt_name', ''), missing))
+        if misses:
+            self.log(f'资产漏检告警：{len(misses)}/{len(self.tasks)} 个任务存在资产缺失；已逐条标记，队列继续执行不中断', 'warning')
+            for index, name, missing in misses[:20]:
+                self.log(f'  漏检任务{index}：{name} —— ' + '；'.join(missing), 'warning')
+            if len(misses) > 20:
+                self.log(f'  其余 {len(misses) - 20} 个漏检任务明细见任务列表与历史记录', 'warning')
         self.publish()
         self.pool_updated.emit(self.pool.snapshot())
 
@@ -300,31 +331,47 @@ class TaskWorker(QThread):
 
     def run(self):
         try:
+            self._cleanup_disk()
             self._scan()
             if not self.tasks:
                 self.log('目录中没有 .txt 提示词', 'warning')
             if not self.pool.names and any(not self._uses_task_model(task) for task in self.tasks):
                 raise ValueError('模型池没有启用的模型，请启用至少一个模型或关闭模型池')
-            for product, rows in groupby(enumerate(self.tasks), key=lambda pair: pair[1].get('product', '')):
-                indices = [i for i, _ in rows]
-                self.log(f'开始处理产品：{product or "未分组"}，共{len(indices)}个任务；最大并发{self.max_concurrency}')
-                pending = []
-                for index in indices:
-                    task = self.tasks[index]
-                    if task.get('status') in {'duplicate', 'submission_unknown'}:
-                        self.log(task.get('error', ''), 'warning')
-                    else:
-                        pending.append(index)
-                if self.max_concurrency == 1:
+            groups = [(product, [i for i, _ in rows])
+                      for product, rows in groupby(enumerate(self.tasks), key=lambda pair: pair[1].get('product', ''))]
+            if self.max_concurrency == 1:
+                # 串行模式保持逐产品推进与完整边界日志（可在设置中改回 1）。
+                for product, indices in groups:
+                    self.log(f'开始处理产品：{product or "未分组"}，共{len(indices)}个任务；最大并发{self.max_concurrency}')
+                    pending = []
+                    for index in indices:
+                        task = self.tasks[index]
+                        if task.get('status') in {'duplicate', 'submission_unknown'}:
+                            self.log(task.get('error', ''), 'warning')
+                        else:
+                            pending.append(index)
                     for index in pending:
                         model = self.tasks[index]['model'] if self.tasks[index].get('task_id') else self._pick(index)
                         if model is not None:
                             self._execute(index, model)
                         self.control.check()
-                else:
-                    self._concurrent_product(pending)
-                self.control.check()
-                self.log(f'产品处理结束：{product or "未分组"}')
+                    self.control.check()
+                    self.log(f'产品处理结束：{product or "未分组"}')
+            else:
+                # 无人值守并发：全部产品共享一个队列，任务完成立即补位（默认 5 路）。
+                pending = []
+                for product, indices in groups:
+                    self.log(f'开始处理产品：{product or "未分组"}，共{len(indices)}个任务；最大并发{self.max_concurrency}')
+                    for index in indices:
+                        task = self.tasks[index]
+                        if task.get('status') in {'duplicate', 'submission_unknown'}:
+                            self.log(task.get('error', ''), 'warning')
+                        else:
+                            pending.append(index)
+                if pending:
+                    self._concurrent_batch(pending)
+                    self.control.check()
+                self.log('队列处理完毕：本轮全部任务已结束')
         except Cancelled:
             self.log('已取消后续排队任务', 'warning')
         except Exception as error:
@@ -341,7 +388,7 @@ class TaskWorker(QThread):
                             self.index = index; self.terminal(task, 'cancelled', '用户取消全部')
                 self.summary.emit(sum(t.get('status') == 'completed' for t in self.tasks), sum(t.get('status') == 'failed' for t in self.tasks))
 
-    def _concurrent_product(self, pending):
+    def _concurrent_batch(self, pending):
         pending = iter(pending)
         active = set()
         exhausted = False

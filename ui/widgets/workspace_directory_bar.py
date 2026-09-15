@@ -19,7 +19,7 @@ class DirectoryField(QWidget):
         button.setToolTip('选择目录'); button.clicked.connect(self.choose_requested); row.addWidget(button)
 
     def set_value(self, text, suffix=''):
-        self.path.setFullText((str(text) if text else '未选择') + suffix)
+        self.path.setFullText(str(text) if text else '未选择', suffix)
 
 
 class WorkspaceDirectoryBar(CardWidget):
@@ -71,4 +71,15 @@ class WorkspaceDirectoryBar(CardWidget):
         self.fields['prompts'].set_value(paths.get('prompts'), f'  · {len(tasks)}条')
         self.fields['images'].set_value(paths.get('images'), f'  · {metrics.get("images", 0)}张')
         self.fields['output'].set_value(paths.get('output'), f'  · {metrics.get("videos", 0)}个 · {metrics.get("bytes", 0)/1024**3:.1f}GB')
-        matched = sum(bool(t.get('images')) for t in tasks); self.match_status.setText(f'✓ 已匹配 {matched}/{len(tasks)}')
+        matched = sum(bool(t.get('images')) for t in tasks)
+        self.match_status.setText(f'✓ 已匹配 {matched}/{len(tasks)}')
+        from PyQt5.QtGui import QColor
+        from ..materials import is_light
+        # 整行统一一种语义色：全匹配=绿、部分匹配=琥珀、无任务=灰。
+        if not tasks:
+            tone = '#8B93A3'
+        elif matched == len(tasks):
+            tone = '#1E8A4F' if is_light() else '#22C55E'
+        else:
+            tone = '#9C6B0A' if is_light() else '#E5B94E'
+        self.match_status.setTextColor(QColor(tone), QColor(tone))

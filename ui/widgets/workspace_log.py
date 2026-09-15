@@ -93,8 +93,8 @@ class FilterTabs(QWidget):
 
 class WorkspaceLog(LogDrawer):
     view_changed = pyqtSignal()
-    COLORS = {'debug': '#AE9CD6', 'info': '#8FB4EE', 'success': '#7CC79A', 'warning': '#E0C16B', 'error': '#E39A9A'}
-    COLORS_LIGHT = {'debug': '#7C6BC0', 'info': '#3E6FD1', 'success': '#2E8B57', 'warning': '#B07D1A', 'error': '#C0483F'}
+    COLORS = {'debug': '#B3A1E3', 'info': '#7FB2F7', 'success': '#5DC98B', 'warning': '#E5B94E', 'error': '#F07C7C'}
+    COLORS_LIGHT = {'debug': '#6E5BB5', 'info': '#2E62C9', 'success': '#1E8A4F', 'warning': '#9C6B0A', 'error': '#C5392F'}
     DISPLAY_LIMIT = 200
 
     def _build_ui(self):
@@ -111,7 +111,7 @@ class WorkspaceLog(LogDrawer):
         self.filter_box = FilterTabs()
         self.filter_box.currentTextChanged.connect(self._render)
         header.addWidget(self.filter_box)
-        header.addSpacing(12)
+        header.addSpacing(18)
         self.export_button = style_button(PushButton('导出')); self.export_button.clicked.connect(self.export)
         self.clear_button = style_button(PushButton('清空')); self.clear_button.clicked.connect(self.clear)
         self.toggle_button = style_button(TransparentToolButton(FIF.UP)); self.toggle_button.setFixedSize(28, 24)

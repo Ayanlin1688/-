@@ -332,8 +332,9 @@ class PoolExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_task_parameters(GROK, 'product', strict, 3)
 
-    def test_concurrency_respects_product_barrier_and_output_folders(self):
-        self.config['task_strategy']['max_concurrency'] = 2
+    def test_global_concurrency_crosses_products_and_keeps_output_folders(self):
+        # 全队列并发（默认 5）：所有产品共享一个队伍，不再有产品边界等待。
+        self.config['task_strategy']['max_concurrency'] = 5
         images = self.root / 'images'; images.mkdir()
         self.config['paths']['images'] = str(images)
         for product in ['A产品', 'B产品']:
@@ -341,8 +342,12 @@ class PoolExecutionTests(unittest.TestCase):
             for i in range(2):
                 (self.prompts / product / f'{i+1}.txt').write_text(f'{product} 场景{i+1}', encoding='utf-8')
         with PoolServer() as server:
+            server.processing_seconds = .5
             tasks = self.run_tasks(server, count=0)
-            self.assertEqual([e[0] for e in server.events], ['submit', 'submit', 'done', 'done']*2)
+            self.assertEqual([t['status'] for t in tasks], ['completed'] * 4)
+            # 四个任务先全部提交（并发跨产品），完成后各自归档到所属产品目录。
+            self.assertEqual([e[0] for e in server.events][:4], ['submit'] * 4)
+            self.assertEqual(server.maximum, 4)
             self.assertEqual([Path(t['result_path']).parent.name for t in tasks], ['A产品']*2 + ['B产品']*2)
 
 

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 from core.api_client import ApiClient, GROK, V3_MODELS
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
@@ -284,6 +285,8 @@ class ModelWorkflowTests(unittest.TestCase):
             worker = TaskWorker(config, []); logs = []
             worker.log_message.connect(lambda message, level: logs.append((message, level)))
             worker.run()
+            # 并发执行后日志从池线程排队，泵一次事件循环收齐（与生产的事件循环一致）。
+            QTest.qWait(120)
             self.assertEqual(server.calls, [])
             self.assertEqual(worker.tasks[0]['status'], 'failed')
             self.assertTrue(any('参数校验' in message and level == 'error' for message, level in logs))

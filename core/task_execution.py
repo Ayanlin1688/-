@@ -118,7 +118,7 @@ class TaskExecution:
             for warning in reference_warnings(original, len(self.task['images'])):
                 self.log(warning + '；请在匹配详情核对绑定顺序和数量', 'warning')
             strategy = self.config['task_strategy']
-            retries = max(0, int(strategy.get('max_retries', 5))) if strategy.get('auto_retry', False) else 0
+            retries = max(0, int(strategy.get('max_retries', 3))) if strategy.get('auto_retry', False) else 0
             failover = self.pool.enabled and bool(self.pool.names) and self.config['model_pool'].get('auto_failover', False)
             for attempt in range(retries + 1):
                 self.control.check()
@@ -167,6 +167,7 @@ class TaskExecution:
                     self.log(f'任务{self.index+1} {self.phase}失败：{message}', 'error')
                     # Local standalone validation cannot be repaired by repeating it.
                     if attempt >= retries or (self.phase == 'validation' and not self.pool.enabled):
+                        self.log(f'任务{self.index+1}：标记失败并保存现场（错误与尝试记录已入账），队列继续下一个任务', 'warning')
                         self.terminal('failed', message); return
                     self.publish(record=True, status='retry_wait', error=message, retry_count=attempt+1)
                     self.log(f'任务{self.index+1}：第{attempt+1}次重试，剩余{retries-attempt-1}次；间隔{strategy.get("retry_interval", 3)}秒', 'warning')

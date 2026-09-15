@@ -13,6 +13,7 @@ from http.server import ThreadingHTTPServer
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtGui import QImage, QColor
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 from core.api_client import ApiClient
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
@@ -96,6 +97,8 @@ class ReferenceDebugTests(unittest.TestCase):
         worker = TaskWorker(self.config, []); logs = []
         worker.log_message.connect(lambda message, level: logs.append((message, level)))
         worker.run()
+        # 全队列并发后任务在池线程执行，日志信号排队到主线程；泵一次事件循环收齐日志。
+        QTest.qWait(120)
         return worker, logs
 
     def test_marker_whitespace_multidigit_and_existing_markers(self):

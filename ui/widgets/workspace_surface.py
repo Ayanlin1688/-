@@ -88,22 +88,45 @@ class ElidedLabel(CaptionLabel):
     """Keep the full path for copying/tooltips without widening the layout."""
     def __init__(self, text='', parent=None):
         super().__init__(parent)
-        self.full_text = text
+        self.full_text = str(text)
+        self._suffix = ''
         self.setProperty('studioStyled', True)
         font = self.font(); font.setPixelSize(12); self.setFont(font)
         self.setTextColor(MUTED, MUTED)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.setFullText(text)
+        self._relayout()
 
-    def setFullText(self, text):
+    def setFullText(self, text, suffix=''):
         self.full_text = str(text)
-        self.setToolTip(self.full_text)
-        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.ElideMiddle, max(20, self.width())))
+        self._suffix = str(suffix or '')
+        self.setToolTip(self.full_text + self._suffix)
+        self._relayout()
+
+    def _relayout(self):
+        # 优先按路径分隔符省略：绝不把单个词或目录名切成两半。
+        metrics = self.fontMetrics()
+        width = max(20, self.width())
+        base, suffix = self.full_text, self._suffix
+        if metrics.horizontalAdvance(base + suffix) <= width:
+            self.setText(base + suffix)
+            return
+        head = ''
+        rest = base
+        if len(rest) > 2 and rest[1:3] in ('\\', ':/'):
+            head, rest = rest[:3], rest[3:]
+        parts = [part for part in rest.split('\\') if part]
+        if len(parts) >= 2:
+            for keep in range(1, len(parts) + 1):
+                candidate = head + '…\\' + '\\'.join(parts[-keep:])
+                if metrics.horizontalAdvance(candidate + suffix) <= width:
+                    self.setText(candidate + suffix)
+                    return
+        self.setText(metrics.elidedText(base, Qt.ElideMiddle, width) + suffix)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.setFullText(self.full_text)
+        self._relayout()
 
 
 class WorkspaceCard(CardWidget):
