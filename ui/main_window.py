@@ -7,10 +7,11 @@ import sys
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent
 from PyQt5.QtWidgets import QApplication
-from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, NavigationItemPosition, Theme, setTheme, setThemeColor
+from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
 from core.config_manager import ConfigManager
 from core.crash_reporter import set_notify
+from core.version import APP_NAME, APP_VERSION
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
 from .components.custom_widgets import ensure_ui_font
@@ -38,7 +39,7 @@ class MainWindow(FluentWindow):
         self._glass_material = 'gradient'
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
-        self.config_manager = config_manager or ConfigManager()
+        self.config_manager = config_manager or ConfigManager(migrate=True)
         self.config_manager.load_config()
         self.model_catalog = ModelCatalogController(
             self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
@@ -80,6 +81,7 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(0, self.model_catalog.start)
         QTimer.singleShot(0, self._sync_window_frame)
         QTimer.singleShot(80, self.apply_appearance)
+        QTimer.singleShot(5000, self._check_updates)
         set_notify(self._uncaught_exception)
 
     def _uncaught_exception(self, exc_type, exc, path):
@@ -97,6 +99,22 @@ class MainWindow(FluentWindow):
                 page.run_log.write(message, 'error')
         except Exception:
             pass
+
+    def _check_updates(self):
+        """启动时可选更新检查：读取配置的版本清单地址，发现新版本提示下载。"""
+        updates = self.config_manager.config.get('updates') or {}
+        url = str(updates.get('manifest_url') or '').strip()
+        if not url or not updates.get('check_on_start', True):
+            return
+        from core.update_check import check_for_update
+
+        def done(result):
+            if not result or self._closing:
+                return
+            self.workspace_page.append_log(f"发现新版本 v{result['version']}（当前 v{APP_VERSION}），可前往下载更新", 'info')
+            InfoBar.info('发现新版本', f"v{result['version']} 已发布（当前 v{APP_VERSION}）", parent=self, duration=8000)
+
+        self.workspace_page.jobs.start(lambda: check_for_update(url), done, lambda message: None)
 
     def apply_appearance(self):
         """应用外观设置（主题 / 高斯模糊），切换立即生效；主题未变化时不重复全量刷新。"""
@@ -436,7 +454,7 @@ class MainWindow(FluentWindow):
         )
 
     def show_about(self) -> None:
-        dialog = Dialog('关于 Yanlin Smart-Creation Matrix', '版本 v3.1\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
+        dialog = Dialog('关于 ' + APP_NAME, f'版本 v{APP_VERSION}\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
         dialog.exec_()
 
     def _setup_schedule(self, network_time):

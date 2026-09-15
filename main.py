@@ -28,7 +28,7 @@ def main() -> int:
     ensure_ui_font()
     from ui.main_window import MainWindow
 
-    window = MainWindow(ConfigManager())
+    window = MainWindow(ConfigManager(migrate=True))
     window.show()
     return app.exec_()
 

@@ -288,5 +288,65 @@ class GateRecoveryTests(unittest.TestCase):
             temp.cleanup()
 
 
+class SlowFirstSubmitHandler(FixtureHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self.server.calls.append((self.path, dict(self.headers), body))
+        if self.path == '/upload':
+            return self.respond({'data': {'files': [{'url': self.server.base + '/image.png'}]}})
+        posts = sum(1 for path, _, _ in self.server.calls if path != '/upload')
+        if posts == 1:
+            time.sleep(.6)  # 第一个提交放慢：把第二个同文案请求逼进 submitting 窗口
+        return self.respond({'data': {'task_id': 'slow-%d' % posts}})
+
+
+class SlowFirstSubmitServer(LocalServer):
+    def __enter__(self):
+        server = super().__enter__()
+        server.RequestHandlerClass = SlowFirstSubmitHandler
+        return server
+
+
+class SamePromptSerializationTests(unittest.TestCase):
+    """同文案、不同参考图的两个请求：必须串行化提交，而不是误判为待确认。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_different_requests_serialize_instead_of_false_unknown(self):
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            prompts = root / 'prompts'
+            prompts.mkdir()
+            images = root / 'images'
+            images.mkdir()
+            (images / '1(1).png').write_bytes(b'good-image')
+            (prompts / '1.txt').write_text('同一段文案。', encoding='utf-8')
+            (prompts / '2.txt').write_text('同一段文案。', encoding='utf-8')
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            config['prompt_detection']['enabled'] = False
+            config['paths'].update(prompts=str(prompts), images=str(images), output=str(root / 'out'))
+            config['workspace'].update(poll_interval=.01, duration=8)
+            config['task_strategy'].update(unmatched_prompt='仍提交文生视频', retry_interval=.01, max_concurrency=2)
+            config['_submission_ledger_path'] = str(root / 'submissions.sqlite3')
+            manager = TaskManager()
+            try:
+                with SlowFirstSubmitServer() as server:
+                    config['api'].update(base_url=server.base, api_key='***', upload_url=server.base + '/upload')
+                    self.assertTrue(manager.start_tasks(config))
+                    wait_until(lambda: not manager.is_running, timeout=20000)
+                posts = [path for path, _, _ in server.calls if path == '/videos']
+                statuses = [t['status'] for t in manager.tasks]
+                self.assertEqual(len(posts), 2, statuses)
+                self.assertEqual(statuses, ['completed', 'completed'])
+            finally:
+                manager.cancel_all()
+                wait_until(lambda: not manager.is_running, timeout=10000)
+        finally:
+            temp.cleanup()
+
+
 if __name__ == '__main__':
     unittest.main()

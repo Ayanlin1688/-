@@ -15,6 +15,7 @@ from core.api_client import ApiClient
 from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
 from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
+from core.version import APP_NAME, APP_VERSION
 from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, catalog_snapshot, usable
 from datetime import datetime
@@ -842,7 +843,7 @@ class SettingsPage(QWidget):
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
         self.theme.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
         self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
-        self.root.addWidget(CaptionLabel('Yanlin Smart-Creation Matrix v3.1 · 多模型并发、产品批处理、定时执行与GitHub同步'))
+        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · 多模型并发、产品批处理、定时执行与GitHub同步'))
 
     def _build_schedule(self):
         group = self._group('定时执行')

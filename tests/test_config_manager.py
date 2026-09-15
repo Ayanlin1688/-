@@ -1,10 +1,12 @@
 import json
+import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.config_manager import ConfigManager, DEFAULT_CONFIG
+from core.config_manager import ConfigManager, DEFAULT_CONFIG, default_config_path
 
 
 class ConfigManagerTests(unittest.TestCase):
@@ -68,6 +70,48 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(config['match_overrides'], {str((root / '空白.txt').resolve()): []})
             manager.update(('task_strategy', 'naming_rule'), '{task_id}.mp4')
             self.assertEqual(ConfigManager(path).load_config()['download_settings']['naming_rule'], '{task_id}.mp4')
+
+
+class DataDirectoryTests(unittest.TestCase):
+    def test_default_path_uses_appdata_and_env_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {'APPDATA': temp, 'YANLIN_CONFIG_DIR': ''}, clear=False):
+                self.assertEqual(default_config_path(), Path(temp) / 'Yanlin' / 'config.json')
+            with patch.dict(os.environ, {'YANLIN_CONFIG_DIR': temp}, clear=False):
+                self.assertEqual(default_config_path(), Path(temp) / 'config.json')
+
+    def test_first_run_migrates_legacy_files_on_demand(self):
+        with tempfile.TemporaryDirectory() as temp:
+            legacy_dir = Path(temp) / 'legacy'
+            legacy_dir.mkdir()
+            (legacy_dir / 'config.json').write_text(json.dumps({'workspace': {'duration': 12}}), encoding='utf-8')
+            ledger = sqlite3.connect(str(legacy_dir / 'submissions.sqlite3'))
+            ledger.execute('CREATE TABLE marker(x)')
+            ledger.commit()
+            ledger.close()
+            appdata = Path(temp) / 'appdata'
+            appdata.mkdir()
+            with patch('core.config_manager.LEGACY_CONFIG', legacy_dir / 'config.json'), \
+                 patch.dict(os.environ, {'APPDATA': str(appdata), 'YANLIN_CONFIG_DIR': ''}, clear=False):
+                manager = ConfigManager(migrate=True)
+                self.assertEqual(manager.path, appdata / 'Yanlin' / 'config.json')
+                self.assertTrue(manager.path.is_file())
+                self.assertTrue((appdata / 'Yanlin' / 'submissions.sqlite3').is_file())
+                loaded = manager.load_config()
+                self.assertEqual(loaded['workspace']['duration'], 12)
+
+    def test_without_migration_falls_back_to_legacy_location(self):
+        with tempfile.TemporaryDirectory() as temp:
+            legacy_dir = Path(temp) / 'legacy'
+            legacy_dir.mkdir()
+            (legacy_dir / 'config.json').write_text('{}', encoding='utf-8')
+            appdata = Path(temp) / 'appdata'
+            appdata.mkdir()
+            with patch('core.config_manager.LEGACY_CONFIG', legacy_dir / 'config.json'), \
+                 patch.dict(os.environ, {'APPDATA': str(appdata), 'YANLIN_CONFIG_DIR': ''}, clear=False):
+                manager = ConfigManager()
+                self.assertEqual(manager.path, legacy_dir / 'config.json')
+                self.assertFalse((appdata / 'Yanlin').exists())
 
 
 if __name__ == "__main__":

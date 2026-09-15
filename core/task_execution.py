@@ -264,19 +264,23 @@ class TaskExecution:
                 if task['signature'] in self.config.get('_rerun_signatures', []):
                     prevent = False
                 self.control.check()
-                outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
-                while outcome == 'busy' and any(
-                        row.get('local_id') == saved.get('local_id') and row.get('status') in
+
+                def live_sibling(record):
+                    # 同文案的兄弟任务仍在本批活动状态中（可等待其收尾）。
+                    return any(
+                        row.get('local_id') == record.get('local_id') and row.get('status') in
                         {'queued', 'uploading', 'submitting', 'processing', 'downloading', 'retry_wait'}
-                        for row in self.owner.tasks):
-                    # Different image lists/parameters for the same prompt are
-                    # serialized, rather than dropped, within this live batch.
+                        for row in self.owner.tasks)
+
+                outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                while live_sibling(saved) and outcome in {'busy', 'unknown'}:
+                    if outcome == 'unknown' and saved.get('signature') == task['signature']:
+                        break  # 同一请求的活跃兄弟：交给下方“重复”降级处理，不再等待。
+                    # 不同参考图/参数的同文案请求命中瞬时占用窗口（含 submitting）：
+                    # 在线串行等待兄弟任务收尾后重试，而不是误判为“待确认”硬挡。
                     self.control.delay(.1)
                     outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
-                if outcome == 'unknown' and saved.get('signature') == task['signature'] and any(
-                        row.get('local_id') == saved.get('local_id') and row.get('status') in
-                        {'uploading', 'submitting', 'queued', 'processing', 'downloading'}
-                        for row in self.owner.tasks):
+                if outcome == 'unknown' and saved.get('signature') == task['signature'] and live_sibling(saved):
                     # A live sibling owns this exact request. A persisted intent
                     # from a previous run still requires explicit recovery.
                     outcome = 'duplicate'

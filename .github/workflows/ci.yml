@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: 全量测试（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 安装依赖
+        run: python -m pip install --disable-pip-version-check "PyQt-Fluent-Widgets>=1.11.3" "requests>=2.31.0"
+      - name: 全量单元测试
+        run: python -X utf8 -m unittest discover -s tests
+
+  build:
+    name: 免安装包构建
+    runs-on: windows-latest
+    timeout-minutes: 40
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 安装依赖
+        run: python -m pip install --disable-pip-version-check "PyQt-Fluent-Widgets>=1.11.3" "requests>=2.31.0" "pyinstaller>=6.10"
+      - name: 构建免安装包与便携 zip
+        run: python -X utf8 packaging/build_release.py
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: YanlinMatrix-win64-${{ github.run_number }}
+          path: |
+            packaging/dist/YanlinMatrix
+            packaging/dist/*.zip
+            packaging/dist/update-manifest.json
+          retention-days: 14

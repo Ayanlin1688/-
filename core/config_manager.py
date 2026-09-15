@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -66,6 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "appearance": {"theme": "dark", "language": "简体中文", "blur": False},
     "diagnostics": {"debug_mode": False},
+    "updates": {"manifest_url": "", "check_on_start": True},
     "prompt_detection": {"enabled": True, "fallback_model": ""},
     "prompt_conversion": {"enabled": True, "preserve_original": True, "prefer_same_format": True},
     "model_overrides": {},
@@ -89,6 +92,58 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # config.json compatible with the named fields prompts_dir/images_dir/output_dir.
 DIRECTORY_ALIASES = (('prompts', 'prompts_dir'), ('images', 'images_dir'), ('output', 'output_dir'))
 
+LEGACY_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
+
+_LEGACY_DATA_FILES = ('config.json', 'submissions.sqlite3', 'history.sqlite3', 'models_cache.json')
+
+
+def default_config_path() -> Path:
+    """默认数据目录：%APPDATA%\\Yanlin；YANLIN_CONFIG_DIR 可覆盖为便携模式。"""
+    override = os.environ.get('YANLIN_CONFIG_DIR', '').strip()
+    if override:
+        return Path(override).expanduser() / 'config.json'
+    base = os.environ.get('APPDATA') or os.environ.get('LOCALAPPDATA')
+    if base:
+        return Path(base) / 'Yanlin' / 'config.json'
+    return LEGACY_CONFIG
+
+
+def _copy_sqlite(source: Path, target: Path) -> None:
+    """通过 SQLite 备份接口拷贝：即使源库正被运行中的实例使用，也是安全快照。"""
+    if target.exists():
+        target.unlink()
+    source_conn = sqlite3.connect(str(source), timeout=10)
+    try:
+        target_conn = sqlite3.connect(str(target))
+        try:
+            source_conn.backup(target_conn)
+        finally:
+            target_conn.close()
+    finally:
+        source_conn.close()
+
+
+def _migrate_legacy_files(target: Path) -> None:
+    """首次升级：把旧位置（仓库旁）的数据搬到新数据目录；逐项尽力，失败保持原状。"""
+    try:
+        if target.exists() or not LEGACY_CONFIG.is_file() or target.parent == LEGACY_CONFIG.parent:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for name in _LEGACY_DATA_FILES:
+        source = LEGACY_CONFIG.parent / name
+        destination = target.parent / name
+        if not source.is_file() or destination.exists():
+            continue
+        try:
+            if name.endswith('.sqlite3'):
+                _copy_sqlite(source, destination)
+            else:
+                shutil.copy2(source, destination)
+        except Exception:
+            continue
+
 
 def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(defaults)
@@ -103,8 +158,17 @@ def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, A
 class ConfigManager:
     """Owns the in-memory configuration and its JSON representation."""
 
-    def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path) if path else Path(__file__).resolve().parent.parent / "config.json"
+    def __init__(self, path: str | Path | None = None, migrate: bool = False) -> None:
+        if path is not None:
+            self.path = Path(path)
+        else:
+            self.path = default_config_path()
+            if migrate and not self.path.exists():
+                _migrate_legacy_files(self.path)
+            if (not self.path.exists() and LEGACY_CONFIG.exists()
+                    and not os.environ.get('YANLIN_CONFIG_DIR', '').strip()):
+                # 新目录尚未就绪（或未迁移）时回退旧位置，优先保住既有配置。
+                self.path = LEGACY_CONFIG
         self.config: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self.error_callback = None
         self._history_store: HistoryStore | None = None

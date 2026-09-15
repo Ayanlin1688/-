@@ -6,6 +6,10 @@ submissions.sqlite3*
 .storyboard-submissions.sqlite3*
 history.sqlite3*
 config/
+
+# Packaging build products
+packaging/build/
+packaging/dist/
 .env
 .env.*
 *.key
