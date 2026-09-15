@@ -41,7 +41,7 @@ def _apply_button_style(button, primary=False):
     light = is_light()
     th = palette()
     ar, ag, ab = th['accent_rgb']
-    fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s)' % (th['accent'], th['accent2'])
+    fill = (th['accent']
             if primary else ('rgba(15,26,52,0.06)' if light else 'rgba(255,255,255,0.06)'))
     border = ('rgba(%d,%d,%d,0.6)' % (ar, ag, ab) if primary else ('rgba(15,26,52,0.16)' if light else 'rgba(255,255,255,0.12)'))
     hover = ('rgba(%d,%d,%d,0.85)' % (ar, ag, ab) if primary else ('rgba(15,26,52,0.28)' if light else 'rgba(255,255,255,0.22)'))

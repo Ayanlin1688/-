@@ -53,8 +53,13 @@ class MainWindow(FluentWindow):
         self._setup_pages()
         self.stackedWidget.setAnimationEnabled(False)
         self.page_transition = PageTransition(self.stackedWidget)
-        self.navigationInterface.setMinimumExpandWidth(100000)
-        self.navigationInterface.panel.collapse()
+        # 两态导航：折叠 64px 图标栏 ↔ 展开 240px 文字导航（左上菜单按钮手动切换）。
+        from . import tokens as design
+        _nav_panel = self.navigationInterface.panel
+        self.navigationInterface.setMinimumExpandWidth(900)
+        _nav_panel.setExpandWidth(design.NAV_EXPAND_WIDTH)
+        _nav_panel.setMenuButtonVisible(True)
+        _nav_panel.collapse()
         from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
         self.navigationInterface.panel.setAcrylicEnabled(isAcrylicAvailable)
         self._rail_indicator_setters = []
@@ -198,11 +203,22 @@ class MainWindow(FluentWindow):
         self.update()
 
     def _setup_navigation_chrome(self) -> None:
-        """64px icon rail: brand logo on top, user avatar pinned at the bottom."""
+        """两态导航：折叠为 64px 图标栏（品牌徽标居顶、用户头像贴底），展开为 240px 文字导航。"""
         from .components.brand_widgets import BrandLogo, UserAvatar
+        from . import tokens as design
         panel = self.navigationInterface.panel
-        panel.setFixedWidth(64)
-        panel.menuButton.hide()
+        panel.setFixedWidth(design.NAV_COLLAPSED_WIDTH)
+        # 菜单按钮保留为两态切换入口：折叠态即左上角汉堡按钮，展开态为收起入口。
+        panel.menuButton.setVisible(True)
+        try:
+            panel.menuButton.clicked.disconnect()
+        except Exception:
+            pass
+        panel.menuButton.clicked.connect(self._toggle_navigation)
+        try:
+            self.navigationInterface.displayModeChanged.connect(self._on_nav_display_mode_changed)
+        except Exception:
+            pass
         return_button = getattr(panel, 'returnButton', None)
         if return_button is not None:
             return_button.hide()
@@ -217,15 +233,16 @@ class MainWindow(FluentWindow):
                                            tooltip='当前用户 · 版本信息')
         routes = [self.workspace_page.objectName(), self.history_page.objectName(),
                   self.settings_page.objectName(), 'about']
+        self._nav_rail_items = []
         for route in routes:
             try:
                 item = self.navigationInterface.widget(route)
             except Exception:
                 continue
-            item.setFixedSize(56, 44)
+            item.setFixedHeight(44)
             inner = getattr(item, 'itemWidget', item)
-            inner.setFixedSize(56, 44)
             original = inner._margins
+            self._nav_rail_items.append((item, inner, original))
             inner._margins = lambda original=original: self._rail_margins(original())
             setter = getattr(inner, 'setIndicatorColor', None)
             if setter:
@@ -234,9 +251,19 @@ class MainWindow(FluentWindow):
                 setter(th['accent'], th['accent2'])
                 self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
+        # 分组：在「设置」前插入分隔符（创作 / 系统 两组）。
+        try:
+            settings_item = self.navigationInterface.widget(self.settings_page.objectName())
+            index = panel.topLayout.indexOf(settings_item)
+            if index > 0:
+                panel.insertSeparator(index)
+        except Exception:
+            pass
+        # 应用初始折叠样式。
+        self._sync_nav_pane(True)
         # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。
         panel = self.navigationInterface.panel
-        for layout_name, spacing in (('topLayout', 6),):
+        for layout_name, spacing in (('topLayout', design.SPACE['sm']),):
             layout = getattr(panel, layout_name, None)
             try:
                 if layout is not None:
@@ -265,9 +292,59 @@ class MainWindow(FluentWindow):
         except Exception:
             pass
 
+    def _toggle_navigation(self) -> None:
+        """菜单按钮：两态切换（展开前先释放折叠态的固定宽度，保证过渡动画）。"""
+        panel = self.navigationInterface.panel
+        try:
+            if panel.isCollapsed():
+                self._sync_nav_pane(False)
+                panel.expand()
+            else:
+                panel.collapse()
+        except Exception:
+            pass
+        # 动画结束后再落一次样式，避免被原生 setCompacted 的固定尺寸覆盖。
+        QTimer.singleShot(320, self._settle_nav_pane)
+
+    def _settle_nav_pane(self) -> None:
+        try:
+            self._sync_nav_pane(self.navigationInterface.panel.isCollapsed())
+        except Exception:
+            pass
+
+    def _on_nav_display_mode_changed(self, mode=None) -> None:
+        # 原生在发出信号后还会执行 setCompacted（会重置尺寸），延后一拍再同步。
+        QTimer.singleShot(0, self._settle_nav_pane)
+
+    def _sync_nav_pane(self, collapsed: bool) -> None:
+        """按折叠/展开状态同步导航尺寸：折叠 64px 固定栏；展开释放宽度并还原内边距。"""
+        from . import tokens as design
+        panel = self.navigationInterface.panel
+        try:
+            if collapsed:
+                panel.setFixedWidth(design.NAV_COLLAPSED_WIDTH)
+            else:
+                panel.setMinimumWidth(0)
+                panel.setMaximumWidth(16777215)
+        except Exception:
+            pass
+        for item, inner, original in getattr(self, '_nav_rail_items', []):
+            try:
+                if collapsed:
+                    item.setMinimumSize(0, 44); item.setMaximumSize(56, 44)
+                    inner.setMinimumSize(0, 44); inner.setMaximumSize(56, 44)
+                    inner._margins = lambda original=original: self._rail_margins(original())
+                else:
+                    item.setMinimumSize(0, 44); item.setMaximumSize(16777215, 44)
+                    inner.setMinimumSize(0, 44); inner.setMaximumSize(16777215, 44)
+                    inner._margins = original
+                inner.updateGeometry()
+            except Exception:
+                pass
+
     @staticmethod
     def _decorate_rail_item(inner) -> None:
-        """Selected chip background + the 3px blue/purple gradient indicator bar."""
+        """Selected chip background + the 3px accent indicator bar."""
         original = inner.paintEvent
 
         def paint(event, inner=inner, original=original):
@@ -285,11 +362,8 @@ class MainWindow(FluentWindow):
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(Qt.NoPen)
                 bar_y = (inner.height() - 16) / 2
-                gradient = QLinearGradient(8, bar_y, 8, bar_y + 16)
                 from . import materials
-                gradient.setColorAt(0, QColor(materials.palette()['accent']))
-                gradient.setColorAt(1, QColor(materials.palette()['accent2']))
-                painter.setBrush(gradient)
+                painter.setBrush(QColor(materials.palette()['accent']))
                 painter.drawRoundedRect(QRectF(8, bar_y, 3, 16), 1.5, 1.5)
                 painter.end()
 

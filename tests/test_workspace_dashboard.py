@@ -111,10 +111,13 @@ class WorkspaceDashboardTests(unittest.TestCase):
         page.splitter.setSizes([400, 190]); QTest.qWait(60)
         page._save_view()
         saved = ConfigManager(self.config.path).load_config()['workspace_view']['log_height']
-        page.log_drawer.toggle(); QTest.qWait(240)
+        page.log_drawer.toggle()
+        wait_until(lambda: not page.log_drawer.browser.isVisible(), timeout=5000)
         self.assertFalse(page.log_drawer.browser.isVisible())
-        page.log_drawer.toggle(); QTest.qWait(240)
+        page.log_drawer.toggle()
+        wait_until(lambda: page.log_drawer.browser.isVisible(), timeout=5000)
         self.assertTrue(page.log_drawer.browser.isVisible())
+        wait_until(lambda: abs(page.log_drawer.height()-saved) <= 3, timeout=5000)
         self.assertLessEqual(abs(page.log_drawer.height()-saved), 3)
 
     def test_preview_opens_actual_clicked_reference(self):

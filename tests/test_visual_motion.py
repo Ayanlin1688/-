@@ -202,7 +202,7 @@ class VisualMotionTests(unittest.TestCase):
         qrouter.pop()
         self.assertIs(self.window.stackedWidget.currentWidget(), self.window.history_page)
         self.assertTrue(self.window.page_transition.isVisible())
-        QTest.qWait(350)
+        wait_until(lambda: not self.window.page_transition.isVisible(), timeout=5000)
         self.assertFalse(self.window.page_transition.isVisible())
 
     def test_match_dialog_has_opaque_dark_material(self):
