@@ -7,6 +7,8 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap, QLinearGradient, QRadialGradient, QPen
 from PyQt5.QtWidgets import QGraphicsEffect
 
+from .palettes import THEMES, resolve as resolve_theme
+
 ACCENT = '#5B8DEF'
 BRAND_START = '#5B8DEF'
 BRAND_END = '#7C6CF0'
@@ -19,19 +21,74 @@ TEXT_PRIMARY = '#F4F5F7'
 BG_BASE = '#0A0B12'
 
 # ---------------------------------------------------------------------------
-# 主题模式（深空 / 白玉）：面板与文字色统一经过这里映射，切换时整体刷新。
+# 多主题：所有面板 / 文字 / 描边 / 光晕颜色都从当前主题调色板取，
+# 切换时调用 apply_theme_tokens()，再整体刷新注册过的控件。
 LIGHT_MODE = False
+THEME_ID = 'dark'
+THEME = THEMES['dark']
 _LABEL_REGISTRY = []
 _BUTTON_REGISTRY = []
 _THEME_CALLBACKS = []
 
+
+def apply_theme_tokens(theme_id):
+    """激活主题调色板；返回实际生效的主题 id。"""
+    global THEME_ID, THEME, LIGHT_MODE
+    THEME_ID = resolve_theme(theme_id)
+    THEME = THEMES[THEME_ID]
+    LIGHT_MODE = bool(THEME.get('light'))
+    return THEME_ID
+
+
+def palette():
+    return THEME
+
+
+def accent_color():
+    return THEME['accent']
+
+
+def accent2_color():
+    return THEME['accent2']
+
+
+def accent_rgb():
+    return THEME['accent_rgb']
+
+
+def text_color(level=1):
+    return THEME.get(f'text{max(1, min(3, int(level)))}', THEME['text1'])
+
+
+def frame_line_color():
+    """窗口圆角描边（1px 高光/墨线）。"""
+    return QColor(*THEME['frame'])
+
+
+def acrylic_tint():
+    """高斯模糊模式的窗口着色（RRGGBBAA，供系统亚克力 API 使用）。"""
+    return THEME['acrylic']
+
+
+def nav_background():
+    """左侧导航栏底色（rgba 字符串）。"""
+    return THEME['nav']
+
 TEXT_COLOR_MAP = {
     '#f5f5f5': '#1A1D24', '#F5F5F7': '#1A1D24', '#F4F5F7': '#1A1D24', '#EDEDF0': '#1A1D24',
     '#ffffff': '#111420', '#FFFFFF': '#111420', '#E5E7EB': '#2A2F3A', '#C7CCD6': '#3A4150',
-    '#f0f0f5': '#1A1D24', '#9AA6B8': '#525A6B',
-    '#9ca3af': '#5A6271', '#9CA3AF': '#5A6271', '#8B93A3': '#525A6B', '#8b93a3': '#525A6B',
-    '#6B7280': '#5D6575', '#7A8294': '#5D6575', '#92929b': '#66707E',
+    '#f0f0f5': '#1A1D24', '#9AA6B8': '#4A5468',
+    '#9ca3af': '#4F586A', '#9CA3AF': '#4F586A', '#8B93A3': '#4A5468', '#8b93a3': '#4A5468',
+    '#6B7280': '#515B6C', '#7A8294': '#515B6C', '#92929b': '#5E6878',
     '#454B5A': '#9AA3B2', '#4B5563': '#8A93A2', '#D6DBFF': '#3A416E',
+}
+
+# 深色主题下把偏灰的辅助文字整体提亮一档，保证低亮度环境下的可读性。
+DARK_TEXT_MAP = {
+    '#9ca3af': '#A9B1C1', '#9CA3AF': '#A9B1C1',
+    '#8B93A3': '#9AA3B5', '#8b93a3': '#9AA3B5',
+    '#6B7280': '#818A9C', '#7A8294': '#8A93A5',
+    '#92929b': '#9CA1AC', '#9AA6B8': '#AEB8C8',
 }
 
 
@@ -45,12 +102,11 @@ def is_light():
 
 
 def map_text_color(color):
-    """把深色主题的文字色映射到浅色主题；非当前模式的原始值会被保留。"""
-    if not LIGHT_MODE:
-        return color
+    """把基础文字色映射到当前主题：浅色主题映射为深色文字，深色主题按需提亮。"""
+    mapping = TEXT_COLOR_MAP if LIGHT_MODE else DARK_TEXT_MAP
     if isinstance(color, QColor):
-        return QColor(TEXT_COLOR_MAP.get(color.name(), color.name()))
-    return TEXT_COLOR_MAP.get(str(color), str(color))
+        return QColor(mapping.get(color.name(), color.name()))
+    return mapping.get(str(color), str(color))
 
 
 def register_label(widget, color):
@@ -84,22 +140,20 @@ def run_theme_callbacks():
 
 
 def ink(alpha):
-    """描边 / 悬停等叠加色：深色用白、浅色用黑蓝。"""
-    return QColor(15, 26, 52, alpha) if LIGHT_MODE else QColor(255, 255, 255, alpha)
+    """描边 / 悬停等叠加色：深色主题用白、浅色主题用墨色。"""
+    return QColor(*THEME['ink'], alpha)
 
 
 def surface_fill(hover=0):
-    if LIGHT_MODE:
-        return QColor(255, 255, 255, 158 + round(24 * hover))
-    return QColor(255, 255, 255, 13 + round(8 * hover))
+    r, g, b, base = THEME['surface']
+    return QColor(r, g, b, min(255, base + round(THEME['surface_add'] * hover)))
 
 
 def surface_border(hover=0, elevated=False):
-    if LIGHT_MODE:
-        return QColor(15, 26, 52, round(34 + 26 * hover))
-    if elevated:
-        return QColor(150, 168, 255, 128)
-    return QColor(255, 255, 255, round(26 + 20 * hover))
+    if elevated and not LIGHT_MODE:
+        return QColor(*THEME['border_elev'])
+    r, g, b, base = THEME['border']
+    return QColor(r, g, b, min(255, base + round(THEME['border_add'] * hover)))
 
 
 def apply_theme_to_labels():
@@ -123,34 +177,27 @@ def restyle_theme_buttons():
 
 def background_brush(rect):
     gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    if LIGHT_MODE:
-        gradient.setColorAt(0, QColor('#F7F9FE'))
-        gradient.setColorAt(1, QColor('#E8EDF8'))
-    else:
-        gradient.setColorAt(0, QColor(BG_BASE))
-        gradient.setColorAt(1, QColor('#10111C'))
+    gradient.setColorAt(0, QColor(THEME['bg1']))
+    gradient.setColorAt(1, QColor(THEME['bg2']))
     return gradient
 
 
 def paint_background(painter, rect, opaque=True):
-    """深空或白玉基底，叠加两束环境径向光。"""
-    if LIGHT_MODE:
+    """主题基底（纵向渐变）叠加两束环境径向光。"""
+    if LIGHT_MODE or opaque:
         painter.fillRect(rect, background_brush(rect))
-    elif opaque:
-        painter.fillRect(rect, QColor(BG_BASE))
     else:
-        tint = QColor(BG_BASE); tint.setAlpha(200)
+        tint = QColor(THEME['bg1']); tint.setAlpha(200)
         painter.fillRect(rect, tint)
     span = max(rect.width(), rect.height())
-    blue_alpha = 30 if LIGHT_MODE else 16
-    purple_alpha = 24 if LIGHT_MODE else 14
+    g1 = THEME['glow1']; g2 = THEME['glow2']
     blue = QRadialGradient(rect.topLeft(), span * 1.3)
-    blue.setColorAt(0, QColor(91, 141, 239, blue_alpha))
-    blue.setColorAt(1, QColor(91, 141, 239, 0))
+    blue.setColorAt(0, QColor(g1[0], g1[1], g1[2], g1[3]))
+    blue.setColorAt(1, QColor(g1[0], g1[1], g1[2], 0))
     painter.fillRect(rect, blue)
     purple = QRadialGradient(rect.bottomRight(), span * 1.3)
-    purple.setColorAt(0, QColor(124, 108, 240, purple_alpha))
-    purple.setColorAt(1, QColor(124, 108, 240, 0))
+    purple.setColorAt(0, QColor(g2[0], g2[1], g2[2], g2[3]))
+    purple.setColorAt(1, QColor(g2[0], g2[1], g2[2], 0))
     painter.fillRect(rect, purple)
 
 
@@ -181,9 +228,11 @@ def paint_surface(widget, painter, elevated=False, hover=0):
         painter.drawPixmap(rect, frost_texture(), QRectF(0, 0, 256, 256))
     if elevated:
         # Qt QSS has no inset box-shadow. Paint a soft 20px inset explicitly.
+        _ar = THEME['accent_rgb']
         for inset in range(20, 0, -1):
             alpha = round(26 * math.exp(-inset/5))
-            color = QColor(15, 26, 52, round(alpha * 1.4)) if LIGHT_MODE else QColor(91, 141, 239, alpha)
+            color = (QColor(*THEME['ink'], round(alpha * 1.4)) if LIGHT_MODE
+                     else QColor(_ar[0], _ar[1], _ar[2], alpha))
             painter.setPen(QPen(color, 1))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 14, 14)
@@ -194,14 +243,14 @@ def paint_surface(widget, painter, elevated=False, hover=0):
     # A fine upper highlight gives the translucent surface a lit edge.
     highlight = QLinearGradient(rect.topLeft(), rect.topRight())
     highlight.setColorAt(0, QColor(255, 255, 255, 0))
-    highlight.setColorAt(.45, QColor(255, 255, 255, 150 if LIGHT_MODE else 22))
+    highlight.setColorAt(.45, QColor(255, 255, 255, THEME['highlight']))
     highlight.setColorAt(1, QColor(255, 255, 255, 0))
     painter.setPen(QPen(highlight, 1))
     painter.drawLine(QPointF(14, 1), QPointF(widget.width()-14, 1))
 
 
-@lru_cache(maxsize=4)
-def shadow_tile(hover=False, primary=False):
+@lru_cache(maxsize=24)
+def shadow_tile(hover=False, primary=False, accent=(91, 141, 239)):
     """Gaussian falloff, prepainted once and stretched with nine-slice rendering."""
     pixmap = QPixmap(96, 96); pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap); painter.setRenderHint(QPainter.Antialiasing)
@@ -213,7 +262,7 @@ def shadow_tile(hover=False, primary=False):
             weight = math.exp(-.5 * (spread / max(1, radius/2))**2)
             color = QColor(0, 0, 0, round(alpha * weight / max(1, radius/2)))
             if primary:
-                color = QColor(91, 141, 239, round(18*weight / max(1, radius/3)))
+                color = QColor(accent[0], accent[1], accent[2], round(18*weight / max(1, radius/3)))
             if hover:
                 color.setAlpha(min(255, round(color.alpha()*1.7)))
             painter.setBrush(color)
@@ -237,7 +286,7 @@ def draw_shadow(painter, rect, hover=0, primary=False):
         if opacity <= 0:
             continue
         painter.save(); painter.setOpacity(opacity)
-        tile = shadow_tile(active, primary)
+        tile = shadow_tile(active, primary, tuple(THEME['accent_rgb']))
         for y in range(3):
             for x in range(3):
                 if x == y == 1:

@@ -36,12 +36,14 @@ def label(text='', size=12, color=MUTED, bold=False, mono=False):
 
 
 def _apply_button_style(button, primary=False):
-    from ..materials import is_light
+    from ..materials import is_light, palette
     light = is_light()
-    fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0)'
+    th = palette()
+    ar, ag, ab = th['accent_rgb']
+    fill = ('qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s)' % (th['accent'], th['accent2'])
             if primary else ('rgba(15,26,52,0.06)' if light else 'rgba(255,255,255,0.06)'))
-    border = ('rgba(130,150,235,0.6)' if primary else ('rgba(15,26,52,0.16)' if light else 'rgba(255,255,255,0.12)'))
-    hover = ('rgba(150,170,250,0.85)' if primary else ('rgba(15,26,52,0.28)' if light else 'rgba(255,255,255,0.22)'))
+    border = ('rgba(%d,%d,%d,0.6)' % (ar, ag, ab) if primary else ('rgba(15,26,52,0.16)' if light else 'rgba(255,255,255,0.12)'))
+    hover = ('rgba(%d,%d,%d,0.85)' % (ar, ag, ab) if primary else ('rgba(15,26,52,0.28)' if light else 'rgba(255,255,255,0.22)'))
     has_icon = not button.icon().isNull()
     if has_icon and button.text():
         padding = '0 12px 0 32px'
@@ -55,7 +57,7 @@ def _apply_button_style(button, primary=False):
     disabled_border = 'rgba(15,26,52,0.08)' if light else 'rgba(255,255,255,0.06)'
     button.setStyleSheet(f'''
         QPushButton, QToolButton {{background:{fill}; color:{text_color}; border:1px solid {border};
-            border-radius:8px; padding:{padding}; font-size:12px;}}
+            border-radius:8px; padding:{padding}; font-size:13px;}}
         QPushButton:hover, QToolButton:hover {{border-color:{hover};}}
         QPushButton:disabled, QToolButton:disabled {{color:{disabled_color}; background:{disabled_bg}; border-color:{disabled_border};}}
     ''')

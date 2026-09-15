@@ -827,8 +827,10 @@ class SettingsPage(QWidget):
     def _build_appearance(self):
         group = self._group("外观")
         self.appearance_group = group
-        self.theme = self._combo(group, "主题", ("appearance", "theme"), ["dark", "light", "system"], ["深空（深色）", "白玉（浅色）", "跟随系统"])
-        self.theme.setToolTip("切换后界面立即生效；白玉模式为浅色玻璃主题")
+        from ..palettes import combo_choices
+        theme_values, theme_texts = combo_choices()
+        self.theme = self._combo(group, "主题", ("appearance", "theme"), theme_values, theme_texts)
+        self.theme.setToolTip("9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效")
         self.blur = self._switch(group, "高斯模糊玻璃", ("appearance", "blur"), FIF.CLOUD)
         self.blur.setToolTip("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）")
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])

@@ -27,7 +27,7 @@ class StatBlock(QWidget):
     def __init__(self, title, value='0', accent=MUTED, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 9, 16, 9); layout.setSpacing(3)
-        self.title = label(title, 11, '#8B93A3'); layout.addWidget(self.title)
+        self.title = label(title, 12, '#8B93A3'); layout.addWidget(self.title)
         self.value = label(value, 17, accent, True, mono=True); layout.addWidget(self.value)
         self.value.setTextFormat(Qt.RichText)
 

@@ -55,8 +55,13 @@ class WorkspaceDirectoryBar(CardWidget):
                 button_style = ('QPushButton {background:transparent; border:0; color:#8AB4F8; font-size:12px; padding:2px 6px;}'
                                 ' QPushButton:hover {color:#BFD2FF; background:rgba(255,255,255,0.06); border-radius:6px;}'
                                 ' QPushButton:disabled {color:#55555f;}')
+            from PyQt5.QtGui import QColor
+            from ..materials import map_text_color
+            text_color = map_text_color('#9ca3af')
+            name = text_color.name() if isinstance(text_color, QColor) else str(text_color)
             for field in self.fields.values():
                 field.path.setStyleSheet(chip)
+                field.path.setTextColor(QColor(name), QColor(name))
             self.match_button.setStyleSheet(button_style)
         except RuntimeError:
             pass

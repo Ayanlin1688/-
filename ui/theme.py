@@ -10,6 +10,7 @@ from qfluentwidgets import (
     PrimaryPushButton, PushButton, LineEdit, SpinBox, ComboBox, SettingCard,
     TextBrowser, setCustomStyleSheet, CardWidget, CaptionLabel, StrongBodyLabel,
     TitleLabel, SwitchButton, ProgressBar, ToolButton, SettingCardGroup, Theme, setTheme,
+    setThemeColor,
 )
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
@@ -17,13 +18,23 @@ from . import materials
 from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
 
-SCROLL_STYLE = """
-QScrollBar:vertical {background:transparent; width:6px; margin:0;}
-QScrollBar:horizontal {background:transparent; height:6px; margin:0;}
-QScrollBar::handle {background:rgba(255,255,255,0.15); border-radius:3px; min-height:28px; min-width:28px;}
-QScrollBar::handle:hover {background:rgba(255,255,255,0.3);}
-QScrollBar::add-line, QScrollBar::sub-line {width:0; height:0;}
-QScrollBar::add-page, QScrollBar::sub-page {background:transparent;}
+def _rgba_str(color, alpha):
+    """把 #rrggbb 或 QColor 转成 rgba(...) 字符串供样式表使用。"""
+    value = color if isinstance(color, QColor) else QColor(color)
+    return 'rgba(%d,%d,%d,%s)' % (value.red(), value.green(), value.blue(), alpha)
+
+
+def scroll_style():
+    """滚动条样式：颜色跟随当前主题墨色（深色用白、浅色用墨）。"""
+    ir, ig, ib = materials.palette()['ink']
+    first, second = (0.28, 0.46) if materials.is_light() else (0.15, 0.3)
+    return f"""
+QScrollBar:vertical {{background:transparent; width:6px; margin:0;}}
+QScrollBar:horizontal {{background:transparent; height:6px; margin:0;}}
+QScrollBar::handle {{background:rgba({ir},{ig},{ib},{first}); border-radius:3px; min-height:28px; min-width:28px;}}
+QScrollBar::handle:hover {{background:rgba({ir},{ig},{ib},{second});}}
+QScrollBar::add-line, QScrollBar::sub-line {{width:0; height:0;}}
+QScrollBar::add-page, QScrollBar::sub-page {{background:transparent;}}
 """
 
 
@@ -36,28 +47,38 @@ def studio_combo_menu(combo):
         menu.view.acrylicBrush.setBlurPicSize(QSize(240, 240))
     else:
         menu = ComboBoxMenu(combo)
-    rules = """
-    QListWidget {background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 rgba(24,26,38,0.97),stop:1 rgba(14,15,24,0.97));
-                 color:white; border:1px solid rgba(255,255,255,0.08); border-radius:12px;}
-    QListWidget::item {border-radius:8px; padding:4px;}
-    QListWidget::item:hover, QListWidget::item:selected {background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(91,141,239,0.24),stop:1 rgba(124,108,240,0.12));}
-    """ + SCROLL_STYLE
+    th = materials.palette()
+    top = _rgba_str('#FCFDFF' if th['light'] else th['bg2'], 0.97)
+    bottom = _rgba_str(th['bg1'], 0.97)
+    fg = th['text1'] if th['light'] else '#ffffff'
+    border = _rgba_str(th['text1'], 0.12) if th['light'] else 'rgba(255,255,255,0.08)'
+    ar, ag, ab = th['accent_rgb']
+    br, bv, bb = th['accent2_rgb']
+    rules = f"""
+    QListWidget {{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 {top},stop:1 {bottom});
+                 color:{fg}; border:1px solid {border}; border-radius:12px;}}
+    QListWidget::item {{border-radius:8px; padding:4px;}}
+    QListWidget::item:hover, QListWidget::item:selected {{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba({ar},{ag},{ab},0.24),stop:1 rgba({br},{bv},{bb},0.12));}}
+    """ + scroll_style()
     setCustomStyleSheet(menu.view, rules, rules)
     return menu
 
 
-def apply_palette(app, light=False):
+def apply_palette(app, light=None):
+    th = materials.palette()
+    if light is None:
+        light = bool(th['light'])
     palette = app.palette()
     if light:
-        colors = ((QPalette.Window, "#F4F6FB"), (QPalette.Base, "#FFFFFF"),
-                  (QPalette.AlternateBase, "#EEF1F8"), (QPalette.Text, "#1A1D24"),
-                  (QPalette.WindowText, "#1A1D24"), (QPalette.ButtonText, "#1A1D24"),
-                  (QPalette.Highlight, ACCENT), (QPalette.HighlightedText, "#ffffff"))
+        colors = ((QPalette.Window, th['bg1']), (QPalette.Base, "#FFFFFF"),
+                  (QPalette.AlternateBase, "#EEF1F8"), (QPalette.Text, th['text1']),
+                  (QPalette.WindowText, th['text1']), (QPalette.ButtonText, th['text1']),
+                  (QPalette.Highlight, th['accent']), (QPalette.HighlightedText, "#ffffff"))
     else:
-        colors = ((QPalette.Window, "#0a0a0b"), (QPalette.Base, "#141418"),
-                  (QPalette.AlternateBase, "#19191e"), (QPalette.Text, "#f4f4f5"),
-                  (QPalette.WindowText, "#f4f4f5"), (QPalette.ButtonText, "#f4f4f5"),
-                  (QPalette.Highlight, ACCENT), (QPalette.HighlightedText, "#ffffff"))
+        colors = ((QPalette.Window, th['bg1']), (QPalette.Base, "#141418"),
+                  (QPalette.AlternateBase, "#19191e"), (QPalette.Text, th['text1']),
+                  (QPalette.WindowText, th['text1']), (QPalette.ButtonText, th['text1']),
+                  (QPalette.Highlight, th['accent']), (QPalette.HighlightedText, "#ffffff"))
     for role, color in colors:
         palette.setColor(role, QColor(color))
     app.setPalette(palette)
@@ -68,40 +89,65 @@ def apply_palette(app, light=False):
 _MODE_STYLED = []
 
 
-def _dark_rules(kind):
-    return {
-        'primary': """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
-            color:white; border:1px solid rgba(160,180,255,0.55); border-radius:8px;}
-            PrimaryPushButton:hover {border-color:rgba(190,205,255,0.8); background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #6996f2,stop:1 #8A7BF3);}
-            PrimaryPushButton:disabled {background:rgba(91,141,239,0.16); color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);}""",
-        'push': "PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;} PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);} PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}",
-        'input': """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}
-            LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.08);}
-            LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}
-            SpinBox QToolButton:hover {background:rgba(91,141,239,0.18); border-radius:6px;}""",
-        'card': "SettingCard {background:transparent; border:0; border-radius:12px;}",
-        'browser': "TextBrowser {background:rgba(0,0,0,0.4); color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.08); border-radius:12px;}",
-    }.get(kind, '')
+def _theme_rules(kind):
+    """控件样式规则：颜色全部来自当前主题调色板。"""
+    th = materials.palette()
+    light = bool(th['light'])
+    ir, ig, ib = th['ink']
+    ar, ag, ab = th['accent_rgb']
+    t1 = th['text1']
 
+    def rgba(r, g, b, a):
+        return 'rgba(%d,%d,%d,%s)' % (r, g, b, a)
 
-def _light_rules(kind):
-    return {
-        'primary': """PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);
-            color:white; border:1px solid rgba(130,150,235,0.6); border-radius:8px;}
-            PrimaryPushButton:hover {border-color:rgba(150,170,250,0.9);}
-            PrimaryPushButton:disabled {background:rgba(91,141,239,0.28); color:rgba(255,255,255,0.75); border-color:rgba(130,150,235,0.3);}""",
-        'push': "PushButton {border-radius:8px; background:rgba(15,26,52,0.06); border:1px solid rgba(15,26,52,0.16); color:#16233B;} PushButton:hover {background:rgba(15,26,52,0.1); border-color:rgba(15,26,52,0.3);} PushButton:disabled {color:rgba(15,26,52,0.35); background:rgba(15,26,52,0.04);}",
-        'input': """LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.78); color:#1A1D24; border:1px solid rgba(15,26,52,0.16);}
-            LineEdit:focus, SpinBox:focus {border:1px solid rgba(91,141,239,0.9); background:rgba(255,255,255,0.96);}
-            LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(15,26,52,0.4);}
-            SpinBox QToolButton:hover {background:rgba(91,141,239,0.16); border-radius:6px;}""",
-        'card': "SettingCard {background:transparent; border:0; border-radius:12px;}",
-        'browser': "TextBrowser {background:rgba(255,255,255,0.55); color:#2A2F3A; border:1px solid rgba(15,26,52,0.12); border-radius:12px;}",
-    }.get(kind, '')
+    if kind == 'primary':
+        border = rgba(ar, ag, ab, '0.6' if light else '0.55')
+        hover = rgba(ar, ag, ab, '0.9' if light else '0.85')
+        if light:
+            disabled = ('background:%s; color:rgba(255,255,255,0.75); border-color:%s;'
+                        % (rgba(ar, ag, ab, '0.28'), rgba(ar, ag, ab, '0.3')))
+        else:
+            disabled = ('background:%s; color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.08);'
+                        % rgba(ar, ag, ab, '0.16'))
+        return ('PrimaryPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s);'
+                ' color:white; border:1px solid %s; border-radius:8px;}'
+                ' PrimaryPushButton:hover {border-color:%s;}'
+                ' PrimaryPushButton:disabled {%s}') % (th['accent'], th['accent2'], border, hover, disabled)
+    if kind == 'push':
+        if light:
+            return ('PushButton {border-radius:8px; background:%s; border:1px solid %s; color:%s;}'
+                    ' PushButton:hover {background:%s; border-color:%s;}'
+                    ' PushButton:disabled {color:%s; background:%s;}') % (
+                rgba(ir, ig, ib, '0.06'), rgba(ir, ig, ib, '0.16'), t1,
+                rgba(ir, ig, ib, '0.1'), rgba(ir, ig, ib, '0.3'),
+                rgba(ir, ig, ib, '0.35'), rgba(ir, ig, ib, '0.04'))
+        return ('PushButton {border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white;}'
+                ' PushButton:hover {background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.2);}'
+                ' PushButton:disabled {color:rgba(255,255,255,0.4); background:rgba(255,255,255,0.02);}')
+    if kind == 'input':
+        focus = rgba(ar, ag, ab, '0.9')
+        if light:
+            return ('LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.78); color:%s; border:1px solid %s;}'
+                    ' LineEdit:focus, SpinBox:focus {border:1px solid %s; background:rgba(255,255,255,0.96);}'
+                    ' LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:%s;}'
+                    ' SpinBox QToolButton:hover {background:%s; border-radius:6px;}') % (
+                t1, rgba(ir, ig, ib, '0.16'), focus, rgba(ir, ig, ib, '0.4'), rgba(ar, ag, ab, '0.16'))
+        return ('LineEdit, SpinBox, ComboBox {border-radius:8px; background:rgba(255,255,255,0.06); color:white; border:1px solid rgba(255,255,255,0.12);}'
+                ' LineEdit:focus, SpinBox:focus {border:1px solid %s; background:rgba(255,255,255,0.08);}'
+                ' LineEdit:disabled, SpinBox:disabled, ComboBox:disabled {color:rgba(255,255,255,0.4);}'
+                ' SpinBox QToolButton:hover {background:%s; border-radius:6px;}') % (focus, rgba(ar, ag, ab, '0.18'))
+    if kind == 'card':
+        return 'SettingCard {background:transparent; border:0; border-radius:12px;}'
+    if kind == 'browser':
+        if light:
+            return ('TextBrowser {background:rgba(255,255,255,0.55); color:%s; border:1px solid %s; border-radius:12px;}'
+                    % (th['text2'], rgba(ir, ig, ib, '0.12')))
+        return 'TextBrowser {background:rgba(0,0,0,0.38); color:rgba(255,255,255,0.72); border:1px solid rgba(255,255,255,0.08); border-radius:12px;}'
+    return ''
 
 
 def _set_control_rules(widget, kind):
-    rules = _light_rules(kind) if materials.is_light() else _dark_rules(kind)
+    rules = _theme_rules(kind)
     if rules:
         setCustomStyleSheet(widget, rules, rules)
 
@@ -112,43 +158,52 @@ def _register_mode_widget(widget, kind):
 
 def refresh_mode_styles():
     light = materials.is_light()
+    th = materials.palette()
     for ref, kind in list(_MODE_STYLED):
         widget = ref()
         if widget is None:
             continue
         try:
             if kind == 'group':
-                widget.titleLabel.setStyleSheet('color:#1A1D24; font-size:18px; font-weight:600;' if light
-                                                else 'color:#ffffff; font-size:18px; font-weight:600;')
+                widget.titleLabel.setStyleSheet('color:%s; font-size:18px; font-weight:600;' % th['text1'])
             elif kind == 'caption2':
-                color = QColor('#5A6271') if light else SECONDARY
+                color = QColor(th['text2'])
                 widget.setTextColor(color, color)
+            elif kind == 'progress':
+                accent = QColor(th['accent'])
+                widget.setCustomBarColor(accent, accent)
+                track = QColor(255, 255, 255, 24) if not light else QColor(*th['ink'], 28)
+                widget.setCustomBackgroundColor(track, track)
+            elif kind == 'switch':
+                accent = QColor(th['accent'])
+                widget.setCheckedIndicatorColor(accent, accent)
+            elif kind == 'titlebtn':
+                color = QColor('#ffffff') if not light else QColor(*th['ink'], 210)
+                widget.setNormalColor(color)
+                widget.setHoverColor(color)
+                widget.setPressedColor(color)
+            elif kind == 'scrollbar':
+                widget.handle.setDarkColor(QColor(*th['ink'], 64 if light else 38))
+                widget.groove.darkBackgroundColor = QColor(0, 0, 0, 0)
+            elif kind == 'page':
+                opaque = bool(widget.property('studioOpaque'))
+                widget.setStyleSheet(_page_stylesheet(widget, opaque))
             else:
                 _set_control_rules(widget, kind)
         except RuntimeError:
             continue
 
 
-def _system_prefers_light():
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
-        value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
-        return bool(value)
-    except Exception:
-        return False
-
-
-def apply_ui_mode(mode='dark'):
-    """切换深空 / 白玉主题：全局材料、Fluent 主题、注册控件与窗口重绘。"""
-    if mode == 'system':
-        light = _system_prefers_light()
-    else:
-        light = (mode == 'light')
-    materials.set_light_mode(light)
+def apply_ui_mode(theme_id='dark'):
+    """切换主题：全局调色板、Fluent 主题、注册控件与窗口重绘一次做完。"""
+    active = materials.apply_theme_tokens(theme_id)
+    light = materials.is_light()
     try:
         setTheme(Theme.LIGHT if light else Theme.DARK, save=False)
+    except Exception:
+        pass
+    try:
+        setThemeColor(QColor(materials.palette()['accent']), save=False)
     except Exception:
         pass
     app = QApplication.instance()
@@ -167,6 +222,7 @@ def apply_ui_mode(mode='dark'):
                 widget.update()
             except Exception:
                 pass
+    return active
 
 
 class SettingSurface:
@@ -196,11 +252,14 @@ def style_controls(root):
             _set_control_rules(widget, kind)
             _register_mode_widget(widget, kind)
         if isinstance(widget, TitleBarButton):
-            widget.setNormalColor(QColor('#ffffff'))
-            widget.setHoverColor(QColor('#ffffff'))
-            widget.setPressedColor(QColor('#ffffff'))
+            _light = materials.is_light()
+            _color = QColor('#ffffff') if not _light else QColor(*materials.palette()['ink'], 210)
+            widget.setNormalColor(_color)
+            widget.setHoverColor(_color)
+            widget.setPressedColor(_color)
+            _register_mode_widget(widget, 'titlebtn')
         if isinstance(widget, SettingCardGroup):
-            widget.titleLabel.setStyleSheet('color:#ffffff; font-size:18px; font-weight:600;')
+            widget.titleLabel.setStyleSheet('color:%s; font-size:18px; font-weight:600;' % materials.palette()['text1'])
             _register_mode_widget(widget, 'group')
         if isinstance(widget, ComboBox):
             widget._createComboMenu = MethodType(studio_combo_menu, widget)
@@ -209,15 +268,19 @@ def style_controls(root):
         if isinstance(widget, (CardWidget, SettingCard)):
             widget._studio_motion = WidgetMotion(widget, card=True)
         if isinstance(widget, ProgressBar):
-            widget.setCustomBarColor(ACCENT, ACCENT)
-            widget.setCustomBackgroundColor(QColor(255,255,255,24), QColor(255,255,255,24))
+            _accent = QColor(materials.palette()['accent'])
+            widget.setCustomBarColor(_accent, _accent)
+            _track = QColor(255, 255, 255, 24) if not materials.is_light() else QColor(*materials.palette()['ink'], 28)
+            widget.setCustomBackgroundColor(_track, _track)
             original_bar_color = widget.barColor
             def bar_color(bar, original=original_bar_color):
                 return QColor(ERROR) if bar.isError() else QColor(WARNING) if bar.isPaused() else original()
             widget.barColor = MethodType(bar_color, widget)
             widget._studio_shimmer = Shimmer(widget)
+            _register_mode_widget(widget, 'progress')
         if isinstance(widget, SwitchButton):
-            widget.setCheckedIndicatorColor(ACCENT, ACCENT)
+            _accent = QColor(materials.palette()['accent'])
+            widget.setCheckedIndicatorColor(_accent, _accent)
             widget.indicator.slideAni.setDuration(200)
             indicator = widget.indicator
             original_background = indicator._backgroundColor
@@ -226,8 +289,10 @@ def style_controls(root):
                 if not control.isEnabled():
                     return color
                 fraction = max(0, min(1, (control.sliderX-5)/20))
-                return QColor(91, 141, 239, round(255*fraction)) if fraction > 0 else color
+                ar, ag, ab = materials.accent_rgb()
+                return QColor(ar, ag, ab, round(255*fraction)) if fraction > 0 else color
             indicator._backgroundColor = MethodType(sliding_color, indicator)
+            _register_mode_widget(widget, 'switch')
         if isinstance(widget, CaptionLabel):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
             if not widget.text().startswith('●') and widget.text() not in {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}:
@@ -239,13 +304,24 @@ def style_controls(root):
         elif isinstance(widget, TitleLabel):
             font = widget.font(); font.setPixelSize(28); font.setBold(True); widget.setFont(font)
         if widget.__class__.__name__ in ('ScrollBar', 'SmoothScrollBar') and hasattr(widget, 'handle'):
-            widget.handle.setDarkColor(QColor(255,255,255,38))
+            widget.handle.setDarkColor(QColor(*materials.palette()['ink'], 64 if materials.is_light() else 38))
             widget.groove.darkBackgroundColor = QColor(0,0,0,0)
             if widget.orientation() == Qt.Vertical:
                 widget.handle.setFixedWidth(6)
             else:
                 widget.handle.setFixedHeight(6)
             widget._studio_scroll_hover = ScrollHover(widget)
+            _register_mode_widget(widget, 'scrollbar')
+
+
+def _page_stylesheet(page, opaque_window):
+    background = 'transparent'
+    if opaque_window:
+        th = materials.palette()
+        background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %s,stop:1 %s)' % (th['bg1'], th['bg2'])
+    return ("#%s {background:%s;}"
+            "QScrollArea, #settingsContent {background:transparent; border:0;}"
+            "QSplitter::handle {background:transparent;}%s") % (page.objectName(), background, scroll_style())
 
 
 def style_page(page, opaque_window=None):
@@ -255,12 +331,9 @@ def style_page(page, opaque_window=None):
     # rounded backing shows through.
     if opaque_window is None:
         opaque_window = page.isWindow()
-    background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0A0B12,stop:1 #12131F)' if opaque_window else 'transparent'
-    page.setStyleSheet(
-        f"#{page.objectName()} {{background:{background};}}"
-        "QScrollArea, #settingsContent {background:transparent; border:0;}"
-        "QSplitter::handle {background:transparent;}" + SCROLL_STYLE
-    )
+    page.setProperty('studioOpaque', bool(opaque_window))
+    page.setStyleSheet(_page_stylesheet(page, opaque_window))
+    _register_mode_widget(page, 'page')
     page.setProperty('isStackedTransparent', True)
     for area in page.findChildren(QAbstractScrollArea):
         area.viewport().setAutoFillBackground(False)
@@ -277,5 +350,7 @@ class ScrollHover(QObject):
 
     def eventFilter(self, bar, event):
         if event.type() in (QEvent.Enter, QEvent.Leave):
-            bar.handle.setDarkColor(QColor(255,255,255,77 if event.type() == QEvent.Enter else 38))
+            light = materials.is_light()
+            alpha = (110 if light else 77) if event.type() == QEvent.Enter else (64 if light else 38)
+            bar.handle.setDarkColor(QColor(*materials.palette()['ink'], alpha))
         return False

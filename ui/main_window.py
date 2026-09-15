@@ -50,11 +50,10 @@ class MainWindow(FluentWindow):
         self.page_transition = PageTransition(self.stackedWidget)
         self.navigationInterface.setMinimumExpandWidth(100000)
         self.navigationInterface.panel.collapse()
-        from qfluentwidgets import setCustomStyleSheet
         from qfluentwidgets.components.widgets.acrylic_label import isAcrylicAvailable
         self.navigationInterface.panel.setAcrylicEnabled(isAcrylicAvailable)
-        navigation_style = 'NavigationPanel {background:rgba(10,11,18,0.45); border:0;}'
-        setCustomStyleSheet(self.navigationInterface.panel, navigation_style, navigation_style)
+        self._rail_indicator_setters = []
+        self._apply_nav_style()
         self._setup_navigation_chrome()
         self.config_manager.error_callback = self.workspace_page.append_log
         self._closing = False
@@ -82,14 +81,39 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(80, self.apply_appearance)
 
     def apply_appearance(self):
-        """应用外观设置（主题模式 / 高斯模糊），切换立即生效。"""
+        """应用外观设置（主题 / 高斯模糊），切换立即生效；主题未变化时不重复全量刷新。"""
         config = self.settings_page.config_manager.config.get('appearance', {})
         try:
-            from .theme import apply_ui_mode
-            apply_ui_mode(config.get('theme', 'dark'))
+            from . import materials
+            from .palettes import resolve
+            desired = resolve(config.get('theme', 'dark'))
+            if desired != materials.THEME_ID:
+                from .theme import apply_ui_mode
+                apply_ui_mode(config.get('theme', 'dark'))
+        except Exception:
+            pass
+        # 主题相关的窗口级外观：导航栏底色、自绘背景色、轨道指示条。
+        try:
+            from . import materials
+            bg = materials.palette()['bg1']
+            self.setCustomBackgroundColor(bg, bg)
+            self._apply_nav_style()
+            for setter in self._rail_indicator_setters:
+                try:
+                    th = materials.palette()
+                    setter(th['accent'], th['accent2'])
+                except Exception:
+                    pass
         except Exception:
             pass
         self._apply_blur_setting(config)
+
+    def _apply_nav_style(self):
+        """导航栏底色跟随当前主题。"""
+        from qfluentwidgets import setCustomStyleSheet
+        from . import materials
+        style = 'NavigationPanel {background:%s; border:0;}' % materials.nav_background()
+        setCustomStyleSheet(self.navigationInterface.panel, style, style)
 
     def _apply_blur_setting(self, config=None):
         config = config if config is not None else self.settings_page.config_manager.config.get('appearance', {})
@@ -98,8 +122,7 @@ class MainWindow(FluentWindow):
             hwnd = int(self.winId())
             if enabled:
                 from . import materials
-                tint = 'F3F6FCA8' if materials.is_light() else '12141CA8'
-                self.windowEffect.setAcrylicEffect(hwnd, tint, True)
+                self.windowEffect.setAcrylicEffect(hwnd, materials.acrylic_tint(), True)
             else:
                 self.windowEffect.removeBackgroundEffect(hwnd)
         except Exception:
@@ -138,7 +161,10 @@ class MainWindow(FluentWindow):
             inner._margins = lambda original=original: self._rail_margins(original())
             setter = getattr(inner, 'setIndicatorColor', None)
             if setter:
-                setter('#5B8DEF', '#7C6CF0')
+                from . import materials
+                th = materials.palette()
+                setter(th['accent'], th['accent2'])
+                self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
         # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。
         panel = self.navigationInterface.panel
@@ -192,8 +218,9 @@ class MainWindow(FluentWindow):
                 painter.setPen(Qt.NoPen)
                 bar_y = (inner.height() - 16) / 2
                 gradient = QLinearGradient(8, bar_y, 8, bar_y + 16)
-                gradient.setColorAt(0, QColor('#5B8DEF'))
-                gradient.setColorAt(1, QColor('#7C6CF0'))
+                from . import materials
+                gradient.setColorAt(0, QColor(materials.palette()['accent']))
+                gradient.setColorAt(1, QColor(materials.palette()['accent2']))
                 painter.setBrush(gradient)
                 painter.drawRoundedRect(QRectF(8, bar_y, 3, 16), 1.5, 1.5)
                 painter.end()
@@ -321,8 +348,8 @@ class MainWindow(FluentWindow):
         painter.setClipping(False)
         if margin:
             # 1px 高光描边，让圆角边缘在深色桌面上有物理厚度感。
-            from .materials import is_light
-            painter.setPen(QColor(15, 26, 52, 46) if is_light() else QColor(255, 255, 255, 26))
+            from .materials import frame_line_color
+            painter.setPen(frame_line_color())
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 

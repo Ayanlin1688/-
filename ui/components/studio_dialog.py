@@ -44,7 +44,7 @@ class DialogHeader(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 0, 8, 0)
         layout.setSpacing(10)
-        self.title_label = dialog_label(title, 14, '#F4F5F7', True)
+        self.title_label = dialog_label(title, 15, '#F4F5F7', True)
         layout.addWidget(self.title_label)
         layout.addStretch(1)
         self.close_button = TransparentToolButton(FIF.CLOSE)
@@ -111,18 +111,19 @@ class StudioDialogBase:
         path = QPainterPath()
         path.addRoundedRect(rect, WINDOW_RADIUS, WINDOW_RADIUS)
         painter.setClipPath(path)
-        from ..materials import is_light
-        if is_light():
-            painter.fillRect(rect, QColor('#F6F8FC'))
-        else:
-            painter.fillRect(rect, QColor('#0E1017'))
-        # 顶部一点冷色渐变，与主窗口的深空质感一致。
+        from ..materials import frame_line_color, palette
+        th = palette()
+        # 弹窗底色取主题基底并微微提亮，顶部叠一层主题光晕。
+        base = QColor(th['bg1']).lighter(104 if th['light'] else 118)
+        painter.fillRect(rect, base)
         wash = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        wash.setColorAt(0, QColor(91, 141, 239, 26 if is_light() else 16))
-        wash.setColorAt(1, QColor(124, 108, 240, 0))
+        ar, ag, ab = th['accent_rgb']
+        br, bv, bb = th['accent2_rgb']
+        wash.setColorAt(0, QColor(ar, ag, ab, 26 if th['light'] else 16))
+        wash.setColorAt(1, QColor(br, bv, bb, 0))
         painter.fillRect(rect, wash)
         painter.setClipping(False)
-        painter.setPen(QColor(15, 26, 52, 46) if is_light() else QColor(255, 255, 255, 30))
+        painter.setPen(frame_line_color())
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), WINDOW_RADIUS, WINDOW_RADIUS)
 

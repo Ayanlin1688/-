@@ -30,15 +30,18 @@ class BrandLogo(_RailWidget):
         # 磁贴锚定在组件顶部，与标题栏文字垂直居中对齐。
         rect = QRectF((self.width()-size)/2, 1.0, size, size)
         center = rect.center()
+        from ..materials import palette
+        th = palette()
+        a2 = th['accent2_rgb']
         halo = QRadialGradient(center, size*0.95)
-        halo.setColorAt(0, QColor(124, 108, 240, 66))
-        halo.setColorAt(1, QColor(124, 108, 240, 0))
+        halo.setColorAt(0, QColor(a2[0], a2[1], a2[2], 66))
+        halo.setColorAt(1, QColor(a2[0], a2[1], a2[2], 0))
         painter.setPen(Qt.NoPen)
         painter.setBrush(halo)
         painter.drawEllipse(QRectF(center.x()-size*0.95, center.y()-size*0.95, size*1.9, size*1.9))
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0, QColor('#5B8DEF'))
-        gradient.setColorAt(1, QColor('#7C6CF0'))
+        gradient.setColorAt(0, QColor(th['accent']))
+        gradient.setColorAt(1, QColor(th['accent2']))
         painter.setBrush(gradient)
         painter.drawRoundedRect(rect, 10, 10)
         painter.setPen(QColor('#FFFFFF'))
@@ -58,13 +61,19 @@ class UserAvatar(_RailWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         size = 30.0
         rect = QRectF((self.width()-size)/2, (self.height()-size)/2, size, size)
+        from ..materials import palette
+        th = palette()
+        a1 = th['accent_rgb']; a2 = th['accent2_rgb']
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0, QColor('#3A416E'))
-        gradient.setColorAt(1, QColor('#232945'))
+        c1 = QColor(a1[0], a1[1], a1[2]); c2 = QColor(a2[0], a2[1], a2[2])
+        if not th['light']:
+            c1 = c1.darker(175); c2 = c2.darker(200)
+        gradient.setColorAt(0, c1)
+        gradient.setColorAt(1, c2)
         painter.setPen(QPen(QColor(255, 255, 255, 38), 1))
         painter.setBrush(gradient)
         painter.drawEllipse(rect)
-        painter.setPen(QColor('#D6DBFF'))
+        painter.setPen(QColor('#FFFFFF') if not th['light'] else QColor(a1[0], a1[1], a1[2]).darker(180))
         font = self.font(); font.setPixelSize(13); font.setBold(True)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignCenter, 'Y')

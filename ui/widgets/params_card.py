@@ -1,6 +1,6 @@
 """Generation parameter card with collapsible advanced section."""
 
-from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve, QSignalBlocker
+from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve, QSignalBlocker, QTimer, QAbstractAnimation
 from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
 from qfluentwidgets import FluentIcon as FIF, PushButton
 
@@ -155,6 +155,8 @@ class ParamsCard(QWidget):
 
     def toggle_advanced(self) -> None:
         self._advanced_animation.stop()
+        self._toggle_generation = getattr(self, '_toggle_generation', 0) + 1
+        generation = self._toggle_generation
         self.advanced_expanded = not self.advanced_expanded
         if self.advanced_expanded:
             self.advanced.setVisible(True)
@@ -167,7 +169,21 @@ class ParamsCard(QWidget):
         self._advanced_animation.setStartValue(start)
         self._advanced_animation.setEndValue(target)
         self._advanced_animation.start()
+        # 事件循环繁忙时动画可能无法在预期时间内收尾；到点强制落定状态，
+        # 保证折叠/展开的最终可见性始终确定（正常运行路径不受影响）。
+        QTimer.singleShot(self._advanced_animation.duration() + 20,
+                          lambda gen=generation: self._finalize_toggle(gen))
         self.expand_button.setIcon(FIF.UP if self.advanced_expanded else FIF.DOWN)
+
+    def _finalize_toggle(self, generation=None):
+        try:
+            if generation is not None and generation != getattr(self, '_toggle_generation', 0):
+                return
+            if self._advanced_animation.state() == QAbstractAnimation.Running:
+                self._advanced_animation.stop()
+            self._finish_toggle()
+        except RuntimeError:
+            pass
 
     def _finish_toggle(self):
         self.advanced.setVisible(self.advanced_expanded)

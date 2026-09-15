@@ -70,23 +70,24 @@ class FilterTabs(QWidget):
             self.setCurrentText('全部')
 
     def _apply(self):
-        from ..materials import is_light
+        from ..materials import is_light, palette
         light = is_light()
+        th = palette()
         for name, chip in self._buttons.items():
             if name == self._current:
                 chip.setStyleSheet(
-                    'QPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5B8DEF,stop:1 #7C6CF0);'
-                    ' color:#FFFFFF; border:0; border-radius:6px; padding:0 10px; font-size:11px; font-weight:500;}'
-                    ' QPushButton:hover {padding:0 10px;}')
+                    ('QPushButton {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s);'
+                     ' color:#FFFFFF; border:0; border-radius:6px; padding:0 10px; font-size:12px; font-weight:500;}'
+                     ' QPushButton:hover {padding:0 10px;}') % (th['accent'], th['accent2']))
             elif light:
                 chip.setStyleSheet(
-                    'QPushButton {background:rgba(15,26,52,0.05); color:#5A6271; border:1px solid rgba(15,26,52,0.12);'
-                    ' border-radius:6px; padding:0 10px; font-size:11px;}'
+                    'QPushButton {background:rgba(15,26,52,0.05); color:#4F586A; border:1px solid rgba(15,26,52,0.14);'
+                    ' border-radius:6px; padding:0 10px; font-size:12px;}'
                     ' QPushButton:hover {color:#1A1D24; background:rgba(15,26,52,0.09);}')
             else:
                 chip.setStyleSheet(
-                    'QPushButton {background:rgba(255,255,255,0.06); color:#9CA3AF; border:1px solid rgba(255,255,255,0.10);'
-                    ' border-radius:6px; padding:0 10px; font-size:11px;}'
+                    'QPushButton {background:rgba(255,255,255,0.06); color:#A9B1C1; border:1px solid rgba(255,255,255,0.12);'
+                    ' border-radius:6px; padding:0 10px; font-size:12px;}'
                     ' QPushButton:hover {color:#F4F5F7; background:rgba(255,255,255,0.10);}')
 
 
@@ -120,8 +121,8 @@ class WorkspaceLog(LogDrawer):
         header.addWidget(self.toggle_button); root.addLayout(header)
         self.browser = TextBrowser(); self.browser.setProperty('studioStyled', True)
         self.browser.setOpenExternalLinks(False); self.browser.setMinimumHeight(0)
-        self.browser.document().setDefaultStyleSheet('div.logline {font-family:"Cascadia Mono","Consolas"; font-size:11px; line-height:160%; margin:1px 0;}')
-        self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
+        self.browser.document().setDefaultStyleSheet('div.logline {font-family:"Cascadia Mono","Consolas"; font-size:12px; line-height:160%; margin:1px 0;}')
+        self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
         root.addWidget(self.browser, 1)
         self.highlight = LogHighlight(self.browser.viewport())
         self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(180)
@@ -133,13 +134,19 @@ class WorkspaceLog(LogDrawer):
 
     def _apply_mode_style(self):
         try:
-            from ..materials import is_light
+            from ..materials import is_light, palette
+            th = palette()
             if is_light():
                 self.setStyleSheet('#workspaceLog {background:rgba(255,255,255,0.66); border:1px solid rgba(15,26,52,0.12); border-top-left-radius:14px; border-top-right-radius:14px;}')
-                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
             else:
-                self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
-                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:11px;}')
+                c = QColor(th['bg2'])
+                self.setStyleSheet('#workspaceLog {background:rgba(%d,%d,%d,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}' % (c.red(), c.green(), c.blue()))
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
+            try:
+                self.filter_box._apply()
+            except Exception:
+                pass
             # 已渲染的日志需要按当前主题重排颜色。
             self._render()
         except RuntimeError:

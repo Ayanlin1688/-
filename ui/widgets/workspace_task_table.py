@@ -216,7 +216,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_header_mode_style)
         for column,txt in enumerate(HEADERS):
-            head=label(txt,11,'#9AA6B8')
+            head=label(txt,12,'#9AA6B8')
             font=head.font(); font.setLetterSpacing(QFont.AbsoluteSpacing,0.6); font.setWeight(QFont.Medium); head.setFont(font)
             if column==11:
                 self._header_grid.addWidget(head,0,column,Qt.AlignVCenter|Qt.AlignHCenter)
