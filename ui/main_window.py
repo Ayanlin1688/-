@@ -11,6 +11,7 @@ from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow
 
 from core.config_manager import ConfigManager
 from core.crash_reporter import set_notify
+from core.i18n import set_language, tr
 from core.version import APP_NAME, APP_VERSION
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
@@ -83,6 +84,7 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(80, self.apply_appearance)
         QTimer.singleShot(5000, self._check_updates)
         set_notify(self._uncaught_exception)
+        self._announce_license()
 
     def _uncaught_exception(self, exc_type, exc, path):
         """未捕获异常：写入口志；主线程内同时提示 UI（子线程只落盘）。"""
@@ -116,9 +118,37 @@ class MainWindow(FluentWindow):
 
         self.workspace_page.jobs.start(lambda: check_for_update(url), done, lambda message: None)
 
+    def _retranslate_chrome(self):
+        """语言切换即时生效范围：导航 / 关于入口 / 关于对话框（其余界面重启后完整生效）。"""
+        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('任务历史'), tr('设置')]):
+            try:
+                item.setText(text)
+            except Exception:
+                pass
+        about_item = getattr(self, '_about_item', None)
+        if about_item is not None:
+            try:
+                about_item.setText(tr('关于'))
+            except Exception:
+                pass
+
+    def _announce_license(self):
+        """启动公告许可状态；首次运行写入试用起点。"""
+        from core.licensing import license_status
+        status = license_status(self.config_manager.config)
+        try:
+            self.config_manager.save_config()
+        except Exception:
+            pass
+        self.workspace_page.append_log('许可状态：' + status['detail'], 'info')
+        if status['state'] in {'expired', 'invalid'}:
+            InfoBar.warning(tr('许可提示'), status['detail'], parent=self, duration=8000)
+
     def apply_appearance(self):
-        """应用外观设置（主题 / 高斯模糊），切换立即生效；主题未变化时不重复全量刷新。"""
+        """应用外观设置（主题 / 高斯模糊 / 语言），切换立即生效；主题未变化时不重复全量刷新。"""
         config = self.settings_page.config_manager.config.get('appearance', {})
+        set_language(config.get('language', '简体中文'))
+        self._retranslate_chrome()
         try:
             from . import materials
             from .palettes import resolve
@@ -439,22 +469,24 @@ class MainWindow(FluentWindow):
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
         self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
-        self.addSubInterface(self.workspace_page, FIF.HOME, "工作台")
-        self.addSubInterface(self.history_page, FIF.HISTORY, "任务历史")
-        self.addSubInterface(self.settings_page, FIF.SETTING, "设置")
+        self._nav_items = [
+            self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
+            self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
+            self.addSubInterface(self.settings_page, FIF.SETTING, tr('设置')),
+        ]
         self.workspace_page.navigation_requested.connect(lambda route: self.switchTo({
             'workspace': self.workspace_page, 'history': self.history_page, 'settings': self.settings_page}[route]))
-        self.navigationInterface.addItem(
+        self._about_item = self.navigationInterface.addItem(
             routeKey="about",
             icon=FIF.INFO,
-            text="关于",
+            text=tr('关于'),
             onClick=self.show_about,
             selectable=False,
             position=NavigationItemPosition.BOTTOM,
         )
 
     def show_about(self) -> None:
-        dialog = Dialog('关于 ' + APP_NAME, f'版本 v{APP_VERSION}\n产品批处理 · 定时执行 · GitHub同步\n多模型调度 · 自动重试 · 并发生成 · 自动下载', self)
+        dialog = Dialog(tr('关于') + ' ' + APP_NAME, f'版本 v{APP_VERSION}\n' + tr('产品批处理 · 定时执行 · GitHub同步') + '\n' + tr('多模型调度 · 自动重试 · 并发生成 · 自动下载'), self)
         dialog.exec_()
 
     def _setup_schedule(self, network_time):

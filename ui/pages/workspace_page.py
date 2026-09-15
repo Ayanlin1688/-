@@ -21,6 +21,7 @@ from core.http_client import Cancelled
 from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
 from ..components.submission_dialog import SubmissionRecoveryDialog
 from core.video_downloader import VideoDownloader, build_filename
+from core.licensing import gate_block
 from ..file_actions import open_local
 
 from ..widgets.current_task_card import CurrentTaskCard
@@ -433,6 +434,11 @@ class WorkspacePage(QWidget):
 
     def start_generation(self):
         if self.closing.is_set() or self._redownloading:
+            return
+        block = gate_block(self.config_manager.config)
+        if block:
+            self.append_log('许可限制：' + block, 'warning')
+            InfoBar.warning('需要激活', block, parent=self, duration=6500)
             return
         self.append_log('开始生成：检查配置并准备后台队列', 'info')
         try:

@@ -16,6 +16,8 @@ from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
 from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
 from core.version import APP_NAME, APP_VERSION
+from core.licensing import license_status
+from core.i18n import tr
 from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, catalog_snapshot, usable
 from datetime import datetime
@@ -843,7 +845,47 @@ class SettingsPage(QWidget):
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
         self.theme.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
         self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
-        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · 多模型并发、产品批处理、定时执行与GitHub同步'))
+        self.language.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
+        self._build_license_row()
+        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步')))
+
+    def _build_license_row(self):
+        self.license_status_label = CaptionLabel(self._license_text())
+        self.license_status_label.setWordWrap(True)
+        activate_button = PushButton(tr('激活'))
+        activate_button.clicked.connect(self._activate_license)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(22, 0, 22, 0)
+        layout.addWidget(self.license_status_label, 1)
+        layout.addWidget(activate_button)
+        self.root.addWidget(row)
+
+    def _license_text(self):
+        status = license_status(self.config_manager.config)
+        return tr('许可状态') + '：' + status['detail']
+
+    def _activate_license(self):
+        from core.licensing import parse_key
+        from qfluentwidgets import Dialog, InfoBar
+        dialog = Dialog(tr('许可与激活'), '', self.window())
+        line = LineEdit()
+        line.setPlaceholderText(tr('输入激活码'))
+        line.setClearButtonEnabled(True)
+        dialog.viewLayout.addWidget(line)
+        dialog.yesButton.setText(tr('激活'))
+        if not dialog.exec():
+            return
+        key = line.text().strip()
+        try:
+            parse_key(key)
+        except ValueError as error:
+            InfoBar.error(tr('激活失败'), str(error), parent=self.window(), duration=6500)
+            return
+        self.config_manager.update(('license', 'key'), key)
+        if hasattr(self, 'license_status_label'):
+            self.license_status_label.setText(self._license_text())
+        InfoBar.success(tr('激活成功'), tr('已激活'), parent=self.window(), duration=4500)
 
     def _build_schedule(self):
         group = self._group('定时执行')
