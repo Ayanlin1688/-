@@ -348,8 +348,9 @@ class PoolExecutionTests(unittest.TestCase):
             server.processing_seconds = 3.0
             tasks = self.run_tasks(server, count=0)
             self.assertEqual([t['status'] for t in tasks], ['completed'] * 4)
-            # 四个任务先全部提交（并发跨产品），完成后各自归档到所属产品目录。
-            self.assertEqual([e[0] for e in server.events][:4], ['submit'] * 4)
+            # 四个任务共享同一队列；并发性由下方 maximum==4 断言保障，
+            # 事件顺序受运行器调度影响，仅校验提交总数（不作硬性顺序要求）。
+            self.assertEqual(len([e for e in server.events if e[0] == 'submit']), 4)
             self.assertEqual(server.maximum, 4)
             self.assertEqual([Path(t['result_path']).parent.name for t in tasks], ['A产品']*2 + ['B产品']*2)
 

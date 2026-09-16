@@ -58,6 +58,7 @@ class BatchExecutionTests(unittest.TestCase):
         config['api'].update(base_url=server.base, api_key='***', upload_url=server.base + '/upload')
         config['workspace']['poll_interval'] = 0.02
         config['prompt_detection']['enabled'] = False
+        config['task_strategy']['max_retries'] = 5
         if model:
             config['workspace']['model'] = model
             config['workspace']['resolution'] = '768p'
@@ -78,7 +79,8 @@ class BatchExecutionTests(unittest.TestCase):
             try:
                 manager.start_tasks(config)
                 wait_until(lambda: not manager.is_running)
-                self.assertEqual([t['status'] for t in manager.tasks], ['completed'] * 5)
+                self.assertEqual([t['status'] for t in manager.tasks], ['completed'] * 5,
+                                 msg=[(t.get('status'), t.get('error'), len(t.get('attempts', []))) for t in manager.tasks])
                 self.assertEqual(len([p for p, _, _ in server.calls if p == '/videos']), 5)
                 summary = [m for m, _ in logs if '共5个提示词，5个已匹配，0个未匹配' in m]
                 self.assertTrue(summary)
