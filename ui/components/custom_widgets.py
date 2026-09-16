@@ -41,11 +41,11 @@ def ensure_ui_font() -> list[str]:
 
 
 class StudioCard(CardWidget):
-    """Real Fluent CardWidget with the studio palette and 14px corners."""
+    """Real Fluent CardWidget with the studio palette and 12px corners."""
     def __init__(self, parent=None, elevated=False):
         super().__init__(parent)
         self.elevated = elevated
-        self.setBorderRadius(14)
+        self.setBorderRadius(12)
 
     def _normalBackgroundColor(self):
         return QColor(255,255,255,13)

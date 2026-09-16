@@ -16,7 +16,7 @@ class CurrentTaskCard(QWidget):
         card = make_card(elevated=True)
         card.setObjectName("currentTaskCard")
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.addWidget(card)
-        root = QVBoxLayout(card); root.setContentsMargins(20, 20, 20, 20); root.setSpacing(9)
+        root = QVBoxLayout(card); root.setContentsMargins(20, 20, 20, 20); root.setSpacing(8)
         root.addWidget(StrongBodyLabel(tr("当前任务")))
         self.concurrency_label = CaptionLabel('正在生成0个，排队0个'); root.addWidget(self.concurrency_label)
         self.title = StrongBodyLabel(tr('尚未开始任务')); root.addWidget(self.title)

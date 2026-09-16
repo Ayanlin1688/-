@@ -11,7 +11,7 @@ class DirectoryField(QWidget):
     choose_requested = pyqtSignal()
     def __init__(self, title, icon=FIF.FOLDER, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(7)
+        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
         glyph = IconWidget(icon); glyph.setFixedSize(14, 14)
         row.addWidget(glyph)
         row.addWidget(label(title, 12, '#9CA3AF', True)); self.path = ElidedLabel(tr('未选择'))
@@ -27,7 +27,7 @@ class WorkspaceDirectoryBar(CardWidget):
     choose_requested = pyqtSignal(str)
     match_requested = pyqtSignal()
     def __init__(self, parent=None):
-        super().__init__(parent); self.setBorderRadius(10); self.setProperty('studioStyled', True)
+        super().__init__(parent); self.setBorderRadius(12); self.setProperty('studioStyled', True)
         self.setFixedHeight(48)
         row = QHBoxLayout(self); row.setContentsMargins(14, 8, 14, 8); row.setSpacing(14)
         self.fields = {}

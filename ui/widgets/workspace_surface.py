@@ -134,7 +134,7 @@ class WorkspaceCard(CardWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty('studioStyled', True)
-        self.setBorderRadius(14)
+        self.setBorderRadius(12)
         self._hover = False
 
     def enterEvent(self, event):
@@ -149,7 +149,7 @@ class WorkspaceCard(CardWidget):
         rect = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
         painter.setPen(QPen(ink(58 if self._hover else 30), 1))
         painter.setBrush(surface_fill(.6 if self._hover else 0))
-        painter.drawRoundedRect(rect, 14, 14)
+        painter.drawRoundedRect(rect, 12, 12)
         # 玻璃顶部内发光：只在上缘画 1px 低透明度亮线。
         glow = QLinearGradient(rect.topLeft(), rect.topRight())
         glow.setColorAt(0, QColor(255, 255, 255, 0))
@@ -158,7 +158,7 @@ class WorkspaceCard(CardWidget):
         painter.setPen(QPen(glow, 1)); painter.drawLine(QPointF(rect.left()+14, rect.top()+1), QPointF(rect.right()-14, rect.top()+1))
         sheen = QLinearGradient(rect.topLeft(), rect.bottomRight())
         sheen.setColorAt(0, QColor(150, 174, 218, 8)); sheen.setColorAt(1, QColor(150, 174, 218, 0))
-        painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 14, 14)
+        painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 12, 12)
 
 
 class BreathingDot(StatusDot):
@@ -330,7 +330,7 @@ class ImagePreview(StudioDialog):
         self.size_label = label(f'{self.original.width()} × {self.original.height()}  ·  ' + tr('原始图片'), 12)
         heading.addWidget(self.size_label); layout.addLayout(heading)
         self.area = ScrollArea(); self.area.setWidgetResizable(False)
-        self.area.setStyleSheet('QScrollArea {background:#0c0e14; border:1px solid rgba(255,255,255,0.08); border-radius:10px;}')
+        self.area.setStyleSheet('QScrollArea {background:#0c0e14; border:1px solid rgba(255,255,255,0.08); border-radius:12px;}')
         self.area.setAlignment(Qt.AlignCenter)
         self.image = ImageLabel(); self.image.setBorderRadius(8, 8, 8, 8)
         self.area.setWidget(self.image); layout.addWidget(self.area, 1)

@@ -221,7 +221,7 @@ def frost_texture():
 def paint_surface(widget, painter, elevated=False, hover=0):
     painter.setRenderHint(QPainter.Antialiasing)
     rect = QRectF(widget.rect()).adjusted(1, 1, -1, -1)
-    path = QPainterPath(); path.addRoundedRect(rect, 14, 14)
+    path = QPainterPath(); path.addRoundedRect(rect, 12, 12)
     painter.save(); painter.setClipPath(path)
     painter.fillPath(path, surface_fill(hover))
     if not LIGHT_MODE:
@@ -235,11 +235,11 @@ def paint_surface(widget, painter, elevated=False, hover=0):
                      else QColor(_ar[0], _ar[1], _ar[2], alpha))
             painter.setPen(QPen(color, 1))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 14, 14)
+            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 12, 12)
     painter.restore()
     painter.setBrush(Qt.NoBrush)
     painter.setPen(QPen(surface_border(hover, elevated), 1))
-    painter.drawRoundedRect(rect, 14, 14)
+    painter.drawRoundedRect(rect, 12, 12)
     # A fine upper highlight gives the translucent surface a lit edge.
     highlight = QLinearGradient(rect.topLeft(), rect.topRight())
     highlight.setColorAt(0, QColor(255, 255, 255, 0))
