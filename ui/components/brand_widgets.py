@@ -1,7 +1,32 @@
 """Brand chrome for the 64px navigation rail (deep-space liquid glass)."""
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPen, QRadialGradient
+from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient
 from qfluentwidgets import NavigationWidget
+
+
+def logo_pixmap(size=64):
+    """品牌磁贴的静态渲染（蓝紫渐变 + 白色 Y 字标）：
+    用于应用图标 / 启动画面 / 关于页；与 BrandLogo 的在线绘制保持同一视觉。"""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    rect = QRectF(0, 0, size, size)
+    gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+    gradient.setColorAt(0, QColor('#5B8DEF'))
+    gradient.setColorAt(1, QColor('#7C6CF0'))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(gradient)
+    radius = max(3.0, size * 0.28)
+    painter.drawRoundedRect(rect, radius, radius)
+    painter.setPen(QColor('#FFFFFF'))
+    font = painter.font()
+    font.setPixelSize(max(8, round(size * 0.5)))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignCenter, 'Y')
+    painter.end()
+    return pixmap
 
 
 class _RailWidget(NavigationWidget):

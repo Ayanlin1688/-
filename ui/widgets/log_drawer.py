@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QVBoxLayout, QWidget, QHBoxLayout, QFileDialog
 
 from ..components.custom_widgets import ComboBox, PushButton, TextBrowser, TransparentToolButton, CaptionLabel
 from core.i18n import tr
+from ..tokens import MOTION
 
 
 class LogDrawer(QWidget):
@@ -54,7 +55,7 @@ class LogDrawer(QWidget):
         self.browser.setMaximumHeight(120)
         root.addWidget(self.browser)
         self._animation = QPropertyAnimation(self.browser, b"maximumHeight", self)
-        self._animation.setDuration(180)
+        self._animation.setDuration(MOTION['base'])
         self._animation.finished.connect(lambda: self.browser.setVisible(self._expanded))
 
     def append_log(self, message: str, level: str = "info") -> None:

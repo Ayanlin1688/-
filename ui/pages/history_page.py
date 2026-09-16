@@ -1,7 +1,7 @@
 """Persisted task records and manual download recovery in a Fluent table."""
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem
-from qfluentwidgets import ComboBox, PushButton, TableWidget, TitleLabel, CaptionLabel, TransparentToolButton, FluentIcon as FIF
+from qfluentwidgets import ComboBox, PushButton, TableWidget, TitleLabel, CaptionLabel, TransparentToolButton, IconWidget, StrongBodyLabel, FluentIcon as FIF
 from core.task_manager import STATUS_TEXT
 from core.i18n import tr
 from ..file_actions import open_local
@@ -11,6 +11,7 @@ class HistoryPage(QWidget):
     redownload_requested = pyqtSignal(object)
     resolve_requested = pyqtSignal(object)
     regenerate_requested = pyqtSignal(object)
+    create_requested = pyqtSignal()
 
     def __init__(self, log_callback, config_manager, parent=None):
         super().__init__(parent)
@@ -29,11 +30,38 @@ class HistoryPage(QWidget):
         self.table.setBorderVisible(True); self.table.setBorderRadius(8); self.table.setEditTriggers(self.table.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setDefaultSectionSize(48)
         root.addWidget(self.table, 1)
+        self.empty_view = self._build_empty_view()
+        root.addWidget(self.empty_view, 1)
         self.filter_box.currentTextChanged.connect(self._filter)
         self.update_history(config_manager.history_records())
 
+    def _build_empty_view(self):
+        """空态三件套：图标 + 说明 + 主操作（去工作台创建任务）。"""
+        view = QWidget()
+        column = QVBoxLayout(view)
+        column.setContentsMargins(0, 24, 0, 24)
+        column.setSpacing(8)
+        column.addStretch(1)
+        glyph = IconWidget(FIF.HISTORY)
+        glyph.setFixedSize(40, 40)  # 空态插画档（图标三档之外的展示尺寸）
+        column.addWidget(glyph, 0, Qt.AlignHCenter)
+        title = StrongBodyLabel(tr('暂无历史记录'))
+        title.setAlignment(Qt.AlignCenter)
+        column.addWidget(title)
+        hint = CaptionLabel(tr('完成的任务会显示在这里，可先到工作台开始创作'))
+        hint.setAlignment(Qt.AlignCenter)
+        column.addWidget(hint)
+        self.empty_action = PushButton(FIF.ADD, tr('去工作台创建任务'))
+        self.empty_action.clicked.connect(lambda: self.create_requested.emit())
+        column.addWidget(self.empty_action, 0, Qt.AlignHCenter)
+        column.addStretch(1)
+        return view
+
     def update_history(self, records):
         self.records = list(reversed(records))
+        has_records = bool(self.records)
+        self.table.setVisible(has_records)
+        self.empty_view.setVisible(not has_records)
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.records))
         for row, task in enumerate(self.records):

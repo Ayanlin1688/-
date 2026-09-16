@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -50,7 +51,7 @@ def build_bundle() -> Path:
     import PyInstaller.__main__ as pyi
     BUILD.mkdir(parents=True, exist_ok=True)
     version_file = _write_version_info(BUILD / 'version_info.txt')
-    icon = ROOT / 'packaging' / 'app.ico'
+    icon = ROOT / 'assets' / 'app.ico'
     args = [
         str(ROOT / 'main.py'),
         '--noconfirm', '--clean', '--onedir', '--windowed',
@@ -62,6 +63,9 @@ def build_bundle() -> Path:
     ]
     if icon.is_file():
         args += ['--icon', str(icon)]
+    assets = ROOT / 'assets'
+    if assets.is_dir():
+        args += ['--add-data', f'{assets}{os.pathsep}assets']
     print('[build] PyInstaller 打包中（首次约 1–3 分钟）…')
     pyi.run(args)
     bundle = DIST / EXE_NAME

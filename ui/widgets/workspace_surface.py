@@ -234,7 +234,13 @@ class ReferenceThumbnail(ImageLabel):
             painter.fillRect(0, 61, self.width(), 19, QColor(0, 0, 0, 155))
             painter.setPen(QColor('#f5f5f5')); font = painter.font(); font.setPixelSize(10); painter.setFont(font)
             painter.drawText(8, 74, f'Picture {self.index+1}')
-            painter.drawText(102, 74, '⠿' if self.editable else '')
+            if self.editable:
+                # 拖动把手：3 × 2 距离点阵（替代 ⠿ 文字符号）。
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(245, 245, 245, 205))
+                for row_index in range(2):
+                    for column_index in range(3):
+                        painter.drawEllipse(QRectF(103 + column_index * 4.5, 69 + row_index * 5, 2.2, 2.2))
 
     def mousePressEvent(self, event):
         self._press = event.pos(); super().mousePressEvent(event)
@@ -337,8 +343,14 @@ class ImagePreview(StudioDialog):
         self.scale = 1.
         self.image.setImage(self.original if not self.original.isNull() else thumbnail(path))
         footer = QHBoxLayout(); name = ElidedLabel(str(Path(path).name)); footer.addWidget(name, 1)
-        for text, callback in [('−', lambda: self.zoom(.8)), (tr('适应窗口'), self.fit), ('+', lambda: self.zoom(1.25)), (tr('关闭'), self.accept)]:
-            button = style_button(PushButton(text)); button.setFixedHeight(30); button.clicked.connect(callback); footer.addWidget(button)
+        zoom_out = style_button(PushButton('', None, FIF.ZOOM_OUT)); zoom_out.setFixedSize(30, 30)
+        zoom_out.setToolTip(tr('缩小')); zoom_out.clicked.connect(lambda: self.zoom(.8)); footer.addWidget(zoom_out)
+        fit_button = style_button(PushButton(tr('适应窗口'))); fit_button.setFixedHeight(30)
+        fit_button.clicked.connect(self.fit); footer.addWidget(fit_button)
+        zoom_in = style_button(PushButton('', None, FIF.ZOOM_IN)); zoom_in.setFixedSize(30, 30)
+        zoom_in.setToolTip(tr('放大')); zoom_in.clicked.connect(lambda: self.zoom(1.25)); footer.addWidget(zoom_in)
+        close_button = style_button(PushButton(tr('关闭'))); close_button.setFixedHeight(30)
+        close_button.clicked.connect(self.accept); footer.addWidget(close_button)
         layout.addLayout(footer)
         if self.original.isNull():
             self.size_label.setText(tr('图片不可读或文件已移动'))

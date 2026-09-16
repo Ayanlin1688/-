@@ -156,6 +156,8 @@ class MainWindow(FluentWindow):
         config = self.settings_page.config_manager.config.get('appearance', {})
         set_language(config.get('language', '简体中文'))
         self._retranslate_chrome()
+        from .motion import set_reduced_motion
+        set_reduced_motion(bool(config.get('reduce_motion', False)))
         try:
             from . import materials
             from .palettes import resolve
@@ -560,6 +562,7 @@ class MainWindow(FluentWindow):
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
         self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
+        self.history_page.create_requested.connect(lambda: self.switchTo(self.workspace_page))
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
             self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
@@ -577,7 +580,17 @@ class MainWindow(FluentWindow):
         )
 
     def show_about(self) -> None:
+        from PyQt5.QtWidgets import QLabel
+        from .components.brand_widgets import logo_pixmap
         dialog = Dialog(tr('关于') + ' ' + APP_NAME, f'版本 v{APP_VERSION}\n' + tr('产品批处理 · 定时执行 · GitHub同步') + '\n' + tr('多模型调度 · 自动重试 · 并发生成 · 自动下载'), self)
+        badge = QLabel()
+        badge.setPixmap(logo_pixmap(56))
+        badge.setFixedSize(56, 56)
+        badge.setAlignment(Qt.AlignCenter)
+        try:
+            dialog.viewLayout.insertWidget(0, badge, 0, Qt.AlignHCenter)
+        except Exception:
+            pass
         dialog.exec_()
 
     def _setup_schedule(self, network_time):

@@ -9,6 +9,7 @@ from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, catalog_snapshot
 from core.model_parameters import MODELS, H3, h3_size, model_options
 from core.i18n import tr
+from ..tokens import MOTION
 
 
 class ParamsCard(QWidget):
@@ -83,7 +84,7 @@ class ParamsCard(QWidget):
         root.addWidget(self.advanced)
         self._advanced_height = max(1, self.advanced.sizeHint().height())
         self._advanced_animation = QPropertyAnimation(self.advanced, b"maximumHeight", self)
-        self._advanced_animation.setDuration(180)
+        self._advanced_animation.setDuration(MOTION['base'])
         self._advanced_animation.setEasingCurve(QEasingCurve.InOutCubic)
         self._advanced_animation.finished.connect(self._finish_toggle)
         controls = {"model": self.model, "aspect_ratio": self.ratio, "resolution": self.resolution, "duration": self.duration, "generate_audio": self.audio, "poll_interval": self.poll, "max_retries": self.retries, "skip_threshold": self.threshold, "seed": self.seed}

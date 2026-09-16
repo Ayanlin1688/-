@@ -18,6 +18,7 @@ from . import materials
 from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
 from core.i18n import tr
+from .tokens import MOTION
 
 # 状态标签颜色豁免表：这些文案保留语义色，不参与 Caption 次级灰化（按当前语言匹配）。
 _STATUS_TEXTS = {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}
@@ -285,7 +286,7 @@ def style_controls(root):
         if isinstance(widget, SwitchButton):
             _accent = QColor(materials.palette()['accent'])
             widget.setCheckedIndicatorColor(_accent, _accent)
-            widget.indicator.slideAni.setDuration(200)
+            widget.indicator.slideAni.setDuration(MOTION['base'])
             indicator = widget.indicator
             original_background = indicator._backgroundColor
             def sliding_color(control, original=original_background):
@@ -299,7 +300,7 @@ def style_controls(root):
             _register_mode_widget(widget, 'switch')
         if isinstance(widget, CaptionLabel):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
-            if not widget.text().startswith('●') and widget.text() not in {tr(text) for text in _STATUS_TEXTS}:
+            if not widget.text().startswith('●') and not widget.property('statusTone') and widget.text() not in {tr(text) for text in _STATUS_TEXTS}:
                 widget.setTextColor(SECONDARY, SECONDARY)
                 _register_mode_widget(widget, 'caption2')
         elif isinstance(widget, StrongBodyLabel):

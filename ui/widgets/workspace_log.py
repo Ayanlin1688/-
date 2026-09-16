@@ -5,6 +5,7 @@ from PyQt5.QtGui import QColor, QPainter, QTextCursor
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from qfluentwidgets import ComboBox, PushButton, TransparentToolButton, TextBrowser, FluentIcon as FIF
 from core.i18n import tr
+from ..tokens import MOTION
 from .log_drawer import LogDrawer
 from .workspace_surface import label, style_button
 
@@ -14,7 +15,7 @@ class LogHighlight(QWidget):
         super().__init__(parent); self._amount = 0.
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.animation = QPropertyAnimation(self, b'amount', self)
-        self.animation.setDuration(480); self.animation.setStartValue(1.); self.animation.setEndValue(0.)
+        self.animation.setDuration(MOTION['slow']); self.animation.setStartValue(1.); self.animation.setEndValue(0.)
 
     @pyqtProperty(float)
     def amount(self):
@@ -126,7 +127,7 @@ class WorkspaceLog(LogDrawer):
         self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
         root.addWidget(self.browser, 1)
         self.highlight = LogHighlight(self.browser.viewport())
-        self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(180)
+        self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(MOTION['base'])
         self._animation.finished.connect(self._toggle_finished)
         self._saved_height = 140
         from ..materials import register_theme_callback

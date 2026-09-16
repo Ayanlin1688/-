@@ -1,7 +1,7 @@
 """Fluent setting cards backed by the application's JSON config."""
 
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTime, QSignalBlocker, QTimer
-from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
+from PyQt5.QtCore import Qt, QPoint, QSize, pyqtSignal, QTime, QSignalBlocker, QTimer
+from PyQt5.QtWidgets import QHBoxLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
@@ -9,6 +9,7 @@ from qfluentwidgets import (
 )
 from ..components.custom_widgets import make_card
 from ..widgets.workspace_surface import label
+from ..widgets.status_dot import Dot, dot_icon
 from ..theme import SettingSurface, style_controls
 from core.background import BackgroundJobs
 from core.api_client import ApiClient
@@ -135,6 +136,9 @@ class SettingsPage(QWidget):
         self.root = self._make_page('appearance')
         self._page_title(self.root, '外观与语言', '主题、玻璃质感、背景与界面语言')
         self._build_appearance(); self.root.addStretch(1)
+        self.root = self._make_page('license')
+        self._page_title(self.root, '账号与许可', '激活状态、许可管理与版本信息')
+        self._build_license_section(); self.root.addStretch(1)
         self.root = self._make_page('sync')
         self._page_title(self.root, 'GitHub 同步', '把代码改动同步到你的私人仓库')
         self._build_sync(); self.root.addStretch(1)
@@ -233,10 +237,6 @@ class SettingsPage(QWidget):
             '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
             '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
         layout = QVBoxLayout(rail); layout.setContentsMargins(16, 22, 14, 26); layout.setSpacing(4)
-        # —— 服务线路：中转站管理 + 每个中转站一条（一等分类）——
-        service_head = CaptionLabel('服务线路')
-        service_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
-        layout.addWidget(service_head); layout.addSpacing(2)
         self._rail_buttons = {}
         self._page_buttons = {}
 
@@ -250,6 +250,26 @@ class SettingsPage(QWidget):
             self._page_buttons[key] = button
             return button
 
+        def add_head(text):
+            head = CaptionLabel(text)
+            head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
+            layout.addWidget(head); layout.addSpacing(2)
+
+        # —— 账号与许可 ——
+        add_head('账号与许可')
+        add_entry('许可与激活', 'license')
+        layout.addSpacing(10)
+        # —— 外观 ——
+        add_head('外观')
+        add_entry('外观与语言', 'appearance')
+        layout.addSpacing(10)
+        # —— 模型与生成 ——
+        add_head('模型与生成')
+        add_entry('模型池', 'pool')
+        add_entry('默认参数', 'defaults')
+        layout.addSpacing(10)
+        # —— 网络与数据：中转站管理 + 每站一条 + 当前线路 + GitHub 同步 ——
+        add_head('网络与数据')
         add_entry('中转站管理', 'stations')
         self._station_nav_layout = QVBoxLayout(); self._station_nav_layout.setSpacing(4)
         layout.addLayout(self._station_nav_layout)
@@ -262,15 +282,13 @@ class SettingsPage(QWidget):
         self._page_buttons['station-new'] = self._station_nav_add
         self._station_nav_buttons = {}
         self._sync_station_nav()
-        layout.addSpacing(14)
-        # —— 设置 ——
-        app_head = CaptionLabel('设置')
-        app_head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
-        layout.addWidget(app_head); layout.addSpacing(2)
-        for key, text in (('api', '当前线路'), ('pool', '模型池'), ('task', '任务策略'),
-                          ('defaults', '默认参数'), ('schedule', '定时执行'),
-                          ('appearance', '外观与语言'), ('sync', 'GitHub 同步')):
-            add_entry(text, key)
+        add_entry('当前线路', 'api')
+        add_entry('GitHub 同步', 'sync')
+        layout.addSpacing(10)
+        # —— 高级 ——
+        add_head('高级')
+        add_entry('任务策略', 'task')
+        add_entry('定时执行', 'schedule')
         layout.addStretch(1)
         return rail
 
@@ -314,7 +332,10 @@ class SettingsPage(QWidget):
             return
         for station in stations:
             sid = station.get('id')
-            button = QPushButton(('● ' if sid == active and active else '○ ') + (station.get('name') or '未命名'))
+            is_active = sid == active and bool(active)
+            button = QPushButton(station.get('name') or '未命名')
+            button.setIcon(dot_icon('#5B8DEF' if is_active else '#6B7280', 10, filled=is_active))
+            button.setIconSize(QSize(10, 10))
             button.setObjectName('stationNavButton')
             button.setCursor(Qt.PointingHandCursor)
             button.setMinimumHeight(32)
@@ -406,6 +427,9 @@ class SettingsPage(QWidget):
         buttons = QHBoxLayout(); buttons.setSpacing(8)
         save = PushButton('保存修改'); use = PushButton('设为当前'); remove = PushButton('删除该中转站')
         save.setFixedHeight(32); use.setFixedHeight(32); remove.setFixedHeight(32)
+        # 破坏性操作按危险语义标色（当前设置中仅此一处破坏性操作）。
+        remove.setStyleSheet('QPushButton {color:#E5484D; border:1px solid rgba(229,72,77,0.45); border-radius:8px; background:transparent; padding:0 12px;}'
+                             'QPushButton:hover {background:rgba(229,72,77,0.10); border-color:rgba(229,72,77,0.70);}')
         buttons.addWidget(save); buttons.addWidget(use); buttons.addStretch(1); buttons.addWidget(remove)
         layout.addLayout(buttons)
         self.root.addWidget(card)
@@ -522,14 +546,16 @@ class SettingsPage(QWidget):
             row_layout = QVBoxLayout(row); row_layout.setContentsMargins(14, 10, 14, 10); row_layout.setSpacing(6)
             is_active = station.get('id') == active and bool(active)
             line1 = QHBoxLayout(); line1.setSpacing(8)
-            dot = label('●', 11, '#5B8DEF' if is_active else '#454B5A')
+            dot = Dot(8, '#5B8DEF' if is_active else '#454B5A', filled=is_active)
             line1.addWidget(dot)
             name = label(station.get('name') or '未命名中转站', 13, '#F4F5F7', True)
             name.setToolTip(station.get('name') or '')
             setattr(row, '_studio_name_label', name)
             line1.addWidget(name)
             if is_active:
-                line1.addWidget(label('当前使用中', 10, '#7CC79A'))
+                current = label('当前使用中', 10, '#7CC79A')
+                current.setProperty('statusTone', True)
+                line1.addWidget(current)
             line1.addStretch(1)
             if not is_active:
                 use = PushButton('设为当前'); use.setFixedHeight(28); use.setCursor(Qt.PointingHandCursor)
@@ -843,23 +869,69 @@ class SettingsPage(QWidget):
         self.blur = self._switch(group, "高斯模糊玻璃", ("appearance", "blur"), FIF.CLOUD)
         self.blur.setToolTip("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）")
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
+        self.reduce_motion = self._switch(group, '减弱动效', ('appearance', 'reduce_motion'), FIF.INFO)
+        self.reduce_motion.setToolTip('停止呼吸点与流光等循环动画，并让页面过渡即时完成（无障碍）')
         self.theme.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
         self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
         self.language.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
-        self._build_license_row()
-        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步')))
+        self.reduce_motion.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
 
-    def _build_license_row(self):
-        self.license_status_label = CaptionLabel(self._license_text())
-        self.license_status_label.setWordWrap(True)
+    def _build_license_section(self):
+        """账号与许可：状态徽标 + 详情 + 试用进度（到期进度条式视觉）。"""
+        card = make_card()
+        layout = QVBoxLayout(card); layout.setContentsMargins(20, 16, 20, 16); layout.setSpacing(10)
+        top = QHBoxLayout(); top.setSpacing(8)
+        self.license_dot = Dot(8, '#8B93A3')
+        top.addWidget(self.license_dot, 0, Qt.AlignVCenter)
+        self.license_badge = label('未激活', 12, '#8B93A3', True)
+        self.license_badge.setProperty('statusTone', True)
+        top.addWidget(self.license_badge)
+        top.addStretch(1)
         activate_button = PushButton(tr('激活'))
         activate_button.clicked.connect(self._activate_license)
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(22, 0, 22, 0)
-        layout.addWidget(self.license_status_label, 1)
-        layout.addWidget(activate_button)
-        self.root.addWidget(row)
+        top.addWidget(activate_button)
+        layout.addLayout(top)
+        self.license_status_label = CaptionLabel(self._license_text())
+        self.license_status_label.setWordWrap(True)
+        layout.addWidget(self.license_status_label)
+        # 试用进度：非试用期自动隐藏。
+        self.license_trial_bar = QProgressBar()
+        self.license_trial_bar.setTextVisible(False)
+        self.license_trial_bar.setFixedHeight(6)
+        layout.addWidget(self.license_trial_bar)
+        self.license_trial_caption = CaptionLabel('')
+        self.license_trial_caption.setProperty('statusTone', True)
+        layout.addWidget(self.license_trial_caption)
+        self.root.addWidget(card)
+        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步')))
+        self._refresh_license_badge()
+
+    def _refresh_license_badge(self):
+        """按当前许可状态刷新徽标与试用进度（激活成功 / 状态变化后调用）。"""
+        status = license_status(self.config_manager.config)
+        tones = {'active': '#22C55E', 'trial': '#5B8DEF', 'expired': '#E5B94E', 'invalid': '#F56C6C'}
+        texts = {'active': '已激活', 'trial': '试用中', 'expired': '试用已结束', 'invalid': '许可无效'}
+        tone = tones.get(status['state'], '#8B93A3')
+        if hasattr(self, 'license_dot'):
+            self.license_dot.set_color(tone)
+        if hasattr(self, 'license_badge'):
+            self.license_badge.setText(texts.get(status['state'], '未激活'))
+            self.license_badge.setTextColor(tone, tone)
+        trial = status['state'] == 'trial' and status.get('days_left') is not None
+        for widget in (self.license_trial_bar, self.license_trial_caption):
+            widget.setVisible(trial)
+        if trial:
+            days = int(self.config_manager.config.get('license', {}).get('trial_days') or 14)
+            left = max(0, int(status['days_left']))
+            self.license_trial_bar.setRange(0, max(1, days))
+            self.license_trial_bar.setValue(left)
+            from .. import materials
+            accent = materials.palette()['accent']
+            self.license_trial_bar.setStyleSheet(
+                'QProgressBar {background:rgba(128,128,128,0.18); border:0; border-radius:3px;}'
+                f'QProgressBar::chunk {{background:{accent}; border-radius:3px;}}')
+            self.license_trial_caption.setText(f'试用剩余 {left} / {days} 天')
+            self.license_trial_caption.setTextColor('#8B93A3', '#8B93A3')
 
     def _license_text(self):
         status = license_status(self.config_manager.config)
@@ -885,6 +957,7 @@ class SettingsPage(QWidget):
         self.config_manager.update(('license', 'key'), key)
         if hasattr(self, 'license_status_label'):
             self.license_status_label.setText(self._license_text())
+        self._refresh_license_badge()
         InfoBar.success(tr('激活成功'), tr('已激活'), parent=self.window(), duration=4500)
 
     def _build_schedule(self):
@@ -951,12 +1024,15 @@ class SettingsPage(QWidget):
         check.setChecked(enabled)
         combo = ModelComboBox()
         combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
-        state = CaptionLabel(f"● {status}")
+        state = CaptionLabel(status)
+        state.setProperty('statusTone', True)
         color = "#67c23a" if status == "健康" else "#e6a23c"
         state.setTextColor(color, color)
+        dot = Dot(7, color)
+        state.dot = dot
         remove = TransparentToolButton(FIF.DELETE)
         remove.setToolTip("删除模型")
-        for widget in (check, combo, state, remove):
+        for widget in (check, combo, dot, state, remove):
             layout.addWidget(widget, 1 if widget is combo else 0)
         self.model_layout.addWidget(row)
         self.model_rows.append((row, check, combo, state))
@@ -1021,16 +1097,22 @@ class SettingsPage(QWidget):
             record = catalog.get(combo.currentText())
             if record is None or not usable(record):
                 status = '已下架' if record is None else '非视频模型' if record.get('kind') != 'video' else '协议待确认'
-                label.setText('● ' + status)
+                label.setText(status)
                 label.setTextColor('#92929b', '#92929b')
+                dot = getattr(label, 'dot', None)
+                if dot is not None:
+                    dot.set_color('#92929b')
                 check.setEnabled(False)
                 continue
             check.setEnabled(True)
             cooling = model.get('status') == '冷却中'
             remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
-            label.setText(f'● 冷却中 {remaining}秒' if cooling else '● 健康')
+            label.setText(f'冷却中 {remaining}秒' if cooling else '健康')
             color = '#e6a23c' if cooling else '#67c23a'
             label.setTextColor(color, color)
+            dot = getattr(label, 'dot', None)
+            if dot is not None:
+                dot.set_color(color)
 
     def refresh_catalog(self, *_):
         catalog = catalog_snapshot(self.config_manager)

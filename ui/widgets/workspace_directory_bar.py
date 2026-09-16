@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
 from qfluentwidgets import CardWidget, IconWidget, PushButton, TransparentToolButton, FluentIcon as FIF
 from core.i18n import tr
 from .workspace_surface import ElidedLabel, label, style_button
+from .status_dot import Dot
 
 
 class DirectoryField(QWidget):
@@ -34,7 +35,9 @@ class WorkspaceDirectoryBar(CardWidget):
         for key, title, icon in [('prompts', tr('提示词'), FIF.DOCUMENT), ('images', tr('参考图'), FIF.PHOTO), ('output', tr('保存至'), FIF.VIDEO)]:
             field = DirectoryField(title, icon); field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k)); self.fields[key] = field
             row.addWidget(field, 1)
-        self.match_status = label(f"✓ {tr('已匹配')} 0/0", 12, '#22C55E', True); row.addWidget(self.match_status)
+        self.match_dot = Dot(8, '#22C55E')
+        row.addWidget(self.match_dot)
+        self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True); row.addWidget(self.match_status)
         self.match_button = PushButton(tr('匹配详情'))
         self.match_button.setToolTip(tr('查看图片与提示词的匹配详情'))
         self.match_button.clicked.connect(self.match_requested)
@@ -73,7 +76,7 @@ class WorkspaceDirectoryBar(CardWidget):
         self.fields['images'].set_value(paths.get('images'), f'  · {metrics.get("images", 0)}张')
         self.fields['output'].set_value(paths.get('output'), f'  · {metrics.get("videos", 0)}个 · {metrics.get("bytes", 0)/1024**3:.1f}GB')
         matched = sum(bool(t.get('images')) for t in tasks)
-        self.match_status.setText(f"✓ {tr('已匹配')} {matched}/{len(tasks)}")
+        self.match_status.setText(f"{tr('已匹配')} {matched}/{len(tasks)}")
         from PyQt5.QtGui import QColor
         from ..materials import is_light
         # 整行统一一种语义色：全匹配=绿、部分匹配=琥珀、无任务=灰。
@@ -84,3 +87,4 @@ class WorkspaceDirectoryBar(CardWidget):
         else:
             tone = '#9C6B0A' if is_light() else '#E5B94E'
         self.match_status.setTextColor(QColor(tone), QColor(tone))
+        self.match_dot.set_color(tone)

@@ -11,6 +11,27 @@ from PyQt5.QtWidgets import QWidget, QApplication
 from qfluentwidgets import BodyLabel
 
 from .materials import SurfaceShadow, background_brush, paint_background
+from .tokens import MOTION
+
+# 无障碍「减弱动效」：由配置 appearance.reduce_motion 驱动的全局开关。
+_reduced_motion = False
+_clocks = weakref.WeakSet()
+
+
+def set_reduced_motion(enabled: bool) -> None:
+    """切换减弱动效：停止呼吸点 / 流光等循环动画，过渡即时完成；
+    开启 / 关闭后唤醒所有视觉时钟，让可见动画立即进入正确状态。"""
+    global _reduced_motion
+    _reduced_motion = bool(enabled)
+    for clock in list(_clocks):
+        try:
+            clock.wake()
+        except (RuntimeError, ReferenceError):
+            _clocks.discard(clock)
+
+
+def reduced_motion() -> bool:
+    return _reduced_motion
 
 
 class HoverWash(QWidget):
@@ -39,7 +60,7 @@ class WidgetMotion(QObject):
         self.animation = QPropertyAnimation(self, b'amount', self)
         self.press_animation = QPropertyAnimation(self, b'press', self)
         for animation in (self.animation, self.press_animation):
-            animation.setDuration(150); animation.setEasingCurve(QEasingCurve.OutCubic)
+            animation.setDuration(MOTION['fast']); animation.setEasingCurve(QEasingCurve.OutCubic)
         self.wash = None if card else HoverWash(widget)
         if not card:
             original_hit = widget.hitButton
@@ -83,7 +104,15 @@ class WidgetMotion(QObject):
         self._press = value; self._apply()
 
     def _animate(self, animation, value):
-        animation.stop(); animation.setStartValue(self.amount if animation is self.animation else self.press)
+        animation.stop()
+        if reduced_motion():
+            # 减弱动效：不播过渡，直接落到目标状态。
+            if animation is self.animation:
+                self.amount = value
+            else:
+                self.press = value
+            return
+        animation.setStartValue(self.amount if animation is self.animation else self.press)
         animation.setEndValue(value); animation.start()
 
     def _apply(self):
@@ -136,6 +165,7 @@ class VisualClock(QObject):
     def __init__(self, parent):
         super().__init__(parent)
         self.items = weakref.WeakSet()
+        _clocks.add(self)
         self.timer = QTimer(self); self.timer.setInterval(16)
         self.timer.timeout.connect(self.tick)
         parent.installEventFilter(self)
@@ -144,8 +174,11 @@ class VisualClock(QObject):
         self.items.add(item); self.wake()
 
     def wake(self):
-        if not self.timer.isActive():
-            self.timer.start()
+        try:
+            if not self.timer.isActive():
+                self.timer.start()
+        except RuntimeError:
+            pass
 
     def tick(self):
         active = False
@@ -189,7 +222,8 @@ class Shimmer(QWidget):
             self._clock = clock_for(self); self._clock.add(self)
 
     def can_animate(self):
-        return self.bar.minimum() < self.bar.value() < self.bar.maximum() and not self.bar.isError() and not self.bar.isPaused()
+        return (not reduced_motion() and self.bar.minimum() < self.bar.value() < self.bar.maximum()
+                and not self.bar.isError() and not self.bar.isPaused())
 
     def set_running(self, running):
         self.bar.setProperty('shimmerRunning', running)
@@ -236,7 +270,7 @@ class StatusDot(BodyLabel):
         super().setTextColor(light, dark)
 
     def can_animate(self):
-        return self.active
+        return self.active and not reduced_motion()
 
     def set_running(self, running):
         self.setProperty('pulseRunning', running)
@@ -269,7 +303,7 @@ class PageTransition(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setFocusPolicy(Qt.NoFocus)
         self.animation = QPropertyAnimation(self, b'blend', self)
-        self.animation.setDuration(300); self.animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self.animation.setDuration(MOTION['slow']); self.animation.setEasingCurve(QEasingCurve.InOutCubic)
         self.animation.finished.connect(self.finish)
         stack.installEventFilter(self); self.hide()
         self._set_current = stack.setCurrentWidget
@@ -279,7 +313,7 @@ class PageTransition(QWidget):
 
     def set_current_widget(self, page, popOut=True):
         current = self.stack.currentWidget()
-        if current is page or current is None or not self.stack.isVisible():
+        if current is page or current is None or not self.stack.isVisible() or reduced_motion():
             return self._set_current(page, popOut)
         old = self.grab() if self.isVisible() else current.grab()
         result = self._set_current(page, popOut)

@@ -177,7 +177,14 @@ EN = {
     '参考图查看器': 'Reference viewer',
     '原始图片': 'Original image',
     '适应窗口': 'Fit window',
+    '缩小': 'Zoom out',
+    '放大': 'Zoom in',
     '图片不可读或文件已移动': 'Image unreadable or file moved',
+    # 空态与启动（收尾批次）
+    '暂无历史记录': 'No history yet',
+    '完成的任务会显示在这里，可先到工作台开始创作': 'Completed tasks will appear here; start from the workspace first',
+    '去工作台创建任务': 'Go to workspace and create tasks',
+    '正在启动…': 'Starting…',
     # 弹窗与模型组件（批次4）
     '确认提交结果': 'Confirm submission result',
     '请先在服务商后台核对该任务。无法确认时关闭此窗口，软件会继续阻止重新提交。': 'Check the task in the provider console first. If unsure, close this window; resubmission stays blocked.',
