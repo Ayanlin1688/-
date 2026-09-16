@@ -84,6 +84,7 @@ class MainWindow(FluentWindow):
         self.settings_page.sync_models_button.clicked.connect(self.model_catalog.refresh)
         self.settings_page.base_url.textChanged.connect(self.model_catalog.credentials_changed)
         self.settings_page.api_key.textChanged.connect(self.model_catalog.credentials_changed)
+        self.settings_page.api_credentials_changed.connect(self.model_catalog.credentials_changed)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
         self.settings_page.appearance_changed.connect(self.apply_appearance)
         QTimer.singleShot(0, self.model_catalog.start)

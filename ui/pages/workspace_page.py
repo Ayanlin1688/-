@@ -376,18 +376,17 @@ class WorkspacePage(QWidget):
     def scan_sources(self):
         self._scan_version += 1
         version = self._scan_version
+        from_watch = self._watch_pending_scan
+        self._watch_pending_scan = False
         if self.closing.is_set() or self.task_manager.is_running:
             return
         self.summary.update_paths(self.config_manager.config['paths'])
         self.refresh_metrics()
         config = runtime_config(self.config_manager)
         if not config['paths']['prompts']:
-            from_watch = self._watch_pending_scan
-            self._watch_pending_scan = False
             self.data_source.set_matches([], [])
             self._tasks_updated([])
-            if from_watch:
-                self._arm_watch()
+            self._arm_watch()
             return
         self.data_source.status_label.setText('正在扫描匹配...')
         def scan():
@@ -398,11 +397,9 @@ class WorkspacePage(QWidget):
             automatic = automatic_matcher.scan_and_match(config['paths'])
             return matched, automatic, matcher.warnings
         def done(result):
-            from_watch = self._watch_pending_scan
-            self._watch_pending_scan = False
-            self._watch_retry = 0
             if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
                 return
+            self._watch_retry = 0
             matched, automatic, warnings = result
             self.data_source.set_matches(matched, automatic)
             self._tasks_updated(matched)
@@ -412,19 +409,14 @@ class WorkspacePage(QWidget):
             self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
             self._watch_note_scan(matched, from_watch)
         def failed(message):
-            self._watch_pending_scan = False
-            if version == self._scan_version and not self.closing.is_set():
-                self.data_source.set_matches([], [])
-                self._tasks_updated([])
-                self.data_source.status_label.setText('扫描失败，请检查目录')
-                self.append_log(message, 'error')
-            if self.closing.is_set() or self.task_manager.is_running:
+            if version != self._scan_version or self.closing.is_set() or self.task_manager.is_running:
                 return
+            self.data_source.set_matches([], [])
+            self._tasks_updated([])
+            self.data_source.status_label.setText('扫描失败，请检查目录')
+            self.append_log(message, 'error')
             # 无人值守监听：一次扫描失败不能让挂机静默停摆，按退避重挂。
-            try:
-                interval = int(self.config_manager.config['task_strategy'].get('watch_interval', 0) or 0)
-            except (TypeError, ValueError):
-                interval = 0
+            interval = self._watch_interval()
             if interval <= 0:
                 return
             self._watch_retry = min(self._watch_retry + 1, 5)
@@ -597,19 +589,24 @@ class WorkspacePage(QWidget):
                 InfoBar.warning('提交待确认', '提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。', parent=self, duration=8000)
         self._arm_watch()
 
+    def _watch_interval(self):
+        try:
+            return max(0, int(self.config_manager.config['task_strategy'].get('watch_interval', 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _arm_watch(self):
         """无人值守监听：队列结束后定时重扫目录，发现新任务自动开始。"""
-        try:
-            interval = int(self.config_manager.config['task_strategy'].get('watch_interval', 0) or 0)
-        except (TypeError, ValueError):
-            interval = 0
+        interval = self._watch_interval()
         if interval <= 0 or self.closing.is_set():
+            self._watch_timer.stop()
             return
         self._watch_timer.start(max(5, interval) * 1000)
         self.append_log(f'无人值守监听已开启：{max(5, interval)} 秒后自动重扫目录，发现新任务将自动开始', 'info')
 
     def _watch_fired(self):
-        if self.closing.is_set():
+        if self.closing.is_set() or self._watch_interval() <= 0:
+            self._watch_timer.stop()
             return
         if self.task_manager.is_running or self._redownloading:
             self._arm_watch()
@@ -625,11 +622,15 @@ class WorkspacePage(QWidget):
             self._watch_seen = paths
             if from_watch:
                 self.append_log('无人值守监听：基线已建立，等待新任务', 'info')
-                self._arm_watch()
+            self._arm_watch()
             return
         fresh = [t for t in tasks if str(t.get('prompt_path')) not in seen] if from_watch else []
         self._watch_seen = seen | paths
         if not from_watch:
+            self._arm_watch()
+            return
+        if self._watch_interval() <= 0:
+            self._watch_timer.stop()
             return
         if fresh:
             self.append_log(f'无人值守监听：发现 {len(fresh)} 个新任务，自动开始生成', 'info')
@@ -767,7 +768,8 @@ class WorkspacePage(QWidget):
                     raise ValueError('请先选择视频保存目录')
                 index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(self.config_manager.history_records()) if row.get('local_id') == task.get('local_id')), 1)
                 filename = task.get('filename') or build_filename(config['download_settings']['naming_rule'], task, index)
-                task['result_path'] = downloader.download_video(result['result_url'], folder, filename)
+                task['result_path'] = downloader.download_video(result['result_url'], folder, filename,
+                                                               generation_key=(task['api_scope'], task['task_id']))
                 task.update(status='completed', result_url=result['result_url'], error='', finished_at=stamp(),
                             size_bytes=Path(task['result_path']).stat().st_size, filename=filename, output_dir=str(Path(folder).resolve()))
                 if task.get('ledger_id'):

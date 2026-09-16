@@ -15,7 +15,7 @@ from core.background import BackgroundJobs
 from core.api_client import ApiClient
 from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
-from core.repository_sync import RepositorySync, GITHUB_REPOSITORY
+from core.repository_sync import RepositorySync, GITHUB_REPOSITORY, repository_secrets
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
 from core.i18n import tr
@@ -53,6 +53,7 @@ class CustomSettingCard(SettingSurface, SettingCard):
 
 class SettingsPage(QWidget):
     debug_mode_changed = pyqtSignal(bool)
+    api_credentials_changed = pyqtSignal()
     schedule_changed = pyqtSignal()
     task_settings_changed = pyqtSignal()
     detection_changed = pyqtSignal()
@@ -450,6 +451,8 @@ class SettingsPage(QWidget):
                                upload_url=upload.text().strip(), upload_api_key=upload_key.text().strip(),
                                capabilities=[k for k, b in boxes.items() if b.isChecked()])
         self._persist_stations(stations)
+        if sid == self.config_manager.config.get('stations_active'):
+            self._apply_station_api(next(station for station in stations if station.get('id') == sid))
         self._render_stations()
         self._switch_page(f'station:{sid}', highlight=True)
         self.log_callback(f'中转站已更新：{name_text}', 'success')
@@ -629,16 +632,23 @@ class SettingsPage(QWidget):
         target = next((s for s in self._stations() if s.get('id') == station_id), None)
         if target is None:
             return
-        self.config_manager.update(('stations_active',), station_id)
+        self.config_manager.update(('stations_active',), station_id, save=False)
+        self._apply_station_api(target)
+        self._render_stations()
+        self.log_callback(f'已切换到中转站：{target.get("name", "")}', 'success')
+
+    def _apply_station_api(self, target):
+        api = dict(self.config_manager.config.get('api', {}))
         for key, edit in (('base_url', self.base_url), ('api_key', self.api_key),
                           ('upload_url', self.upload_url), ('upload_api_key', self.upload_key)):
             value = target.get(key, '') or ''
             blocker = QSignalBlocker(edit)
             edit.setText(value)
             del blocker
-            self.config_manager.update(('api', key), value)
-        self._render_stations()
-        self.log_callback(f'已切换到中转站：{target.get("name", "")}', 'success')
+            api[key] = value
+        self.config_manager.update(('api',), api)
+        # Publish only after all credentials belong to the same station.
+        self.api_credentials_changed.emit()
 
     def _delete_station(self, station_id):
         stations = [s for s in self._stations() if s.get('id') != station_id]
@@ -828,8 +838,8 @@ class SettingsPage(QWidget):
         self.fail_threshold = self._spin(group, "连续失败阈值", ("task_strategy", "failure_skip_threshold"), 1, 100)
         self.watch_interval = self._spin(group, '无人值守监听（秒）', ('task_strategy', 'watch_interval'), 0, 86400)
         self.watch_interval.setToolTip('队列结束后按此间隔自动重扫目录；发现新提示词会自动开始下一批，适合 7×24 无人值守。0 = 关闭')
-        self.disk_cleanup_days = self._spin(group, '临时缓存保留（天）', ('task_strategy', 'disk_cleanup_days'), 1, 90)
-        self.disk_cleanup_days.setToolTip('自动清理超过保留期的下载临时文件与旧运行日志，防止磁盘占满停机')
+        self.disk_cleanup_days = self._spin(group, '临时缓存保留（天）', ('task_strategy', 'disk_cleanup_days'), 0, 90)
+        self.disk_cleanup_days.setToolTip('清理视频保存目录中超过保留期的下载临时文件；0 表示停止清理，仅检查剩余空间')
         self.disk_min_free_gb = self._spin(group, '磁盘剩余预警（GB）', ('task_strategy', 'disk_min_free_gb'), 1, 200)
         self.disk_min_free_gb.setToolTip('输出盘剩余空间低于该值时写入预警日志并加强清理')
         self.max_retry.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
@@ -1001,7 +1011,7 @@ class SettingsPage(QWidget):
         self.sync_button.setText('正在同步...')
         config = copy.deepcopy(self.config_manager.config)
         def work():
-            secrets = [config['api'].get(key, '') for key in ('api_key', 'upload_api_key')]
+            secrets = repository_secrets(config)
             return RepositorySync(secrets=secrets, log=self.jobs.log_message.emit).sync()
         def reset():
             self.sync_button.setEnabled(True); self.sync_button.setText('同步到GitHub')

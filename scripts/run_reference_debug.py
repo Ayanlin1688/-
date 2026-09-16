@@ -15,6 +15,7 @@ from core.config_manager import ConfigManager
 from core.reference_diagnostics import image_metadata
 from core.task_manager import TaskManager
 from core.matcher import StoryboardMatcher
+from ui.model_catalog_controller import runtime_config
 
 OUT = ROOT / 'artifacts' / 'reference-debug'
 PROMPT = Path('D:/分镜提示词目录/玫瑰毯子/玫瑰毯子1.txt')
@@ -36,7 +37,9 @@ def main():
     args = parser.parse_args()
     if args.auto_match:
         OUT = ROOT / 'artifacts' / 'reference-automatch'
-    config = ConfigManager().load_config()
+    config_manager = ConfigManager()
+    config_manager.load_config()
+    config = runtime_config(config_manager)
     if not PROMPT.is_file() or not all(path.is_file() for path in IMAGES):
         raise SystemExit('真实素材不完整，没有上传或提交。')
     if not config['api']['api_key'].strip():
@@ -107,6 +110,12 @@ def main():
                     running=manager.is_running, source_prompt=str(PROMPT.resolve()),
                     source_images=[str(path.resolve()) for path in IMAGES],
                     matching_mode=manifest['matching_mode'], tasks=manager.tasks))
+            def persist(record):
+                try:
+                    config_manager.history_upsert(record)
+                except Exception as error:
+                    log(f'无法保存历史：{error}', 'error')
+                checkpoint()
             def done(success, failed):
                 code[0] = 0 if success == 1 and failed == 0 else 1
                 checkpoint()
@@ -114,7 +123,7 @@ def main():
                 app.quit()
             manager.log_message.connect(log)
             manager.current_task_changed.connect(checkpoint)
-            manager.record_updated.connect(checkpoint)
+            manager.record_updated.connect(persist)
             manager.all_finished.connect(done)
             signal.signal(signal.SIGINT, lambda *_: manager.cancel_all())
             heartbeat = QTimer(); heartbeat.timeout.connect(lambda: None); heartbeat.start(100)

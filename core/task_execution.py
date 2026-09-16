@@ -146,6 +146,9 @@ class TaskExecution:
                 except Exception as error:
                     message = self.owner.redact(error)
                     entry.update(status='failed', task_id=self.task.get('task_id', ''), phase=self.phase, error=message, finished_at=stamp())
+                    if self.phase == 'download' and self.task.get('task_id') and getattr(error, 'status_code', None) in {401, 403}:
+                        self.task['result_url'] = ''
+                        self.log('下载地址已失效；下次重试将查询已有 task_id 获取新地址', 'warning')
                     remote_failed = isinstance(error, RemoteGenerationFailed)
                     if remote_failed:
                         self.task['remote_failed'] = True
@@ -372,5 +375,6 @@ class TaskExecution:
         task['filename'] = build_filename(self.config['download_settings']['naming_rule'], task, task.get('product_task_index', self.index+1))
         task['output_dir'] = resolve_output_directory(self.config['paths']['output'], task.get('output_subdir', ''))
         self.publish(record=True, status='downloading')
-        task['result_path'] = downloader.download_video(task['result_url'], task['output_dir'], task['filename'])
+        task['result_path'] = downloader.download_video(task['result_url'], task['output_dir'], task['filename'],
+                                                       generation_key=(self.owner.scope, task['task_id']))
         task['size_bytes'] = Path(task['result_path']).stat().st_size

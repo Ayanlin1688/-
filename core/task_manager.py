@@ -107,7 +107,7 @@ class TaskWorker(QThread):
     def _gate_recovered(self):
         """限流冷却到点：自动试探恢复，不再要求人工点击。"""
         self.log(f'限流冷却结束：自动恢复提交（当前并发上限 {self.gate.limit}）', 'info')
-        self.pause_changed.emit(False)
+        self.pause_changed.emit(self.control.paused)
 
     def submission_error(self, status_code):
         seconds = self.gate.failed(status_code)
@@ -158,7 +158,7 @@ class TaskWorker(QThread):
         try:
             strategy = self.config.get('task_strategy', {})
             cleanup_disk(self.config.get('paths', {}), self.log,
-                         retention_days=int(strategy.get('disk_cleanup_days', 7) or 7),
+                         retention_days=int(strategy.get('disk_cleanup_days', 7)),
                          min_free_gb=float(strategy.get('disk_min_free_gb', 2) or 2))
         except Exception as error:
             self.log(f'磁盘清理自检未完成：{error}', 'warning')
@@ -405,6 +405,8 @@ class TaskWorker(QThread):
         with ThreadPoolExecutor(max_workers=self.max_concurrency, thread_name_prefix='storyboard-task') as executor:
             while active or not exhausted:
                 self.control.check()
+                if self.gate.auto_resume():
+                    self._gate_recovered()
                 while len(active) < self.gate.limit and not exhausted and not self.control.paused and not self.gate.paused and self.gate.remaining() <= 0:
                     try:
                         index = next(pending)

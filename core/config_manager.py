@@ -95,7 +95,7 @@ DIRECTORY_ALIASES = (('prompts', 'prompts_dir'), ('images', 'images_dir'), ('out
 
 LEGACY_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
 
-_LEGACY_DATA_FILES = ('config.json', 'submissions.sqlite3', 'history.sqlite3', 'models_cache.json')
+_LEGACY_DATA_FILES = ('submissions.sqlite3', 'history.sqlite3', 'models_cache.json', 'config.json')
 
 
 def default_config_path() -> Path:
@@ -125,9 +125,9 @@ def _copy_sqlite(source: Path, target: Path) -> None:
 
 
 def _migrate_legacy_files(target: Path) -> None:
-    """首次升级：把旧位置（仓库旁）的数据搬到新数据目录；逐项尽力，失败保持原状。"""
+    """补迁缺失数据；配置最后发布，避免首次迁移使用缺少提交账本的新目录。"""
     try:
-        if target.exists() or not LEGACY_CONFIG.is_file() or target.parent == LEGACY_CONFIG.parent:
+        if not LEGACY_CONFIG.is_file() or target.parent == LEGACY_CONFIG.parent:
             return
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -137,13 +137,31 @@ def _migrate_legacy_files(target: Path) -> None:
         destination = target.parent / name
         if not source.is_file() or destination.exists():
             continue
+        temporary = None
         try:
+            fd, staging = tempfile.mkstemp(prefix='.migrate-', suffix='.tmp', dir=target.parent)
+            os.close(fd)
+            temporary = Path(staging)
             if name.endswith('.sqlite3'):
-                _copy_sqlite(source, destination)
+                _copy_sqlite(source, temporary)
             else:
-                shutil.copy2(source, destination)
-        except Exception:
+                shutil.copy2(source, temporary)
+            # Both operations fail if another instance published the target first.
+            if os.name == 'nt':
+                os.rename(temporary, destination)
+            else:
+                os.link(temporary, destination)
+        except FileExistsError:
             continue
+        except Exception:
+            if name.endswith('.sqlite3'):
+                return
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
@@ -164,7 +182,7 @@ class ConfigManager:
             self.path = Path(path)
         else:
             self.path = default_config_path()
-            if migrate and not self.path.exists():
+            if migrate:
                 _migrate_legacy_files(self.path)
             if (not self.path.exists() and LEGACY_CONFIG.exists()
                     and not os.environ.get('YANLIN_CONFIG_DIR', '').strip()):
@@ -180,6 +198,13 @@ class ConfigManager:
             if not isinstance(raw, dict):
                 raise ValueError("configuration root must be an object")
             self.config = _deep_merge(DEFAULT_CONFIG, raw)
+            # Normalize legacy aliases before any migration writes a checkpoint.
+            for key, alias in DIRECTORY_ALIASES:
+                value = self.config['paths'].get(key)
+                if value:
+                    self.config[alias] = value
+                elif self.config.get(alias):
+                    self.config['paths'][key] = self.config[alias]
             if 'naming_rule' not in raw.get('download_settings', {}):
                 self.config['download_settings']['naming_rule'] = self.config['task_strategy']['naming_rule']
             self.config['task_strategy']['naming_rule'] = self.config['download_settings']['naming_rule']
@@ -222,14 +247,6 @@ class ConfigManager:
                         pass  # 迁移失败保持原状，下次启动重试
                 else:
                     self.config['migrations'] = dict(migrations or {}, history_to_sqlite=True)
-            # Mirror the spec-named directory fields; old configs may carry the
-            # aliases instead of the canonical paths entries.
-            for key, alias in DIRECTORY_ALIASES:
-                value = self.config['paths'].get(key)
-                if value:
-                    self.config[alias] = value
-                elif self.config.get(alias):
-                    self.config['paths'][key] = self.config[alias]
             # Only migrate real Stage 1 bindings; synthetic demo entries never become production references.
             for name, images in raw.get('matching_order', {}).items():
                 if all(not p.startswith('demo:') for p in images) and self.config['paths']['prompts']:

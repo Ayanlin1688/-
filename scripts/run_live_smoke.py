@@ -16,7 +16,7 @@ from ui.model_catalog_controller import runtime_config
 
 def main():
     parser = argparse.ArgumentParser(description='使用本地配置提交最多一个真实视频任务（可能计费）。')
-    parser.add_argument('--config', type=Path, default=ROOT / 'config.json')
+    parser.add_argument('--config', type=Path, help='使用指定配置；默认与桌面应用的数据目录一致')
     parser.add_argument('--submit', action='store_true', help='执行最多一个真实任务；默认仅检查配置')
     args = parser.parse_args()
     config_manager = ConfigManager(args.config)
@@ -50,14 +50,8 @@ def main():
     code = [1]
     manager.log_message.connect(lambda message, level: print(f'[{level.upper()}] {message}', flush=True))
     def persist(record):
-        records = config_manager.config['history']
-        index = next((i for i, item in enumerate(records) if item.get('local_id') == record['local_id']), None)
-        if index is None:
-            records.append(record)
-        else:
-            records[index] = record
         try:
-            config_manager.update(('history',), records)
+            config_manager.history_upsert(record)
         except Exception as error:
             print(f'ERROR: 无法保存历史：{error}', flush=True)
     def done(success, failed):

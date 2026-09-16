@@ -16,6 +16,23 @@ class GitSyncError(RuntimeError):
     pass
 
 
+def repository_secrets(config):
+    """Protect credentials for both the selected provider and saved stations."""
+    sections = [config.get('api')]
+    stations = config.get('stations')
+    if isinstance(stations, list):
+        sections.extend(stations)
+    secrets = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for key in ('api_key', 'upload_api_key'):
+            value = section.get(key)
+            if isinstance(value, str) and value.strip():
+                secrets.append(value.strip())
+    return tuple(dict.fromkeys(secrets))
+
+
 class RepositorySync:
     _lock = threading.Lock()
 
@@ -42,9 +59,10 @@ class RepositorySync:
     @staticmethod
     def _sensitive_path(name):
         path = Path(name)
+        basename = path.name.casefold()
         folders = {part.casefold() for part in path.parts}
-        return (path.name.casefold() in {'config.json', 'models_cache.json', 'models_cache.json.tmp'} or path.name.startswith('.env') or
-                path.name.startswith(('submissions.sqlite3', '.storyboard-submissions.sqlite3')) or
+        return (basename in {'config.json', 'models_cache.json', 'models_cache.json.tmp'} or basename.startswith('.env') or
+                basename.startswith(('submissions.sqlite3', '.storyboard-submissions.sqlite3', 'history.sqlite3')) or
                 path.suffix.casefold() in {'.mp4', '.mov', '.avi', '.log', '.pyc', '.pyo', '.key', '.pem'} or
                 bool(folders & {'artifacts', 'screenshots', 'temp', 'tmp', '__pycache__', '.vscode', '.idea', '.venv', 'venv', '视频输出目录', '视频保存目录'}))
 
@@ -101,7 +119,8 @@ class RepositorySync:
                 raise GitSyncError('请先切换到main分支再同步')
             if self._git(['remote', 'get-url', 'origin']).rstrip('/') != self.expected_origin.rstrip('/'):
                 raise GitSyncError('origin与项目授权仓库不一致，停止同步')
-            for name in ('config.json', 'models_cache.json', 'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
+            for name in ('config.json', 'models_cache.json', 'history.sqlite3', 'history.sqlite3-wal', 'history.sqlite3-shm',
+                         'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
                 self._git(['check-ignore', '--no-index', name])
             self._check_snapshot()
             self._git(['add', '.'])

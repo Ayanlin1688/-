@@ -28,8 +28,9 @@ def _asset_path(name: str) -> Path:
 
 
 def main() -> int:
+    config_manager = ConfigManager(migrate=True)
     # 无人值守兜底：任何未捕获异常先落盘留痕，不让进程静默退出。
-    install_default(Path(__file__).resolve().parent / 'logs')
+    install_default(config_manager.path.parent / 'logs')
     app = QApplication(sys.argv)
     app.setApplicationName('YanlinMatrix')
     icon_path = _asset_path('app.ico')
@@ -43,7 +44,7 @@ def main() -> int:
     splash = show_splash()
     if splash is not None:
         app.processEvents()
-    window = MainWindow(ConfigManager(migrate=True))
+    window = MainWindow(config_manager)
     window.show()
     if splash is not None:
         splash.finish(window)

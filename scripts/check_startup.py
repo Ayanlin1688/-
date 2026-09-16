@@ -11,8 +11,9 @@ env = dict(os.environ)
 env["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "offscreen"
 with tempfile.TemporaryDirectory(prefix='studio-startup-') as folder:
     checkout = Path(folder)
-    # ConfigManager normally resolves config.json beside main.py. Copy source
-    # only so this check cannot consume a user's enabled schedule or credentials.
+    # Override both normal AppData lookup and any inherited portable data root.
+    env['YANLIN_CONFIG_DIR'] = str(checkout / 'data')
+    # Copy source only so legacy migration cannot consume production credentials.
     shutil.copy2(root / 'main.py', checkout / 'main.py')
     for name in ('core', 'ui'):
         shutil.copytree(root / name, checkout / name, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))

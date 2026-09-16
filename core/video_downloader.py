@@ -1,6 +1,8 @@
 """Stream to a temporary file; commit only complete downloads."""
 from datetime import datetime
 from pathlib import Path
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -34,29 +36,81 @@ class VideoDownloader(HttpClient):
         self.overwrite_existing = overwrite_existing
         self.check_cancel = check_cancel or (lambda: None)
 
-    def download_video(self, url, save_dir, filename):
+    @staticmethod
+    def _ownership_path(destination):
+        return destination.with_name(destination.name + '.storyboard-output-diagnostics.json')
+
+    def _owns_file(self, destination, identity):
+        try:
+            record = json.loads(self._ownership_path(destination).read_text(encoding='utf-8'))
+            if not isinstance(record, dict) or record.get('identity') != identity:
+                return False
+            if not destination.is_file() or destination.stat().st_size != record.get('size_bytes'):
+                return False
+            digest = hashlib.sha256()
+            with destination.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    self.check_cancel()
+                    digest.update(chunk)
+            return digest.hexdigest() == record.get('sha256')
+        except (OSError, ValueError):
+            return False
+
+    def _destination(self, folder, filename, identity):
+        original = folder / safe_filename(filename)
+        candidate = original
+        suffix = 1
+        while True:
+            if candidate.resolve().parent != folder:
+                raise ValueError('下载路径超出输出目录')
+            if not candidate.exists() and not candidate.is_symlink():
+                return candidate, False
+            if self._owns_file(candidate, identity):
+                return candidate, True
+            tail = '_' + identity[:12] + (f'_{suffix}' if suffix > 1 else '')
+            candidate = folder / (original.stem[:140] + tail + '.mp4')
+            suffix += 1
+
+    def _save_ownership(self, destination, identity, size, digest):
+        target = self._ownership_path(destination)
+        descriptor, temporary = tempfile.mkstemp(prefix='.storyboard-output-', suffix='-diagnostics.json', dir=destination.parent)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                json.dump(dict(identity=identity, size_bytes=size, sha256=digest), stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def download_video(self, url, save_dir, filename, *, generation_key=None):
         partial = None
         try:
             folder = Path(save_dir).expanduser().resolve()
             folder.mkdir(parents=True, exist_ok=True)
-            destination = folder / safe_filename(filename)
-            if destination.resolve().parent != folder:
-                raise ValueError('下载路径超出输出目录')
-            if destination.exists() and not self.overwrite_existing:
-                self.log(f'文件已存在，跳过下载：{destination}', 'warning')
+            identity = hashlib.sha256(json.dumps(generation_key if generation_key is not None else url,
+                                                 ensure_ascii=False).encode('utf-8')).hexdigest()
+            destination, owned = self._destination(folder, filename, identity)
+            if owned and not self.overwrite_existing:
+                self.log(f'已核验当前任务的视频，跳过下载：{destination}', 'info')
                 return str(destination)
             self.check_cancel()
             # Never forward the provider Bearer key to a returned CDN URL.
             with self.request('GET', url, authenticated=False, stream=True, headers={'Accept-Encoding': 'identity'}) as response:
+                content_type = response.headers.get('Content-Type', '').partition(';')[0].strip().lower()
+                if content_type.startswith('text/') or content_type in {'application/json', 'application/xml'} or content_type.endswith(('+json', '+xml')):
+                    raise IOError(f'下载响应不是视频：Content-Type={content_type}')
                 length = int(response.headers.get('Content-Length', 0))
                 descriptor, partial = tempfile.mkstemp(prefix='.' + destination.stem[:40], suffix='.part', dir=folder)
                 count, last_percent = 0, -1
+                digest = hashlib.sha256()
                 with os.fdopen(descriptor, 'wb') as stream:
                     for chunk in response.iter_content(chunk_size=64 * 1024):
                         self.check_cancel()
                         if not chunk:
                             continue
                         stream.write(chunk)
+                        digest.update(chunk)
                         count += len(chunk)
                         percent = min(100, int(count * 100 / length)) if length else None
                         if percent is not None and percent >= last_percent + 5:
@@ -67,19 +121,26 @@ class VideoDownloader(HttpClient):
                 self.check_cancel()
                 if not count or (length and not response.headers.get('Content-Encoding') and count != length):
                     raise IOError(f'下载不完整：预期 {length} 字节，收到 {count} 字节')
-                if destination.exists() and not self.overwrite_existing:
-                    self.log(f'文件已由其他任务保存，跳过覆盖：{destination}', 'warning')
-                elif self.overwrite_existing:
-                    os.replace(partial, destination)
-                    partial = None
-                else:
-                    # Exclusive publication also protects against a destination created during streaming.
-                    if os.name == 'nt':
-                        # Windows rename refuses existing destinations and also works on non-NTFS disks.
-                        os.rename(partial, destination)
+                while True:
+                    self.check_cancel()
+                    destination, owned = self._destination(folder, filename, identity)
+                    if owned and not self.overwrite_existing:
+                        return str(destination)
+                    if owned and self.overwrite_existing:
+                        os.replace(partial, destination)
                         partial = None
                     else:
-                        os.link(partial, destination)
+                        try:
+                            # Exclusive publication handles another process taking this name mid-download.
+                            if os.name == 'nt':
+                                os.rename(partial, destination)
+                                partial = None
+                            else:
+                                os.link(partial, destination)
+                        except FileExistsError:
+                            continue
+                    self._save_ownership(destination, identity, count, digest.hexdigest())
+                    break
                 self.log(f'下载完成：{destination} ({count / 1024 / 1024:.2f} MB)', 'success')
                 return str(destination)
         except Exception as error:

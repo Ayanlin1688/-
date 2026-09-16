@@ -1,4 +1,5 @@
 """Unattended disk hygiene: purge stale temp files and warn before the disk fills."""
+import os
 import shutil
 import time
 from pathlib import Path
@@ -13,12 +14,19 @@ def _purge(root, cutoff):
     removed = 0
     freed = 0
     try:
-        candidates = [path for path in Path(root).rglob('*') if path.suffix.lower() in TEMP_SUFFIXES]
+        root = Path(root).resolve()
+        candidates = []
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            base = Path(directory)
+            # os.walk does not treat Windows junctions as symbolic links.
+            dirs[:] = [name for name in dirs if not (base / name).is_symlink()
+                       and not getattr(base / name, 'is_junction', lambda: False)()]
+            candidates.extend(base / name for name in files if Path(name).suffix.lower() in TEMP_SUFFIXES)
     except OSError:
         return removed, freed
     for path in candidates:
         try:
-            if path.is_symlink() or not path.is_file():
+            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
                 continue
             stat = path.stat()
             if stat.st_mtime >= cutoff:
@@ -35,20 +43,20 @@ def _purge(root, cutoff):
 
 
 def cleanup_disk(paths, log, retention_days=7, min_free_gb=2.0, now=None):
-    """Delete stale temp files under media directories and report free space.
+    """Delete stale download files under the output directory and report space.
 
     Only well-known temp suffixes older than the retention window are removed;
-    completed videos and reference images are never touched.
+    completed videos and the reference directory are never cleaned. A nonpositive
+    retention disables deletion while retaining free-space warnings.
     """
-    now = now or time.time()
+    now = time.time() if now is None else now
     cutoff = now - max(1, int(retention_days)) * 86400
     removed = 0
     freed = 0
     dirs = [Path(root) for root in (paths.get('output'), paths.get('images')) if root and Path(root).is_dir()]
-    for root in dirs:
-        part_removed, part_freed = _purge(root, cutoff)
-        removed += part_removed
-        freed += part_freed
+    output = paths.get('output')
+    if int(retention_days) > 0 and output and Path(output).is_dir():
+        removed, freed = _purge(output, cutoff)
     if removed:
         log(f'磁盘清理：已删除 {removed} 个过期临时文件（释放 {freed / MEGABYTE:.1f}MB）', 'info')
     if dirs:
