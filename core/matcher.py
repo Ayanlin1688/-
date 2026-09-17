@@ -36,6 +36,8 @@ def prefix_matches(stem, prefix):
 
 
 def prompt_number(name, fallback):
+    # Parenthesized suffixes are view numbers, never the storyboard series.
+    name = re.sub(r'(?:\(\d+\))+$', '', normalized_name(name))
     match = re.search(r'(\d+)$', name) or re.search(r'(\d+)', name)
     return int(match.group(1)) if match else fallback
 
@@ -81,8 +83,9 @@ class StoryboardMatcher:
         images = sorted((str(Path(p).resolve()) for p in image_files), key=natural_path_key)
         stems = {path: normalized_name(Path(path).stem) for path in images}
         result = []
-        for index, prompt in enumerate(prompts):
+        for prompt in prompts:
             name = Path(prompt).stem
+            image_methods = {}
             if prompt in self.overrides:
                 bound = []
                 for override in self.overrides[prompt]:
@@ -96,23 +99,26 @@ class StoryboardMatcher:
                     else:
                         self.warnings.append(f'已忽略产品目录外的手动图片绑定：{candidate}')
                 method = '手动绑定'
+                image_methods = {path: method for path in bound}
             else:
                 normalized = normalized_name(name)
-                bound = [p for p in images if stems[p] == normalized]
-                method = '完全匹配'
-                if bound:
-                    # A base image and its numbered views belong to the same
-                    # exact series (01.jpg, 01(1).jpg, 01(2).png).
-                    bound = [p for p in images if stems[p] == normalized or
-                             re.fullmatch(re.escape(normalized) + r'\(\d+\)', stems[p])]
-                if not bound:
-                    bound = [p for p in images if prefix_matches(stems[p], normalized)]
-                    method = '前缀匹配'
-                if not bound:
-                    number = prompt_number(normalized, index + 1)
-                    bound = [p for p in images if image_series_number(stems[p]) == number]
-                    method = f'序号匹配（系列{number}）'
-            result.append(dict(prompt_path=prompt, prompt_name=name, images=bound, matched=bool(bound), match_method=method if bound else '未绑定图片'))
+                number = prompt_number(normalized, None)
+                # Priority describes each image's evidence, not an early exit:
+                # an exact base must not hide differently named views of it.
+                for path in images:
+                    if stems[path] == normalized:
+                        image_methods[path] = '完全匹配'
+                    elif prefix_matches(stems[path], normalized):
+                        image_methods[path] = '前缀匹配'
+                    elif number is not None and image_series_number(stems[path]) == number:
+                        image_methods[path] = f'序号匹配（系列{number}）'
+                bound = list(image_methods)
+                methods = sorted(set(image_methods.values()), key=lambda value:
+                                 0 if value == '完全匹配' else 1 if value == '前缀匹配' else 2)
+                method = ' + '.join(methods)
+            result.append(dict(prompt_path=prompt, prompt_name=name, images=bound, matched=bool(bound),
+                               image_match_methods=image_methods,
+                               match_method=method if bound else '未绑定图片'))
         return result
 
     def scan_and_match(self, paths):
@@ -150,8 +156,30 @@ class StoryboardMatcher:
         self.products = [directory.name for directory in product_dirs]
 
         groups = []
+        selected_product = ''
+        selected_image_root = image_root
+        selected_image_parent = image_root
+        if root_prompts and not product_dirs and image_root is not None:
+            candidate = image_root / prompt_root.name
+            if candidate.is_dir():
+                selected_product = prompt_root.name
+                selected_image_root = candidate
+            elif normalized_name(image_root.name) == normalized_name(prompt_root.name):
+                selected_product = prompt_root.name
+                selected_image_parent = image_root.parent
+            elif any(directory != prompt_root and directory.is_dir()
+                     and self._same_direct_child(directory, prompt_root.parent, directory.name)
+                     and (image_root / directory.name).is_dir()
+                     and any(p.is_file() and p.suffix.lower() == '.txt' for p in directory.iterdir())
+                     for directory in prompt_root.parent.iterdir()):
+                # Sibling product folders establish that images is their root.
+                # A missing product child must not fall back to another product.
+                selected_product = prompt_root.name
+                selected_image_root = candidate
+            if selected_product:
+                self.products = [selected_product]
         if root_prompts:
-            groups.append(('', prompt_root, image_root, root_prompts, bool(product_dirs)))
+            groups.append((selected_product, prompt_root, selected_image_root, root_prompts, bool(product_dirs)))
         for directory in product_dirs:
             entries = directory.rglob('*') if self.recursive else directory.iterdir()
             prompts = sorted(
@@ -173,11 +201,14 @@ class StoryboardMatcher:
             if product and (group_image_root is None or not group_image_root.is_dir()):
                 image_issue = f'产品“{product}”缺少同名图片目录'
                 missing_directory = True
-            elif product and not self._same_direct_child(group_image_root, image_root, product):
+            elif product and not self._same_direct_child(group_image_root,
+                    selected_image_parent if selected_product else image_root, product):
                 image_issue = f'产品“{product}”的同名图片目录是越界链接'
             if image_issue:
                 as_text = missing_directory and self.unmatched_policy == '仍提交文生视频'
-                self.warnings.append(image_issue + ('，按设置提交文生视频' if as_text else '，已跳过该产品'))
+                paused = missing_directory and self.unmatched_policy == '暂停任务'
+                self.warnings.append(image_issue + ('，按设置提交文生视频' if as_text else
+                                                   '，按设置暂停等待处理' if paused else '，已跳过该产品'))
                 images = []
             elif group_image_root is None:
                 images = []
@@ -194,7 +225,7 @@ class StoryboardMatcher:
                 images.sort(key=natural_path_key)
             # Pure flat inputs retain the old recursive scan and external manual
             # selection behavior. Product/mixed inputs keep strict product scopes.
-            allowed_root = group_image_root if product_dirs else None
+            allowed_root = group_image_root if product_dirs or selected_product else None
             matched = self.match_files(prompts, images, allowed_root, direct_images=direct_images)
             output_subdir = self._safe_product_folder(product, used_subdirs) if product else ''
             task_total = len(matched)
@@ -202,7 +233,7 @@ class StoryboardMatcher:
                 skip_reason = image_issue
                 if skip_reason:
                     task.update(images=[], matched=False, match_method='产品图片目录缺失')
-                    if missing_directory and self.unmatched_policy == '仍提交文生视频':
+                    if missing_directory and self.unmatched_policy in {'仍提交文生视频', '暂停任务'}:
                         skip_reason = ''
                 task.update(
                     product=product,

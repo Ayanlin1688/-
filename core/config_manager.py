@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "generate_audio": True,
         "poll_interval": 5,
+        "poll_timeout": 7200,
         "max_retries": 3,
         "skip_threshold": 3,
         "seed": "",

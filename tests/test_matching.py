@@ -23,7 +23,7 @@ class MatchingTests(unittest.TestCase):
             p, i = matcher.scan_directories(prompts, images)
             self.assertEqual((len(p), len(i)), (4, 4))
             result = matcher.match_files(p, i)
-            self.assertEqual([Path(v).name for v in result[0]['images']], ['01汽车.jpg'])
+            self.assertEqual([Path(v).name for v in result[0]['images']], ['01汽车.jpg', '01汽车_2.png'])
             self.assertEqual([Path(v).name for v in result[1]['images']], ['02车轮_1.webp', '02车轮_2.jpg'])
             # An unrelated positional image must no longer masquerade as a match.
             self.assertEqual(result[2]['images'], [])
@@ -44,16 +44,16 @@ class MatchingTests(unittest.TestCase):
             self.assertEqual([Path(p).name for p in tasks[1]['images']], ['10(1).jpg'])
             self.assertIn('序号匹配', tasks[0]['match_method'])
 
-    def test_prefix_respects_number_boundary_and_exact_wins(self):
+    def test_prefix_respects_number_boundary_and_exact_keeps_series_views(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             images = [root / name for name in ['产品10(1).jpg', '产品1(10).jpg', '产品1(2).jpg', '1(1).jpg']]
             matcher = StoryboardMatcher()
             task = matcher.match_files([root / '产品1.txt'], images)[0]
-            self.assertEqual([Path(p).name for p in task['images']], ['产品1(2).jpg', '产品1(10).jpg'])
+            self.assertEqual([Path(p).name for p in task['images']], ['1(1).jpg', '产品1(2).jpg', '产品1(10).jpg'])
             task = matcher.match_files([root / '产品1.txt'], images + [root / '产品1.jpg', root / '产品1.png'])[0]
         self.assertEqual([Path(p).name for p in task['images']],
-                         ['产品1(2).jpg', '产品1(10).jpg', '产品1.jpg', '产品1.png'])
+                         ['1(1).jpg', '产品1(2).jpg', '产品1(10).jpg', '产品1.jpg', '产品1.png'])
 
     def test_prefix_matches_when_image_stem_is_shorter_than_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -77,7 +77,7 @@ class MatchingTests(unittest.TestCase):
         root = Path('fixture')
         task = StoryboardMatcher().match_files([root / '01.txt'],
             [root / name for name in ['01.jpg', '01(2).png', '01(1).jpg', '010.jpg', '图片1.jpg']])[0]
-        self.assertEqual(set(Path(p).name for p in task['images']), {'01.jpg', '01(1).jpg', '01(2).png'})
+        self.assertEqual(set(Path(p).name for p in task['images']), {'01.jpg', '01(1).jpg', '01(2).png', '图片1.jpg'})
 
     def test_prompt_number_can_be_inside_filename_without_using_row_position(self):
         root = Path('fixture')

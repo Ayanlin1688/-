@@ -191,6 +191,9 @@ class TaskWorker(QThread):
                 task['prompt_read_error'] = '读取提示词失败：' + str(error)
             task['prompt_sha256'] = prompt_sha256(task)
             model = task.get('requested_model') or self.config['workspace']['model']
+            actual_images = submission_images(task, model, self.config.get('_model_catalog'))
+            if len(actual_images) < len(task['images']):
+                self.log(f'提示词{Path(task["prompt_path"]).name}绑定了{len(task["images"])}张图，模型{model}最多支持{len(actual_images)}张，已自动截取前{len(actual_images)}张', 'warning')
             params = self._parameters(task, model)
             signature = task_signature(task, model, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
             output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
@@ -244,9 +247,25 @@ class TaskWorker(QThread):
                     continue
             scoped = [record for record in candidates if record.get('api_scope') == self.scope]
             old = scoped[-1] if scoped else candidates[-1] if candidates else None
+            if not old and not task.get('images'):
+                # A missing local reference changes the request signature, but
+                # it must not hide an already-paid, unfinished remote task.
+                # Only recover a verified same-account, same-source prompt;
+                # changed content and terminal remote failures stay separate.
+                recoverable = [record for record in previous.values()
+                               if record.get('api_scope') == self.scope
+                               and record.get('task_id')
+                               and record.get('prompt_path') == task.get('prompt_path')
+                               and record.get('prompt_sha256') == task.get('prompt_sha256')
+                               and record.get('ledger_state') not in {'released', 'failed', 'rejected'}
+                               and record.get('status') not in {'completed', 'duplicate'}
+                               and not record.get('remote_failed')]
+                if recoverable:
+                    old = recoverable[-1]
+                    self.log(f'任务{sequence}：当前参考图缺失，恢复已付费任务 {old["task_id"]}，不重新提交', 'warning')
             if old and not old.get('api_scope') and not task.get('skip_reason'):
                 old = self._quarantine_legacy(task, old)
-            if old and not task.get('skip_reason'):
+            if old and (old.get('task_id') or not task.get('skip_reason')):
                 if old.get('status') == 'completed' and (not self.config['task_strategy'].get('prevent_duplicates', True)
                         or task['signature'] in self.config.get('_rerun_signatures', []) or old.get('signature') in self.config.get('_rerun_signatures', [])):
                     continue
@@ -267,6 +286,9 @@ class TaskWorker(QThread):
                 else:
                     task.update(status='queued', error='')
         matched = sum(t['matched'] for t in self.tasks)
+        for product, rows in groupby(self.tasks, key=lambda t: t.get('product', '')):
+            group = list(rows)
+            self.log(f'产品{product or "未分组"}：提示词{len(group)}个，图片{len({p for t in group for p in t["images"]})}张')
         self.log(f'匹配完成：共{len(self.tasks)}个提示词，{matched}个已匹配，{len(self.tasks)-matched}个未匹配')
         misses = []
         for index, task in enumerate(self.tasks, 1):
@@ -397,6 +419,11 @@ class TaskWorker(QThread):
                         if task.get('status') not in TERMINAL:
                             self.index = index; self.terminal(task, 'cancelled', '用户取消全部')
                 self.summary.emit(sum(t.get('status') == 'completed' for t in self.tasks), sum(t.get('status') == 'failed' for t in self.tasks))
+                self.log('队列结束：成功{}·失败{}·跳过{}·未匹配{}'.format(
+                    sum(t.get('status') == 'completed' for t in self.tasks),
+                    sum(t.get('status') in {'failed', 'submission_unknown'} for t in self.tasks),
+                    sum(t.get('status') in {'skipped', 'duplicate', 'cancelled'} for t in self.tasks),
+                    sum(not t.get('matched') for t in self.tasks)))
 
     def _concurrent_batch(self, pending):
         pending = iter(pending)

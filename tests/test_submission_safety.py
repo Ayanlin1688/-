@@ -49,7 +49,7 @@ class ConcurrentLimitHandler(FixtureHandler):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         self.server.calls.append((self.path, dict(self.headers), body))
         number = int(json.loads(body)['prompt'].split()[-1])
-        self.server.barrier.wait(timeout=5)
+        # Admission serializes upload/create; remote generation still overlaps.
         if number == 1:
             return self.respond({'task_id': 'running-before-limit'})
         time.sleep(.1 + number * .02)
@@ -60,7 +60,6 @@ class ConcurrentLimitServer(LocalServer):
     def __enter__(self):
         server = super().__enter__()
         server.RequestHandlerClass = ConcurrentLimitHandler
-        server.barrier = threading.Barrier(4)
         server.always_processing = True
         return server
 
@@ -169,7 +168,7 @@ class SubmissionSafetyTests(unittest.TestCase):
         with ConcurrentLimitServer() as server:
             self.config['api'].update(base_url=server.base, api_key='local-fixture')
             self.manager.start_tasks(self.config)
-            wait_until(lambda: self.manager.is_paused, timeout=15000)
+            wait_until(lambda: self.manager.is_paused, timeout=30000)
             self.assertEqual(self.manager.worker.gate.limit, 1)
             self.assertEqual(len(server.calls), 4)
             self.assertEqual(self.manager.tasks[4]['status'], 'waiting')

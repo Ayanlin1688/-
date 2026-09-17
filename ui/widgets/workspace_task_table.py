@@ -8,6 +8,7 @@ from qfluentwidgets.common.config import isDarkTheme
 from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
 from core.i18n import tr
 from core.prompt_detector import short_model_name
+from core.task_state import submission_images
 from .task_queue_panel import TaskQueuePanel
 from .workspace_surface import WorkspaceCard, BreathingDot, ReferenceStrip, label, style_button, BLUE, GREEN, RED, YELLOW, MUTED
 from ..motion import Shimmer
@@ -110,7 +111,8 @@ class ExpandedTaskRow(QWidget):
         nb.addWidget(self.dot); nb.addWidget(self.number,1)
         self.title=label('',13,'#f5f5f5',True); self.title.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred); self.product=label('',12,MUTED); self.product.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred); self.model_label=label('',11,BLUE,True)
         self.ratio=label('—',12,MUTED,mono=True); self.resolution=label('—',12,MUTED,mono=True); self.duration=label('—',12,MUTED,mono=True)
-        self.images_button=style_button(TransparentToolButton(FIF.PHOTO)); self.images_button.setFixedSize(64,30); self.images_button.clicked.connect(lambda:self._preview())
+        self.images_button=style_button(PushButton()); self.images_button.setFixedSize(76,30); self.images_button.clicked.connect(lambda:self.action_requested.emit(self.index,'match'))
+        self.images_button.setToolTip(tr('查看每个提示词绑定的参考图'))
         ph=QWidget(); pl=QHBoxLayout(ph); pl.setContentsMargins(0,0,0,0); pl.setSpacing(8); self.progress=TaskProgress(); self.percentage=label('0%',11,MUTED,mono=True); self.percentage.setFixedWidth(35); pl.addWidget(self.progress,1); pl.addWidget(self.percentage)
         self.timing=label('—',12,MUTED,mono=True)
         self.status_label=label('',11); self.status_label.setFixedHeight(22); self.status_label.setAlignment(Qt.AlignCenter)
@@ -150,6 +152,8 @@ class ExpandedTaskRow(QWidget):
         model=t.get('model') or t.get('requested_model') or self.defaults.get('model',''); src=(' · '+tr('手动')) if t.get('model_source')=='manual' else (' · '+tr('自动')) if t.get('model_source')=='auto' else ''; short='V2' if model=='video-v2' else 'V3' if model=='video-v3' else short_model_name(model)
         self.model_label.setText(f'[{short}]'+src); self.model_label.setToolTip(model+src); self.model_label.setStyleSheet(self._model_chip_style(model))
         text=tr(STATUS_TEXT.get(s,s))
+        if not t.get('images') and s in {'waiting', 'pending'}:
+            text=tr('未匹配'); col=YELLOW
         chip=QColor(col)
         metrics=QFontMetrics(self.status_label.font())
         self.status_label.setFixedWidth(min(112, metrics.horizontalAdvance(text)+20))
@@ -157,6 +161,17 @@ class ExpandedTaskRow(QWidget):
         self.status_label.setStyleSheet(f'color:{col};background:rgba({chip.red()},{chip.green()},{chip.blue()},0.14);border-radius:6px;padding:0 2px;')
         val=100 if s=='completed' else max(0,min(100,int(t.get('progress',0)))); self.progress.setValue(val); self.progress.setError(s=='failed'); self.percentage.setText(f'{val}%')
         p={**self.defaults,**(t.get('effective_parameters') or t.get('_display_parameters',{}))}; self.ratio.setText(str(p.get('aspect_ratio') or p.get('ratio') or '—')); self.resolution.setText(str(p.get('resolution') or '—')); d=p.get('duration'); self.duration.setText(f'{d}s' if d not in (None,'') else '—'); self.timing.setText('—'); self.images_button.setText(f'IMG ×{len(t.get("images",[]))}'); self.update()
+        total = len(t.get('images', []))
+        actual = t.get('submitted_image_count', t.get('_display_image_count'))
+        if actual is None:
+            actual = len(submission_images(t, model))
+        self.images_button.setText(f'{actual}/{total}' if actual != total else f'IMG ×{total}')
+        elapsed = t.get('poll_elapsed_seconds')
+        if elapsed is not None:
+            seconds = max(0, int(elapsed))
+            self.timing.setText(f'{seconds//60}分{seconds%60}秒')
+            self.timing.setToolTip(f'已轮询{seconds//60}分{seconds%60}秒')
+        self.progress.setPaused(s not in ACTIVE)
         if hasattr(self, 'references'):
             self.references.set_editable(self.editable and not self.busy)
             self.references.set_paths(t.get('images', []))
@@ -177,7 +192,7 @@ class ExpandedTaskRow(QWidget):
 
     def leaveEvent(self, event):
         self._hover = False; self.update(); super().leaveEvent(event)
-    def set_editable(self,e,busy=False): self.editable=e; self.busy=busy; self.images_button.setEnabled(bool(self.task.get('images')))
+    def set_editable(self,e,busy=False): self.editable=e; self.busy=busy; self.images_button.setEnabled(not busy)
     def paintEvent(self,e):
         s=self.task.get('status'); p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         if s in ACTIVE:

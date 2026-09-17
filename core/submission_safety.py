@@ -5,6 +5,8 @@
 """
 import threading
 import time
+from contextlib import contextmanager
+from collections import deque
 
 DEFAULT_PROBE_SECONDS = 60.0
 
@@ -23,6 +25,32 @@ class SubmissionGate:
         self.paused_until = 0.0
         self.on_recover = None
         self.lock = threading.Lock()
+        self._permits = deque()
+
+    @contextmanager
+    def permit(self, control):
+        """FIFO upload/create admission; release before long-running polling.
+
+        Canceled waiters remove their ticket, so they cannot strand the queue.
+        The ledger remains the cross-process authority for duplicate protection.
+        """
+        ticket = object()
+        with self.lock:
+            self._permits.append(ticket)
+        try:
+            while True:
+                control.check()
+                with self.lock:
+                    admitted = self._permits[0] is ticket
+                if admitted:
+                    break
+                control.delay(.05)
+            self.wait(control)
+            control.before_task()
+            yield
+        finally:
+            with self.lock:
+                self._permits.remove(ticket)
 
     def failed(self, status_code):
         with self.lock:

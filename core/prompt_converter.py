@@ -54,6 +54,7 @@ class ConversionResult:
     target_format: str
     converted: bool
     warnings: tuple[str, ...] = ()
+    shot_count: int = 0
 
 
 def _text(value: str) -> str:
@@ -191,7 +192,10 @@ def h3_to_v2(prompt_text: str) -> str:
     blocks.extend((
         '', f"环境音：{_picture_to_v2(sections['overall_soundscape'])}",
         '', '【禁止项】', _V2_FORBIDDEN,
-        '', '【强制声明】', _V2_REQUIRED,
+        '', '【强制声明】',
+        '原始概要：' + _picture_to_v2(sections['summary']),
+        '主体保留：' + _picture_to_v2(sections['retention_analysis']),
+        '配乐要求：' + _picture_to_v2(sections['non_diegetic_music']),
     ))
     return '\n'.join(blocks)
 
@@ -232,6 +236,7 @@ def _parse_v2(prompt_text: str) -> tuple[str, list[str], str]:
     shots: list[list[str]] = []
     numbers = []
     sound_lines: list[str] = []
+    voice_lines: list[str] = []
     mode = 'shots'
     while index < len(body):
         line = body[index]
@@ -247,6 +252,7 @@ def _parse_v2(prompt_text: str) -> tuple[str, list[str], str]:
                 sound_lines.append(sound_match.group(1).rstrip())
             continue
         if mode == 'voices':
+            voice_lines.append(line.rstrip())
             continue
         shot_match = _V2_SHOT_RE.match(line)
         if shot_match:
@@ -263,6 +269,7 @@ def _parse_v2(prompt_text: str) -> tuple[str, list[str], str]:
             if not shots or mode == 'sound':
                 raise ValueError('V2 结构无效：声线块位置无效')
             mode = 'voices'
+            voice_lines.append(line.rstrip())
             continue
         if mode == 'shots' and shots:
             shots[-1].append(line.rstrip())
@@ -275,7 +282,7 @@ def _parse_v2(prompt_text: str) -> tuple[str, list[str], str]:
         raise ValueError('V2 镜头结构无效：至少需要镜头1')
     if numbers != list(range(1, len(numbers) + 1)):
         raise ValueError('V2 镜头结构无效：镜头编号必须从 1 连续递增且不能重复')
-    return station, ['\n'.join(lines).strip() for lines in shots], '\n'.join(sound_lines).strip() or 'N/A'
+    return station, ['\n'.join(lines).strip() for lines in shots], '\n'.join(sound_lines + voice_lines).strip() or 'N/A'
 
 
 def _timestamp_milliseconds(index: int, shot_count: int, duration: float | None) -> int:
@@ -310,6 +317,10 @@ def v2_to_h3(prompt_text: str, duration: float | None = None) -> str:
     sound = _picture_to_h3(sound)
     summary = ' '.join(re.sub(r'\s+', ' ', shot).strip() for shot in shots)
     detailed = []
+    # Keep custom negative prompts and mandatory declarations verbatim within
+    # a standard H3 section. Previously these were silently discarded.
+    source = strip_v2_declaration(prompt_text)
+    constraints = source[re.search(r'(?m)^\s*【禁止项】\s*$', source).start():].strip()
     for index, shot in enumerate(shots):
         if index == 0:
             detailed.append(f'[Shot 1] {shot}')
@@ -319,7 +330,7 @@ def v2_to_h3(prompt_text: str, duration: float | None = None) -> str:
     return '\n\n'.join((
         f'subject_definitions:\n<Subject 1> is {_sentence(station)}',
         f'summary:\n[reference generation] {_sentence(summary)}',
-        'retention_analysis:\n<Subject 1>: fully_preserved',
+        'retention_analysis:\n<Subject 1>: fully_preserved\n' + _picture_to_h3(constraints),
         'detailed_description:\n' + '\n'.join(detailed),
         f'overall_soundscape:\n{sound}',
         'non_diegetic_music:\nN/A',
@@ -353,7 +364,8 @@ def convert_for_model(
         converted = v2_to_h3(text, duration)
     else:
         return ConversionResult(text, source, target, False, ())
-    return ConversionResult(converted, source, target, True, ())
+    shot_count = len(_h3_shots(_parse_h3(text)['detailed_description'])) if source == 'H3' else len(_parse_v2(text)[1])
+    return ConversionResult(converted, source, target, True, (), shot_count)
 
 
 __all__ = [

@@ -82,8 +82,13 @@ class DataSourceCard(QWidget):
             f'已匹配 {count} / 未匹配 {len(matches)-count}'
         )
 
-    def open_match_dialog(self) -> None:
+    def open_match_dialog(self, prompt_path=None) -> None:
         self.log_callback("打开匹配详情", "info")
         dialog = MatchDialog(self.window(), self.log_callback, self.config_manager, self.matches, self.automatic_matches)
+        if isinstance(prompt_path, str):
+            for index, task in enumerate(dialog.matches):
+                if task.get('prompt_path') == prompt_path:
+                    dialog.prompt_list.setCurrentRow(index)
+                    break
         dialog.saved.connect(self.overrides_changed)
         dialog.exec_()

@@ -57,7 +57,7 @@ class PromptFormatDetectionTests(unittest.TestCase):
 
 
 class H3ToV2Tests(unittest.TestCase):
-    def test_renders_literal_v2_without_h3_metadata_or_voice_tags(self):
+    def test_renders_v2_preserving_metadata_without_voice_tags(self):
         expected = """【分镜】
 
 人物站位：Maya, standing on the left beside @图1. The bicycle from @图10, parked on the right.
@@ -75,7 +75,10 @@ Maya says: "Let's go."
 文字/UI/水印/Logo/角标/可读文字/真实UI
 
 【强制声明】
-无背景音乐,仅保留环境音与人声和音效;画面禁字幕/文字/水印/Logo;禁止可读文字(指画面字幕文字,不含人声台词)"""
+原始概要：[reference generation] Metadata that must not become a shot.
+主体保留：<Subject 1>: fully_preserved
+<Subject 2>: fully_preserved
+配乐要求：N/A"""
         self.assertEqual(h3_to_v2(H3_PROMPT), expected)
 
     def test_rejects_missing_or_out_of_order_h3_sections(self):
@@ -106,7 +109,7 @@ Maya says: "Let's go."
 
 
 class V2ToH3Tests(unittest.TestCase):
-    def test_removes_template_metadata_and_voice_blocks_then_renders_six_fields(self):
+    def test_removes_template_declaration_but_preserves_voice_and_constraints(self):
         prompt = """该SKILL 由Work-Fisher制作，免费公开，禁止任何盗卖行为
 
 【分镜】
@@ -132,6 +135,11 @@ summary:
 
 retention_analysis:
 <Subject 1>: fully_preserved
+【禁止项】
+文字/UI/水印/Logo/角标/可读文字/真实UI
+
+【强制声明】
+无背景音乐,仅保留环境音与人声和音效;画面禁字幕/文字/水印/Logo;禁止可读文字(指画面字幕文字,不含人声台词)
 
 detailed_description:
 [Shot 1] Maya看向<Picture 1>。
@@ -141,6 +149,7 @@ Maya画外音继续：“走吧。”
 
 overall_soundscape:
 街道底噪和一声车铃。
+【Maya声线】 二十多岁女声，中音，语速平稳。
 
 non_diegetic_music:
 N/A"""
@@ -207,7 +216,7 @@ N/A"""
                 with self.assertRaises(ValueError):
                     v2_to_h3(prompt)
 
-    def test_discards_every_line_in_multiline_voice_blocks(self):
+    def test_preserves_every_line_in_multiline_voice_blocks(self):
         prompt = """【分镜】
 人物站位：Maya在左侧。
 镜头1：Maya说：“保留镜头台词。”
@@ -222,7 +231,7 @@ N/A"""
         self.assertIn('[Shot 1] Maya说：“保留镜头台词。”', converted)
         self.assertIn('overall_soundscape:\n安静室内底噪。', converted)
         for voice_metadata in ('二十多岁女声', '常态语速', '四十岁男声', '低沉，不急促'):
-            self.assertNotIn(voice_metadata, converted)
+            self.assertIn(voice_metadata, converted)
 
     def test_accepts_documented_sample_without_storyboard_heading(self):
         prompt = """人物站位：Maya在左侧。

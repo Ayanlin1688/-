@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from PyQt5.QtWidgets import QApplication
 from core.config_manager import ConfigManager
 from core.model_catalog import builtin_models
@@ -203,7 +204,8 @@ class ModelUiTests(unittest.TestCase):
             self.config.config['workspace']['poll_interval'] = .01
             try:
                 wait_until(lambda: len(workspace.queue_panel._tasks) == 1)
-                workspace.start_button.click()
+                with patch.object(workspace, '_choose_unmatched_policy', return_value='仍提交文生视频'):
+                    workspace.start_button.click()
                 wait_until(lambda: len(server.jobs) == 1)
                 client = ApiClient(metadata.base, 'fixture-key')
                 try:

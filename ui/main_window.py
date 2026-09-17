@@ -589,7 +589,7 @@ class MainWindow(FluentWindow):
         badge.setFixedSize(56, 56)
         badge.setAlignment(Qt.AlignCenter)
         try:
-            dialog.viewLayout.insertWidget(0, badge, 0, Qt.AlignHCenter)
+            dialog.textLayout.insertWidget(0, badge, 0, Qt.AlignHCenter)
         except Exception:
             pass
         dialog.exec_()

@@ -109,7 +109,11 @@ def main() -> None:
     window.workspace_page.queue_panel.select_task(2)
     window.workspace_page.current_task.update_progress(0, 0, -1)
     wait_for_animation()
-    capture(window, "screenshot_3_params_collapsed.png")
+    window.workspace_page.open_controls()
+    window.workspace_page.controls_dialog.resize(1100, 1000)
+    wait_for_animation()
+    capture(window.workspace_page.controls_dialog, "screenshot_3_params.png")
+    window.workspace_page.controls_dialog.close()
     window.switchTo(window.history_page)
     wait_for_animation(350)
     capture(window, "screenshot_4_history.png")
@@ -125,15 +129,20 @@ def main() -> None:
     window.switchTo(window.workspace_page)
     wait_for_animation(350)
     QApplication.processEvents()
-    window.workspace_page.log_drawer.toggle()
+    if not window.workspace_page.log_drawer._expanded:
+        window.workspace_page.log_drawer.toggle()
+    window.workspace_page.splitter.setSizes([650, 400])
     window.workspace_page.queue_panel.toggle_group('玫瑰毯子')
     wait_for_animation()
-    capture(window, "screenshot_6_log_collapsed.png")
+    capture(window, "screenshot_6_log.png")
     window.close()
     app.processEvents()
     temp.cleanup()
     with zipfile.ZipFile(ROOT / 'screenshots.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(OUT.glob('screenshot_*.png')):
+        for name in ('screenshot_1_workspace.png', 'screenshot_2_match_dialog.png',
+                     'screenshot_3_params.png', 'screenshot_4_history.png',
+                     'screenshot_5_settings.png', 'screenshot_6_log.png'):
+            path = OUT / name
             archive.write(path, path.name)
 
 

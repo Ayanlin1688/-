@@ -13,7 +13,7 @@ from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
 from core.prompt_detector import annotate_tasks
-from core.task_state import parameters_for_model
+from core.task_state import parameters_for_model, submission_images
 from ..model_catalog_controller import runtime_config
 from ..components.model_selector import catalog_snapshot, usable
 from core.api_client import ApiClient
@@ -62,7 +62,7 @@ class WorkspacePage(QWidget):
         self._watch_retry = 0
         self._build_ui()
         manager = self.task_manager
-        self.start_button.clicked.connect(self.start_generation)
+        self.start_button.clicked.connect(lambda: self.start_generation(interactive=True))
         self.pause_button.clicked.connect(self.toggle_pause)
         self.cancel_button.clicked.connect(manager.cancel_all)
         self.current_task.skip_button.clicked.connect(manager.skip_current)
@@ -320,7 +320,10 @@ class WorkspacePage(QWidget):
         if not 0 <= index < len(self.queue_panel._tasks):
             return
         task = self.queue_panel._tasks[index]
-        if action == 'menu':
+        if action == 'match':
+            if not self.task_manager.is_running:
+                self.data_source.open_match_dialog(task.get('prompt_path'))
+        elif action == 'menu':
             menu = self.queue_panel.action_menu(index)
             button = self.queue_panel.rows[index].more_button
             menu.exec(button.mapToGlobal(button.rect().bottomLeft())); menu.deleteLater()
@@ -407,6 +410,14 @@ class WorkspacePage(QWidget):
                 self.append_log(warning, 'warning')
             count = sum(t['matched'] for t in matched)
             self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
+            for task in matched:
+                name = Path(task['prompt_path']).name
+                if not task['images']:
+                    self.append_log(f'未匹配：{name}，原因：{task.get("skip_reason") or "没有找到同名、前缀或同序号图片"}', 'warning')
+                model = task.get('requested_model') or config['workspace']['model']
+                limit = len(submission_images(task, model, config.get('_model_catalog')))
+                if limit < len(task['images']):
+                    self.append_log(f'提示词{name}绑定了{len(task["images"])}张图，模型{model}最多支持{limit}张，已自动截取前{limit}张', 'warning')
             self._watch_note_scan(matched, from_watch)
         def failed(message):
             if version != self._scan_version or self.closing.is_set() or self.task_manager.is_running:
@@ -425,8 +436,33 @@ class WorkspacePage(QWidget):
             self.append_log(f'无人值守监听：本次重扫失败，{delay} 秒后自动重试（第 {self._watch_retry} 次）', 'warning')
         self.jobs.start(scan, done, failed)
 
-    def start_generation(self):
-        if self.closing.is_set() or self._redownloading:
+    def _choose_unmatched_policy(self, tasks):
+        dialog = StudioDialog(self, '未匹配参考图')
+        dialog.resize(560, 300)
+        message = CaptionLabel(f'检测到{len(tasks)}个提示词未匹配参考图，是否继续？')
+        message.setWordWrap(True)
+        dialog.body_layout.addWidget(message)
+        names = CaptionLabel('\n'.join(Path(t['prompt_path']).name for t in tasks[:8]))
+        names.setWordWrap(True)
+        dialog.body_layout.addWidget(names)
+        selected = [None]
+        def choose(policy):
+            selected[0] = policy
+            dialog.accept()
+        for text, policy in [('跳过未匹配任务', '跳过并警告'), ('全部提交为文生视频', '仍提交文生视频')]:
+            button = PushButton(text)
+            button.clicked.connect(lambda checked=False, p=policy: choose(p))
+            dialog.body_layout.addWidget(button)
+        cancel = PushButton('取消返回匹配')
+        cancel.clicked.connect(dialog.reject)
+        dialog.body_layout.addWidget(cancel)
+        cancel.setFocus()
+        dialog.exec_()
+        dialog.deleteLater()
+        return selected[0]
+
+    def start_generation(self, interactive=False):
+        if self.closing.is_set() or self._redownloading or self.task_manager.is_running:
             return
         block = gate_block(self.config_manager.config)
         if block:
@@ -435,8 +471,18 @@ class WorkspacePage(QWidget):
             return
         self.append_log('开始生成：检查配置并准备后台队列', 'info')
         try:
+            config = runtime_config(self.config_manager)
+            if interactive:
+                matches = StoryboardMatcher.from_config(config).scan_and_match(config['paths'])
+                missing = [task for task in matches if not task.get('images')]
+                if missing:
+                    policy = self._choose_unmatched_policy(missing)
+                    if policy is None:
+                        self.append_log('已取消生成，请在匹配详情补充参考图', 'info')
+                        return
+                    config['task_strategy']['unmatched_prompt'] = policy
             self._scan_version += 1
-            self.task_manager.start_tasks(runtime_config(self.config_manager))
+            self.task_manager.start_tasks(config)
         except Exception as error:
             self.append_log(f'无法开始：{error}', 'error')
             InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
@@ -547,6 +593,7 @@ class WorkspacePage(QWidget):
         for task in tasks:
             view = dict(task)
             model = task.get('model') or task.get('requested_model') or config['workspace']['model']
+            view['_display_image_count'] = len(submission_images(task, model, catalog))
             view['_display_parameters'] = task.get('effective_parameters') or parameters_for_model(
                 model, config['workspace'], config['model_pool'].get('enabled') or task.get('model_source') in {'auto', 'manual', 'fallback'},
                 len(task.get('images', [])), catalog)

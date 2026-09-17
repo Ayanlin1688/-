@@ -954,7 +954,9 @@ class SettingsPage(QWidget):
         line = LineEdit()
         line.setPlaceholderText(tr('输入激活码'))
         line.setClearButtonEnabled(True)
-        dialog.viewLayout.addWidget(line)
+        # QFluentWidgets Dialog uses textLayout (viewLayout belongs to
+        # MessageBoxBase). An invalid layout silently broke the activate click.
+        dialog.textLayout.addWidget(line)
         dialog.yesButton.setText(tr('激活'))
         if not dialog.exec():
             return

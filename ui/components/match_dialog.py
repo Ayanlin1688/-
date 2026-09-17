@@ -15,7 +15,7 @@ from ..theme import style_controls, style_page
 from .model_selector import ModelComboBox, catalog_snapshot
 from core.prompt_detector import annotate_tasks
 from core.prompt_converter import convert_for_model
-from core.task_state import parameters_for_model
+from core.task_state import parameters_for_model, submission_images
 
 
 class MatchDialog(StudioDialog):
@@ -27,7 +27,8 @@ class MatchDialog(StudioDialog):
         self.config_manager = config_manager
         self.matches = copy.deepcopy(matches or [])
         self.bindings = {t['prompt_path']: list(t['images']) for t in self.matches}
-        self.automatic = {t['prompt_path']: list(t['images']) for t in automatic_matches or self.matches}
+        automatic_source = self.matches if automatic_matches is None else automatic_matches
+        self.automatic = {t['prompt_path']: list(t['images']) for t in automatic_source}
         self.dirty = set()
         self.model_overrides = dict(config_manager.config.get('model_overrides', {})) if config_manager else {}
         self.models_dirty = False
@@ -56,6 +57,9 @@ class MatchDialog(StudioDialog):
         self.detected_model_label = CaptionLabel('自动识别模型：未识别')
         self.detected_model_label.setWordWrap(True)
         layout.addWidget(self.detected_model_label)
+        self.match_method_label = CaptionLabel('匹配方式：未绑定图片')
+        self.match_method_label.setWordWrap(True)
+        layout.addWidget(self.match_method_label)
         self.model_combo = ModelComboBox()
         layout.addWidget(self.model_combo)
         self.binding_summary = CaptionLabel('已绑定0张参考图')
@@ -117,6 +121,7 @@ class MatchDialog(StudioDialog):
             return
         key = self.matches[row]['prompt_path']
         task = self.matches[row]
+        self.match_method_label.setText('匹配方式：' + task.get('match_method', '手动绑定'))
         detected = task.get('detected_model') or '未识别（使用默认模型）'
         self.detected_model_label.setText('自动识别模型：' + detected)
         self.model_combo.set_models(catalog_snapshot(self.config_manager), self.model_overrides.get(key, ''),
@@ -163,14 +168,26 @@ class MatchDialog(StudioDialog):
 
     def _refresh_picture_labels(self):
         count = self.picture_list.count()
-        self.binding_summary.setText(f'已绑定{count}张参考图 · 从上到下对应 Picture 1–{count}' if count else '已绑定0张参考图')
+        row = self.prompt_list.currentRow()
+        task = self.matches[row] if row >= 0 else {}
+        paths = [self.picture_list.item(i).data(Qt.UserRole) for i in range(count)]
+        model = self._effective_preview_model(task) if task else ''
+        actual = len(submission_images(dict(task, images=paths), model, catalog_snapshot(self.config_manager)))
+        self.binding_summary.setText(
+            f'已绑定{count}张参考图 · 实际提交 {actual}/{count} · 从上到下对应 Picture 1–{actual}'
+            if count else '已绑定0张参考图')
         for index in range(count):
             item = self.picture_list.item(index)
             host = self.picture_list.itemWidget(item)
             if host is not None:
                 name = Path(item.data(Qt.UserRole)).name
                 status = '文件缺失或图片不可读' if item.data(Qt.UserRole + 1) else '本地图片'
+                method = task.get('image_match_methods', {}).get(item.data(Qt.UserRole), task.get('match_method', '手动绑定'))
+                status += f' · {method}'
+                if index >= actual:
+                    status += ' · 超出模型上限，本次不提交'
                 host.findChild(CaptionLabel, 'pictureCaption').setText(f'Picture {index+1} · {name}\n{status}')
+                item.setToolTip(status)
 
     def _remember(self, *_):
         self._refresh_picture_labels()
@@ -224,6 +241,7 @@ class MatchDialog(StudioDialog):
         else:
             self.model_overrides.pop(key, None)
         self.models_dirty = True
+        self._refresh_picture_labels()
         self._refresh_prompt_preview()
 
     def _effective_preview_model(self, task):
@@ -290,7 +308,8 @@ class MatchDialog(StudioDialog):
         self._show_details(self.prompt_list.currentRow())
 
     def _rematch(self):
-        self.bindings = copy.deepcopy(self.automatic)
+        self.bindings = {task['prompt_path']: list(self.automatic.get(task['prompt_path'], []))
+                         for task in self.matches}
         self.dirty.update(self.bindings)
         self._show_details(self.prompt_list.currentRow())
         self._notice('已恢复本次扫描的自动匹配结果，点击保存调整生效')

@@ -38,8 +38,9 @@ class WorkspaceDirectoryBar(CardWidget):
         self.match_dot = Dot(8, '#22C55E')
         row.addWidget(self.match_dot)
         self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True); row.addWidget(self.match_status)
-        self.match_button = PushButton(tr('匹配详情'))
-        self.match_button.setToolTip(tr('查看图片与提示词的匹配详情'))
+        self.match_button = PushButton(FIF.SEARCH, tr('匹配详情'))
+        self.match_button.setMinimumSize(118, 32)
+        self.match_button.setToolTip(tr('查看每个提示词绑定的参考图'))
         self.match_button.clicked.connect(self.match_requested)
         row.addWidget(self.match_button)
         from ..materials import register_theme_callback

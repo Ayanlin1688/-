@@ -51,7 +51,8 @@ class Stage5ExecutionTests(unittest.TestCase):
             self.assertIn('subject_definitions:', bodies[0]['prompt'])
             self.assertIn('人物站位：', bodies[1]['prompt'])
             self.assertIn('@Image10', bodies[1]['prompt'])
-            self.assertTrue(bodies[1]['prompt'].endswith(V2_TAIL))
+            self.assertIn('【禁止项】', bodies[1]['prompt'])
+            self.assertIn('原始概要：[reference generation] Metadata that must not become a shot.', bodies[1]['prompt'])
             task = self.manager.tasks[0]
             self.assertEqual(task['submitted_prompt'], bodies[1]['prompt'])
             self.assertEqual(task['original_prompt'], H3_PROMPT)
@@ -67,8 +68,12 @@ class Stage5ExecutionTests(unittest.TestCase):
             self.start(server)
             self.assertTrue(records)
             self.assertTrue(all('original_prompt' not in task and '_original_prompt' not in task for task in records))
-            data = Path(self.config['_submission_ledger_path']).read_bytes()
-            self.assertNotIn(b'Metadata that must not become a shot.', data)
+            # The original snapshot remains opt-out. Converted/wire prompts
+            # now intentionally retain metadata instead of dropping it.
+            from core.submission_ledger import account_scope
+            saved = SubmissionLedger(self.config['_submission_ledger_path']).records(account_scope(self.config))
+            self.assertTrue(saved)
+            self.assertTrue(all('original_prompt' not in record and '_original_prompt' not in record for record in saved))
             self.assertEqual(self.path.read_text(encoding='utf-8'), H3_PROMPT)
 
     def test_same_format_failover_precedes_other_format_model(self):

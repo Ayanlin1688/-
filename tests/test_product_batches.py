@@ -234,7 +234,7 @@ class ProductWorkerTests(unittest.TestCase):
                 manager.cancel_all()
                 wait_until(lambda: not manager.is_running)
 
-    def test_missing_product_folder_is_always_skipped_before_submission(self):
+    def test_missing_product_folder_pauses_then_resumes_as_text_only(self):
         with tempfile.TemporaryDirectory() as temp, LocalServer() as server:
             root = Path(temp)
             prompt = root / "prompts" / "缺图产品"; prompt.mkdir(parents=True)
@@ -244,13 +244,17 @@ class ProductWorkerTests(unittest.TestCase):
             config["paths"] = {"prompts": str(prompt.parent), "images": str(images), "output": str(root / "output")}
             config["api"].update(base_url=server.base, api_key="local-test", upload_url=server.base + "/upload")
             config["task_strategy"]["unmatched_prompt"] = "暂停任务"
+            config['workspace']['poll_interval'] = .01
             manager = TaskManager()
             try:
                 manager.start_tasks(config)
-                wait_until(lambda: not manager.is_running)
-                self.assertEqual(manager.tasks[0]["status"], "skipped")
-                self.assertTrue(manager.tasks[0]["skip_reason"])
+                wait_until(lambda: manager.tasks and manager.tasks[0]['status'] == 'paused')
+                self.assertTrue(manager.is_paused)
                 self.assertEqual(server.calls, [])
+                manager.resume_tasks()
+                wait_until(lambda: not manager.is_running)
+                self.assertEqual(manager.tasks[0]['status'], 'completed')
+                self.assertEqual(sum(path == '/videos' for path, *_ in server.calls), 1)
             finally:
                 manager.cancel_all()
                 wait_until(lambda: not manager.is_running)

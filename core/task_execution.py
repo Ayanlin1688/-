@@ -25,6 +25,10 @@ class DuplicateSubmission(RuntimeError):
     pass
 
 
+class PromptConversionFailed(ValueError):
+    """A lossy or invalid local conversion cannot be repaired by model failover."""
+
+
 class TaskExecution:
     def __init__(self, owner, index, task, model):
         self.owner = owner
@@ -93,16 +97,17 @@ class TaskExecution:
         try:
             self.progress(0, 0, -1)
             self.control.before_task()
-            if self.task.get('prompt_read_error'):
+            recovering = bool(self.task.get('task_id'))
+            if self.task.get('prompt_read_error') and not recovering:
                 raise ValueError(self.task['prompt_read_error'])
-            if self.task.get('skip_reason'):
+            if self.task.get('skip_reason') and not recovering:
                 self.log(self.task['skip_reason'] + '，已跳过', 'warning')
                 self.terminal('skipped', self.task['skip_reason']); return
             policy = self.config['task_strategy']['unmatched_prompt']
-            if not self.task['images'] and policy == '跳过并警告':
+            if not recovering and not self.task['images'] and policy == '跳过并警告':
                 self.log(f'任务{self.index+1}：未匹配图片，按策略跳过', 'warning')
                 self.terminal('skipped'); return
-            if not self.task['images'] and policy == '暂停任务':
+            if not recovering and not self.task['images'] and policy == '暂停任务':
                 self.control.set('paused', True); self.owner.pause_changed.emit(True)
                 self.publish(status='paused')
                 self.log('未匹配图片，已暂停；点击继续将对此任务提交文生视频，或点击跳过/取消', 'warning')
@@ -135,6 +140,12 @@ class TaskExecution:
                 except Cancelled:
                     raise
                 except DuplicateSubmission:
+                    return
+                except PromptConversionFailed as error:
+                    message = self.owner.redact(error)
+                    entry.update(status='failed', phase='conversion', error=message, finished_at=stamp())
+                    self.log(f'任务{self.index+1}：提示词转换失败，禁止自动切换模型：{message}', 'error')
+                    self.terminal('failed', message)
                     return
                 except SubmissionUncertain as error:
                     self.owner.submission_error(getattr(error, 'status_code', None))
@@ -238,10 +249,13 @@ class TaskExecution:
             duration = params.get('duration', params.get('seconds', ''))
             self.log(f'{prefix}：参数=比例{ratio}，分辨率{resolution}，时长{duration}秒')
             conversion = self.config.get('prompt_conversion', {})
-            result = convert_for_model(original, self.model, duration=params.get('duration'),
-                                       enabled=conversion.get('enabled', True), catalog=catalog)
+            try:
+                result = convert_for_model(original, self.model, duration=params.get('duration'),
+                                           enabled=conversion.get('enabled', True), catalog=catalog)
+            except Exception as error:
+                raise PromptConversionFailed(str(error)) from error
             if result.converted:
-                self.log(f'提示词格式已从{result.source_format}转换为{result.target_format}格式')
+                self.log(f'提示词格式已从{result.source_format}转换为{result.target_format}，保留了{getattr(result, "shot_count", 0)}个镜头描述')
             for warning in result.warnings:
                 self.log(warning, 'warning')
             if conversion.get('preserve_original', True):
@@ -296,54 +310,61 @@ class TaskExecution:
                     self.log(message, 'warning')
                     raise DuplicateSubmission(message)
                 task['ledger_id'] = saved['ledger_id']
-            self.phase = 'upload'
-            originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(image_paths)] if self.owner.debug_mode else []
-            self.log(f'{prefix}：上传图片{len(image_paths)}张...')
-            if family_for(self.model, catalog) == GROK:
-                urls = image_paths
-                self.log(f'{prefix}：Grok 使用本地参考文件 {len(urls)} 张')
-            else:
-                if self.urls is None:
-                    uploaded = uploader.upload_images(image_paths, self.control.check)
-                    if any(url is None for url in uploaded):
-                        raise RuntimeError('图片上传失败，本次未提交视频任务')
-                    self.urls = uploaded
-                    self.uploaded_paths = list(image_paths)
-                    if self.owner.debug_mode:
-                        for i, (path, url) in enumerate(zip(image_paths, self.urls), 1):
-                            if not self.owner.debug_mode:
-                                break
-                            original = originals[i-1] if i <= len(originals) else diagnostics.inspect_local(path, i)
-                            description = describe_image(original) if original else '尺寸/格式未知'
-                            self.log(f'  图{i}: {path} ({description}) -> {url}', 'debug')
-                            diagnostics.verify_uploaded(original, url, i)
-                urls = self.urls
-            field_name = 'input_reference（真实文件）' if family_for(self.model, catalog) == GROK else 'images'
-            self.log(f'实际提交{field_name}: ' + json.dumps(redact_structure(urls, self.owner.redact), ensure_ascii=False), 'debug')
-            self.control.check()
-            self.owner.gate.wait(self.control)
-            self.control.before_task()
-            if task_signature(task, self.model, params, self.config['api']['base_url'], catalog) != task['signature']:
-                self.urls = None
-                raise ValueError('参考图片在上传过程中发生变化，已停止提交；请重新扫描')
-            self.phase = 'submit'; self.publish(status='submitting')
-            # Commit the intent synchronously before the first network byte.
-            self.owner.ledger.save(task, 'submitting')
-            self.intent_sent = True
-            self.log(f'{prefix}：提交创建任务，模型={self.model}')
-            task['task_id'] = client.create_task(self.model, prompt, urls, params, catalog)
-            task['attempts'][-1]['task_id'] = task['task_id']
-            self.publish(record=True, submitted_image_count=len(urls), status='queued')
-            if getattr(client, 'last_submit_status', 200) == 429 or getattr(client, 'last_submit_status', 200) >= 500:
-                self.owner.submission_error(client.last_submit_status)
-            else:
-                self.owner.gate.succeeded()
-            self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
+            with self.owner.gate.permit(self.control):
+                self.log(f'{prefix}获取提交许可，开始上传')
+                self.phase = 'upload'
+                originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(image_paths)] if self.owner.debug_mode else []
+                self.log(f'{prefix}：上传图片{len(image_paths)}张...')
+                if family_for(self.model, catalog) == GROK:
+                    urls = image_paths
+                    self.log(f'{prefix}：Grok 使用本地参考文件 {len(urls)} 张')
+                else:
+                    if self.urls is None:
+                        uploaded = uploader.upload_images(image_paths, self.control.check)
+                        if any(url is None for url in uploaded):
+                            raise RuntimeError('图片上传失败，本次未提交视频任务')
+                        self.urls = uploaded
+                        self.uploaded_paths = list(image_paths)
+                        if self.owner.debug_mode:
+                            for i, (path, url) in enumerate(zip(image_paths, self.urls), 1):
+                                if not self.owner.debug_mode:
+                                    break
+                                original = originals[i-1] if i <= len(originals) else diagnostics.inspect_local(path, i)
+                                description = describe_image(original) if original else '尺寸/格式未知'
+                                self.log(f'  图{i}: {path} ({description}) -> {url}', 'debug')
+                                diagnostics.verify_uploaded(original, url, i)
+                    urls = self.urls
+                field_name = 'input_reference（真实文件）' if family_for(self.model, catalog) == GROK else 'images'
+                self.log(f'实际提交{field_name}: ' + json.dumps(redact_structure(urls, self.owner.redact), ensure_ascii=False), 'debug')
+                self.control.check()
+                self.owner.gate.wait(self.control)
+                self.control.before_task()
+                if task_signature(task, self.model, params, self.config['api']['base_url'], catalog) != task['signature']:
+                    self.urls = None
+                    raise ValueError('参考图片在上传过程中发生变化，已停止提交；请重新扫描')
+                self.phase = 'submit'; self.publish(status='submitting')
+                # Commit the intent synchronously before the first network byte.
+                self.owner.ledger.save(task, 'submitting')
+                self.intent_sent = True
+                self.log(f'{prefix}：提交创建任务，模型={self.model}')
+                task['task_id'] = client.create_task(self.model, prompt, urls, params, catalog)
+                task['attempts'][-1]['task_id'] = task['task_id']
+                self.publish(record=True, submitted_image_count=len(urls), status='queued')
+                if getattr(client, 'last_submit_status', 200) == 429 or getattr(client, 'last_submit_status', 200) >= 500:
+                    self.owner.submission_error(client.last_submit_status)
+                else:
+                    self.owner.gate.succeeded()
+                self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
         else:
             self.log(f"沿用已有task_id={task['task_id']}继续轮询，不重复创建")
         if not task.get('result_url'):
             self.phase = 'poll'
-            deadline = time.monotonic() + float(self.config['workspace'].get('poll_timeout', 3600))
+            poll_started = time.monotonic()
+            previous_elapsed = float(task.get('poll_elapsed_seconds') or 0)
+            deadline = poll_started + float(self.config['workspace'].get('poll_timeout', 7200))
+            last_progress = None
+            unchanged_since = poll_started
+            last_stall_notice = poll_started
             while True:
                 self.control.check()
                 if time.monotonic() >= deadline:
@@ -359,8 +380,18 @@ class TaskExecution:
                     raise
                 self.control.check()
                 self.progress(result['progress'])
-                self.publish(status='downloading' if result['status'] == 'completed' else ('processing' if result['status'] == 'failed' else result['status']))
-                self.log(f"{prefix}：轮询中... 状态={result['status']}，进度={result['progress']:g}%")
+                now = time.monotonic()
+                poll_elapsed = previous_elapsed + max(0, now - poll_started)
+                if result['progress'] != last_progress:
+                    last_progress = result['progress']
+                    unchanged_since = last_stall_notice = now
+                elif now - unchanged_since >= 60 and now - last_stall_notice >= 60:
+                    self.log(f'{prefix}：上游进度未更新，任务仍在处理中，请耐心等待', 'warning')
+                    last_stall_notice = now
+                self.publish(poll_elapsed_seconds=poll_elapsed,
+                             status='downloading' if result['status'] == 'completed' else ('processing' if result['status'] == 'failed' else result['status']))
+                minutes, seconds = divmod(int(poll_elapsed), 60)
+                self.log(f"{prefix}：轮询中... 状态={result['status']}，进度={result['progress']:g}%，已轮询{minutes}分{seconds}秒")
                 if result['status'] == 'failed':
                     raise RemoteGenerationFailed('远端生成失败：' + str(extract(result['raw'], ('error', 'message')) or result['raw']))
                 if result['status'] == 'completed':
