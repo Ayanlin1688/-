@@ -300,6 +300,8 @@ class MainWindow(FluentWindow):
             self.navigationInterface.widget('about').hide()
         except Exception:
             pass
+        # 标题栏拖拽误触发加固：点击手抖不再演变为“窗口漂移”。
+        self._harden_titlebar_drag()
 
     def _toggle_navigation(self) -> None:
         """菜单按钮：两态切换（展开前先释放折叠态的固定宽度，保证过渡动画）。"""
@@ -386,6 +388,55 @@ class MainWindow(FluentWindow):
                 painter.end()
 
         inner.paintEvent = paint
+
+    def _harden_titlebar_drag(self) -> None:
+        """标题栏拖拽加固：7px 位移阈值，杜绝点击手抖被误判为“拖动窗口”。
+
+        库原实现会在每个鼠标移动事件上触发 startSystemMove（SC_MOVE），
+        点击最大化按钮时的手指细微抖动都可能让窗口开始跟随鼠标漂移。
+        这里加阈值：位移不足 7px 的移动一律不启动窗口移动；超过阈值后
+        维持库原有的“每次移动调用一次”行为，拖动体验不变。
+        """
+        try:
+            bar = self.titleBar
+            state = {'press': None, 'seen': False}
+            original_press = bar.mousePressEvent
+            original_move = bar.mouseMoveEvent
+            original_release = getattr(bar, 'mouseReleaseEvent', None)
+
+            def guarded_press(event):
+                if event.button() == Qt.LeftButton:
+                    state['press'] = event.pos()
+                    state['seen'] = True
+                return original_press(event)
+
+            def guarded_move(event):
+                try:
+                    if event.buttons() & Qt.LeftButton:
+                        if not state['seen'] or state['press'] is None:
+                            # 未收到按下（例如被其它控件吞掉）：先记录参考点，不触发移动。
+                            state['press'] = event.pos()
+                            state['seen'] = True
+                            return None
+                        delta = event.pos() - state['press']
+                        if delta.manhattanLength() < 7 or not bar.canDrag(event.pos()):
+                            return None
+                    return original_move(event)
+                except Exception:
+                    return original_move(event)
+
+            def guarded_release(event):
+                state['press'] = None
+                state['seen'] = False
+                if original_release is not None:
+                    return original_release(event)
+                return None
+
+            bar.mousePressEvent = guarded_press
+            bar.mouseMoveEvent = guarded_move
+            bar.mouseReleaseEvent = guarded_release
+        except Exception:
+            pass
 
     @staticmethod
     def _rail_margins(margins: QMargins) -> QMargins:
