@@ -6,8 +6,8 @@ from pathlib import Path
 
 CJK = re.compile(r'[\u4e00-\u9fff]')
 UI_ROOT = Path(__file__).resolve().parent.parent / 'ui'
-# 2026-09-21 基线（设置页等分批翻译后请下调此值）。
-BASELINE = 515
+# 2026-09-21 基线（含主题注册表里的名称数据，如「霞光」；分批翻译后请下调此值）。
+BASELINE = 516
 
 
 def _count_file(path: Path) -> int:

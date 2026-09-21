@@ -178,27 +178,30 @@ def restyle_theme_buttons():
 def background_brush(rect):
     gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
     gradient.setColorAt(0, QColor(THEME['bg1']))
+    if THEME.get('bgm'):
+        gradient.setColorAt(0.5, QColor(THEME['bgm']))
     gradient.setColorAt(1, QColor(THEME['bg2']))
     return gradient
 
 
 def paint_background(painter, rect, opaque=True):
-    """主题基底（纵向渐变）叠加两束环境径向光。"""
+    """主题基底（纵向渐变）叠加环境径向光（glow1/2 必需，glow3/4 可选）。"""
     if LIGHT_MODE or opaque:
         painter.fillRect(rect, background_brush(rect))
     else:
         tint = QColor(THEME['bg1']); tint.setAlpha(200)
         painter.fillRect(rect, tint)
     span = max(rect.width(), rect.height())
-    g1 = THEME['glow1']; g2 = THEME['glow2']
-    blue = QRadialGradient(rect.topLeft(), span * 1.3)
-    blue.setColorAt(0, QColor(g1[0], g1[1], g1[2], g1[3]))
-    blue.setColorAt(1, QColor(g1[0], g1[1], g1[2], 0))
-    painter.fillRect(rect, blue)
-    purple = QRadialGradient(rect.bottomRight(), span * 1.3)
-    purple.setColorAt(0, QColor(g2[0], g2[1], g2[2], g2[3]))
-    purple.setColorAt(1, QColor(g2[0], g2[1], g2[2], 0))
-    painter.fillRect(rect, purple)
+    anchors = (('glow1', rect.topLeft()), ('glow3', rect.topRight()),
+               ('glow2', rect.bottomRight()), ('glow4', rect.bottomLeft()))
+    for key, anchor in anchors:
+        glow = THEME.get(key)
+        if not glow:
+            continue
+        radial = QRadialGradient(anchor, span * 1.3)
+        radial.setColorAt(0, QColor(glow[0], glow[1], glow[2], glow[3]))
+        radial.setColorAt(1, QColor(glow[0], glow[1], glow[2], 0))
+        painter.fillRect(rect, radial)
 
 
 @lru_cache(maxsize=1)

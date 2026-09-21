@@ -18,7 +18,9 @@ def _hex(value: str) -> str:
 # ---------------------------------------------------------------------------
 # 主题 token 说明：
 #   bg1/bg2          窗口纵向渐变（上 → 下）
+#   bgm              可选：渐变中段色（三段渐变，缺省忽略）
 #   glow1/glow2      左上 / 右下环境径向光晕 (r, g, b, a)
+#   glow3/glow4      可选：右上 / 左下环境径向光晕（缺省不绘制）
 #   surface(_add)    玻璃表面填充 rgba 基值 / 悬停增量
 #   border(_add)     发丝描边 rgba 基值 / 悬停增量
 #   border_elev      悬浮卡片的提亮描边
@@ -159,10 +161,25 @@ THEMES: dict[str, dict] = {
         'acrylic': 'F7F3EAA8', 'nav': 'rgba(248,245,238,0.60)',
         'frame': (92, 70, 45, 48),
     },
+    'aurora': {
+        'id': 'aurora', 'name': '霞光', 'name_en': 'Aurora', 'light': True,
+        'bg1': '#D3E1FF', 'bgm': '#EAD0DF', 'bg2': '#F3C2A8',
+        'glow1': (156, 192, 255, 58), 'glow2': (240, 106, 58, 48),
+        'glow3': (243, 178, 208, 58), 'glow4': (247, 205, 180, 64),
+        'surface': (255, 255, 255, 138), 'surface_add': 22,
+        'border': (255, 255, 255, 190), 'border_add': 26,
+        'border_elev': (255, 255, 255, 218),
+        'line': (74, 141, 255),
+        'ink': (30, 45, 80), 'highlight': 198,
+        'text1': '#1E2A3A', 'text2': '#46536B', 'text3': '#526075',
+        'accent': '#4A8DFF', 'accent2': '#8B5CF6',
+        'acrylic': 'F2ECF4C8', 'nav': 'rgba(255,250,252,0.55)',
+        'frame': (255, 255, 255, 170),
+    },
 }
 
 # 主题选择下拉的顺序：深色家族 → 浅色家族 → 跟随系统
-THEME_ORDER = ['dark', 'midnight', 'graphite', 'nebula', 'abyss', 'dusk', 'light', 'mist', 'sand']
+THEME_ORDER = ['dark', 'midnight', 'graphite', 'nebula', 'abyss', 'dusk', 'light', 'mist', 'sand', 'aurora']
 SYSTEM_OPTION = ('system', '跟随系统')
 
 for _theme in THEMES.values():
