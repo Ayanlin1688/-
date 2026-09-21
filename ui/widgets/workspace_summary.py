@@ -28,7 +28,7 @@ def directory_metrics(paths):
 class StatBlock(QWidget):
     def __init__(self, title, value='0', accent=MUTED, dot=MUTED, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self); layout.setContentsMargins(14, 9, 14, 9); layout.setSpacing(5)
+        layout = QVBoxLayout(self); layout.setContentsMargins(15, 10, 15, 10); layout.setSpacing(5)
         head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(6)
         if dot:
             dot_label = QLabel('●')
@@ -61,7 +61,7 @@ class WorkspaceSummary(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        self.metrics_row = QHBoxLayout(); self.metrics_row.setContentsMargins(0, 0, 0, 0); self.metrics_row.setSpacing(10)
+        self.metrics_row = QHBoxLayout(); self.metrics_row.setContentsMargins(0, 0, 0, 0); self.metrics_row.setSpacing(12)
         specs = [(tr('批量生成中'), tr('就绪'), BLUE), (tr('产品进度'), '0/0', '#f0f0f5'), (tr('任务进度'), '0/0', '#f0f0f5'),
                  (tr('今日完成'), '0', GREEN), (tr('待完成'), '0', '#f0f0f5'), (tr('成功率'), '—', '#f0f0f5'), (tr('失败'), '0', RED), (tr('并发'), '1', '#f0f0f5')]
         self.blocks = []
@@ -70,7 +70,7 @@ class WorkspaceSummary(QWidget):
         th = _palette()
         dots = {0: th['accent'], 3: YELLOW, 5: GREEN, 6: RED, 7: th['accent2']}
         for index, (title, value, accent) in enumerate(specs):
-            card = WorkspaceCard(); card.setFixedHeight(68)
+            card = WorkspaceCard(); card.setFixedHeight(72)
             lay = QVBoxLayout(card); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
             block = StatBlock(title, value, accent, dot=dots.get(index, MUTED))
             lay.addWidget(block)

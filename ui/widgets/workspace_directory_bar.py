@@ -1,43 +1,67 @@
 """Compact workspace directory strip; the detailed cards remain in the tool dialog."""
-from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
-from qfluentwidgets import CardWidget, IconWidget, PushButton, TransparentToolButton, FluentIcon as FIF
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
+from qfluentwidgets import IconWidget, PushButton, FluentIcon as FIF
 from core.i18n import tr
-from .workspace_surface import ElidedLabel, label, style_button
+from .workspace_surface import ElidedLabel, WorkspaceCard, label
 from .status_dot import Dot
 
 
-class DirectoryField(QWidget):
+class DirectoryCard(WorkspaceCard):
+    """单个目录信息卡：图标方块 + 两行文字 + 下拉指示（点击整卡选择目录）。"""
+
     choose_requested = pyqtSignal()
+
     def __init__(self, title, icon=FIF.FOLDER, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
-        glyph = IconWidget(icon); glyph.setFixedSize(14, 14)
-        row.addWidget(glyph)
-        row.addWidget(label(title, 12, '#9CA3AF', True)); self.path = ElidedLabel(tr('未选择'))
-        self.path.setStyleSheet('background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10); border-radius:8px; padding:4px 8px;')
-        row.addWidget(self.path, 1); button = style_button(TransparentToolButton(FIF.FOLDER)); button.setFixedSize(28, 28)
-        button.setToolTip(tr('选择目录')); button.clicked.connect(self.choose_requested); row.addWidget(button)
+        self.setFixedHeight(56)
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self); row.setContentsMargins(10, 8, 10, 8); row.setSpacing(10)
+        self.glyph_host = QWidget(); self.glyph_host.setFixedSize(30, 30)
+        g = QVBoxLayout(self.glyph_host); g.setContentsMargins(0, 0, 0, 0)
+        glyph = IconWidget(icon); glyph.setFixedSize(16, 16)
+        g.addWidget(glyph, 0, Qt.AlignCenter)
+        row.addWidget(self.glyph_host)
+        col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(1)
+        self.title = label(title, 11, '#9CA3AF')
+        col.addWidget(self.title)
+        self.path = ElidedLabel(tr('未选择'))
+        col.addWidget(self.path)
+        row.addLayout(col, 1)
+        row.addWidget(label('▾', 12, '#9CA3AF'))
+
+    def mouseReleaseEvent(self, event):
+        try:
+            self.choose_requested.emit()
+        except RuntimeError:
+            pass
+        super().mouseReleaseEvent(event)
 
     def set_value(self, text, suffix=''):
         self.path.setFullText(str(text) if text else tr('未选择'), suffix)
 
 
-class WorkspaceDirectoryBar(CardWidget):
+class WorkspaceDirectoryBar(QWidget):
     choose_requested = pyqtSignal(str)
     match_requested = pyqtSignal()
+
     def __init__(self, parent=None):
-        super().__init__(parent); self.setBorderRadius(12); self.setProperty('studioStyled', True)
-        self.setFixedHeight(48)
-        row = QHBoxLayout(self); row.setContentsMargins(14, 8, 14, 8); row.setSpacing(14)
+        super().__init__(parent)
+        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(10)
+        self._tints = {'prompts': '74,141,255', 'images': '139,92,246', 'output': '52,199,89'}
         self.fields = {}
-        for key, title, icon in [('prompts', tr('提示词'), FIF.DOCUMENT), ('images', tr('参考图'), FIF.PHOTO), ('output', tr('保存至'), FIF.VIDEO)]:
-            field = DirectoryField(title, icon); field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k)); self.fields[key] = field
+        for key, title, icon in [('prompts', tr('提示词'), FIF.DOCUMENT),
+                                 ('images', tr('参考图'), FIF.PHOTO),
+                                 ('output', tr('保存至'), FIF.VIDEO)]:
+            field = DirectoryCard(title, icon)
+            field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k))
+            self.fields[key] = field
             row.addWidget(field, 1)
+        row.addSpacing(4)
         self.match_dot = Dot(8, '#22C55E')
         row.addWidget(self.match_dot)
-        self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True); row.addWidget(self.match_status)
+        self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True)
+        row.addWidget(self.match_status)
         self.match_button = PushButton(FIF.SEARCH, tr('匹配详情'))
         self.match_button.setMinimumSize(118, 32)
         self.match_button.setToolTip(tr('查看每个提示词绑定的参考图'))
@@ -49,24 +73,24 @@ class WorkspaceDirectoryBar(CardWidget):
 
     def _apply_mode_style(self):
         try:
-            from ..materials import is_light
-            if is_light():
-                chip = 'background:rgba(15,26,52,0.05); border:1px solid rgba(15,26,52,0.12); border-radius:8px; padding:4px 8px;'
+            from PyQt5.QtGui import QColor
+            from ..materials import is_light, map_text_color
+            light = is_light()
+            alpha = 0.18 if light else 0.26
+            for key, field in self.fields.items():
+                rgb = self._tints.get(key, '74,141,255')
+                field.glyph_host.setStyleSheet(f'background:rgba({rgb},{alpha}); border-radius:9px;')
+                tone = map_text_color('#9ca3af')
+                name = tone.name() if isinstance(tone, QColor) else str(tone)
+                field.path.setTextColor(QColor(name), QColor(name))
+            if light:
                 button_style = ('QPushButton {background:transparent; border:0; color:#3E6FD1; font-size:12px; padding:2px 6px;}'
                                 ' QPushButton:hover {color:#2A55AE; background:rgba(15,26,52,0.06); border-radius:6px;}'
                                 ' QPushButton:disabled {color:rgba(15,26,52,0.35);}')
             else:
-                chip = 'background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10); border-radius:8px; padding:4px 8px;'
                 button_style = ('QPushButton {background:transparent; border:0; color:#8AB4F8; font-size:12px; padding:2px 6px;}'
                                 ' QPushButton:hover {color:#BFD2FF; background:rgba(255,255,255,0.06); border-radius:6px;}'
                                 ' QPushButton:disabled {color:#55555f;}')
-            from PyQt5.QtGui import QColor
-            from ..materials import map_text_color
-            text_color = map_text_color('#9ca3af')
-            name = text_color.name() if isinstance(text_color, QColor) else str(text_color)
-            for field in self.fields.values():
-                field.path.setStyleSheet(chip)
-                field.path.setTextColor(QColor(name), QColor(name))
             self.match_button.setStyleSheet(button_style)
         except RuntimeError:
             pass
@@ -88,4 +112,3 @@ class WorkspaceDirectoryBar(CardWidget):
         else:
             tone = '#9C6B0A' if is_light() else '#E5B94E'
         self.match_status.setTextColor(QColor(tone), QColor(tone))
-        self.match_dot.set_color(tone)

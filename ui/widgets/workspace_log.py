@@ -103,7 +103,7 @@ class WorkspaceLog(LogDrawer):
         self.setObjectName('workspaceLog')
         self.setAttribute(Qt.WA_StyledBackground)
         self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
-        root = QVBoxLayout(self); root.setContentsMargins(16, 8, 16, 8); root.setSpacing(6)
+        root = QVBoxLayout(self); root.setContentsMargins(18, 10, 18, 10); root.setSpacing(8)
         header = QHBoxLayout(); self.header = header
         header.addWidget(label(tr('执行日志'), 13, '#F4F5F7', True))
         self.count_label = label(f'{tr("本次运行")} 0 {tr("条")}', 11, '#7A8294', mono=True)
@@ -130,7 +130,7 @@ class WorkspaceLog(LogDrawer):
         self.highlight = LogHighlight(self.browser.viewport())
         self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(MOTION['base'])
         self._animation.finished.connect(self._toggle_finished)
-        self._saved_height = 140
+        self._saved_height = 158
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_mode_style)
         self._apply_mode_style()

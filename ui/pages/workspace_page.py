@@ -100,7 +100,7 @@ class WorkspacePage(QWidget):
         QTimer.singleShot(2500, self._arm_watch)
 
     def _build_ui(self):
-        root = QVBoxLayout(self); root.setContentsMargins(24, 10, 24, 18); root.setSpacing(16)
+        root = QVBoxLayout(self); root.setContentsMargins(26, 12, 26, 20); root.setSpacing(18)
         self.toolbar = QWidget(); self.toolbar.setFixedHeight(56)
         header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
         header.addWidget(label(tr('工作台'), 22, '#F4F5F7', True))

@@ -47,13 +47,26 @@ class BrandLogo(_RailWidget):
 
     def __init__(self, parent=None):
         super().__init__(64, 68, parent)
+        self._expanded = False
+
+    def set_expanded(self, expanded):
+        """展开态：加宽为品牌区块（磁贴 + 中文名 + 英文小字）。"""
+        self._expanded = bool(expanded)
+        self._apply_size()
+
+    def setCompacted(self, isCompacted: bool):
+        self._apply_size()
+
+    def _apply_size(self):
+        self.setFixedSize(224 if self._expanded else 64, 68)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         size = 34.0
         # 磁贴锚定在组件顶部，与标题栏文字垂直居中对齐。
-        rect = QRectF((self.width()-size)/2, 1.0, size, size)
+        left = 15.0
+        rect = QRectF(left, 1.0, size, size)
         center = rect.center()
         from ..materials import palette
         th = palette()
@@ -73,6 +86,21 @@ class BrandLogo(_RailWidget):
         font = self.font(); font.setPixelSize(17); font.setBold(True)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignCenter, 'Y')
+        if self._expanded and self.width() > 140:
+            from core.version import APP_NAME, APP_NAME_CN
+            from ..materials import map_text_color
+            text_left = left + size + 10
+            text_width = max(20.0, self.width() - text_left - 10)
+            title_color = map_text_color('#f5f5f5')
+            painter.setPen(title_color if isinstance(title_color, QColor) else QColor(str(title_color)))
+            font = self.font(); font.setPixelSize(15); font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(QRectF(text_left, 6, text_width, 22), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME_CN)
+            sub_color = map_text_color('#9AA6B8')
+            painter.setPen(sub_color if isinstance(sub_color, QColor) else QColor(str(sub_color)))
+            font = self.font(); font.setPixelSize(10); font.setBold(False)
+            painter.setFont(font)
+            painter.drawText(QRectF(text_left, 28, text_width, 16), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME)
 
 
 class UserAvatar(_RailWidget):

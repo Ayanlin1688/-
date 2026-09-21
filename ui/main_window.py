@@ -370,6 +370,26 @@ class MainWindow(FluentWindow):
             panel.menuButton.setToolTip(tr('展开 / 收起导航'))
         except Exception:
             pass
+        # 展开态：品牌区块加宽显示「中文名 + 英文名」，并隐藏标题栏上的重复英文标题。
+        try:
+            brand = getattr(self, 'brand_logo', None)
+            if brand is not None and hasattr(brand, 'set_expanded'):
+                brand.set_expanded(not collapsed)
+        except Exception:
+            pass
+        try:
+            title_bar = getattr(self, 'titleBar', None)
+            layout = getattr(title_bar, 'hBoxLayout', None) or (title_bar.layout() if title_bar is not None else None)
+            if layout is not None:
+                want = self.windowTitle()
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    widget = item.widget() if item is not None else None
+                    if widget is not None and hasattr(widget, 'text') and widget.text() == want:
+                        widget.setVisible(bool(collapsed))
+                        break
+        except Exception:
+            pass
 
     @staticmethod
     def _decorate_rail_item(inner) -> None:
