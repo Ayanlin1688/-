@@ -140,7 +140,9 @@ class WorkspaceLog(LogDrawer):
             from ..materials import is_light, palette
             th = palette()
             if is_light():
-                self.setStyleSheet('#workspaceLog {background:rgba(255,255,255,0.66); border:1px solid rgba(15,26,52,0.12); border-top-left-radius:14px; border-top-right-radius:14px;}')
+                surface = th['surface']
+                alpha = (surface[3] / 255.0) if isinstance(surface, (tuple, list)) and len(surface) == 4 else 0.66
+                self.setStyleSheet(f'#workspaceLog {{background:rgba(255,255,255,{alpha:.2f}); border:1px solid rgba(15,26,52,0.12); border-top-left-radius:14px; border-top-right-radius:14px;}}')
                 self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
             else:
                 c = QColor(th['bg2'])
