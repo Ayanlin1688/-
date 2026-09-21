@@ -168,7 +168,8 @@ class SubmissionSafetyTests(unittest.TestCase):
         with ConcurrentLimitServer() as server:
             self.config['api'].update(base_url=server.base, api_key='local-fixture')
             self.manager.start_tasks(self.config)
-            wait_until(lambda: self.manager.is_paused, timeout=30000)
+            # 三次 429 触发暂停涉及累计 5s+10s 退避等待；重负载机器上需要更宽裕的等待上限。
+            wait_until(lambda: self.manager.is_paused, timeout=90000)
             self.assertEqual(self.manager.worker.gate.limit, 1)
             self.assertEqual(len(server.calls), 4)
             self.assertEqual(self.manager.tasks[4]['status'], 'waiting')

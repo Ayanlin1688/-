@@ -192,13 +192,14 @@ def paint_background(painter, rect, opaque=True):
         tint = QColor(THEME['bg1']); tint.setAlpha(200)
         painter.fillRect(rect, tint)
     span = max(rect.width(), rect.height())
+    scale = float(THEME.get('glow_scale', 1.3))
     anchors = (('glow1', rect.topLeft()), ('glow3', rect.topRight()),
                ('glow2', rect.bottomRight()), ('glow4', rect.bottomLeft()))
     for key, anchor in anchors:
         glow = THEME.get(key)
         if not glow:
             continue
-        radial = QRadialGradient(anchor, span * 1.3)
+        radial = QRadialGradient(anchor, span * scale)
         radial.setColorAt(0, QColor(glow[0], glow[1], glow[2], glow[3]))
         radial.setColorAt(1, QColor(glow[0], glow[1], glow[2], 0))
         painter.fillRect(rect, radial)
