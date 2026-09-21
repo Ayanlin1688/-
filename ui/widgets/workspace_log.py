@@ -120,6 +120,7 @@ class WorkspaceLog(LogDrawer):
         self.toggle_button.setToolTip(tr('折叠 / 展开日志')); self.toggle_button.clicked.connect(self.toggle)
         for button in (self.clear_button, self.export_button):
             button.setFixedHeight(24); header.addWidget(button)
+        header.addSpacing(10)
         header.addWidget(self.toggle_button); root.addLayout(header)
         self.browser = TextBrowser(); self.browser.setProperty('studioStyled', True)
         self.browser.setOpenExternalLinks(False); self.browser.setMinimumHeight(0)

@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF, QSize, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QListWidgetItem, QSizePolicy
-from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF)
+from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, PrimaryPushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF)
 from qfluentwidgets.common.config import isDarkTheme
 from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
 from core.i18n import tr
@@ -257,7 +257,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self.empty_label=label(tr('暂无任务'),15,'#C7CCD6',True); self.empty_label.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_label)
         self.empty_hint=label(tr('选择分镜提示词目录后会自动扫描并匹配参考图'),12); self.empty_hint.setAlignment(Qt.AlignCenter); ep.addWidget(self.empty_hint)
         button_row=QHBoxLayout(); button_row.addStretch(1)
-        self.empty_button=style_button(PushButton(FIF.FOLDER,tr('选择目录'))); self.empty_button.setFixedHeight(32); self.empty_button.clicked.connect(lambda *_: self.select_prompts_requested.emit()); button_row.addWidget(self.empty_button)
+        self.empty_button=style_button(PrimaryPushButton(FIF.FOLDER,tr('选择目录')), primary=True); self.empty_button.setFixedHeight(32); self.empty_button.clicked.connect(lambda *_: self.select_prompts_requested.emit()); button_row.addWidget(self.empty_button)
         button_row.addStretch(1); ep.addLayout(button_row)
         self.empty_panel.setVisible(False)
         lay.addWidget(self.empty_panel,1)
