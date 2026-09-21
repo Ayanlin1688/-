@@ -267,7 +267,16 @@ class MainWindow(FluentWindow):
         # 恢复上次的展开状态（记忆化）。
         try:
             if self.config_manager.config.get('appearance', {}).get('nav_expanded'):
-                QTimer.singleShot(120, self._toggle_navigation)
+                def _restore_expanded_pane():
+                    try:
+                        panel = self.navigationInterface.panel
+                        if panel.isCollapsed():
+                            self._toggle_navigation()
+                        else:
+                            self._sync_nav_pane(False)
+                    except Exception:
+                        pass
+                QTimer.singleShot(120, _restore_expanded_pane)
         except Exception:
             pass
         # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。

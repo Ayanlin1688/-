@@ -124,8 +124,8 @@ class WorkspaceLog(LogDrawer):
         header.addWidget(self.toggle_button); root.addLayout(header)
         self.browser = TextBrowser(); self.browser.setProperty('studioStyled', True)
         self.browser.setOpenExternalLinks(False); self.browser.setMinimumHeight(0)
-        self.browser.document().setDefaultStyleSheet('div.logline {font-family:"Cascadia Mono","Consolas"; font-size:12px; line-height:160%; margin:1px 0;}')
-        self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
+        self.browser.document().setDefaultStyleSheet('div.logline {font-family:"Cascadia Mono","Consolas"; font-size:13px; line-height:180%; margin:1px 0;}')
+        self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:13px;}')
         root.addWidget(self.browser, 1)
         self.highlight = LogHighlight(self.browser.viewport())
         self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(MOTION['base'])
@@ -143,11 +143,11 @@ class WorkspaceLog(LogDrawer):
                 surface = th['surface']
                 alpha = (surface[3] / 255.0) if isinstance(surface, (tuple, list)) and len(surface) == 4 else 0.66
                 self.setStyleSheet(f'#workspaceLog {{background:rgba(255,255,255,{alpha:.2f}); border:1px solid rgba(15,26,52,0.12); border-top-left-radius:14px; border-top-right-radius:14px;}}')
-                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#2A2F3A; font-family:"Cascadia Mono","Consolas"; font-size:13px;}')
             else:
                 c = QColor(th['bg2'])
                 self.setStyleSheet('#workspaceLog {background:rgba(%d,%d,%d,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}' % (c.red(), c.green(), c.blue()))
-                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:12px;}')
+                self.browser.setStyleSheet('TextBrowser {background:transparent; border:0; color:#E5E7EB; font-family:"Cascadia Mono","Consolas"; font-size:13px;}')
             try:
                 self.filter_box._apply()
             except Exception:

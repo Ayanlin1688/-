@@ -100,10 +100,10 @@ class WorkspacePage(QWidget):
         QTimer.singleShot(2500, self._arm_watch)
 
     def _build_ui(self):
-        root = QVBoxLayout(self); root.setContentsMargins(24, 8, 24, 16); root.setSpacing(16)
+        root = QVBoxLayout(self); root.setContentsMargins(24, 10, 24, 18); root.setSpacing(16)
         self.toolbar = QWidget(); self.toolbar.setFixedHeight(56)
         header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
-        header.addWidget(label(tr('工作台'), 16, '#F4F5F7', True))
+        header.addWidget(label(tr('工作台'), 22, '#F4F5F7', True))
         self.navigation_tabs = {}
         for key, text in [('workspace', tr('工作台')), ('history', tr('任务历史')), ('settings', tr('设置'))]:
             button = PushButton(text); button.setProperty('studioStyled', True); button.setFixedSize(76, 44)

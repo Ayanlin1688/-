@@ -136,6 +136,12 @@ class WorkspaceCard(CardWidget):
         self.setProperty('studioStyled', True)
         self.setBorderRadius(12)
         self._hover = False
+        self._tint = None
+
+    def set_tint(self, color):
+        """可选底色微染（统计卡等局部用法）；None 表示无染色。"""
+        self._tint = color
+        self.update()
 
     def enterEvent(self, event):
         self._hover = True; self.update(); super().enterEvent(event)
@@ -159,6 +165,9 @@ class WorkspaceCard(CardWidget):
         sheen = QLinearGradient(rect.topLeft(), rect.bottomRight())
         sheen.setColorAt(0, QColor(150, 174, 218, 8)); sheen.setColorAt(1, QColor(150, 174, 218, 0))
         painter.setBrush(sheen); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 12, 12)
+        if self._tint is not None:
+            painter.setBrush(self._tint); painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(rect, 12, 12)
 
 
 class BreathingDot(StatusDot):

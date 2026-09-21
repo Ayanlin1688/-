@@ -332,7 +332,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
             return
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
-            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,52)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
+            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,56)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
         self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); products={t.get('product') or '未分组' for t in tasks}; done=sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组')==p) for p in products); self.product_progress_label.setText(f"{tr('产品')} {done}/{len(products)}"); self._filter(self.filter_box.currentText()); self._apply_column_widths()
     def _filter(self,s):
         for i,t in enumerate(self._tasks):

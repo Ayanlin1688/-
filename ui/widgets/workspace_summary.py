@@ -2,9 +2,10 @@
 from datetime import datetime
 from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy
+from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame, QLabel, QSizePolicy
 from core.i18n import tr
-from .workspace_surface import WorkspaceCard, label, MUTED, BLUE, GREEN, RED
+from .workspace_surface import WorkspaceCard, label, MUTED, BLUE, GREEN, RED, YELLOW
 
 
 def directory_metrics(paths):
@@ -25,14 +26,21 @@ def directory_metrics(paths):
 
 
 class StatBlock(QWidget):
-    def __init__(self, title, value='0', accent=MUTED, parent=None):
+    def __init__(self, title, value='0', accent=MUTED, dot=MUTED, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self); layout.setContentsMargins(16, 8, 16, 8); layout.setSpacing(4)
+        layout = QVBoxLayout(self); layout.setContentsMargins(14, 9, 14, 9); layout.setSpacing(5)
+        head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(6)
+        if dot:
+            dot_label = QLabel('●')
+            dot_label.setStyleSheet(f'color:{dot}; background:transparent; border:0; font-size:9px;')
+            dot_label.setFixedWidth(10)
+            head.addWidget(dot_label)
         self.title = label(title, 12, '#8B93A3')
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        layout.addWidget(self.title)
-        # 卡片数值降到 15px（页面标题保持第一层级）；Ignored 宽度策略让 8 张卡严格均分。
-        self.value = label(value, 15, accent, True, mono=True)
+        head.addWidget(self.title, 1)
+        layout.addLayout(head)
+        # 数值 19px（页面标题 22px 保持第一层级）；Ignored 宽度策略让 8 张卡严格均分。
+        self.value = label(value, 19, accent, True, mono=True)
         self.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(self.value)
         self.value.setTextFormat(Qt.RichText)
@@ -48,22 +56,27 @@ class _CompatCard(QWidget):
 
 class WorkspaceSummary(QWidget):
     directory_requested = pyqtSignal(str)
+    # 8 张独立统计卡：仿设计稿的浅色微染与彩色圆点（仅浅色主题生效）。
+    _TINTS = {0: (74, 141, 255), 3: (255, 184, 77), 5: (52, 199, 89), 6: (255, 107, 129), 7: (139, 92, 246)}
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        self.metrics_card = WorkspaceCard(); self.metrics_card.setFixedHeight(64)
-        row = QHBoxLayout(self.metrics_card); row.setContentsMargins(2, 2, 2, 2); row.setSpacing(0)
+        self.metrics_row = QHBoxLayout(); self.metrics_row.setContentsMargins(0, 0, 0, 0); self.metrics_row.setSpacing(10)
         specs = [(tr('批量生成中'), tr('就绪'), BLUE), (tr('产品进度'), '0/0', '#f0f0f5'), (tr('任务进度'), '0/0', '#f0f0f5'),
                  (tr('今日完成'), '0', GREEN), (tr('待完成'), '0', '#f0f0f5'), (tr('成功率'), '—', '#f0f0f5'), (tr('失败'), '0', RED), (tr('并发'), '1', '#f0f0f5')]
         self.blocks = []
-        self._separators = []
+        self.stat_cards = []
+        from ..materials import palette as _palette
+        th = _palette()
+        dots = {0: th['accent'], 3: YELLOW, 5: GREEN, 6: RED, 7: th['accent2']}
         for index, (title, value, accent) in enumerate(specs):
-            if index:
-                separator = QFrame(); separator.setFrameShape(QFrame.VLine); separator.setFixedWidth(1)
-                self._separators.append(separator)
-                row.addWidget(separator)
-            block = StatBlock(title, value, accent); row.addWidget(block, 1); self.blocks.append(block)
-        root.addWidget(self.metrics_card)
+            card = WorkspaceCard(); card.setFixedHeight(68)
+            lay = QVBoxLayout(card); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
+            block = StatBlock(title, value, accent, dot=dots.get(index, MUTED))
+            lay.addWidget(block)
+            self.metrics_row.addWidget(card, 1)
+            self.blocks.append(block); self.stat_cards.append(card)
+        root.addLayout(self.metrics_row)
         self.cards = [_CompatCard(self) for _ in range(4)]
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_mode_style)
@@ -72,10 +85,13 @@ class WorkspaceSummary(QWidget):
     def _apply_mode_style(self):
         try:
             from ..materials import is_light
-            color = 'rgba(15,26,52,0.10)' if is_light() else 'rgba(255,255,255,0.06)'
-            for separator in self._separators:
-                separator.setStyleSheet(f'color:{color}; background:{color};')
+            light = is_light()
+            for index, card in enumerate(self.stat_cards):
+                rgb = self._TINTS.get(index)
+                card.set_tint(QColor(rgb[0], rgb[1], rgb[2], 96) if (light and rgb) else None)
         except RuntimeError:
+            pass
+        except Exception:
             pass
 
     def update_paths(self, paths):
