@@ -75,6 +75,46 @@ class LicensingTests(unittest.TestCase):
         config['license']['trial_started'] = '2020-01-01'
         self.assertIsNone(gate_block(config, today=today))  # 已激活放行
 
+    # —— YL2 非对称签名（2026-09 升级；静态样例由厂商私钥签发，公钥已嵌入核心代码） ——
+    YL2_VALID = 'YL2.eyJjdXN0b21lciI6Iuagt-S-i-WuouaItyIsImVkaXRpb24iOiJwcm8iLCJleHBpcmVzIjoiMjAzMC0xMi0zMSJ9.qI-zJ66vFfOq7jcTTCoF7MUVg-1fPJghFr62t8c5teuqppOzYSUN8yQj_OZ3BMNMwhnOYL1TT6VaEOx7aYL4JJiDxsKMYL2RU3Tc2SL1OXo5l9IM5q7N6swK_qvVIeWbU7CCJFKTFANqqpZc9gyKUc7S2oIsOExi2mQk44p5ePD862Y5EL3_AQZKzhrhPCyPcSZp86cidevrmKAxXtX_3T3TMWZu23ejoOHEZLRn9h06DayullKwqkj55lxGzczTjkMpyCKbuuMv9GZ8ywOtrbENEJa827yUGHLczapjOBKsMOanrJhhE87t4ryigDAnFaiXADBplvZ4Wfm_992gQ2vSfIQwLERjUjGbm5BLxds3vkZPVxX48LOiZeG2DIy1Vli43pkhqXqJxzFdbaxDV_ffhQUmSFH4IfbKaBghZpeCJCDribi4gCKtxGwO-WLTucHxbM0a0DyMNh0HBtJKPFHAVZ1YG52paggZfiXwT8wYEbDE_XZakEHJU8VUFcq9'
+    YL2_EXPIRED = 'YL2.eyJjdXN0b21lciI6Iuagt-S-i-WuouaItyIsImVkaXRpb24iOiJwcm8iLCJleHBpcmVzIjoiMjAyNC0wMS0wMSJ9.MMKDSvJHXuLu6_s4q4zsWTZT4HVPeiR3EAsrdjAlmHDjymcB3uAqIbhvjT-pik_d7Uat8EjoZe5qr0k2zbmPAeOK5bY8_Q0BkBlQZZaNynKjZojeI0eK-HdSkJHTq20ATGc8ZOy40B8VWjj-w6grZR23iMSOtvIInohj73nOmI6pCYVP4HL73xN0379GghnG3D5qYAVJMkrK7P7EQImJWqZhtDYre9l30hKN3iXDG2wIdVfY_AdLID1Ljk6E8HqWxHeem2gRwzG8vGCVwXpMyjsAGQ2Th9KB4Kj2efzsHEGY0ydJOMlXrbAKCI6oNHArv2ndBdxKVyj4n3wMiUlU95_PJrkBdVQ2hz7LGCvaoiEkqo7dYXuxodXykg8YXMK5Nl7TlDZUchB3cMYqa4VAh4hYRa9CNAENfpdCDB5mCk3px377WvwNazioy3Wb8yn-cN14PgH0Ec29ASdpXJwGQVpdITXrwB-oTL382FT79NSWG50oL8jOs0IrGK4RvrdI'
+
+    def test_yl2_asymmetric_roundtrip(self):
+        parsed = parse_key(self.YL2_VALID)
+        self.assertEqual(parsed['customer'], '样例客户')
+        self.assertEqual(parsed['expires'], '2030-12-31')
+
+    def test_yl2_tampered_rejected(self):
+        tampered = self.YL2_VALID[:-6] + 'AAAAAA'
+        with self.assertRaisesRegex(ValueError, '签名不匹配'):
+            parse_key(tampered)
+
+    def test_yl2_expired_rejected(self):
+        with self.assertRaisesRegex(ValueError, '到期'):
+            parse_key(self.YL2_EXPIRED)
+
+    def test_yl2_dynamic_keypair(self):
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+        except ImportError:
+            self.skipTest('cryptography 不可用')
+        import core.licensing as licensing
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = key.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption())
+        public_pem = key.public_key().public_bytes(serialization.Encoding.PEM,
+                                                   serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        original = licensing._VERIFY_PUBLIC_PEM
+        licensing._VERIFY_PUBLIC_PEM = public_pem
+        try:
+            from core.licensing import make_key_asymmetric
+            key_text = make_key_asymmetric('动态客户', 'pro', '2031-01-01', private_pem)
+            self.assertEqual(parse_key(key_text)['customer'], '动态客户')
+        finally:
+            licensing._VERIFY_PUBLIC_PEM = original
+
 
 if __name__ == '__main__':
     unittest.main()

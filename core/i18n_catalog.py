@@ -39,6 +39,12 @@ EN = {
     '请激活后继续使用': 'Please activate to continue',
     '关于': 'About',
     '需要激活': 'Activation required',
+    # 诊断与支持
+    '导出诊断包': 'Export diagnostics',
+    '诊断包': 'Diagnostics pack',
+    '将日志、脱敏配置与环境信息打包为 zip，便于排查问题': 'Package logs, redacted config and environment into a zip for troubleshooting',
+    '已导出诊断包': 'Diagnostics exported',
+    '导出失败': 'Export failed',
     # 工作台顶栏与目录区（第二批）
     '产品': 'Products',
     '任务': 'Tasks',

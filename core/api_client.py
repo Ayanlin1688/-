@@ -72,9 +72,10 @@ class ApiClient(HttpClient):
             sanitized = redact_structure(payload, self.redact)
             self.log('请求体: ' + json.dumps(sanitized, ensure_ascii=False), 'debug')
 
-    def create_task(self, model, prompt, image_urls, params, catalog=None):
+    def create_task(self, model, prompt, image_urls, params, catalog=None, idempotency_key=None):
         family = family_for(model, catalog)
         endpoint = '/video/generations' if family == 'video-v1' else '/videos'
+        idempotency_key = (idempotency_key or '').strip() or None
         try:
             references = params.get('image_paths', image_urls) if family == GROK else image_urls
             if not isinstance(references, (list, tuple)):
@@ -102,10 +103,10 @@ class ApiClient(HttpClient):
                         manifest['input_reference'].append(dict(filename=path.name, path=str(path.resolve()), size_bytes=path.stat().st_size,
                                                                 content_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream'))
                     self._debug_request(endpoint, manifest, multipart=True)
-                    response = stack.enter_context(self._create_request(endpoint, files=files))
+                    response = stack.enter_context(self._create_request(endpoint, files=files, idempotency_key=idempotency_key))
                 else:
                     self._debug_request(endpoint, payload)
-                    response = stack.enter_context(self._create_request(endpoint, json=payload))
+                    response = stack.enter_context(self._create_request(endpoint, json=payload, idempotency_key=idempotency_key))
                 self.last_submit_status = response.status_code
                 try:
                     raw = self.json(response)
@@ -122,10 +123,11 @@ class ApiClient(HttpClient):
             self.log(f'提交失败：{self.redact(error)}', 'error')
             raise
 
-    def _create_request(self, endpoint, **kwargs):
+    def _create_request(self, endpoint, idempotency_key=None, **kwargs):
+        headers = {'Idempotency-Key': idempotency_key} if idempotency_key else {}
         try:
             return self.request('POST', self.base_url + endpoint, check_status=False,
-                                timeout=(10, 30), allow_redirects=False, **kwargs)
+                                timeout=(10, 30), allow_redirects=False, headers=headers, **kwargs)
         except RequestError as error:
             raise SubmissionUncertain(str(error), error.status_code, error.body) from None
 

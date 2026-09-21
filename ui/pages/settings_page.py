@@ -789,6 +789,16 @@ class SettingsPage(QWidget):
         row.addWidget(self.last_model_sync, 1)
         row.addWidget(self.sync_models_button)
         group.addSettingCard(CustomSettingCard('上游模型目录', host, FIF.SYNC))
+        diag_host = QWidget()
+        diag_row = QHBoxLayout(diag_host)
+        diag_row.setContentsMargins(0, 0, 0, 0)
+        self.diagnostics_hint = CaptionLabel(tr('将日志、脱敏配置与环境信息打包为 zip，便于排查问题'))
+        self.diagnostics_hint.setWordWrap(True)
+        self.diagnostics_button = PushButton(FIF.SAVE, tr('导出诊断包'))
+        self.diagnostics_button.clicked.connect(self._export_diagnostics)
+        diag_row.addWidget(self.diagnostics_hint, 1)
+        diag_row.addWidget(self.diagnostics_button)
+        group.addSettingCard(CustomSettingCard(tr('诊断包'), diag_host, FIF.SAVE))
 
     def _build_pool(self):
         group = self._group("模型池")
@@ -839,7 +849,7 @@ class SettingsPage(QWidget):
         self.watch_interval = self._spin(group, '无人值守监听（秒）', ('task_strategy', 'watch_interval'), 0, 86400)
         self.watch_interval.setToolTip('队列结束后按此间隔自动重扫目录；发现新提示词会自动开始下一批，适合 7×24 无人值守。0 = 关闭')
         self.disk_cleanup_days = self._spin(group, '临时缓存保留（天）', ('task_strategy', 'disk_cleanup_days'), 0, 90)
-        self.disk_cleanup_days.setToolTip('清理视频保存目录中超过保留期的下载临时文件；0 表示停止清理，仅检查剩余空间')
+        self.disk_cleanup_days.setToolTip('仅清理输出目录内超过保留期的下载临时文件（含联接/符号链接防护，绝不越出输出目录）；0 表示停止清理，仅检查剩余空间')
         self.disk_min_free_gb = self._spin(group, '磁盘剩余预警（GB）', ('task_strategy', 'disk_min_free_gb'), 1, 200)
         self.disk_min_free_gb.setToolTip('输出盘剩余空间低于该值时写入预警日志并加强清理')
         self.max_retry.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
@@ -971,6 +981,22 @@ class SettingsPage(QWidget):
             self.license_status_label.setText(self._license_text())
         self._refresh_license_badge()
         InfoBar.success(tr('激活成功'), tr('已激活'), parent=self.window(), duration=4500)
+
+    def _export_diagnostics(self):
+        from PyQt5.QtWidgets import QFileDialog
+        from qfluentwidgets import InfoBar
+        from core.diagnostics_pack import build_diagnostics_pack
+        default = 'Yanlin-diagnostics-' + datetime.now().strftime('%Y%m%d-%H%M') + '.zip'
+        path, _ = QFileDialog.getSaveFileName(self, tr('导出诊断包'), default, 'Zip (*.zip)')
+        if not path:
+            return
+        try:
+            target = build_diagnostics_pack(self.config_manager, path)
+        except Exception as error:
+            InfoBar.error(tr('导出失败'), str(error), parent=self.window(), duration=6500)
+            return
+        self.log_callback(f'诊断包已导出：{target}', 'success')
+        InfoBar.success(tr('已导出诊断包'), str(target), parent=self.window(), duration=6000)
 
     def _build_schedule(self):
         group = self._group('定时执行')

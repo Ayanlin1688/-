@@ -2,6 +2,8 @@
 
 - 任何网络/解析异常一律静默返回 None（检查永不打扰正常使用）。
 - fetch 参数仅供测试注入；生产走 urllib。
+- 返回结果携带资产 sha256（若清单提供）：未来自动更新下载产物时必须校验；
+  建议发布流程同时对该清单做签名（后续版本接入）。
 """
 from __future__ import annotations
 
@@ -39,9 +41,11 @@ def check_for_update(manifest_url, timeout=10, fetch=None):
         if not version or not is_newer(version):
             return None
         url = ''
+        sha256 = ''
         assets = data.get('assets') or []
         if isinstance(assets, list) and assets and isinstance(assets[0], dict):
             url = str(assets[0].get('download_url') or assets[0].get('file') or '')
-        return {'version': version, 'url': url, 'notes': str(data.get('notes') or '')}
+            sha256 = str(assets[0].get('sha256') or '')
+        return {'version': version, 'url': url, 'notes': str(data.get('notes') or ''), 'sha256': sha256}
     except Exception:
         return None

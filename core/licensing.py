@@ -1,11 +1,14 @@
-"""离线许可（最小版）：试用期 + 签名激活码校验 + 启动闸门。
+"""离线许可：试用期 + 激活码校验 + 启动闸门。
 
-激活码格式：YL1.<base64url(payload)>.<base64url(hmac_sha256(payload, SECRET))>
+激活码格式（两种）：
+- YL2（推荐，非对称）：YL2.<base64url(payload)>.<base64url(rsa_pkcs1v15_sha256(payload))>
+  私钥仅保留在厂商工具；应用内嵌公钥验签，第三方无法伪造。
+- YL1（遗留，共享密钥）：YL1.<base64url(payload)>.<base64url(hmac_sha256(payload, SECRET))>
+  仅供演示/兼容；对外发码请使用 --private-key 生成 YL2。
 payload JSON：{"customer": "...", "edition": "pro", "expires": "YYYY-MM-DD" 或 ""}
 
-- 校验完全离线；后续可平滑升级为在线激活服务或非对称签名（接口保持不变）。
-- 生成工具：scripts/make_license.py（厂商侧使用；最小版为共享密钥方案，
-  对外发布前建议升级：私钥只留在厂商工具、应用内仅放公钥验签）。
+- 校验完全离线；后续可平滑升级为在线激活服务（接口保持不变）。
+- 发码工具：scripts/make_license.py --private-key <私钥.pem>
 """
 from __future__ import annotations
 
@@ -16,7 +19,21 @@ import json
 from datetime import date, timedelta
 
 KEY_PREFIX = 'YL1'
+RSA_PREFIX = 'YL2'
 DEFAULT_TRIAL_DAYS = 14
+
+# YL2 验签公钥（2026-09 生成；私钥仅保留在厂商侧，不入仓库）。
+_VERIFY_PUBLIC_PEM = """-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAvaed6WOUWl4tP/5smtM6
+fGh+OILl5brlrex+9uLqZVbibMTKYUu74HXlQn/w+gtRzs09GEI+wzMmMs9lCy0M
+2J6L1dvyddkA5mjLPJNxhrrM0PgwPpw65HJisczCZw9QFBXbGNGjYrBxisFbMRlc
+e9qOtr67VbGvEdf/OGAkhr5TUjiPBo+v4RuxpSOQDLufZVWjK1fwBQk8hmpi4FgR
+UazzSsw/+xse4i40kAqFCiMi1RoBI8IsBzMzTFyfC6m3KddYnVRNOziFc38WaPVz
+LP1JNkbU4MbU0ytS6wg+90v14osDklET+uZhyCBLoz/G4QLBsqPTW+4TPA6MdSYC
+fiIRDtPCBaHudDmwmxJrBAcdUY5Sh72RWaFBEU4BZ80BaGHdnezXnnBsqlGOzj7W
+xlQw2AHp75Tl1S5CYzt3mc+i6dfJbsCKTpNlsUVqCXv5Vlk6MNLOlBBq+QAZf8mu
+jrhyPiJ4SFv2GLXqqMqbPv+qVB1g3a/tRJYQhXR/jSN1AgMBAAE=
+-----END PUBLIC KEY-----"""
 
 # 最小版共享密钥：仅用于离线验证；正式对外发布前建议升级为非对称签名或在线激活。
 _VERIFY_SECRET = b'yanlin-smart-creation-matrix.license.v1'
@@ -35,6 +52,30 @@ def _sign(payload: bytes) -> str:
     return _b64(hmac.new(_VERIFY_SECRET, payload, hashlib.sha256).digest())
 
 
+def _verify_rsa(payload: bytes, signature: bytes, public_pem: str | None = None) -> bool:
+    """用内嵌公钥验证 RSA PKCS#1 v1.5 (SHA-256) 签名；任何异常按验证失败处理。"""
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        public_key = serialization.load_pem_public_key((public_pem or _VERIFY_PUBLIC_PEM).encode('utf-8'))
+        public_key.verify(signature, payload, padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except Exception:
+        return False
+
+
+def make_key_asymmetric(customer: str, edition: str = 'pro', expires: str = '', private_key_pem=b'') -> str:
+    """生成 YL2 非对称签名激活码（厂商工具使用；应用侧不需要此函数）。"""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    payload = json.dumps({'customer': customer, 'edition': edition, 'expires': expires},
+                         ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    raw = private_key_pem if isinstance(private_key_pem, bytes) else str(private_key_pem).encode('utf-8')
+    private_key = serialization.load_pem_private_key(raw, password=None)
+    signature = private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
+    return f'{RSA_PREFIX}.{_b64(payload)}.{_b64(signature)}'
+
+
 def make_key(customer: str, edition: str = 'pro', expires: str = '') -> str:
     """生成激活码（厂商工具；expires 为空表示不过期）。"""
     payload = json.dumps({'customer': customer, 'edition': edition, 'expires': expires},
@@ -46,15 +87,22 @@ def parse_key(key: str) -> dict:
     """解析并校验激活码；非法时抛出 ValueError（中文原因）。"""
     text = (key or '').strip().replace(' ', '')
     parts = text.split('.')
-    if len(parts) != 3 or parts[0] != KEY_PREFIX:
+    if len(parts) != 3 or parts[0] not in {KEY_PREFIX, RSA_PREFIX}:
         raise ValueError('激活码格式不正确')
     try:
         payload = _unb64(parts[1])
-        signature = parts[2]
     except Exception:
         raise ValueError('激活码格式不正确')
-    if not hmac.compare_digest(_sign(payload), signature):
-        raise ValueError('激活码校验失败（签名不匹配）')
+    if parts[0] == RSA_PREFIX:
+        try:
+            signature = _unb64(parts[2])
+        except Exception:
+            raise ValueError('激活码格式不正确')
+        if not _verify_rsa(payload, signature):
+            raise ValueError('激活码校验失败（签名不匹配）')
+    else:
+        if not hmac.compare_digest(_sign(payload), parts[2]):
+            raise ValueError('激活码校验失败（签名不匹配）')
     try:
         data = json.loads(payload.decode('utf-8'))
     except ValueError:

@@ -49,6 +49,7 @@ class HistoryStore:
                 conn.close()
             self._load()
             self._trim()
+            self.maintain()
 
     # —— 连接与落盘（按操作开关，不持有长期句柄） ——
     def _open(self):
@@ -114,6 +115,28 @@ class HistoryStore:
         finally:
             conn.close()
         return extra
+
+    def maintain(self, interval_days=7):
+        """定期整理（默认 7 天一次）：VACUUM 回收空间并记录整理时间。"""
+        with self.lock:
+            conn = self._open()
+            try:
+                conn.execute('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)')
+                row = conn.execute("SELECT value FROM meta WHERE key='last_maintain'").fetchone()
+                now = time.time()
+                if row:
+                    try:
+                        if now - float(row[0]) < max(1, int(interval_days)) * 86400:
+                            return False
+                    except (TypeError, ValueError):
+                        pass
+                conn.execute('VACUUM')
+                conn.execute("INSERT INTO meta(key, value) VALUES('last_maintain', ?) "
+                             'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (str(now),))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
 
     # —— 对外 ——
     def upsert(self, record):

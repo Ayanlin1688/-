@@ -1,9 +1,11 @@
 """One task owns its clients and retries only the failed stage."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import time
 
+from .aigc import write_aigc_metadata
 from .api_client import ApiClient, SubmissionUncertain
 from .http_client import Cancelled, extract
 from .image_uploader import ImageUploader
@@ -173,6 +175,8 @@ class TaskExecution:
                         self.intent_sent = False
                         self.owner.ledger.save(self.task, 'rejected')
                         self.task.pop('ledger_id', None)
+                        self.task.pop('submit_idempotency_key', None)
+                        self.task.pop('submit_idempotency_signature', None)
                     model_failure = self.phase in {'validation', 'submit'} or remote_failed
                     in_pool = self.model in self.pool.names
                     remaining = self.pool.failed(self.model, force_cooldown=bool(failover)) if model_failure and in_pool else 0
@@ -191,6 +195,8 @@ class TaskExecution:
                         self.task.update(task_id='', result_url='', result_path='', filename='')
                         self.task.pop('remote_failed', None)
                         self.task.pop('ledger_id', None)
+                        self.task.pop('submit_idempotency_key', None)
+                        self.task.pop('submit_idempotency_signature', None)
                         self.intent_sent = False
                     # Known IDs always keep their original model for query/download recovery.
                     if model_failure and not self.task.get('task_id') and not self.task.get('model_locked'):
@@ -290,7 +296,11 @@ class TaskExecution:
                         for row in self.owner.tasks)
 
                 outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                waiting_logged = False
                 while live_sibling(saved) and outcome in {'busy', 'unknown'}:
+                    if not waiting_logged:
+                        self.log(f'{prefix}：同文案任务仍在收尾，等待其结束后自动重试提交（防重复扣费）', 'warning')
+                        waiting_logged = True
                     if outcome == 'unknown' and saved.get('signature') == task['signature']:
                         break  # 同一请求的活跃兄弟：交给下方“重复”降级处理，不再等待。
                     # 不同参考图/参数的同文案请求命中瞬时占用窗口（含 submitting）：
@@ -347,7 +357,14 @@ class TaskExecution:
                 self.owner.ledger.save(task, 'submitting')
                 self.intent_sent = True
                 self.log(f'{prefix}：提交创建任务，模型={self.model}')
-                task['task_id'] = client.create_task(self.model, prompt, urls, params, catalog)
+                submit_key = task.get('submit_idempotency_key')
+                if not submit_key or task.get('submit_idempotency_signature') != task.get('signature'):
+                    material = f"{task.get('signature', '')}|attempt-{len(task.get('attempts', []))}"
+                    submit_key = 'yl-' + hashlib.sha256(material.encode('utf-8')).hexdigest()[:40]
+                    task['submit_idempotency_key'] = submit_key
+                    task['submit_idempotency_signature'] = task.get('signature')
+                task['task_id'] = client.create_task(self.model, prompt, urls, params, catalog,
+                                                     idempotency_key=submit_key)
                 task['attempts'][-1]['task_id'] = task['task_id']
                 self.publish(record=True, submitted_image_count=len(urls), status='queued')
                 if getattr(client, 'last_submit_status', 200) == 429 or getattr(client, 'last_submit_status', 200) >= 500:
@@ -362,6 +379,7 @@ class TaskExecution:
             poll_started = time.monotonic()
             previous_elapsed = float(task.get('poll_elapsed_seconds') or 0)
             deadline = poll_started + float(self.config['workspace'].get('poll_timeout', 7200))
+            poll_interval = max(.05, float(self.config['workspace']['poll_interval']))
             last_progress = None
             unchanged_since = poll_started
             last_stall_notice = poll_started
@@ -385,6 +403,7 @@ class TaskExecution:
                 if result['progress'] != last_progress:
                     last_progress = result['progress']
                     unchanged_since = last_stall_notice = now
+                    poll_interval = max(.05, float(self.config['workspace']['poll_interval']))
                 elif now - unchanged_since >= 60 and now - last_stall_notice >= 60:
                     self.log(f'{prefix}：上游进度未更新，任务仍在处理中，请耐心等待', 'warning')
                     last_stall_notice = now
@@ -399,7 +418,8 @@ class TaskExecution:
                         raise RuntimeError('完成响应没有视频下载地址')
                     self.publish(record=True, status='downloading', result_url=result['result_url'])
                     break
-                self.control.delay(max(.01, float(self.config['workspace']['poll_interval'])))
+                self.control.delay(poll_interval)
+                poll_interval = min(30.0, poll_interval * 1.5)
         self.phase = 'download'
         self.control.check()
         self.log(f'{prefix}：生成完成，开始下载...', 'success')
@@ -409,3 +429,8 @@ class TaskExecution:
         task['result_path'] = downloader.download_video(task['result_url'], task['output_dir'], task['filename'],
                                                        generation_key=(self.owner.scope, task['task_id']))
         task['size_bytes'] = Path(task['result_path']).stat().st_size
+        if self.config.get('download_settings', {}).get('aigc_metadata', True):
+            try:
+                write_aigc_metadata(task['result_path'], model=self.model, task_id=task.get('task_id', ''))
+            except Exception as error:
+                self.log(f'提示：AIGC 标注写入失败（不影响下载结果）：{error}', 'warning')

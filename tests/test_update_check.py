@@ -39,6 +39,14 @@ class UpdateCheckTests(unittest.TestCase):
         result = check_for_update('https://x', fetch=fetch)
         self.assertEqual(result['url'], 'YanlinMatrix-v99.zip')
 
+    def test_asset_sha256_passthrough(self):
+        def fetch(url):
+            return {'version': '99.0.0', 'assets': [{'file': 'pkg.zip', 'sha256': 'abc123def456'}]}
+        result = check_for_update('https://x', fetch=fetch)
+        self.assertEqual(result['sha256'], 'abc123def456')
+        empty = check_for_update('https://x', fetch=lambda url: {'version': '99.0.0'})
+        self.assertEqual(empty['sha256'], '')
+
 
 if __name__ == '__main__':
     unittest.main()

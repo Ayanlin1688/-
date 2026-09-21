@@ -124,6 +124,24 @@ def run_installer() -> None:
     subprocess.check_call([str(iscc), f'/DAppVersion={APP_VERSION}', str(ROOT / 'packaging' / 'installer.iss')])
 
 
+def maybe_sign(paths) -> None:
+    """可选代码签名：配置环境变量 YANLIN_SIGN_COMMAND（含 {file} 占位）后自动签名。
+
+    示例（signtool）：
+      YANLIN_SIGN_COMMAND=signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx {file}
+    """
+    template = os.environ.get('YANLIN_SIGN_COMMAND', '').strip()
+    if not template:
+        print('[sign] 未配置 YANLIN_SIGN_COMMAND，跳过代码签名（正式发布前请配置签名证书）')
+        return
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            continue
+        subprocess.check_call(template.replace('{file}', str(path)), shell=True)
+        print(f'[sign] 已签名：{path}')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-build', action='store_true', help='跳过 PyInstaller，直接复用现有 dist 产物')
@@ -139,8 +157,10 @@ def main() -> int:
     manifest = make_manifest(zip_path)
     print(f'[ok] 便携包：{zip_path}')
     print(f'[ok] 版本清单：{manifest}')
+    maybe_sign([bundle / f'{EXE_NAME}.exe', zip_path])
     if args.installer:
         run_installer()
+        maybe_sign([DIST / f'YanlinMatrix-Setup-{APP_VERSION}.exe'])
     return 0
 
 
