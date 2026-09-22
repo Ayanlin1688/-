@@ -329,3 +329,18 @@ class SurfaceShadow(QGraphicsEffect):
         rect = QRectF(offset.x(), offset.y(), pixmap.width()/dpr, pixmap.height()/dpr)
         draw_shadow(painter, rect, self.hover, self.primary)
         painter.drawPixmap(offset, pixmap)
+
+
+# 任务监看带 / 状态胶囊配色（浅色, 深色）双色对：颜色单一来源集中于此，
+# 组件只引用键名（测试护栏：ui/ 其余文件的颜色字面量需保持收敛）。
+MONITOR = {
+    'live': ('#3E63C8', '#9CC2F5'),
+    'title': ('#17191C', '#F4F5F7'),
+    'title_error': ('#B3261E', '#F56C6C'),
+    'dim': ('#5D6570', '#A9B1C1'),
+    'state_failed': ('#B3261E', '#F1A0A0'),
+    'state_completed': ('#2E8B57', '#7EDC9F'),
+    'state_active': ('#3E63C8', '#9CC2F5'),
+    'state_wait': ('#B7791F', '#EFC078'),
+    'state_idle': ('#5D6570', '#A9B1C1'),
+}

@@ -1,6 +1,6 @@
 """Compact Fluent workspace task table."""
 from pathlib import Path
-from PyQt5.QtCore import Qt, QRectF, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QListWidgetItem, QSizePolicy
 from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, PrimaryPushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF)
@@ -247,10 +247,12 @@ class WorkspaceTaskTable(TaskQueuePanel):
         tools=QHBoxLayout(); tools.setContentsMargins(16,10,16,10); tools.setSpacing(8)
         tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
         self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('重试中'),tr('等待冷却'),tr('已完成'),tr('失败'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
-        self.reset_models_button=style_button(PushButton(tr('重置模型识别'))); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested); tools.addWidget(self.reset_models_button, 0, Qt.AlignVCenter)
-        self.params_button=style_button(PushButton(FIF.SETTING,tr('生成参数'))); self.params_button.setFixedHeight(32); tools.addWidget(self.params_button, 0, Qt.AlignVCenter)
+        # 低频与破坏性操作收进「更多操作」菜单，头部只留高频入口（筛选 + 匹配详情）。
+        self.reset_models_button=style_button(PushButton(tr('重置模型识别'))); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested)
+        self.params_button=style_button(PushButton(FIF.SETTING,tr('生成参数'))); self.params_button.setFixedHeight(32)
         self.match_button=style_button(PushButton(FIF.SEARCH,tr('匹配详情'))); self.match_button.setFixedHeight(32); tools.addWidget(self.match_button, 0, Qt.AlignVCenter)
-        self.cancel_button=style_button(PushButton(tr('取消全部'))); self.cancel_button.setFixedHeight(32); tools.addWidget(self.cancel_button, 0, Qt.AlignVCenter)
+        self.cancel_button=style_button(PushButton(tr('取消全部'))); self.cancel_button.setFixedHeight(32)
+        self.more_button=style_button(PushButton(FIF.DOWN,tr('更多操作'))); self.more_button.setFixedHeight(32); self.more_button.clicked.connect(self._open_more_menu); tools.addWidget(self.more_button, 0, Qt.AlignVCenter)
         lay.addLayout(tools)
         self._header_host=QWidget(); self._header_host.setFixedHeight(34); self._header_grid=QGridLayout(self._header_host); self._header_grid.setContentsMargins(16,0,16,0); self._header_grid.setHorizontalSpacing(CELL_SPACING)
         self._apply_header_mode_style()
@@ -396,6 +398,21 @@ class WorkspaceTaskTable(TaskQueuePanel):
         for i,t in enumerate(self._tasks):
             it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,56)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
         self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); products={t.get('product') or '未分组' for t in tasks}; done=sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组')==p) for p in products); self.product_progress_label.setText(f"{tr('产品')} {done}/{len(products)}"); self._filter(self.filter_box.currentText()); self._apply_column_widths()
+    def build_more_menu(self):
+        """构建「更多操作」菜单（独立出来便于复用与测试）。"""
+        menu = RoundMenu(parent=self)
+        for text, handler in ((tr('重置模型识别'), self.reset_models_requested.emit),
+                              (tr('生成参数'), self.params_button.click),
+                              (tr('取消全部'), self.cancel_button.click)):
+            action = Action(text, menu)
+            action.triggered.connect(lambda checked=False, _handler=handler: _handler())
+            menu.addAction(action)
+        return menu
+
+    def _open_more_menu(self):
+        menu = self.build_more_menu()
+        menu.exec(self.more_button.mapToGlobal(QPoint(0, self.more_button.height() + 4)))
+
     def _filter(self,s):
         for i,t in enumerate(self._tasks):
             hidden=(s!=tr('全部') and tr(STATUS_TEXT.get(t.get('status','waiting'),'等待中'))!=s and not(s==tr('生成中') and t.get('status') in ACTIVE))

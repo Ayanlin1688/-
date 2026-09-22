@@ -6,8 +6,8 @@ from pathlib import Path
 import threading
 import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy
-from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget
+from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy, QFrame
+from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget, MessageBoxBase, SubtitleLabel
 from ..components.studio_dialog import StudioDialog
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
@@ -31,9 +31,22 @@ from ..widgets.workspace_log import WorkspaceLog
 from ..widgets.params_card import ParamsCard
 from ..widgets.recent_completed_panel import RecentCompletedPanel
 from ..widgets.workspace_task_table import WorkspaceTaskTable
+from ..widgets.task_monitor_bar import TaskMonitorBar
 from ..widgets.workspace_summary import WorkspaceSummary, directory_metrics
 from ..widgets.workspace_directory_bar import WorkspaceDirectoryBar
 from ..widgets.workspace_surface import ImagePreview, BreathingDot, label, style_button, BLUE, GREEN, MUTED, RED
+
+
+class _CancelAllDialog(MessageBoxBase):
+    """取消全部任务的二次确认：破坏性操作不再一点即发。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.viewLayout.addWidget(SubtitleLabel(tr('取消全部任务？')))
+        self.viewLayout.addWidget(CaptionLabel(
+            tr('正在进行的任务将停止本地处理，远端任务可能继续执行；排队中的任务将被跳过。')))
+        self.yesButton.setText(tr('确认取消'))
+        self.cancelButton.setText(tr('返回'))
 
 
 class WorkspacePage(QWidget):
@@ -64,8 +77,10 @@ class WorkspacePage(QWidget):
         manager = self.task_manager
         self.start_button.clicked.connect(lambda: self.start_generation(interactive=True))
         self.pause_button.clicked.connect(self.toggle_pause)
-        self.cancel_button.clicked.connect(manager.cancel_all)
+        self.cancel_button.clicked.connect(self._confirm_cancel_all)
         self.current_task.skip_button.clicked.connect(manager.skip_current)
+        self.task_monitor.skip_clicked.connect(manager.skip_current)
+        self.task_monitor.details_clicked.connect(self.open_controls)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
         self.current_task.resolve_button.clicked.connect(lambda: self.resolve_submission(self.current_task.task_info))
         self.queue_panel.task_selected.connect(manager.select_current)
@@ -77,6 +92,7 @@ class WorkspacePage(QWidget):
         manager.task_list_updated.connect(self._tasks_updated)
         manager.current_task_changed.connect(self._current_changed)
         manager.task_progress.connect(self.current_task.update_progress)
+        manager.task_progress.connect(self.task_monitor.update_progress)
         manager.log_message.connect(self.append_log)
         manager.record_updated.connect(self._record)
         manager.running_changed.connect(self._running_changed)
@@ -116,12 +132,16 @@ class WorkspacePage(QWidget):
         self.status_line = QHBoxLayout(); self.status_line.setSpacing(7)
         self.status_dot = BreathingDot(BLUE, active=False); self.status_dot.setFixedSize(14, 18)
         self.status_text = label(tr('就绪'), 12, '#9CA3AF', True)
-        self.status_line.addWidget(self.status_dot); self.status_line.addWidget(self.status_text)
         self.product_status = label(f"{tr('产品')} 0/0", 12, '#9CA3AF'); self.task_status = label(f"{tr('任务')} 0/0", 12, '#9CA3AF')
         self.concurrent_status = label(f"{tr('并发')} 0", 12, '#9CA3AF'); self.elapsed_status = label(f"{tr('已运行')} 00:00:00", 12, '#9CA3AF', mono=True)
-        for widget in (self.product_status, self.task_status, self.concurrent_status, self.elapsed_status):
-            separator = label('·', 12, '#4B5563')
-            self.status_line.addWidget(separator); self.status_line.addWidget(widget)
+        # 状态胶囊：就绪/运行 与 已运行时长 合并为一条胶囊；产品/任务/并发数字改由概览卡区承载。
+        self.status_pill = QFrame(); self.status_pill.setObjectName('statusPill'); self.status_pill.setFixedHeight(28)
+        self.status_pill.setStyleSheet('#statusPill{background:rgba(91,141,239,.10); border:1px solid rgba(91,141,239,.28); border-radius:14px;}')
+        pill_layout = QHBoxLayout(self.status_pill); pill_layout.setContentsMargins(12, 0, 14, 0); pill_layout.setSpacing(7)
+        pill_layout.addWidget(self.status_dot); pill_layout.addWidget(self.status_text); pill_layout.addWidget(self.elapsed_status)
+        self.status_line.addWidget(self.status_pill)
+        for widget in (self.product_status, self.task_status, self.concurrent_status):
+            widget.hide()
         header.insertLayout(1, self.status_line)
         header.addStretch(1)
         self.api_dot = BreathingDot(MUTED); self.api_status = label(tr('未检测'), 11)
@@ -142,6 +162,9 @@ class WorkspacePage(QWidget):
         self.directory_bar = WorkspaceDirectoryBar()
         self.directory_bar.choose_requested.connect(self.choose_directory)
         root.addWidget(self.directory_bar)
+        # 常驻任务监看带：当前任务与实时进度提升到主界面第一屏（完整详情仍在弹窗）。
+        self.task_monitor = TaskMonitorBar()
+        root.addWidget(self.task_monitor)
         self.product_progress_label = label('当前：—，总进度：产品 0/0', 11)
         self.product_progress = ProgressBar()
         self.product_progress.hide()
@@ -274,7 +297,7 @@ class WorkspacePage(QWidget):
         self._update_status_strip(tasks, elapsed, running)
 
     def _update_status_strip(self, tasks, elapsed, running):
-        """顶栏实时状态：批量生成中 · 产品 x/y · 任务 a/b · 并发 n · 已运行 hh:mm:ss"""
+        """顶栏实时状态：就绪/批量生成中 · 已运行时长（产品/任务/并发数字由概览卡区展示）。"""
         self.status_dot.active = running
         self.status_dot.update()
         self.status_text.setText(tr('批量生成中') if running else tr('就绪'))
@@ -288,6 +311,15 @@ class WorkspacePage(QWidget):
         self.concurrent_status.setText(f"{tr('并发')} {active}")
         seconds = int(elapsed)
         self.elapsed_status.setText(f"{tr('已运行')} {seconds//3600:02d}:{seconds%3600//60:02d}:{seconds%60:02d}")
+
+    def _confirm_cancel_all(self):
+        """取消全部：破坏性操作先确认；未运行时直接完成（无副作用）。"""
+        if not self.task_manager.is_running:
+            self.task_manager.cancel_all()
+            return
+        dialog = _CancelAllDialog(self)
+        if dialog.exec():
+            self.task_manager.cancel_all()
 
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks
@@ -575,6 +607,8 @@ class WorkspacePage(QWidget):
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)
         self.current_task.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
+        self.task_monitor.update_task(index, task)
+        self.task_monitor.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
         self.queue_panel.select_task(index)
         product = task.get('product') or '未分组'
         task_index = task.get('product_task_index', index + 1)
@@ -601,11 +635,14 @@ class WorkspacePage(QWidget):
         self.queue_panel.update_tasks(displayed)
         self.current_task.update_counts(sum(t.get('status') in ACTIVE for t in tasks),
                                         sum(t.get('status', 'waiting') == 'waiting' for t in tasks))
+        self.task_monitor.update_counts(sum(t.get('status') in ACTIVE for t in tasks),
+                                        sum(t.get('status', 'waiting') == 'waiting' for t in tasks))
         total = len(tasks)
         self.product_progress.setRange(0, max(1, total))
         self.product_progress.setValue(sum(task.get('status') in TERMINAL for task in tasks))
         if not tasks:
             self.product_progress_label.setText('当前：—，总进度：产品 0/0')
+            self.task_monitor.show_idle()
         self._update_summary()
 
     def _record(self, record):
