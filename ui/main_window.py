@@ -256,6 +256,9 @@ class MainWindow(FluentWindow):
                 setter(th['accent'], th['accent'])
                 self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
+            self._guard_leaf_nav_item(item, inner)
+            # 点击后延迟一拍校正尺寸：吸收原生在两态切换边缘的任何小动作（幂等）。
+            item.clicked.connect(lambda *args, _self=self: QTimer.singleShot(300, _self._settle_nav_pane))
         # 分组：在「设置」前插入分隔符（创作 / 系统 两组）。
         try:
             settings_item = self.navigationInterface.widget(self.settings_page.objectName())
@@ -468,6 +471,28 @@ class MainWindow(FluentWindow):
                 painter.end()
 
         inner.paintEvent = paint
+
+    @staticmethod
+    def _guard_leaf_nav_item(item, inner) -> None:
+        """叶子导航项防御：禁用 QFluentWidgets 的展开/收起尺寸动画。
+
+        本主题下树节点 sizeHint 宽度为 0；展开态点击会触发 setExpanded 的几何动画，
+        将节点收缩到 0 宽——被点击的导航项随即从界面消失（实测复现“点击后就消失了”）。
+        三个导航项均为叶子节点、没有可展开的子列表：仅保留展开状态与箭头动画。
+        """
+        original = item.setExpanded
+
+        def safe_set_expanded(is_expanded, ani=False, _item=item, _inner=inner, _orig=original):
+            if _item.isLeaf():
+                _item.isExpanded = bool(is_expanded)
+                try:
+                    _inner.setExpanded(bool(is_expanded))
+                except Exception:
+                    pass
+                return
+            return _orig(is_expanded, ani)
+
+        item.setExpanded = safe_set_expanded
 
     def _harden_titlebar_drag(self) -> None:
         """标题栏拖拽加固：7px 位移阈值，杜绝点击手抖被误判为“拖动窗口”。
