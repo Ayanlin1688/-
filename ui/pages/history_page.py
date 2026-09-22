@@ -85,8 +85,10 @@ class HistoryPage(QWidget):
         self.footer.setVisible(has_records)
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.records))
+        self._row_status = []
         for row, task in enumerate(self.records):
             status = tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
+            self._row_status.append(status)
             values = [str(len(self.records)-row), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
                       task.get('created_at', '').replace('T', '\n') or '—', task.get('finished_at', '').replace('T', '\n') or '—',
                       f"{task['size_bytes']/1024/1024:.1f} MB" if task.get('size_bytes') else '—']
@@ -132,5 +134,7 @@ class HistoryPage(QWidget):
         open_local(folder, self.log_callback, folder=True)
 
     def _filter(self, status):
+        statuses = getattr(self, '_row_status', [])
         for row in range(self.table.rowCount()):
-            self.table.setRowHidden(row, status != tr('全部状态') and self.table.item(row, 4).text() != status)
+            text = statuses[row] if row < len(statuses) else ''
+            self.table.setRowHidden(row, status != tr('全部状态') and text != status)

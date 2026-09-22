@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 from PyQt5.QtTest import QTest
 from core.config_manager import ConfigManager
 from ui.main_window import MainWindow
@@ -40,7 +40,10 @@ class PipelineUiTests(unittest.TestCase):
             self.assertFalse(workspace.start_button.isEnabled())
             wait_until(lambda: not workspace.task_manager.is_running, timeout=90000)
             self.assertEqual(window.history_page.table.rowCount(), 1)
-            self.assertEqual(window.history_page.table.item(0, 4).text(), '已完成')
+            status_cell = window.history_page.table.cellWidget(0, 4)
+            status_tag = status_cell.findChild(QLabel) if status_cell is not None else None
+            self.assertIsNotNone(status_tag, '状态列应渲染为胶囊标签')
+            self.assertEqual(status_tag.text(), '已完成')
             self.assertEqual(workspace.recent_panel.list.count(), 1)
             record = manager.history_records()[0]
             target = Path(record['result_path'])
