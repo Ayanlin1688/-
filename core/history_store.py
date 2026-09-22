@@ -39,6 +39,7 @@ class HistoryStore:
         self.lock = threading.RLock()
         self._cache = []
         self._positions = {}
+        self.last_maintain_error = ''  # 最近一次整理失败原因（空 = 正常）
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock:
             conn = self._open()
@@ -117,9 +118,16 @@ class HistoryStore:
         return extra
 
     def maintain(self, interval_days=7):
-        """定期整理（默认 7 天一次）：VACUUM 回收空间并记录整理时间。"""
+        """定期整理（默认 7 天一次）：VACUUM 回收空间并记录整理时间。
+
+        整理失败（磁盘满、被占用等）不阻断启动：保留错误详情并留待下次重试。
+        """
         with self.lock:
-            conn = self._open()
+            try:
+                conn = self._open()
+            except sqlite3.Error as error:
+                self.last_maintain_error = str(error)
+                return False
             try:
                 conn.execute('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)')
                 row = conn.execute("SELECT value FROM meta WHERE key='last_maintain'").fetchone()
@@ -134,9 +142,16 @@ class HistoryStore:
                 conn.execute("INSERT INTO meta(key, value) VALUES('last_maintain', ?) "
                              'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (str(now),))
                 conn.commit()
+                self.last_maintain_error = ''
                 return True
+            except (sqlite3.Error, OSError) as error:
+                self.last_maintain_error = str(error)
+                return False
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     # —— 对外 ——
     def upsert(self, record):
@@ -183,7 +198,10 @@ class HistoryStore:
         with self.lock:
             if limit is None:
                 return list(self._cache)
-            return list(self._cache[-max(0, int(limit)):])
+            count = max(0, int(limit))
+            if count == 0:
+                return []
+            return list(self._cache[-count:])
 
     def count(self):
         with self.lock:

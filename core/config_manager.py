@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -191,9 +192,11 @@ class ConfigManager:
                 self.path = LEGACY_CONFIG
         self.config: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self.error_callback = None
+        self.load_error = ''  # 最近一次加载失败原因（供界面提示；每次加载先清空）
         self._history_store: HistoryStore | None = None
 
     def load_config(self) -> dict[str, Any]:
+        self.load_error = ''
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
@@ -253,8 +256,20 @@ class ConfigManager:
                 if all(not p.startswith('demo:') for p in images) and self.config['paths']['prompts']:
                     key = str((Path(self.config['paths']['prompts']) / name).resolve())
                     self.config['match_overrides'].setdefault(key, images)
-        except (OSError, ValueError, json.JSONDecodeError):
+        except FileNotFoundError:
+            # 首次启动：配置文件尚未生成，静默使用默认值。
             self.config = copy.deepcopy(DEFAULT_CONFIG)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            # 配置损坏：回退默认值前先备份原件，并把原因留给界面提示（不静默覆盖用户数据）。
+            self.config = copy.deepcopy(DEFAULT_CONFIG)
+            self.load_error = f'配置文件无法读取（{error}），已回退默认设置'
+            try:
+                if self.path.is_file():
+                    backup = self.path.with_name(self.path.name + '.corrupt-' + time.strftime('%Y%m%d-%H%M%S'))
+                    shutil.copy2(self.path, backup)
+                    self.load_error += f'；原文件已备份为 {backup.name}'
+            except OSError:
+                pass
         return copy.deepcopy(self.config)
 
     def save_config(self, config: dict[str, Any] | None = None) -> None:

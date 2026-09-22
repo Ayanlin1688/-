@@ -330,6 +330,12 @@ class WorkspaceTaskTable(TaskQueuePanel):
             self.list.setVisible(bool(incoming)); self.empty_label.setVisible(not incoming)
             self._filter(self.filter_box.currentText())
             return
+        # 显式销毁旧行控件：list.clear() 只删条目，setItemWidget 挂载的部件不会随之释放。
+        for row in self.rows:
+            try:
+                row.setParent(None); row.deleteLater()
+            except RuntimeError:
+                pass
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
             it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,56)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it

@@ -1,6 +1,6 @@
 """一键诊断包：日志 + 脱敏配置 + 环境信息 + 最近任务摘要 → 单文件 zip。
 
-- 密钥类字段（api_key / *_key）在打包前统一替换为 `***`，日志按新到旧择取。
+- 密钥类字段（api_key / *_key / key / token / secret / password）在打包前统一替换为 `***`，日志按新到旧择取。
 - 供售后支持与远程排障使用；也可作为用户自助排查的素材。
 """
 from __future__ import annotations
@@ -15,15 +15,17 @@ from .version import APP_NAME, APP_VERSION
 
 _LOG_BUDGET = 12 * 1024 * 1024  # 日志总体积预算（12MB）
 _HISTORY_LIMIT = 50
+# 精确键名（小写）：覆盖 license.key 这类不带 _key 后缀的秘密字段。
+_SECRET_NAMES = {'api_key', 'upload_api_key', 'key', 'token', 'secret', 'password'}
 
 
 def _redacted(node):
-    """递归脱敏：密钥类字符串字段替换为 ***。"""
+    """递归脱敏：密钥类字符串字段替换为 ***（键名或 *_key 后缀均视为秘密）。"""
     if isinstance(node, dict):
         result = {}
         for key, value in node.items():
             lower = str(key).lower()
-            if isinstance(value, str) and (lower in {'api_key', 'upload_api_key'} or lower.endswith('_key')):
+            if isinstance(value, str) and (lower in _SECRET_NAMES or lower.endswith('_key')):
                 result[key] = '***' if value.strip() else ''
             else:
                 result[key] = _redacted(value)

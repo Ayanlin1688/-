@@ -86,6 +86,11 @@ def make_key(customer: str, edition: str = 'pro', expires: str = '') -> str:
 def parse_key(key: str) -> dict:
     """解析并校验激活码；非法时抛出 ValueError（中文原因）。"""
     text = (key or '').strip().replace(' ', '')
+    try:
+        text.encode('ascii')
+    except UnicodeEncodeError:
+        # 非 ASCII（粘贴带入中文/全角字符）会让 hmac.compare_digest 抛 TypeError 逃逸，此处统一转为可提示的 ValueError。
+        raise ValueError('激活码包含无法识别的字符，请检查是否混入了中文或全角符号')
     parts = text.split('.')
     if len(parts) != 3 or parts[0] not in {KEY_PREFIX, RSA_PREFIX}:
         raise ValueError('激活码格式不正确')

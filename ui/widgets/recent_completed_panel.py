@@ -59,9 +59,18 @@ class RecentCompletedPanel(QWidget):
         self.update_history([])
 
     def update_history(self, records):
-        self.list.clear()
         records = sorted((r for r in records if r.get('status') == 'completed' and r.get('result_path')),
                          key=lambda r: r.get('finished_at', ''), reverse=True)[:20]
+        keys = [(r.get('local_id'), r.get('finished_at'), r.get('size_bytes')) for r in records]
+        if keys == getattr(self, '_keys', None):
+            return  # 数据未变化：跳过重建，避免反复重挂行控件
+        self._keys = keys
+        # 显式销毁旧行控件：list.clear() 只删条目，setItemWidget 挂载的部件不会随之释放。
+        for index in range(self.list.count()):
+            widget = self.list.itemWidget(self.list.item(index))
+            if widget is not None:
+                widget.setParent(None); widget.deleteLater()
+        self.list.clear()
         self.list.setVisible(bool(records))
         self.empty_state.setVisible(not records)
         for task in records:

@@ -35,6 +35,7 @@ EN = {
     '已激活': 'Activated',
     '已过期': 'Expired',
     '无效激活码': 'Invalid key',
+    '激活码无法识别，请检查后重试': 'Unrecognized license key, check it and try again',
     '许可提示': 'License notice',
     '请激活后继续使用': 'Please activate to continue',
     '关于': 'About',

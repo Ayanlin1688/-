@@ -315,6 +315,7 @@ class SurfaceShadow(QGraphicsEffect):
         pixmap, offset = self.sourcePixmap(Qt.LogicalCoordinates, QGraphicsEffect.NoPad)
         if pixmap.isNull():
             return
-        rect = QRectF(offset.x(), offset.y(), pixmap.width()/pixmap.devicePixelRatioF(), pixmap.height()/pixmap.devicePixelRatioF())
+        dpr = pixmap.devicePixelRatioF() or 1.0  # 防御 DPR=0（回归日志多次实抓），避免除零中断绘制
+        rect = QRectF(offset.x(), offset.y(), pixmap.width()/dpr, pixmap.height()/dpr)
         draw_shadow(painter, rect, self.hover, self.primary)
         painter.drawPixmap(offset, pixmap)

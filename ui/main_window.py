@@ -66,6 +66,8 @@ class MainWindow(FluentWindow):
         self._apply_nav_style()
         self._setup_navigation_chrome()
         self.config_manager.error_callback = self.workspace_page.append_log
+        if getattr(self.config_manager, 'load_error', ''):
+            self.workspace_page.append_log(self.config_manager.load_error, 'warning')
         self._closing = False
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(100)
@@ -769,6 +771,7 @@ class MainWindow(FluentWindow):
 
     def closeEvent(self, event):
         self.schedule_timer.stop()
+        self.settings_page.stop_timers()
         self.model_catalog.shutdown()
         if self._background_busy():
             event.ignore()

@@ -976,6 +976,10 @@ class SettingsPage(QWidget):
         except ValueError as error:
             InfoBar.error(tr('激活失败'), str(error), parent=self.window(), duration=6500)
             return
+        except Exception as error:  # 兜底：解析层任何异常都必须给用户可见反馈，不能静默无响应
+            InfoBar.error(tr('激活失败'), str(error).strip() or tr('激活码无法识别，请检查后重试'),
+                          parent=self.window(), duration=6500)
+            return
         self.config_manager.update(('license', 'key'), key)
         if hasattr(self, 'license_status_label'):
             self.license_status_label.setText(self._license_text())
@@ -1113,6 +1117,13 @@ class SettingsPage(QWidget):
         if changed:
             self.config_manager.update(('model_pool', 'models'), models)
         self.refresh_pool_state()
+
+    def stop_timers(self):
+        """窗口关闭时停止页面内的周期刷新，避免退出流程中仍在轮询模型池状态。"""
+        try:
+            self.pool_timer.stop()
+        except Exception:
+            pass
 
     def refresh_pool_state(self):
         now = time.time()

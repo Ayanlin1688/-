@@ -6,6 +6,8 @@ from core.task_manager import STATUS_TEXT
 from core.i18n import tr
 from ..file_actions import open_local
 
+HISTORY_DISPLAY_LIMIT = 100  # 历史页只渲染最近 N 条（页脚文案同步承诺）
+
 
 class HistoryPage(QWidget):
     redownload_requested = pyqtSignal(object)
@@ -76,13 +78,28 @@ class HistoryPage(QWidget):
         return mapping.get(status, ('rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'))
 
     def update_history(self, records):
-        self.records = list(reversed(records))
+        # 只渲染最近 100 条（页脚已承诺）；数据未变化时短路，避免整表重建与控件重挂。
+        total = len(records)
+        display = list(reversed(records))[:HISTORY_DISPLAY_LIMIT]
+        keys = [(r.get('local_id'), r.get('status'), r.get('finished_at'),
+                 bool(r.get('result_path')), r.get('size_bytes') or 0) for r in display]
+        if keys == getattr(self, '_display_keys', None) and total == getattr(self, '_total', -1):
+            return
+        self._display_keys = keys
+        self._total = total
+        self.records = display
         has_records = bool(self.records)
         self.table.setVisible(has_records)
         self.empty_view.setVisible(not has_records)
-        gb = sum((t.get('size_bytes') or 0) for t in self.records) / 1024**3
-        self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=len(self.records), gb=gb))
+        gb = sum((t.get('size_bytes') or 0) for t in records) / 1024**3
+        self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=total, gb=gb))
         self.footer.setVisible(has_records)
+        # 显式销毁旧单元格控件：setCellWidget 挂载的部件不随 setRowCount(0) 释放。
+        for row in range(self.table.rowCount()):
+            for column in range(self.table.columnCount()):
+                widget = self.table.cellWidget(row, column)
+                if widget is not None:
+                    widget.setParent(None); widget.deleteLater()
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.records))
         self._row_status = []

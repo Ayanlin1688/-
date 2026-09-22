@@ -129,6 +129,8 @@ def maybe_sign(paths) -> None:
 
     示例（signtool）：
       YANLIN_SIGN_COMMAND=signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx {file}
+
+    注意：{file} 会被替换为带引号的完整路径（防路径含空格断参），模板中不要自带引号。
     """
     template = os.environ.get('YANLIN_SIGN_COMMAND', '').strip()
     if not template:
@@ -138,7 +140,7 @@ def maybe_sign(paths) -> None:
         path = Path(path)
         if not path.exists():
             continue
-        subprocess.check_call(template.replace('{file}', str(path)), shell=True)
+        subprocess.check_call(template.replace('{file}', f'"{path}"'), shell=True)
         print(f'[sign] 已签名：{path}')
 
 
@@ -153,11 +155,11 @@ def main() -> int:
         bundle = build_bundle()
     if not bundle.is_dir():
         raise SystemExit('没有可用产物；先执行完整构建')
+    maybe_sign([bundle / f'{EXE_NAME}.exe'])  # 先签名主程序，再打包，保证 zip 内分发的是已签名 exe
     zip_path = make_zip(bundle)
     manifest = make_manifest(zip_path)
     print(f'[ok] 便携包：{zip_path}')
     print(f'[ok] 版本清单：{manifest}')
-    maybe_sign([bundle / f'{EXE_NAME}.exe', zip_path])
     if args.installer:
         run_installer()
         maybe_sign([DIST / f'YanlinMatrix-Setup-{APP_VERSION}.exe'])
