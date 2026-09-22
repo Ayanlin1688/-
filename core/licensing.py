@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
+import sys
 from datetime import date, timedelta
 
 KEY_PREFIX = 'YL1'
@@ -50,6 +51,15 @@ def _unb64(text: str) -> bytes:
 
 def _sign(payload: bytes) -> str:
     return _b64(hmac.new(_VERIFY_SECRET, payload, hashlib.sha256).digest())
+
+
+def _legacy_hmac_allowed() -> bool:
+    """YL1（共享密钥演示格式）仅在非冻结环境（源码运行/测试）可用。
+
+    发行版（PyInstaller 冻结产物）只接受 YL2 非对称签名激活码：共享密钥内置在
+    发行包中，任何人都可据此自签，必须只保留在开发/演示链路。
+    """
+    return not getattr(sys, 'frozen', False)
 
 
 def _verify_rsa(payload: bytes, signature: bytes, public_pem: str | None = None) -> bool:
@@ -106,6 +116,8 @@ def parse_key(key: str) -> dict:
         if not _verify_rsa(payload, signature):
             raise ValueError('激活码校验失败（签名不匹配）')
     else:
+        if not _legacy_hmac_allowed():
+            raise ValueError('此激活码为旧版演示格式，正式版已不再支持；请联系供应商获取新版激活码')
         if not hmac.compare_digest(_sign(payload), parts[2]):
             raise ValueError('激活码校验失败（签名不匹配）')
     try:

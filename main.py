@@ -52,10 +52,23 @@ def main() -> int:
     from ui.main_window import MainWindow
     from ui.splash import show_splash
 
+    # 单实例守卫：同一数据目录已有实例时，请求其前置窗口并退出（防定时双触发/配置竞写）。
+    from core.single_instance import SingleInstance
+    guard = SingleInstance(SingleInstance.key_for(config_manager.path.parent))
+    if not guard.acquire():
+        return 0
+
     splash = show_splash()
     if splash is not None:
         app.processEvents()
     window = MainWindow(config_manager)
+
+    def _bring_to_front():
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+
+    guard.activation_requested.connect(_bring_to_front)
     window.show()
     if splash is not None:
         splash.finish(window)
