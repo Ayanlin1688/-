@@ -163,7 +163,7 @@ class SettingsPage(QWidget):
     # ------------------------------------------------------------------
     def _make_page(self, key):
         content = QWidget(); content.setObjectName('settingsContent')
-        layout = QVBoxLayout(content); layout.setContentsMargins(30, 24, 30, 36); layout.setSpacing(18)
+        layout = QVBoxLayout(content); layout.setContentsMargins(34, 26, 34, 42); layout.setSpacing(20)
         area = ScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.NoFrame)
         area.setWidget(content)
         try:
@@ -221,7 +221,7 @@ class SettingsPage(QWidget):
 
     def _group(self, title):
         group = SettingCardGroup(title)
-        group.cardLayout.setSpacing(18)
+        group.cardLayout.setSpacing(20)
         self.root.addWidget(group)
         self.groups.append(group)
         return group
@@ -230,10 +230,10 @@ class SettingsPage(QWidget):
     # 左侧分类导航（滚动锚点）
     # ------------------------------------------------------------------
     def _build_rail(self):
-        rail = QWidget(); rail.setObjectName('settingsRail'); rail.setFixedWidth(184)
+        rail = QWidget(); rail.setObjectName('settingsRail'); rail.setFixedWidth(196)
         rail.setStyleSheet(
             '#settingsRail {background:transparent; border-right:1px solid rgba(255,255,255,0.07);}'
-            '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:9px 13px;'
+            '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:10px 14px;'
             ' color:#9CA3AF; font-size:13px; background:transparent;}'
             '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
             '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
@@ -404,7 +404,7 @@ class SettingsPage(QWidget):
         caption.setWordWrap(True)
         self.root.addWidget(caption)
         card = make_card()
-        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
         name = LineEdit(); name.setText(station.get('name', '')); name.setPlaceholderText('名称，例如：主线路 · 国内')
         base = LineEdit(); base.setText(station.get('base_url', '')); base.setPlaceholderText('API Base URL')
         key_edit = LineEdit(); key_edit.setText(station.get('api_key', '')); key_edit.setEchoMode(LineEdit.Password); key_edit.setPlaceholderText('API Key')
@@ -472,7 +472,7 @@ class SettingsPage(QWidget):
         group = self._group('中转站')
         self.stations_group = group
         card = make_card(); self.stations_card = card
-        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
         hint = CaptionLabel('每个中转站独立成一项（左侧导航可直达）；「设为当前」后任务走该线路；可标记视频 / 语言 / 生图能力。')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
@@ -492,7 +492,7 @@ class SettingsPage(QWidget):
     def _build_station_editor_page(self):
         """新增中转站页：保留共用编辑器字段（与旧版完全一致）。"""
         card = make_card()
-        layout = QVBoxLayout(card); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
+        layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
         self.station_editor_host = QWidget()
         editor = QVBoxLayout(self.station_editor_host); editor.setContentsMargins(0, 0, 0, 0); editor.setSpacing(8)
         self.station_editor_title = CaptionLabel('新增中转站'); editor.addWidget(self.station_editor_title)
