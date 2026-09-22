@@ -163,7 +163,7 @@ class SettingsPage(QWidget):
     # ------------------------------------------------------------------
     def _make_page(self, key):
         content = QWidget(); content.setObjectName('settingsContent')
-        layout = QVBoxLayout(content); layout.setContentsMargins(28, 22, 28, 30); layout.setSpacing(16)
+        layout = QVBoxLayout(content); layout.setContentsMargins(30, 24, 30, 36); layout.setSpacing(18)
         area = ScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.NoFrame)
         area.setWidget(content)
         try:
@@ -221,7 +221,7 @@ class SettingsPage(QWidget):
 
     def _group(self, title):
         group = SettingCardGroup(title)
-        group.cardLayout.setSpacing(16)
+        group.cardLayout.setSpacing(18)
         self.root.addWidget(group)
         self.groups.append(group)
         return group
@@ -233,11 +233,11 @@ class SettingsPage(QWidget):
         rail = QWidget(); rail.setObjectName('settingsRail'); rail.setFixedWidth(184)
         rail.setStyleSheet(
             '#settingsRail {background:transparent; border-right:1px solid rgba(255,255,255,0.07);}'
-            '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:7px 12px;'
+            '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:9px 13px;'
             ' color:#9CA3AF; font-size:13px; background:transparent;}'
             '#settingsRail QPushButton:hover {background:rgba(255,255,255,0.06); color:#E5E7EB;}'
             '#settingsRail QPushButton[railActive="true"] {background:rgba(91,141,239,0.14); color:#FFFFFF; font-weight:600;}')
-        layout = QVBoxLayout(rail); layout.setContentsMargins(16, 22, 14, 26); layout.setSpacing(4)
+        layout = QVBoxLayout(rail); layout.setContentsMargins(18, 24, 16, 28); layout.setSpacing(5)
         self._rail_buttons = {}
         self._page_buttons = {}
 
