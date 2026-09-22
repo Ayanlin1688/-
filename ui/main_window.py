@@ -311,6 +311,36 @@ class MainWindow(FluentWindow):
             pass
         # 标题栏拖拽误触发加固：点击手抖不再演变为“窗口漂移”。
         self._harden_titlebar_drag()
+        # 真实屏幕自愈：窗口在后台/被遮挡期间绘制可能被系统节流，导航区
+        # 只在屏幕上残留空白（PrintWindow 自检看不到这类问题）。守卫保证
+        # 激活/恢复/切页/低频都会补一次重绘，导航内容任何情况下自动回来。
+        self._install_repaint_guard()
+
+    def _install_repaint_guard(self) -> None:
+        guard = QTimer(self)
+        guard.setInterval(6000)
+        guard.timeout.connect(self._integrity_repaint)
+        guard.start()
+        self._repaint_guard = guard
+        try:
+            self.stackedWidget.currentChanged.connect(lambda *_: QTimer.singleShot(160, self._integrity_repaint))
+        except Exception:
+            pass
+
+    def _integrity_repaint(self) -> None:
+        try:
+            if not self.isVisible() or self.isMinimized():
+                return
+            panel = self.navigationInterface.panel
+            panel.update()
+            for item, inner, _original in getattr(self, '_nav_rail_items', []):
+                try:
+                    inner.update()
+                except Exception:
+                    pass
+            self.update()
+        except Exception:
+            pass
 
     def _toggle_navigation(self) -> None:
         """菜单按钮：两态切换（展开前先释放折叠态的固定宽度，保证过渡动画）。"""
@@ -336,6 +366,7 @@ class MainWindow(FluentWindow):
             self._sync_nav_pane(self.navigationInterface.panel.isCollapsed())
         except Exception:
             pass
+        self._integrity_repaint()
 
     def _on_nav_display_mode_changed(self, mode=None) -> None:
         # 原生在发出信号后还会执行 setCompacted（会重置尺寸），延后一拍再同步。
@@ -508,6 +539,9 @@ class MainWindow(FluentWindow):
                 self.titleBar.maxBtn.setMaxState(self.isMaximized())
             except Exception:
                 pass
+        if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange, QEvent.Show):
+            # 激活/恢复/显示后补一次重绘：修复“后台期间绘制节流”造成的屏幕残留空白。
+            QTimer.singleShot(120, self._integrity_repaint)
 
     def _apply_titlebar_tweak(self):
         """标题从导航徽标右侧开始（目标绝对 x=88），空白图标隐藏，标题 13px/600。"""
