@@ -8,7 +8,7 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 env = dict(os.environ)
-env["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "offscreen"
+env["QT_QPA_PLATFORM"] = os.environ.get("YANLIN_STARTUP_PLATFORM", "windows" if sys.platform == "win32" else "offscreen")
 with tempfile.TemporaryDirectory(prefix='studio-startup-') as folder:
     checkout = Path(folder)
     # Override both normal AppData lookup and any inherited portable data root.

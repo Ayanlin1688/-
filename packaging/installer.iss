@@ -22,6 +22,15 @@ OutputBaseFilename=YanlinMatrix-Setup-{#AppVersion}
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\assets\app.ico
+UninstallDisplayIcon={app}\{#ExeName}
+; 安装前请求关闭正在运行的程序，避免文件被占用导致升级失败。
+CloseApplications=yes
+RestartApplications=no
+; 如提供 legal\eula.txt，则安装时展示许可协议（缺失时跳过，不装订占位协议）。
+#if FileExists(AddBackslash(SourcePath) + "..\legal\eula.txt")
+LicenseFile=..\legal\eula.txt
+#endif
 
 [Languages]
 Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"

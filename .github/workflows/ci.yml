@@ -26,6 +26,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt
       - name: 全量单元测试
         run: python -X utf8 -m unittest discover -s tests
+      - name: 启动冒烟（隔离配置，运行 3 秒无 stderr）
+        env:
+          YANLIN_STARTUP_PLATFORM: offscreen
+        run: python -X utf8 scripts/check_startup.py
 
   build:
     name: 免安装包构建
@@ -50,3 +54,16 @@ jobs:
             packaging/dist/*.zip
             packaging/dist/update-manifest.json
           retention-days: 14
+      - name: 产物启动冒烟（offscreen 持续运行 5 秒）
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:YANLIN_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "yanlin-smoke"
+          $exe = "packaging/dist/YanlinMatrix/YanlinMatrix.exe"
+          if (-not (Test-Path $exe)) { throw "未找到打包产物：$exe" }
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          $p.Refresh()
+          if ($p.HasExited) { throw "exe 提前退出：exit=$($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "PASS: 打包产物持续运行 5 秒"

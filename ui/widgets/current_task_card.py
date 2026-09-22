@@ -46,7 +46,10 @@ class CurrentTaskCard(QWidget):
         # Tint the track too: an upload failure may occur while progress is still 0%.
         track = ERROR if failed else '#35353c'
         self.progress.setCustomBackgroundColor(track, track)
-        self.title.setTextColor(ERROR if failed else '#ffffff', ERROR if failed else '#ffffff')
+        # 标题色跟随主题（浅色主题下用深色文字，修复白底白字）。
+        from ..materials import text_color
+        title_color = ERROR if failed else text_color(1)
+        self.title.setTextColor(title_color, title_color)
         self.title.setText(f"{index + 1:02d} · {task['prompt_name']} · {tr(STATUS_TEXT.get(task['status'], task['status']))}")
         self.details.setText(f"参考图 {len(task.get('images', []))} 张    模型 {task['model']}\n任务ID：{task.get('task_id') or '待提交'}")
         self._update_debug_summary()

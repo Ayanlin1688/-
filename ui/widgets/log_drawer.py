@@ -17,6 +17,7 @@ from ..tokens import MOTION
 
 class LogDrawer(QWidget):
     COLORS = {"debug": "#8db9dc", "info": "#9999a0", "success": "#8ab978", "warning": "#ccb080", "error": "#d79292"}
+    MAX_ENTRIES = 5000  # 日志上限：24h 无人值守防止内存与重放成本随时间无限增长
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -53,6 +54,7 @@ class LogDrawer(QWidget):
         self.browser.setOpenExternalLinks(False)
         self.browser.setMinimumHeight(0)
         self.browser.setMaximumHeight(120)
+        self.browser.document().setMaximumBlockCount(self.MAX_ENTRIES + 100)
         root.addWidget(self.browser)
         self._animation = QPropertyAnimation(self.browser, b"maximumHeight", self)
         self._animation.setDuration(MOTION['base'])
@@ -64,6 +66,8 @@ class LogDrawer(QWidget):
         if level == 'debug' and not self.debug_mode:
             return
         self.entries.append((timestamp, str(message), level))
+        if len(self.entries) > self.MAX_ENTRIES:
+            del self.entries[:len(self.entries) - self.MAX_ENTRIES]
         if self._selected_level() in (None, level):
             self._append_entry(timestamp, message, level)
 

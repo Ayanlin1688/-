@@ -127,6 +127,7 @@ def register_theme_callback(callback):
 
 
 def run_theme_callbacks():
+    alive = []
     for target_ref, func in list(_THEME_CALLBACKS):
         try:
             if target_ref is None:
@@ -135,8 +136,14 @@ def run_theme_callbacks():
                 target = target_ref()
                 if target is not None:
                     func(target)
+                else:
+                    continue  # 宿主已销毁：剔除死引用（注册表只增不删会让主题切换线性变慢）
+        except RuntimeError:
+            continue  # 宿主已析构：剔除
         except Exception:
             pass
+        alive.append((target_ref, func))
+    _THEME_CALLBACKS[:] = alive
 
 
 def ink(alpha):
@@ -157,17 +164,20 @@ def surface_border(hover=0, elevated=False):
 
 
 def apply_theme_to_labels():
+    alive = []
     for ref, color in list(_LABEL_REGISTRY):
         widget = ref()
         if widget is None:
-            continue
+            continue  # 已销毁的弱引用：剔除
         try:
             mapped = map_text_color(color)
             name = mapped.name() if isinstance(mapped, QColor) else str(mapped)
             widget.setTextColor(QColor(name), QColor(name))
             widget.setStyleSheet(f'background:transparent; color:{name};')
         except (RuntimeError, AttributeError):
-            continue
+            continue  # 控件已析构或类型不符：剔除
+        alive.append((ref, color))
+    _LABEL_REGISTRY[:] = alive
 
 
 def restyle_theme_buttons():

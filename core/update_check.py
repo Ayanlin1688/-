@@ -46,6 +46,8 @@ def check_for_update(manifest_url, timeout=10, fetch=None):
         if isinstance(assets, list) and assets and isinstance(assets[0], dict):
             url = str(assets[0].get('download_url') or assets[0].get('file') or '')
             sha256 = str(assets[0].get('sha256') or '')
+        if url and '://' in url and not url.lower().startswith('https://'):
+            url = ''  # 非 https 的绝对链接一律不下发；相对文件名保留（仅作展示用途）
         return {'version': version, 'url': url, 'notes': str(data.get('notes') or ''), 'sha256': sha256}
     except Exception:
         return None

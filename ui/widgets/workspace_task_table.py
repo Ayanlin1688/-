@@ -36,7 +36,7 @@ CELL_SPACING = 16
 
 
 def resolve_widths(total_width):
-    """在给定内容宽度下解析各列宽度（权重分配 + 上限 + 余量均摊）。"""
+    """在给定内容宽度下解析各列宽度（权重分配 + 上限 + 余量均摊 + 不足时收缩）。"""
     count = len(COLUMN_SPEC)
     available = max(0, int(total_width) - CELL_SPACING * (count - 1))
     widths = [spec[1] for spec in COLUMN_SPEC]
@@ -52,6 +52,24 @@ def resolve_widths(total_width):
             share = leftover / len(flex)
             for index, _ in flex:
                 widths[index] += share
+    elif extra < 0 and flex:
+        # 空间不足：先按权重从弹性列收缩，再按“宽列先减”补齐保底后的缺口。
+        # 输出始终适配可用宽度，避免 QGridLayout 压缩依赖行内控件弹性导致表头与数据列漂移。
+        deficit = -extra
+        weight_sum = sum(spec[3] for _, spec in flex)
+        for index, spec in flex:
+            floor = min(spec[1], 56)
+            widths[index] = max(floor, int(spec[1] - deficit * spec[3] / weight_sum))
+        leftover = available - fixed - sum(widths[index] for index, _ in flex)
+        if leftover < 0:
+            for index, spec in sorted(flex, key=lambda pair: widths[pair[0]], reverse=True):
+                if leftover >= 0:
+                    break
+                floor = min(spec[1], 56)
+                take = min(max(0, widths[index] - floor), -leftover)
+                if take:
+                    widths[index] -= take
+                    leftover += take
     return [max(0, int(round(value))) for value in widths]
 
 
@@ -116,8 +134,9 @@ class ExpandedTaskRow(QWidget):
         ph=QWidget(); pl=QHBoxLayout(ph); pl.setContentsMargins(0,0,0,0); pl.setSpacing(8); self.progress=TaskProgress(); self.percentage=label('0%',11,MUTED,mono=True); self.percentage.setFixedWidth(35); pl.addWidget(self.progress,1); pl.addWidget(self.percentage)
         self.timing=label('—',12,MUTED,mono=True)
         self.status_label=label('',11); self.status_label.setFixedHeight(22); self.status_label.setAlignment(Qt.AlignCenter)
-        self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip(tr('更多操作')); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
+        self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip(tr('更多操作')); self.more_button.setProperty('studioKeepWidth', True); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
         cells=(number_box,self.title,self.product,self.model_label,self.ratio,self.resolution,self.duration,self.images_button,ph,self.timing,self.status_label,self.more_button)
+        self._cells=cells
         for column,cell in enumerate(cells):
             if column in (10,11):
                 grid_align=Qt.AlignVCenter | (Qt.AlignLeft if column==10 else Qt.AlignHCenter)
@@ -140,6 +159,13 @@ class ExpandedTaskRow(QWidget):
 
     def apply_widths(self, widths):
         apply_grid_columns(self.grid, widths)
+        # 逐格锁宽：QGridLayout 的自动分配受控件尺寸提示影响，会与表头漂移；
+        # min=max=列宽后列宽成为唯一解（标有 studioKeepWidth 的行尾按钮保持自身尺寸）。
+        for column, cell in enumerate(self._cells):
+            if cell.property('studioKeepWidth'):
+                continue
+            if cell.minimumWidth() != widths[column] or cell.maximumWidth() != widths[column]:
+                cell.setMinimumWidth(widths[column]); cell.setMaximumWidth(widths[column])
 
     def _preview(self):
         if self.task.get('images'): self.preview_requested.emit(self.task['images'][0])
@@ -230,8 +256,10 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self._apply_header_mode_style()
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_header_mode_style)
+        self._header_cells=[]
         for column,txt in enumerate(HEADERS):
             head=label(tr(txt),12,'#9AA6B8')
+            self._header_cells.append(head)
             font=head.font(); font.setLetterSpacing(QFont.AbsoluteSpacing,0.6); font.setWeight(QFont.Medium); head.setFont(font)
             if column==11:
                 self._header_grid.addWidget(head,0,column,Qt.AlignVCenter|Qt.AlignHCenter)
@@ -289,23 +317,51 @@ class WorkspaceTaskTable(TaskQueuePanel):
         except Exception:
             return 0
 
-    def _apply_column_widths(self):
-        """表头与所有数据行使用同一解析结果，保证逐像素对齐。"""
+    def _row_geometry(self):
+        """以真实行控件为锚：返回（内容起点相对 surface 的 x，行内容宽度）。
+
+        列表样式会给 item 控件额外的内边距（实测 8px 起步），仅按 viewport 估算
+        会让表头与数据列漂移；直接读取行宿主控件的几何得到逐像素准确的锚点。
+        """
+        try:
+            if self.rows:
+                host = self.rows[0].host
+                origin = host.mapTo(self.surface, host.rect().topLeft()).x()
+                return origin, max(0, host.width() - 32)
+            if self.list.count():
+                rect = self.list.visualItemRect(self.list.item(0))
+                origin = self.list.viewport().mapTo(self.surface, rect.topLeft()).x()
+                return origin, max(0, rect.width() - 32)
+        except (RuntimeError, AttributeError):
+            pass
         try:
             viewport = self.list.viewport().width()
         except Exception:
-            return
+            viewport = 0
         if viewport <= 0:
             viewport = max(0, self.surface.width() - 32)
-        widths = resolve_widths(viewport - 32)
+        return self._viewport_left_inset(), max(0, viewport - 32)
+
+    def _apply_column_widths(self):
+        """表头与所有数据行使用同一解析结果，保证逐像素对齐。"""
+        origin, content = self._row_geometry()
+        widths = resolve_widths(content)
         self._widths = widths
         try:
-            left = self._viewport_left_inset() + 16
-            right = max(0, self.surface.width() - left - (viewport - 32))
+            host = self._header_host
+            left = max(0, origin + 16 - host.x())
+            right = max(0, host.width() - left - content)
             self._header_grid.setContentsMargins(left, 0, right, 0)
         except Exception:
             pass
         apply_grid_columns(self._header_grid, widths)
+        # 表头逐格锁宽：与数据行使用同一刚性列宽，杜绝布局再分配造成的漂移。
+        for column, head in enumerate(getattr(self, '_header_cells', [])):
+            try:
+                if head.minimumWidth() != widths[column] or head.maximumWidth() != widths[column]:
+                    head.setMinimumWidth(widths[column]); head.setMaximumWidth(widths[column])
+            except RuntimeError:
+                pass
         for row in self.rows:
             try:
                 row.apply_widths(widths)

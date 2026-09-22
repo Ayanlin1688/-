@@ -295,18 +295,38 @@ class TaskExecution:
                         {'queued', 'uploading', 'submitting', 'processing', 'downloading', 'retry_wait'}
                         for row in self.owner.tasks)
 
-                outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                def abandoned_sibling(record):
+                    # 兄弟已被跳过/取消/终结而账本记录仍活跃：无人再跟进其远端收尾，
+                    # 继续等待是死锁（实测复现：跳过已提交的兄弟 → 本任务从未提交却被判重复）。
+                    return any(
+                        row.get('local_id') == record.get('local_id') and row.get('status') in
+                        {'skipped', 'cancelled', 'failed', 'duplicate'}
+                        for row in self.owner.tasks)
+
+                # 占用评估状态机：每轮重新 reserve 后决策——可等待的活跃兄弟在线串行等待，
+                # 已被弃用的兄弟逐条放行（ignore_ids），避免把“刚收尾/刚被跳过”误当活跃占用。
+                ignored = set()
                 waiting_logged = False
-                while live_sibling(saved) and outcome in {'busy', 'unknown'}:
-                    if not waiting_logged:
-                        self.log(f'{prefix}：同文案任务仍在收尾，等待其结束后自动重试提交（防重复扣费）', 'warning')
-                        waiting_logged = True
+                outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                while True:
+                    if outcome in {'claimed', 'duplicate'}:
+                        break
                     if outcome == 'unknown' and saved.get('signature') == task['signature']:
-                        break  # 同一请求的活跃兄弟：交给下方“重复”降级处理，不再等待。
-                    # 不同参考图/参数的同文案请求命中瞬时占用窗口（含 submitting）：
-                    # 在线串行等待兄弟任务收尾后重试，而不是误判为“待确认”硬挡。
-                    self.control.delay(.1)
-                    outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent)
+                        break  # 同一请求的活跃/未决兄弟：交给下方“重复”降级处理，不再等待。
+                    if outcome == 'busy' and saved.get('ledger_id') and abandoned_sibling(saved):
+                        ignored.add(saved['ledger_id'])
+                        outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent, ignore_ids=ignored)
+                        continue
+                    if live_sibling(saved):
+                        if not waiting_logged:
+                            self.log(f'{prefix}：同文案任务仍在收尾，等待其结束后自动重试提交（防重复扣费）', 'warning')
+                            waiting_logged = True
+                        # 不同参考图/参数的同文案请求命中瞬时占用窗口（含 submitting）：
+                        # 在线串行等待兄弟任务收尾后重试，而不是误判为“待确认”硬挡。
+                        self.control.delay(.1)
+                        outcome, saved = self.owner.ledger.reserve(task, self.owner.scope, prevent, ignore_ids=ignored)
+                        continue
+                    break
                 if outcome == 'unknown' and saved.get('signature') == task['signature'] and live_sibling(saved):
                     # A live sibling owns this exact request. A persisted intent
                     # from a previous run still requires explicit recovery.

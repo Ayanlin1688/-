@@ -57,12 +57,19 @@ class SubmissionLedger:
             return [self._record(row) for row in db.execute(
                 'SELECT * FROM submissions WHERE scope=? ORDER BY updated', (scope,))]
 
-    def reserve(self, task, scope, prevent_duplicates=True):
-        """Return (claimed/duplicate/busy/unknown, record). Intent never expires."""
+    def reserve(self, task, scope, prevent_duplicates=True, ignore_ids=()):
+        """Return (claimed/duplicate/busy/unknown, record). Intent never expires.
+
+        ignore_ids：调用方判定“无需等待”的记录（如已被跳过/取消的弃用兄弟），
+        评估时跳过；同一请求（同签名）的防重与其余活跃记录不受影响。
+        """
+        ignore = set(ignore_ids or ())
         with self._connection() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = list(db.execute('SELECT * FROM submissions WHERE scope=? ORDER BY updated DESC', (scope,)))
             for row in rows:
+                if row['id'] in ignore:
+                    continue
                 same_prompt = row['prompt_sha'] == task['prompt_sha256']
                 same_request = row['signature'] == task['signature']
                 if same_prompt and row['state'] in {'submitting', 'unknown'}:

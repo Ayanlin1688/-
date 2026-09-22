@@ -88,7 +88,10 @@ class WidgetMotion(QObject):
     def amount(self, value):
         self._value = value
         if self.shadow:
-            self.shadow.hover = value; self.shadow.update()
+            try:
+                self.shadow.hover = value; self.shadow.update()
+            except RuntimeError:
+                self.shadow = None  # 宿主已析构：丢弃悬空 effect 引用
         if self.wash:
             self.wash.amount = value; self.wash.update()
         self._apply()
@@ -138,8 +141,22 @@ class WidgetMotion(QObject):
         if self.wash:
             self.wash.amount = 0; self.wash.update()
         if self.shadow:
-            self.shadow.hover = 0; self.shadow.update()
+            try:
+                self.shadow.hover = 0; self.shadow.update()
+            except RuntimeError:
+                self.shadow = None  # 宿主已析构：丢弃悬空 effect 引用
         self._apply()
+
+    def detach(self):
+        """显式解绑：停止动画并移除事件过滤器（重复样式化时替换旧实例）。"""
+        try:
+            self.animation.stop(); self.press_animation.stop()
+        except RuntimeError:
+            pass
+        try:
+            self.widget.removeEventFilter(self)
+        except (RuntimeError, TypeError):
+            pass
 
     def eventFilter(self, obj, event):
         kind = event.type()

@@ -69,20 +69,29 @@ def style_button(button, primary=False):
     button.setProperty('studioStyled', True)
     register_button(button, primary)
     _apply_button_style(button, primary)
+    previous = getattr(button, '_studio_motion', None)
+    if previous is not None:
+        try:
+            previous.detach()  # 重复样式化时先解绑旧实例，避免悬空引用刷日志
+        except Exception:
+            pass
     button._studio_motion = WidgetMotion(button, primary=primary)
     return button
 
 
 def restyle_buttons():
     from ..materials import _BUTTON_REGISTRY
+    alive = []
     for ref, primary in list(_BUTTON_REGISTRY):
         button = ref()
         if button is None:
-            continue
+            continue  # 已销毁的弱引用：剔除
         try:
             _apply_button_style(button, primary)
         except RuntimeError:
-            continue
+            continue  # 控件已析构：剔除
+        alive.append((ref, primary))
+    _BUTTON_REGISTRY[:] = alive
 
 
 class ElidedLabel(CaptionLabel):

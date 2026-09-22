@@ -134,7 +134,8 @@ class TaskControl:
             self.active_index = index
             self._local.index = index
             self._active.add(index)
-            self._skipped.discard(index)
+            # 不清除 _skipped：任务交接窗口（release 之后、begin 之前）内设置的
+            # 跳过意图必须保留到真正开始执行时生效，而不是被静默丢弃。
 
     def release(self, index):
         with self.condition:
@@ -145,9 +146,9 @@ class TaskControl:
 
     def skip_for(self, index):
         with self.condition:
-            if index in self._active:
-                self._skipped.add(index)
-                self.condition.notify_all()
+            # 无条件记录跳过意图（含排队中与交接窗口中的任务）：执行时由 check() 生效。
+            self._skipped.add(index)
+            self.condition.notify_all()
 
     def set(self, name, value):
         with self.condition:

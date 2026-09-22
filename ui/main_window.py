@@ -340,6 +340,24 @@ class MainWindow(FluentWindow):
                     inner.update()
                 except Exception:
                     pass
+            # 页面栈 / 当前页 / 标题栏同样可能被系统节流留下残影：一并补绘。
+            try:
+                page = self.stackedWidget.currentWidget()
+                if page is not None:
+                    page.update()
+            except Exception:
+                pass
+            try:
+                self.titleBar.update()
+            except Exception:
+                pass
+            try:
+                from PyQt5.QtWidgets import QApplication
+                modal = QApplication.activeModalWidget()
+                if modal is not None:
+                    modal.update()
+            except Exception:
+                pass
             self.update()
         except Exception:
             pass

@@ -164,6 +164,7 @@ class TaskWorker(QThread):
             self.log(f'磁盘清理自检未完成：{error}', 'warning')
 
     def _scan(self):
+        self.control.check()  # 扫描前检查：大目录的长时间扫描开始前即可响应取消/跳过
         paths = self.config['paths']
         self.log(f"开始扫描目录：提示词={paths['prompts']}, 图片={paths.get('images', '')}")
         matcher = StoryboardMatcher.from_config(self.config)
@@ -182,6 +183,7 @@ class TaskWorker(QThread):
         previous = {t.get('signature'): t for t in [*self.config.get('history', []), *self.previous, *saved]
                     if t.get('signature') and (not t.get('api_scope') or t['api_scope'] == self.scope)}
         for sequence, task in enumerate(self.tasks, 1):
+            self.control.check()  # 逐任务检查点：扫描/标注全程均可被“取消全部”随时打断
             try:
                 task['_original_prompt'] = prompt_content(task)
             except (OSError, UnicodeError) as error:
