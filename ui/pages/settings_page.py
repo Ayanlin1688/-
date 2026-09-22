@@ -221,7 +221,7 @@ class SettingsPage(QWidget):
 
     def _group(self, title):
         group = SettingCardGroup(title)
-        group.cardLayout.setSpacing(20)
+        group.cardLayout.setSpacing(24)
         self.root.addWidget(group)
         self.groups.append(group)
         return group

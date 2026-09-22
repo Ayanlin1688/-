@@ -235,6 +235,17 @@ class SettingSurface:
     def paintEvent(self, event):
         painter = QPainter(self)
         paint_surface(self, painter, hover=getattr(getattr(self, '_studio_motion', None), 'amount', 0))
+        # 浅色主题下补一层柔白：设置卡与色彩背景拉开层级（贴合设计稿的白卡质感）。
+        try:
+            from . import materials
+            if materials.is_light():
+                from PyQt5.QtCore import Qt as _Qt, QRectF as _QRectF
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(_Qt.NoPen)
+                painter.setBrush(QColor(255, 255, 255, 96))
+                painter.drawRoundedRect(_QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 12, 12)
+        except Exception:
+            pass
 
 
 def style_controls(root):
