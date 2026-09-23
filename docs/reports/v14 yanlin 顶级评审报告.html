@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>言林智创矩阵 · 全量代码评审（v14）</title>
+<style>
+  :root{
+    --paper:#F8F8F5;
+    --paper-2:#FCFCFA;
+    --ink:#17191C;
+    --ink-2:#5D6570;
+    --ink-3:#8A9099;
+    --hair:#DBDBD4;
+    --hair-2:#E7E7E0;
+    --rust:#A63A2A;
+    --wash:#F0EFE9;
+    --term-bg:#14171A;
+    --term-ink:#E9E7E1;
+    --term-hair:rgba(255,255,255,.14);
+    --sans:"Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif;
+    --mono:"Cascadia Code",Consolas,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:16px;line-height:1.75;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--rust);text-decoration:none;}
+  a:hover{text-decoration:underline;text-underline-offset:3px;}
+  code,.mono{font-family:var(--mono);font-size:.78em;letter-spacing:.01em;}
+  code{background:var(--wash);border:1px solid var(--hair-2);border-radius:3px;padding:.08em .38em;white-space:nowrap;}
+
+  .cover{max-width:1080px;margin:0 auto;padding:72px 36px 44px;}
+  .kicker{font-size:12px;letter-spacing:.14em;color:var(--ink-2);text-transform:uppercase;}
+  h1{font-size:42px;line-height:1.18;font-weight:600;letter-spacing:-.015em;margin:18px 0 14px;}
+  .lede{font-size:17px;line-height:1.8;color:var(--ink-2);max-width:46em;margin:0 0 26px;}
+  .lede strong{color:var(--ink);font-weight:600;}
+  .meta-row{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:12px 0;display:flex;flex-wrap:wrap;gap:8px 28px;font-size:13px;color:var(--ink-2);}
+  .meta-row .mono{font-size:12px;}
+  .cover-note{margin-top:14px;font-size:12.5px;color:var(--ink-3);max-width:52em;}
+
+  .shell{max-width:1240px;margin:0 auto;padding:8px 36px 80px;display:grid;grid-template-columns:220px minmax(0,1fr);gap:52px;}
+  nav.toc{position:sticky;top:28px;align-self:start;font-size:13.5px;line-height:2.05;padding-top:6px;}
+  nav.toc .toc-title{font-size:11px;letter-spacing:.14em;color:var(--ink-3);text-transform:uppercase;margin-bottom:8px;}
+  nav.toc a{color:var(--ink-2);display:block;}
+  nav.toc a:hover{color:var(--ink);text-decoration:none;}
+  nav.toc .toc-sub{padding-left:14px;color:var(--ink-3);}
+
+  main{min-width:0;}
+  section{padding:34px 0 26px;border-top:1px solid var(--hair);}
+  section:first-child{border-top:none;padding-top:8px;}
+  h2{font-size:25px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;}
+  h2 .sn{color:var(--rust);font-family:var(--mono);font-size:.62em;font-weight:500;margin-right:12px;vertical-align:2px;}
+  .sec-sub{color:var(--ink-3);font-size:13px;margin:0 0 20px;}
+  p{max-width:46em;}
+  .prose{max-width:46em;}
+
+  .metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--hair);background:var(--paper-2);margin:20px 0 24px;}
+  .metric{padding:16px 18px 14px;border-right:1px solid var(--hair);}
+  .metric:last-child{border-right:none;}
+  .metric .mv{font-family:var(--mono);font-size:30px;line-height:1;font-weight:500;}
+  .metric .mv.p1{color:var(--rust);}
+  .metric .ml{font-size:12px;color:var(--ink-3);margin-top:8px;letter-spacing:.03em;}
+  .metric .md{font-size:11.5px;color:var(--ink-3);margin-top:2px;}
+
+  .callout{border-left:2px solid var(--rust);padding:4px 0 4px 16px;margin:22px 0;max-width:44em;}
+  .callout p{margin:0;font-size:14.5px;color:var(--ink);}
+
+  .tbl-wrap{overflow-x:auto;margin:18px 0 26px;border:1px solid var(--hair);background:var(--paper-2);}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.6;}
+  th{font-size:11.5px;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;text-align:left;font-weight:600;padding:10px 14px;border-bottom:1px solid var(--hair);white-space:nowrap;}
+  td{padding:11px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td.id{font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--ink-2);}
+  td.loc{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);}
+  .sev{font-family:var(--mono);font-size:12px;font-weight:500;}
+  .sev.p1{color:var(--rust);}
+  .sev.p2{color:var(--ink);}
+  .sev.p3{color:var(--ink-3);}
+  tr.p1-row td{background:rgba(166,58,42,.035);}
+  .st{font-size:12px;color:var(--ink-2);white-space:nowrap;}
+  .st.done{color:#3E6B4F;}
+  .tag{display:inline-block;font-size:11px;font-family:var(--mono);border:1px solid var(--hair);border-radius:3px;padding:1px 7px;color:var(--ink-2);background:var(--paper);margin-left:6px;}
+  .tag.ev{border-color:rgba(166,58,42,.5);color:var(--rust);}
+
+  h3{font-size:17px;font-weight:600;margin:30px 0 6px;}
+  h3 .mono{font-size:12px;color:var(--ink-3);font-weight:400;margin-left:10px;}
+
+  pre.term{background:var(--term-bg);color:var(--term-ink);font-family:var(--mono);font-size:12.5px;line-height:1.72;padding:18px 20px;border-left:2px solid var(--rust);overflow-x:auto;margin:14px 0 18px;}
+  pre.term .g{color:#9BB89B;}
+  pre.term .r{color:#E0938A;}
+  pre.term .dim{color:#8B8F94;}
+
+  ul.tight,ol.tight{padding-left:20px;margin:12px 0;max-width:46em;}
+  ul.tight li,ol.tight li{margin:7px 0;}
+  .verify li::marker{color:#3E6B4F;content:"✓ ";}
+  .wave{margin:26px 0 8px;border:1px solid var(--hair);background:var(--paper-2);}
+  .wave-h{padding:13px 18px;border-bottom:1px solid var(--hair);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;}
+  .wave-h .wn{font-family:var(--mono);font-size:12px;color:var(--rust);letter-spacing:.06em;}
+  .wave-h .wt{font-weight:600;font-size:15px;}
+  .wave-h .wd{color:var(--ink-3);font-size:12.5px;}
+  .wave-b{padding:14px 18px;}
+  .wave-b .item{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;padding:7px 0;border-bottom:1px dashed var(--hair-2);font-size:14px;}
+  .wave-b .item:last-child{border-bottom:none;}
+  .wave-b .item .mono{font-size:12px;color:var(--ink-2);padding-top:2px;}
+
+  .lines{display:grid;grid-template-columns:1fr;gap:0;border:1px solid var(--hair);background:var(--paper-2);}
+  .line-row{display:grid;grid-template-columns:200px minmax(0,1fr);gap:18px;padding:14px 18px;border-bottom:1px solid var(--hair-2);}
+  .line-row:last-child{border-bottom:none;}
+  .line-row .ln{font-weight:600;font-size:14px;}
+  .line-row .ln .mono{display:block;font-size:11.5px;color:var(--ink-3);font-weight:400;margin-top:3px;}
+  .line-row .ld{font-size:13.5px;color:var(--ink-2);}
+
+  footer.colophon{margin-top:56px;border-top:1px solid var(--hair);padding:26px 0 0;font-size:13px;color:var(--ink-2);}
+  footer .fblk{max-width:52em;}
+  footer .mono{font-size:11.5px;color:var(--ink-3);}
+
+  @media (max-width:1020px){
+    .shell{grid-template-columns:1fr;gap:0;}
+    nav.toc{position:static;padding:0 0 20px;border-bottom:1px solid var(--hair);}
+    nav.toc a{display:inline-block;margin-right:16px;}
+    nav.toc .toc-sub{display:none;}
+    .metrics{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .metric:nth-child(2n){border-right:none;}
+    .metric{border-bottom:1px solid var(--hair);}
+    .line-row{grid-template-columns:1fr;}
+    .wave-b .item{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="kicker">内部工程文档 · Internal Engineering Dossier</div>
+  <h1>言林智创矩阵 · 全量代码评审</h1>
+  <p class="lede">五路专家评审对 <strong>HEAD <span class="mono">abb2345</span>（v3.4.1）</strong> 做了代码级逐行审查：UI 渲染与 Qt、并发与生命周期、数据与存储、网络与许可、打包与交付。结论：<strong>无 P0 级缺陷</strong>；2 项 P1 资源泄漏与 11 项 P2 已列入三波修复计划。每一条发现均给出 <strong>文件:行号</strong> 证据，关键条目附可复现输出。</p>
+  <div class="meta-row">
+    <span>评审日期&nbsp;<span class="mono">2026-09-22</span></span>
+    <span>评审范围&nbsp;<span class="mono">abb2345 · v3.4.1</span></span>
+    <span>报告版本&nbsp;<span class="mono">v14</span></span>
+    <span>状态&nbsp;审计完成 · 修复按波次执行</span>
+  </div>
+  <p class="cover-note">过程说明：首轮五路并发评审遭遇评审沙箱服务限流（大批任务中断）；UI 线由评审员完整落盘，其余四线由主控工程师按同一证据标准补审完成。全部原始报告与复现脚本见文末「复核方式」。</p>
+</header>
+
+<div class="shell">
+<nav class="toc">
+  <div class="toc-title">目录</div>
+  <a href="#summary">01 · 结论摘要</a>
+  <a href="#method">02 · 方法与过程</a>
+  <a href="#findings">03 · 发现总表</a>
+  <a class="toc-sub" href="#f-p1">P1 · 2 项</a>
+  <a class="toc-sub" href="#f-p2">P2 · 11 项</a>
+  <a class="toc-sub" href="#f-p3">P3 · 16 项</a>
+  <a href="#evidence">04 · 实证详录</a>
+  <a href="#lines">05 · 分线速览</a>
+  <a href="#verified">06 · 已核查通过</a>
+  <a href="#plan">07 · 修复计划</a>
+  <a href="#colophon">08 · 复核方式</a>
+</nav>
+
+<main>
+
+<section id="summary">
+  <h2><span class="sn">01</span>结论摘要</h2>
+  <p class="sec-sub">评审覆盖 5 条线、30 项发现；按证据标准分级，可逐条复核。</p>
+  <div class="metrics">
+    <div class="metric"><div class="mv">0</div><div class="ml">P0</div><div class="md">崩溃 / 数据毁灭级</div></div>
+    <div class="metric"><div class="mv p1">2</div><div class="ml">P1</div><div class="md">资源泄漏类，波次一</div></div>
+    <div class="metric"><div class="mv">11</div><div class="ml">P2</div><div class="md">边界误判 / 安全 / 发布</div></div>
+    <div class="metric"><div class="mv">16</div><div class="ml">P3</div><div class="md">健壮性 / 卫生</div></div>
+    <div class="metric"><div class="mv">1</div><div class="ml">附加</div><div class="md">回归日志实抓</div></div>
+  </div>
+  <div class="callout"><p>最值得先修的是「高频重建 / 资源泄漏」一族——历史页在 200 条记录下单次刷新卡顿 <span class="mono">1.4–3.8 秒</span>、每次泄漏约 <span class="mono">1666</span> 个子控件；它直接决定长时间挂机的内存曲线与界面流畅度。</p></div>
+  <ul class="tight">
+    <li><strong>两条边界缺陷已实证复现</strong>：同文案任务在「兄弟被跳过」后被静默判重复（任务从未提交，POST 计数为证）；激活码含非 ASCII 字符时激活流程无任何提示（<span class="mono">TypeError</span> 逃逸）。</li>
+    <li>计费与数据安全的核心防线（提交幂等键、跨进程账本、防重定向重放、配置原子写、全链路脱敏）经代码级核查<strong>结论完好</strong>——「bug 很多」的感受主要来自第一类可感知的卡顿/泄漏，而非计费或数据安全问题。</li>
+    <li>24h 无人值守场景的两个前置条件已单列：单实例守卫（PK-P2-2）与扫描阶段可取消（CC-P3-1）。</li>
+  </ul>
+</section>
+
+<section id="method">
+  <h2><span class="sn">02</span>方法与过程</h2>
+  <p class="sec-sub">五线并行 · 同一证据标准 · 全程只读（零真实费用）</p>
+  <p>评审分为五条线，各自持有明确文件清单与问题类别；允许读代码、跑只读探针与本地桩测试，禁止修改仓库与真实网络调用。每条发现必须包含：<strong>位置（文件:行号）· 严重度 · 证据 · 触发场景 · 修复建议</strong>；无法确证的条目进入「未验证的疑点」而非正文。</p>
+  <p>首轮五路并发评审因沙箱服务限流大面积中断（仅 UI 线完整完成并落盘）；随后三条补审尝试同样被限流打断。最终由主控工程师对并发、数据、网络、打包四线按同一证据标准直接完成审查，并对两条关键缺陷编写复现脚本实测通过（脚本与原始输出留档，见文末）。</p>
+</section>
+
+<section id="findings">
+  <h2><span class="sn">03</span>发现总表</h2>
+  <p class="sec-sub">全部 30 项按严重度分级；状态列随修复推进更新。</p>
+
+  <h3 id="f-p1">P1 · 随使用时长恶化（先修）<span class="mono">2 items</span></h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>级别</th><th>标题</th><th>位置</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr class="p1-row"><td class="id">UI-P1-1</td><td><span class="sev p1">P1</span></td><td>历史页整表重建 + 控件泄漏：200 条记录单次 1.4–3.8s，每次泄漏 ≈1666 控件</td><td class="loc">ui/pages/history_page.py:78-128</td><td class="st">待修 · 波次一</td></tr>
+      <tr class="p1-row"><td class="id">UI-P1-2</td><td><span class="sev p1">P1</span></td><td>「最近完成」面板与任务表同类重建泄漏（<span class="mono">clear()</span> 不删 item widget）</td><td class="loc">recent_completed_panel.py:61-75<br>workspace_task_table.py:315-336</td><td class="st">待修 · 波次一</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 id="f-p2">P2 · 边界误判 / 商业安全 / 发布工程<span class="mono">11 items</span></h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>级别</th><th>标题</th><th>位置</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td class="id">UI-P2-1</td><td><span class="sev p2">P2</span></td><td>弱引用注册表只增不删：主题切换随会话线性变慢（4000 死引用实测）</td><td class="loc">materials.py:29-31,112-126,159-171</td><td class="st">待修 · 波次二</td></tr>
+      <tr><td class="id">UI-P2-2</td><td><span class="sev p2">P2</span></td><td>SurfaceShadow 密集挂载：同卡渲染代价 2.8×（53 处 effect）</td><td class="loc">motion.py:73-81 / materials.py:304-321</td><td class="st">待修 · 波次三</td></tr>
+      <tr><td class="id">UI-P2-3</td><td><span class="sev p2">P2</span></td><td>浅色主题「当前任务」标题硬编码白色（白底白字）</td><td class="loc">current_task_card.py:47-49</td><td class="st">待修 · 波次二</td></tr>
+      <tr><td class="id">UI-P2-4</td><td><span class="sev p2">P2</span></td><td>自愈重绘覆盖面不全（页面栈 / 标题栏 / 次级弹窗未覆盖）</td><td class="loc">main_window.py:319-346,363-381</td><td class="st">待修 · 波次二</td></tr>
+      <tr><td class="id">UI-P2-5</td><td><span class="sev p2">P2</span></td><td>执行日志无上限：24h 挂机场景内存与重放成本失控</td><td class="loc">log_drawer.py:66,82-84</td><td class="st">待修 · 波次二</td></tr>
+      <tr><td class="id">CC-P2-1</td><td><span class="sev p2">P2</span></td><td>兄弟任务「已提交后被跳过」→ 等待任务被静默判 duplicate（从未提交）<span class="tag ev">已实证</span></td><td class="loc">task_execution.py:291-319</td><td class="st">待修 · 波次二</td></tr>
+      <tr><td class="id">DT-P2-1</td><td><span class="sev p2">P2</span></td><td>配置损坏静默回退默认值：无提示、无备份、原件会被覆盖</td><td class="loc">config_manager.py:256-257</td><td class="st">待修 · 波次一</td></tr>
+      <tr><td class="id">NT-P2-1</td><td><span class="sev p2">P2</span></td><td>YL1 共享密钥内置且发行版接受 → 可自签激活码（enforce 启用日升级 P0）</td><td class="loc">licensing.py:21-39,86-118</td><td class="st">产品决策 · 波次三</td></tr>
+      <tr><td class="id">NT-P2-2</td><td><span class="sev p2">P2</span></td><td>激活码含非 ASCII 字符 → TypeError 逃逸，激活失败无提示 <span class="tag ev">已实证</span></td><td class="loc">licensing.py:104 / settings_page.py:960-977</td><td class="st">待修 · 波次一</td></tr>
+      <tr><td class="id">PK-P2-1</td><td><span class="sev p2">P2</span></td><td>签名顺序缺陷：分发物（zip 内 exe）未含签名；配置签名即构建失败</td><td class="loc">build_release.py:156-160,141</td><td class="st">待修 · 波次一</td></tr>
+      <tr><td class="id">PK-P2-2</td><td><span class="sev p2">P2</span></td><td>无单实例机制：定时双触发 / 配置写覆盖竞态 / 状态发散</td><td class="loc">main.py:31-47 / main_window.py:719-754</td><td class="st">产品决策 · 波次三</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 id="f-p3">P3 · 健壮性 / 卫生（含 1 项附加）<span class="mono">16 + 1 items</span></h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>级别</th><th>标题</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="id">UI-P3-1</td><td><span class="sev p3">P3</span></td><td>WidgetMotion 悬空引用：effect 移除后抛错刷日志</td><td class="loc">motion.py:88-162 / workspace_surface.py:67-73</td></tr>
+      <tr><td class="id">UI-P3-2</td><td><span class="sev p3">P3</span></td><td>表头与数据列 7–13px 错位（中段列最明显）</td><td class="loc">workspace_task_table.py:292-313</td></tr>
+      <tr><td class="id">UI-P3-3</td><td><span class="sev p3">P3</span></td><td>SettingsPage.pool_timer 不随窗口关闭停止</td><td class="loc">settings_page.py:155-158</td></tr>
+      <tr><td class="id">UI-P3-4</td><td><span class="sev p3">P3</span></td><td>绘制异常处置边界：无钩子=abort / 有钩子=静默半绘制</td><td class="loc">theme.py:235-249 / crash_reporter.py</td></tr>
+      <tr><td class="id">CC-P3-1</td><td><span class="sev p3">P3</span></td><td>扫描阶段无取消检查点（取消/关闭在扫描期间无效）</td><td class="loc">task_manager.py:166-313</td></tr>
+      <tr><td class="id">CC-P3-2</td><td><span class="sev p3">P3</span></td><td>任务交接窗口内「跳过」被静默丢弃（窗口极小）</td><td class="loc">task_manager.py _pick→_execute</td></tr>
+      <tr><td class="id">CC-P3-3</td><td><span class="sev p3">P3</span></td><td>兄弟未决时等待方保守暂停：提示对象不清、无联动恢复</td><td class="loc">task_execution.py:304-319</td></tr>
+      <tr><td class="id">DT-P3-1</td><td><span class="sev p3">P3</span></td><td>启动期 VACUUM 无异常保护 + GUI 主线程阻塞</td><td class="loc">history_store.py:52,119-138</td></tr>
+      <tr><td class="id">DT-P3-2</td><td><span class="sev p3">P3</span></td><td>诊断包脱敏遗漏 <span class="mono">license.key</span></td><td class="loc">diagnostics_pack.py:20-33</td></tr>
+      <tr><td class="id">DT-P3-3</td><td><span class="sev p3">P3</span></td><td>多实例历史缓存发散（读走内存快照）</td><td class="loc">history_store.py / config_manager.py:315-324</td></tr>
+      <tr><td class="id">DT-P3-4</td><td><span class="sev p3">P3</span></td><td><span class="mono">records(0)</span> 边界返回全量而非空</td><td class="loc">history_store.py:182-186</td></tr>
+      <tr><td class="id">NT-P3-1</td><td><span class="sev p3">P3</span></td><td>试用期纯本地：可重置 / 可改天数 / 时钟回拨延长</td><td class="loc">licensing.py:123-155</td></tr>
+      <tr><td class="id">NT-P3-2</td><td><span class="sev p3">P3</span></td><td>更新清单 sha256 未接入下游校验；资产 URL 未限 https</td><td class="loc">update_check.py:44-49</td></tr>
+      <tr><td class="id">PK-P3-1</td><td><span class="sev p3">P3</span></td><td>CI 无产物启动冒烟（工具有、未接入）</td><td class="loc">ci.yml:44-52</td></tr>
+      <tr><td class="id">PK-P3-2</td><td><span class="sev p3">P3</span></td><td>安装器缺 EULA / 图标 / CloseApplications 声明</td><td class="loc">installer.iss:11-23</td></tr>
+      <tr><td class="id">PK-P3-3</td><td><span class="sev p3">P3</span></td><td>main.py 运行时 pip 兜底与崩溃留痕安装顺序</td><td class="loc">main.py:13-15,31-33</td></tr>
+      <tr><td class="id">附加-1</td><td><span class="sev p3">P3</span></td><td>SurfaceShadow 绘制除零（DPR=0，回归日志实抓 ×3）</td><td class="loc">materials.py:318</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="evidence">
+  <h2><span class="sn">04</span>实证详录</h2>
+  <p class="sec-sub">两条关键缺陷附可复现输出；脚本与原始日志留档（本地桩服务，零真实费用）。</p>
+
+  <h3>CC-P2-1 · 跳过兄弟任务 → 等待任务被静默判「重复」<span class="mono">task_execution.py:291-319</span></h3>
+  <p class="prose">场景：队列内两个同文案、不同参考图的任务。task0 先提交成功进入 processing；task1 处于「等待兄弟收尾」循环。此时对 task0 执行跳过。预期 task1 应接管提交；实际输出（复现第 1 轮，误判批次）：</p>
+  <pre class="term">task0 submitted: True statuses: ['processing', 'uploading']
+FINAL statuses: [<span class="r">('skipped', '已跳过')</span>, <span class="r">('duplicate', '同一提示词已有生成中的任务，跳过避免重复扣费')</span>]
+POST /videos count: <span class="r">1</span>        <span class="dim">← 唯一一次是 task0 的，task1 从未提交</span>
+duplicate_of: [None, '33365839cea94c1999c95985351abffd']
+warning | 任务2/2：同文案任务仍在收尾，等待其结束后自动重试提交（防重复扣费）
+warning | 任务1：已跳过；仅停止本地处理，远端任务可能继续执行</pre>
+  <p class="prose">对照复现（第 2 轮）：task0 尚在上传阶段即被跳过时，task1 能正确接管提交（<span class="mono">processing</span>）——两轮对比定位出精确触发条件：<strong>兄弟「已提交后被跳过」（账本记录保持 active）时才会误判</strong>。机制：等待循环以 <span class="mono">live_sibling()</span> 与陈旧 <span class="mono">outcome</span> 组合退出、未做最终 re-reserve 刷新，落入“busy”分类分支。修复方向：循环退出后补一次最终 reserve；对「兄弟已弃用但远端未决」给出显式可恢复状态，不静默落为 duplicate。</p>
+
+  <h3>NT-P2-2 · 非 ASCII 激活码 → TypeError 逃逸、激活无提示<span class="mono">licensing.py:104</span></h3>
+  <p class="prose">用户从聊天软件粘贴含中文/全角字符的内容当激活码时（高概率真实场景）：</p>
+  <pre class="term"><span class="dim">$ python -X utf8 probe_nonascii_key.py</span>
+'YL1.abc.中文'   → <span class="r">!!! TypeError : comparing strings with non-ASCII characters is not supported</span>
+'YL1.abc.qQ==中文' → <span class="r">!!! TypeError : comparing strings with non-ASCII characters is not supported</span>
+'YL2.abc.中文'   → ValueError: 激活码校验失败（签名不匹配）   <span class="dim">← YL2 路径正常</span>
+'YL1.a.b'        → ValueError: 激活码格式不正确               <span class="dim">← 全 ASCII 正常报错</span></pre>
+  <p class="prose">设置页激活入口仅捕获 <span class="mono">ValueError</span>（settings_page.py:975-977），TypeError 逃逸到 Qt 槽后被全局钩子吞掉——<strong>用户点「激活」后无任何错误提示</strong>。修复方向：parse_key 入口对签名段做 ASCII 预检并统一抛 ValueError；激活入口兜底 <span class="mono">except Exception</span>。</p>
+</section>
+
+<section id="lines">
+  <h2><span class="sn">05</span>分线速览</h2>
+  <p class="sec-sub">每线完整报告见 <span class="mono">.cluster/r19/audit/</span>。</p>
+  <div class="lines">
+    <div class="line-row">
+      <div class="ln">UI 渲染与 Qt<span class="mono">ui_render.md · 18KB</span></div>
+      <div class="ld">2×P1（历史页/列表重建泄漏，附离屏探针实测）、5×P2、4×P3。<br>覆盖：绘制路径、QGraphicsEffect 代价、弱引用注册表、自愈重绘覆盖面、浅色主题 token、日志上限。</div>
+    </div>
+    <div class="line-row">
+      <div class="ln">并发与生命周期<span class="mono">concurrency.md</span></div>
+      <div class="ld">1×P2（兄弟任务边界，两轮实证）、3×P3。已知「后台收尾竞态」修复经代码级核查完整；取消链覆盖经确认（扫描阶段除外）。</div>
+    </div>
+    <div class="line-row">
+      <div class="ln">数据与存储<span class="mono">data_store.md</span></div>
+      <div class="ld">1×P2（配置损坏静默回退）、4×P3。原子写、迁移幂等、账本语义、跨进程发布顺序均核查通过。</div>
+    </div>
+    <div class="line-row">
+      <div class="ln">网络与许可<span class="mono">network_license.md</span></div>
+      <div class="ld">2×P2（YL1 自签风险、非 ASCII 激活缺陷）、2×P3。幂等键、防重定向重放、脱敏链路核查通过。</div>
+    </div>
+    <div class="line-row">
+      <div class="ln">打包与交付<span class="mono">packaging_release.md</span></div>
+      <div class="ld">2×P2（签名顺序、单实例缺失）、3×P3。版本单一来源、构建参数、清单、冒烟工具链核查通过。</div>
+    </div>
+  </div>
+</section>
+
+<section id="verified">
+  <h2><span class="sn">06</span>已核查通过</h2>
+  <p class="sec-sub">评审同时记录「确认安全」的核心防线，防止反复排查同一处。</p>
+  <ul class="tight verify">
+    <li>提交计费安全：Idempotency-Key + <span class="mono">allow_redirects=False</span>（防重定向重放 POST）+ 提交不确定态保守语义（解析失败/无 task_id 的 5xx 一律禁自动重试）。</li>
+    <li>跨进程账本：<span class="mono">BEGIN IMMEDIATE</span> 写锁、<span class="mono">synchronous=FULL</span>、意图永不过期、显式恢复才放行。</li>
+    <li>配置持久化：同目录 mkstemp → fsync → <span class="mono">os.replace</span> 原子写；迁移幂等 + 失败保底；旧目录迁移的跨进程安全发布。</li>
+    <li>凭据卫生：Authorization 头不落日志；api_key/log_secrets 全链路替换；调试请求体深层脱敏。（诊断包一处遗漏见 DT-P3-2）</li>
+    <li>后台收尾竞态（历史修复）：<span class="mono">_background_busy</span> → is_running 门控 → worker.finished FIFO → <span class="mono">sip.isdeleted</span> 双守卫，未发现残余同类。</li>
+    <li>主题系统：<span class="mono">_THEME_CALLBACKS</span> 弱引用 + RuntimeError 守卫；<span class="mono">runtime_config()</span> 深拷贝保证 <span class="mono">_rerun_signatures</span> 不污染持久配置。</li>
+    <li>发布一致性：版本号单一来源贯穿 exe 信息 / zip 命名 / 清单 / 安装器；CI 测试与构建分离、依赖版本固定。</li>
+    <li>鼠标交互：HoverWash/Shimmer/过渡层均设鼠标穿透；嵌套 effect 规避逻辑有效（离屏高 DPI 实测无图标缩放问题）。</li>
+  </ul>
+</section>
+
+<section id="plan">
+  <h2><span class="sn">07</span>修复计划</h2>
+  <p class="sec-sub">三波执行：先低风险见效，再补测试护航，最后产品决策项。</p>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">WAVE 01</span><span class="wt">低风险 · 立即执行</span><span class="wd">改动小、可独立验证、立即改善手感与安全</span></div>
+    <div class="wave-b">
+      <div class="item"><span class="mono">UI-P1-1</span><span>历史页增量更新 + 显式释放旧控件 + 「最近 100 条」截断</span></div>
+      <div class="item"><span class="mono">UI-P1-2</span><span>「最近完成」/任务表重建前逐个 deleteLater + 无变化短路</span></div>
+      <div class="item"><span class="mono">附加-1</span><span>SurfaceShadow 除零守卫 + 离屏单测</span></div>
+      <div class="item"><span class="mono">NT-P2-2</span><span>parse_key ASCII 预检 + 激活入口兜底提示 + 单测</span></div>
+      <div class="item"><span class="mono">DT-P3-2</span><span>脱敏规则补 key / token / secret 家族</span></div>
+      <div class="item"><span class="mono">DT-P2-1</span><span>配置损坏 → 备份 .bak + 显式提示</span></div>
+      <div class="item"><span class="mono">DT-P3-1</span><span>maintain() 包 try/except，失败留日志下周重试</span></div>
+      <div class="item"><span class="mono">DT-P3-4</span><span>records(0) 边界修正</span></div>
+      <div class="item"><span class="mono">PK-P2-1</span><span>签名顺序：先签 exe 再打 zip；签名列表仅 .exe；路径加引号</span></div>
+      <div class="item"><span class="mono">UI-P3-3</span><span>pool_timer 随窗口关闭停止</span></div>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">WAVE 02</span><span class="wt">需谨慎 · 补测试护航</span><span class="wd">涉及行为变化，每条配套单测或复现用例</span></div>
+    <div class="wave-b">
+      <div class="item"><span class="mono">CC-P2-1</span><span>等待循环退出后最终 re-reserve + 显式可恢复状态（保留防重复扣费语义）</span></div>
+      <div class="item"><span class="mono">UI-P2-1</span><span>弱引用注册表原位压缩（遍历时剔除死引用）</span></div>
+      <div class="item"><span class="mono">UI-P2-5</span><span>日志条数上限（maximumBlockCount + deque）</span></div>
+      <div class="item"><span class="mono">UI-P2-4</span><span>自愈重绘覆盖：页面栈 / 当前页 / 标题栏并入 _integrity_repaint</span></div>
+      <div class="item"><span class="mono">UI-P2-3</span><span>当前任务卡标题改主题 token（浅色主题可读）</span></div>
+      <div class="item"><span class="mono">UI-P3-1</span><span>WidgetMotion 悬空引用守卫（sip.isdeleted）</span></div>
+      <div class="item"><span class="mono">UI-P3-2</span><span>表头与数据行共用同一组列宽与左边界</span></div>
+      <div class="item"><span class="mono">CC-P3-1</span><span>扫描循环插入取消检查点</span></div>
+      <div class="item"><span class="mono">CC-P3-2</span><span>交接窗口跳过：begin 前移或延迟标记</span></div>
+      <div class="item"><span class="mono">PK-P3-1/2/3</span><span>CI 冒烟接入 / 安装器 EULA 与图标 / pip 兜底限定非 frozen</span></div>
+      <div class="item"><span class="mono">NT-P3-2</span><span>更新资产 https 约束（轻量）</span></div>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">WAVE 03</span><span class="wt">产品决策 · 发布前闭环</span><span class="wd">涉及商业策略与较大工程，单独立项</span></div>
+    <div class="wave-b">
+      <div class="item"><span class="mono">NT-P2-1</span><span>YL1 发行门控：发行版仅接受 YL2（测试保留 YL1）——enforce 上线前置条件</span></div>
+      <div class="item"><span class="mono">PK-P2-2</span><span>单实例守卫（检测已运行 → 前置已有窗口），或产品文档明确单实例约束</span></div>
+      <div class="item"><span class="mono">UI-P2-2</span><span>SurfaceShadow 性能重构（阴影改 paintEvent 直绘，设置卡类去 effect）——单独排期</span></div>
+    </div>
+  </div>
+</section>
+
+<footer class="colophon" id="colophon">
+  <h2 style="font-size:18px;margin-bottom:12px;">08 · 复核方式</h2>
+  <div class="fblk">
+    <p>全部原始材料位于工作区 <span class="mono">.cluster/r19/</span>：</p>
+    <ul class="tight">
+      <li>分线报告：<span class="mono">audit/ui_render.md · concurrency.md · data_store.md · network_license.md · packaging_release.md · materials_zerodiv.md · 00_MASTER.md</span></li>
+      <li>复现脚本与原始输出：<span class="mono">repro/repro_sibling_skip.py · repro_sibling_fail.py · result_skip.txt · result_fail.txt · result_skip_run1.txt</span></li>
+    </ul>
+    <p>所有行号引用以 HEAD <span class="mono">abb2345</span> 为准；修复提交后，对应条目状态将在下一版复核中更新（报告版本 v15）。</p>
+    <p class="mono" style="margin-top:18px;">YanlinMatrix · Internal Engineering Dossier · v14 · 2026-09-22 · AutoClaw</p>
+  </div>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

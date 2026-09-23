@@ -42,6 +42,7 @@ EN = {
     '返回': 'Back',
     '取消全部任务？': 'Cancel all tasks?',
     '正在进行的任务将停止本地处理，远端任务可能继续执行；排队中的任务将被跳过。': 'Running tasks will stop locally; remote tasks may continue. Queued tasks will be skipped.',
+    '运行中不可重复启动': 'Already running; cannot start again',
     '许可提示': 'License notice',
     '请激活后继续使用': 'Please activate to continue',
     '关于': 'About',

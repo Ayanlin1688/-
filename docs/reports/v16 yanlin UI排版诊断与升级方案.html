@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>言林智创矩阵 · UI 排版诊断与升级方案（v16）</title>
+<style>
+  :root{
+    --paper:#F8F8F5; --paper-2:#FCFCFA; --ink:#17191C; --ink-2:#5D6570; --ink-3:#8A9099;
+    --hair:#DBDBD4; --hair-2:#E7E7E0; --rust:#A63A2A; --wash:#F0EFE9;
+    --ok:#3E6B4F; --term-bg:#14171A; --term-ink:#E9E7E1;
+    --blue:#3E63C8; --violet:#5F55B8;
+    --sans:"Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif;
+    --mono:"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;}
+  a{color:var(--rust);text-decoration:none;} a:hover{text-decoration:underline;text-underline-offset:3px;}
+  code,.mono{font-family:var(--mono);font-size:.78em;letter-spacing:.01em;}
+  code{background:var(--wash);border:1px solid var(--hair-2);border-radius:3px;padding:.08em .38em;white-space:nowrap;}
+
+  .cover{max-width:1080px;margin:0 auto;padding:72px 36px 40px;}
+  .kicker{font-size:12px;letter-spacing:.14em;color:var(--ink-2);text-transform:uppercase;}
+  h1{font-size:41px;line-height:1.18;font-weight:600;letter-spacing:-.015em;margin:18px 0 14px;}
+  .lede{font-size:17px;line-height:1.8;color:var(--ink-2);max-width:46em;margin:0 0 24px;}
+  .lede strong{color:var(--ink);font-weight:600;}
+  .meta-row{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:12px 0;display:flex;flex-wrap:wrap;gap:8px 28px;font-size:13px;color:var(--ink-2);}
+  .meta-row .mono{font-size:12px;}
+  .cover-note{margin-top:12px;font-size:12.5px;color:var(--ink-3);max-width:54em;}
+
+  .shell{max-width:1240px;margin:0 auto;padding:8px 36px 80px;display:grid;grid-template-columns:224px minmax(0,1fr);gap:52px;}
+  nav.toc{position:sticky;top:28px;align-self:start;font-size:13.5px;line-height:2.05;padding-top:6px;}
+  nav.toc .tt{font-size:11px;letter-spacing:.14em;color:var(--ink-3);text-transform:uppercase;margin-bottom:8px;}
+  nav.toc a{color:var(--ink-2);display:block;}
+  nav.toc a:hover{color:var(--ink);text-decoration:none;}
+  nav.toc .sub{padding-left:14px;color:var(--ink-3);}
+
+  main{min-width:0;}
+  section{padding:34px 0 26px;border-top:1px solid var(--hair);}
+  section:first-child{border-top:none;padding-top:8px;}
+  h2{font-size:25px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;}
+  h2 .sn{color:var(--rust);font-family:var(--mono);font-size:.62em;font-weight:500;margin-right:12px;vertical-align:2px;}
+  .sec-sub{color:var(--ink-3);font-size:13px;margin:0 0 20px;}
+  p{max-width:47em;}
+  .prose{max-width:47em;}
+
+  .callout{border-left:2px solid var(--rust);padding:4px 0 4px 16px;margin:22px 0;max-width:46em;}
+  .callout p{margin:0;font-size:14.5px;}
+
+  .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);background:var(--paper-2);margin:20px 0 26px;}
+  .metric{padding:16px 18px 14px;border-right:1px solid var(--hair);}
+  .metric:last-child{border-right:none;}
+  .metric .mv{font-family:var(--mono);font-size:29px;line-height:1;font-weight:500;}
+  .metric .mv.r{color:var(--rust);}
+  .metric .ml{font-size:12px;color:var(--ink-3);margin-top:8px;letter-spacing:.03em;}
+  .metric .md{font-size:11.5px;color:var(--ink-3);margin-top:2px;}
+
+  .tbl-wrap{overflow-x:auto;margin:18px 0 26px;border:1px solid var(--hair);background:var(--paper-2);}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.6;}
+  th{font-size:11.5px;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;text-align:left;font-weight:600;padding:10px 14px;border-bottom:1px solid var(--hair);white-space:nowrap;}
+  td{padding:11px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td.id{font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--ink-2);}
+  .sev{font-family:var(--mono);font-size:12px;font-weight:500;}
+  .sev.h{color:var(--rust);}
+  .sev.m{color:var(--ink);}
+  .sev.l{color:var(--ink-3);}
+  tr.big td{background:rgba(166,58,42,.035);}
+
+  h3{font-size:17px;font-weight:600;margin:30px 0 6px;}
+  h3 .mono{font-size:12px;color:var(--ink-3);font-weight:400;margin-left:10px;}
+
+  .wave{margin:26px 0 10px;border:1px solid var(--hair);background:var(--paper-2);}
+  .wave-h{padding:13px 18px;border-bottom:1px solid var(--hair);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;}
+  .wave-h .wn{font-family:var(--mono);font-size:12px;color:var(--rust);letter-spacing:.06em;}
+  .wave-h .wt{font-weight:600;font-size:15px;}
+  .wave-h .wd{color:var(--ink-3);font-size:12.5px;}
+  .item{padding:14px 18px;border-bottom:1px solid var(--hair-2);}
+  .item:last-child{border-bottom:none;}
+  .item .it{font-weight:600;font-size:14.5px;}
+  .item .it .id{font-family:var(--mono);color:var(--rust);font-size:12px;margin-right:10px;}
+  .kv{display:grid;grid-template-columns:82px minmax(0,1fr);gap:4px 14px;margin-top:8px;font-size:13.5px;}
+  .kv dt{color:var(--ink-3);font-size:12.5px;padding-top:2px;}
+  .kv dd{margin:0;color:var(--ink-2);}
+  .kv dd b{color:var(--ink);font-weight:600;}
+  .kv code{font-size:.82em;}
+
+  ul.tight,ol.tight{padding-left:20px;margin:12px 0;max-width:46em;}
+  ul.tight li,ol.tight li{margin:7px 0;}
+  .check li::marker{color:var(--ok);content:"✓ ";}
+
+  pre.dump{background:var(--term-bg);color:var(--term-ink);font-family:var(--mono);font-size:12px;line-height:1.7;padding:16px 18px;border-left:2px solid var(--rust);overflow-x:auto;margin:14px 0 18px;}
+  pre.dump .dim{color:#8B8F94;}
+
+  .dir-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0 8px;max-width:60em;}
+  .dir{border:1px solid var(--hair);background:var(--paper-2);padding:16px 18px;}
+  .dir .dt{font-weight:600;font-size:14px;margin-bottom:6px;}
+  .dir .dt .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:1px;}
+  .dir ul{margin:8px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink-2);}
+  .dir ul li{margin:5px 0;}
+
+  footer.colophon{margin-top:56px;border-top:1px solid var(--hair);padding:26px 0 0;font-size:13px;color:var(--ink-2);}
+  footer .fblk{max-width:52em;}
+  footer .mono{font-size:11.5px;color:var(--ink-3);}
+
+  @media (max-width:1020px){
+    .shell{grid-template-columns:1fr;gap:0;}
+    nav.toc{position:static;padding:0 0 20px;border-bottom:1px solid var(--hair);}
+    nav.toc a{display:inline-block;margin-right:16px;}
+    nav.toc .sub{display:none;}
+    .metrics{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .metric:nth-child(2n){border-right:none;}
+    .metric{border-bottom:1px solid var(--hair);}
+    .dir-grid{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="kicker">内部设计文档 · UI 排版专项评审</div>
+  <h1>言林智创矩阵 · UI 排版诊断与升级方案</h1>
+  <p class="lede">对工作台、任务进度区、任务历史、设置四个界面做了逐屏评审：<strong>8 个场景截图评审 + 50 余项几何实测 + 顶级生产工具对标</strong>。结论先说：这不是「细节没抠好」，而是<strong>任务监看层缺位与排版规范缺失两件事</strong>。升级方向定为<strong>布局重构（保留现有视觉语言）</strong>，方案分三批、每项都给出改法与验证方式。</p>
+  <div class="meta-row">
+    <span>评审日期&nbsp;<span class="mono">2026-09-22</span></span>
+    <span>评审范围&nbsp;工作台 / 进度区 / 历史 / 设置</span>
+    <span>方案版本&nbsp;<span class="mono">v16</span></span>
+    <span>状态&nbsp;方案待确认后分波实施</span>
+  </div>
+  <p class="cover-note">配套产出：<a href="v16 yanlin 工作台升级示意.html">工作台升级示意（目标稿）</a>。本轮只出诊断与方案，不改动代码；实施按第 06 节的分波节奏推进。</p>
+</header>
+
+<div class="shell">
+<nav class="toc">
+  <div class="tt">目录</div>
+  <a href="#summary">01 · 结论摘要</a>
+  <a href="#method">02 · 评审方法与素材</a>
+  <a href="#diagnosis">03 · 诊断：五个根因</a>
+  <a href="#pages">04 · 逐页问题清单</a>
+  <a href="#bench">05 · 顶级工具对标</a>
+  <a href="#direction">06 · 升级方向与边界</a>
+  <a href="#plan">07 · 执行方案（P0/P1/P2）</a>
+  <a href="#verify">08 · 验收与实施节奏</a>
+  <a href="#colophon">09 · 素材索引</a>
+</nav>
+
+<main>
+
+<section id="summary">
+  <h2><span class="sn">01</span>结论摘要</h2>
+  <p class="sec-sub">一句话版本：界面不缺功能，缺一个「先看进度、再看配置」的骨架。</p>
+  <div class="metrics">
+    <div class="metric"><div class="mv r">5</div><div class="ml">根因问题</div><div class="md">层级 / 主次 / 规范 / 冗余 / 监看</div></div>
+    <div class="metric"><div class="mv">40+</div><div class="ml">逐屏问题条目</div><div class="md">按严重度分级归纳</div></div>
+    <div class="metric"><div class="mv">11</div><div class="ml">升级改造项</div><div class="md">P0 四 / P1 四 / P2 三</div></div>
+    <div class="metric"><div class="mv">3</div><div class="ml">实施批次</div><div class="md">每批独立可验证</div></div>
+  </div>
+  <div class="callout"><p><strong>最大瓶颈：任务监看层缺位。</strong>「当前任务与实时进度」藏在「生成参数与任务详情」弹窗里，弹窗内容合计约 1030px，在 820px 高度内必须滚动才能看到进度卡；而主界面只剩一张表格在承担「监看」职责。顶级生产工具（Topaz Video AI、达芬奇、Runway）的第一屏永远是「队列 + 进度」，配置藏在后面。</p></div>
+  <ul class="tight">
+    <li><strong>改造强度：布局重构（Layout Restructure）。</strong>保留深空主题视觉语言、三页信息架构与全部业务流；重排工作台的信息层次、工具栏组织、表格与日志规范。不到「全量重做」，也远不止「调调间距」。</li>
+    <li><strong>升级后骨架（目标稿已出）：</strong>顶栏只留状态与主操作 → 概览 4 主卡 + 复合卡 → <strong>常驻「当前任务监看带」</strong> → 目录配置行 → 任务队列（工具栏分组 + 规范表格）→ 日志区（筛选胶囊 + 图标操作）。</li>
+    <li><strong>实施原则：</strong>只动 <code>ui/</code> 层会到「改哪、怎么改、怎么验」的程度；不动业务逻辑与主流程。每批改完用「截图对比 + 全量回归」验收。</li>
+  </ul>
+</section>
+
+<section id="method">
+  <h2><span class="sn">02</span>评审方法与素材</h2>
+  <p class="sec-sub">三个视角互相校验，避免只凭观感下结论。</p>
+  <ul class="tight">
+    <li><strong>逐屏设计评审（8 个场景）</strong>：工作台空态 / 任务态 / 展开导航态、当前任务卡、任务队列卡特写、历史页、设置两页、日志展开态。每屏按「布局结构、间距、对齐、字号层级、留白密度、截断与错位」逐条过，问题按高 / 中 / 低定级。</li>
+    <li><strong>几何实测（硬数据）</strong>：对关键组件做渲染级测量（位置、尺寸、内外边距、字号、行高），共 50 余项数值，用来区分「观感问题」与「实际数值问题」。</li>
+    <li><strong>代码基线核对</strong>：所有结论与当前实现的组件结构逐一对得上（布局容器、表格列规格、主题 token），确保改法可落地。</li>
+  </ul>
+  <p class="prose">评审覆盖的核心场景：工作台（空态 / 任务态 / 展开导航）、任务队列与当前任务区、任务历史、设置（默认页 / 外观页）、执行日志（收起 / 展开）。原始截图与评审记录见第 09 节素材索引。</p>
+</section>
+
+<section id="diagnosis">
+  <h2><span class="sn">03</span>诊断：五个根因</h2>
+  <p class="sec-sub">把 40 多条散点问题归拢到 5 个根因，改造按根因走，不做逐条打补丁。</p>
+
+  <h3>根因 A · 信息层级扁平，字号阶梯缺失<span class="mono">贯穿全部页面</span></h3>
+  <p class="prose">全界面在 10–12px 区间堆了绝大多数文字：概览卡的标签约 12px、数值仅 26px 高；表头与正文几乎同号，只靠颜色区分；日志 11.5px 且对比度偏低。没有清晰的「大数值 / 标题 / 正文 / 辅助」四级阶梯，扫读时抓不到重点。深色背景下辅助灰字（<code>#7C8596</code> 一档）在低亮度屏幕上读起来费劲。</p>
+
+  <h3>根因 B · 操作无主次，工具按钮平铺<span class="mono">任务队列头部 / 日志头部 / 顶栏</span></h3>
+  <p class="prose">任务队列头部同排 5 个操作（全部状态筛选、重置模型识别、生成参数、匹配详情、取消全部），视觉权重完全相同；「取消全部」这种破坏性操作没有任何样式区分与二次确认。日志头部同样挤了 8 个控件（5 个筛选 + 导出 + 清空 + 展开）。顶栏「未配置 / 自动保存 / 暂停 / 开始生成」混排，前置条件未满足时主按钮的可用逻辑不清晰。</p>
+
+  <h3>根因 C · 表格对齐与状态规范缺失<span class="mono">任务队列 / 历史页</span></h3>
+  <p class="prose">文本、数值、状态混用同一种对齐方式；历史页时间列折行、文件大小小数点不对齐；任务队列进度条仅 87px 宽且百分比位置随数值浮动，竖向无法比较；状态标签样式不统一（实底 / 描边 / 虚框混用）；序号列的彩色圆点与状态列语义重复，等于同一信息表达两遍。</p>
+
+  <h3>根因 D · 重复信息占位，密度分配失衡<span class="mono">工作台全域 / 设置页</span></h3>
+  <p class="prose">「产品 / 任务进度」在顶栏状态条、概览卡、队列头部、日志头部出现 4 次；「匹配详情」入口出现 2 次；设置页主标题与卡片内小标题重复、说明文案两段重复。与此同时，任务队列行高 52px 信息密度却不低，日志区默认高度只有 140px，形成「该松的不松、该紧的不紧」。</p>
+
+  <h3>根因 E · 任务监看层缺位（本轮最核心）<span class="mono">工作台信息架构</span></h3>
+  <p class="prose">实测：「当前任务卡 + 参数卡 + 数据源卡 + 最近完成」总高约 1030px，全部放在「生成参数与任务详情」弹窗（980×820）内，且弹窗内还要滚动；主界面只有概览数字和表格在承载监看。结果是：想确认「现在跑到哪了、还剩多久」必须开弹窗，这对一个「挂着跑批」的生产工具是结构性问题。顶级工具的第一屏结构是「队列 + 当前任务进度」常驻，配置抽屉化，这个骨架需要补上。</p>
+</section>
+
+<section id="pages">
+  <h2><span class="sn">04</span>逐页问题清单</h2>
+  <p class="sec-sub">从评审记录中归纳的代表性条目（完整清单见素材索引）。</p>
+
+  <h3>工作台（主界面）</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>#</th><th>位置</th><th>问题</th><th>严重度</th></tr></thead>
+    <tbody>
+      <tr class="big"><td class="id">W-1</td><td>信息架构</td><td>当前任务与进度藏于弹窗，主界面缺常驻监看带；弹窗内容超长需滚动（根因 E）</td><td><span class="sev h">高</span></td></tr>
+      <tr class="big"><td class="id">W-2</td><td>任务队列头部</td><td>5 个操作按钮平铺无分组；「取消全部」无危险样式与确认（根因 B）</td><td><span class="sev h">高</span></td></tr>
+      <tr class="big"><td class="id">W-3</td><td>概览卡区</td><td>8 张指标卡单行平铺无分级，窄窗口必挤压；大小写混排（「就绪」等文字值过大）（根因 D）</td><td><span class="sev h">高</span></td></tr>
+      <tr><td class="id">W-4</td><td>顶栏状态条</td><td>「就绪 / 产品 / 任务 / 并发 / 已运行」连续排列无分组，与右侧操作区层级混淆（根因 D）</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">W-5</td><td>目录配置行</td><td>三个选择器宽度不统一；右侧「已匹配 + 匹配详情」未与字段形成分组，且与队列头部重复（根因 D）</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">W-6</td><td>任务表：进度列</td><td>进度条纤细（4–5px）、百分比随数值浮动不定位，跨行比较困难（根因 C）</td><td><span class="sev h">高</span></td></tr>
+      <tr><td class="id">W-7</td><td>任务表：状态与序号</td><td>序号列圆点与状态列重复；状态标签样式（实/描/虚）不统一（根因 C）</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">W-8</td><td>执行日志头部</td><td>左侧长句混排多个状态；右侧 8 个控件无分组、按钮贴太紧（根因 B）</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">W-9</td><td>日志区高度</td><td>收起态仅 44px，展开 140px，正文 11.5px 对比度偏低（根因 A）</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">W-10</td><td>模型标签</td><td>模型列使用高饱和徽标，与「已完成」绿状态色语义冲突（色只应表达状态）（根因 C）</td><td><span class="sev m">中</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>任务历史页</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>#</th><th>位置</th><th>问题</th><th>严重度</th></tr></thead>
+    <tbody>
+      <tr class="big"><td class="id">H-1</td><td>表格全体</td><td>全部列居中对齐：文本列不齐、大小数点不齐；不符合「文本左对齐、数值右对齐、状态操作居中」规则</td><td><span class="sev h">高</span></td></tr>
+      <tr><td class="id">H-2</td><td>时间列</td><td>提交 / 完成时间折成两行，行高被撑大</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">H-3</td><td>状态标签</td><td>深绿底 + 浅绿字等组合对比度偏低</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">H-4</td><td>操作列</td><td>不同行按钮数量不同、居中位置参差；「失败」行无播放图标导致列内不齐</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">H-5</td><td>表头</td><td>表头与数据背景相同，层级弱；缺斑马纹或更明确行分隔</td><td><span class="sev l">低</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>设置页</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>#</th><th>位置</th><th>问题</th><th>严重度</th></tr></thead>
+    <tbody>
+      <tr><td class="id">S-1</td><td>主内容标题区</td><td>大标题与卡片内小标题重复、两段说明几乎重复</td><td><span class="sev m">中</span></td></tr>
+      <tr class="big"><td class="id">S-2</td><td>侧栏导航</td><td>分组标题与菜单项字号 / 颜色 / 缩进差异小，「分组」与「页面」难区分；组间距不足显拥挤</td><td><span class="sev h">高</span></td></tr>
+      <tr><td class="id">S-3</td><td>空状态卡</td><td>内容集中左上、右侧大留白；两个按钮权重接近无主次</td><td><span class="sev m">中</span></td></tr>
+      <tr><td class="id">S-4</td><td>设置卡片</td><td>右侧控件（下拉 / 开关）高度与内边距不统一；个别图标语义不准</td><td><span class="sev l">低</span></td></tr>
+      <tr><td class="id">S-5</td><td>页面下半区</td><td>内容偏上，宽屏下大片空置</td><td><span class="sev l">低</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="bench">
+  <h2><span class="sn">05</span>顶级工具对标</h2>
+  <p class="sec-sub">对标对象：Topaz Video AI（最接近的批量视频生产工具）、DaVinci Resolve（生产面板）、Linear（信息密度规范）、Runway（生成任务队列）。</p>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>范式</th><th>顶级做法</th><th>现状差距</th><th>借鉴动作</th></tr></thead>
+    <tbody>
+      <tr><td>监看优先</td><td>第一屏 = 「队列 + 当前任务进度」；配置永远是次级入口</td><td>进度藏在弹窗，主屏靠数字卡片撑场（根因 E）</td><td>新增常驻「当前任务监看带」；弹窗瘦身为「配置抽屉」</td></tr>
+      <tr><td>状态单一真源</td><td>同一信息只出现一处；状态色只表达状态</td><td>进度重复 4 处；模型徽标抢状态色（根因 D）</td><td>进度只在监看带 + 队列；模型徽标改中性色</td></tr>
+      <tr><td>工具分组</td><td>高频操作平铺、低频收进「更多」；危险操作隔离 + 确认</td><td>5 个按钮平等铺开（根因 B）</td><td>筛选 + 匹配详情保留；其余进「更多操作」；取消全部红色 + 确认</td></tr>
+      <tr><td>数据对齐规范</td><td>文本左 / 数值右 / 状态居中；进度轨道固定宽度</td><td>对齐混乱、进度浮动（根因 C）</td><td>列对齐规则化；进度固定轨道 + 定宽百分比</td></tr>
+      <tr><td>密度与留白节拍</td><td>8px 网格；主数值大字号 + 弱标签；次级信息降一级灰度</td><td>字号扁平、留白失衡（根因 A）</td><td>字号四级阶梯 + 8px 间距系统 + 对比度提升</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="direction">
+  <h2><span class="sn">06</span>升级方向与边界</h2>
+  <p class="sec-sub">先划边界再动手：哪些绝不碰、哪些可以重构、做到什么强度。</p>
+  <div class="dir-grid">
+    <div class="dir">
+      <div class="dt"><span class="sw" style="background:var(--ok)"></span>必须保留（不动）</div>
+      <ul>
+        <li>深空主题视觉语言：深底 + 玻璃卡 + 蓝紫强调色（全部主题保留）</li>
+        <li>三页信息架构与导航方式（工作台 / 历史 / 设置；折叠与展开两态）</li>
+        <li>业务主流程与全部功能入口（扫描→匹配→生成→下载、重试、待确认处理）</li>
+        <li>品牌元素与既有文案语义（可优化措辞，不改含义）</li>
+        <li>不改业务逻辑、路由与数据模型</li>
+      </ul>
+    </div>
+    <div class="dir">
+      <div class="dt"><span class="sw" style="background:var(--rust)"></span>可以重构</div>
+      <ul>
+        <li>工作台信息层次与区域顺序（监看层上桌、概览减值分级）</li>
+        <li>工具栏组织（分组、更多菜单、危险操作样式）</li>
+        <li>表格系统（对齐规则、列宽、状态胶囊、进度列、行样式）</li>
+        <li>日志区排布与对比度；设置页间距、侧栏层级与卡片规范</li>
+        <li>弹窗信息架构（瘦身、去滚动、配置归位）</li>
+      </ul>
+    </div>
+  </div>
+  <p class="prose"><strong>设计方向（一句话）：</strong>把它当作一台「长期挂机的生产控制台」来排版：先监看、后配置；信息密度保持高，但用字号阶梯与对齐规则让每一眼都有落点。<strong>强度：布局重构</strong>，分三批实施，每批独立可回退。</p>
+</section>
+
+<section id="plan">
+  <h2><span class="sn">07</span>执行方案（P0 / P1 / P2）</h2>
+  <p class="sec-sub">每项给出：目标 / 改法 / 涉及文件 / 风险 / 验证。涉及文件均在当前代码库中定位到了具体组件。</p>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">P0 · 布局骨架</span><span class="wt">信息架构重排</span><span class="wd">效果最大的一批；先做这四项，界面「看起来是另一个产品」</span></div>
+
+    <div class="item">
+      <div class="it"><span class="id">P0-1</span>当前任务监看带上桌（根因 E）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>主界面常驻一条监看带：当前任务名 + 状态 + 进度条 + 已用/剩余 + 跳过/详情；无任务时显示空闲态。</dd>
+        <dt>改法</dt><dd>把 <code>CurrentTaskCard</code> 的进度区抽为一个紧凑横条组件，挂到工作台 <code>splitter</code> 上方（目录行与队列之间）；完整卡片仍留在弹窗作详情。</dd>
+        <dt>文件</dt><dd><code>ui/widgets/current_task_card.py</code>（抽条）、<code>ui/pages/workspace_page.py</code>（挂载与信号接线）</dd>
+        <dt>风险</dt><dd>低。纯增量组件，不改现有卡。</dd>
+        <dt>验证</dt><dd>跑批时监看带实时刷新；「跳过/详情」按钮与队列操作一致；空态文案正确。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P0-2</span>概览卡分级：8 平铺 → 4 主卡 + 复合卡（根因 A/D）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>主行 4 张：任务进度（带微进度条）、成功率、今日完成、待处理；右侧一张复合卡收「产品进度 / 失败 / 平均耗时」。</dd>
+        <dt>改法</dt><dd>重排 <code>WorkspaceSummary</code> 的卡片结构与宽度分配（不再 8 等分）；数值字号提到 24–26px，标签降一级灰度；「就绪」这类文字值改用状态胶囊。</dd>
+        <dt>文件</dt><dd><code>ui/widgets/workspace_summary.py</code></dd>
+        <dt>风险</dt><dd>低。数据接口不动，只重排。</dd>
+        <dt>验证</dt><dd>1280 / 1400 / 1600 三档宽度截图不挤压；数值变化实时。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P0-3</span>任务队列工具栏分组 + 危险操作隔离（根因 B）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>头部只留「筛选 + 匹配详情」；「重置模型识别 / 生成参数」收进「更多操作」下拉；「取消全部」红色描边 + 二次确认。</dd>
+        <dt>改法</dt><dd><code>WorkspaceTaskTable</code> 头部按钮重构 + 「更多」菜单（沿用 <code>RoundMenu</code>）；取消逻辑前加确认对话框。</dd>
+        <dt>文件</dt><dd><code>ui/widgets/workspace_task_table.py</code>、<code>ui/pages/workspace_page.py</code></dd>
+        <dt>风险</dt><dd>中。菜单交互需要事件循环测试；确认弹窗要双语文案。</dd>
+        <dt>验证</dt><dd>各入口功能不丢；取消全部先弹确认；UI 测试同步更新。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P0-4</span>顶栏重组：状态与操作分离（根因 D）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>顶栏只留「页面标题 + 运行状态胶囊（含已运行时长）+ 自动保存 + 暂停 + 开始生成」；产品/任务/并发数字移入概览卡区。</dd>
+        <dt>改法</dt><dd><code>workspace_page.py</code> 顶部状态条（<code>status_row</code> 相关）与概览区职责重划；未配置时「开始生成」置灰并带原因提示。</dd>
+        <dt>文件</dt><dd><code>ui/pages/workspace_page.py</code></dd>
+        <dt>风险</dt><dd>低。</dd>
+        <dt>验证</dt><dd>运行中状态胶囊呼吸效果正常；未配置禁用态正确。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">P1 · 规范层</span><span class="wt">表格、间距、日志、侧栏</span><span class="wd">把「规范」沉淀成代码里可复用的 token 与组件规则</span></div>
+
+    <div class="item">
+      <div class="it"><span class="id">P1-1</span>任务表与历史表对齐 / 状态 / 进度规范（根因 C）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>文本左对齐、数值右对齐、比例/分辨率/时长居中；状态统一为胶囊三族（进行=蓝、完成=绿、异常=红/黄、其余=灰/虚线）；进度列固定 92px 轨道 + 42px 定宽百分比；历史页时间改 <code>09-22 10:08</code> 单行；去掉序号列圆点（状态列已表达）。</dd>
+        <dt>改法</dt><dd>任务表：调 <code>COLUMN_SPEC</code> 与单元格构造；历史表：重写单元格对齐与状态胶囊渲染（两表统一到同一套 <code>pill</code> 样式工厂）。</dd>
+        <dt>文件</dt><dd><code>ui/widgets/workspace_task_table.py</code>、<code>ui/pages/history_page.py</code></dd>
+        <dt>风险</dt><dd>中。列宽变更会动已对齐的表头系统（此前修复过逐像素对齐，改时重复用同一锚点方法验证）。</dd>
+        <dt>验证</dt><dd>4 档宽度下表格对齐实测；既有对齐回归测试保持绿。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P1-2</span>8px 间距系统 + 字号四级阶梯（根因 A）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>字号：大数值 26 / 页面标题 19 / 分区标题 14 / 正文 13 / 辅助 11.5–12；间距统一 4 / 8 / 12 / 16 / 24；辅助文字对比度整体抬一档（弱灰 <code>#7C8596</code> → <code>#98A2B3</code> 区间）。</dd>
+        <dt>改法</dt><dd>在 <code>ui/tokens.py</code> / 主题层沉淀字号与间距常量；组件逐个替换硬编码数值（分批，不一次全改）。</dd>
+        <dt>文件</dt><dd><code>ui/tokens.py</code>、<code>ui/materials.py</code>（对比度映射）、各组件</dd>
+        <dt>风险</dt><dd>中。全局替换面广，按页面分批提交。</dd>
+        <dt>验证</dt><dd>每批附暗色截图对比；对比度抽查满足正文 4.5:1。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P1-3</span>日志区重排（根因 B/A）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>左侧「运行摘要」分段（本次 N 条 / 定时状态）；右侧取消中英混排按钮，改「胶囊筛选 + 图标操作组」；正文 12.5px、行高 1.8、时间戳弱化。</dd>
+        <dt>改法</dt><dd><code>WorkspaceLog</code> 头部重构；筛选改为胶囊 tab；导出/清空/收起改为图标按钮 + tooltip。</dd>
+        <dt>文件</dt><dd><code>ui/widgets/workspace_log.py</code>、<code>ui/widgets/log_drawer.py</code></dd>
+        <dt>风险</dt><dd>低。</dd>
+        <dt>验证</dt><dd>筛选逻辑不丢（级别过滤断言）；收起 / 展开行为与记忆化正常。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P1-4</span>设置页与侧栏层级修正（根因 D/S-2）</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>侧栏分组标题（10.5px / 字距 / 弱色）与项明确分离、组间距 16–24px；设置页去掉重复标题与重复说明；卡片统一 56px 高、右侧控件固定 120px 对齐；底部死白区加「恢复默认 / 界面说明」次级内容。</dd>
+        <dt>改法</dt><dd><code>settings_page.py</code> 的 rail 与卡片构建函数逐一调整；文案去重。</dd>
+        <dt>文件</dt><dd><code>ui/pages/settings_page.py</code></dd>
+        <dt>风险</dt><dd>低。</dd>
+        <dt>验证</dt><dd>截图对比；i18n 词条同步（新增文案双语言）。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-h"><span class="wn">P2 · 打磨与治理</span><span class="wt">状态完备性与弹窗治理</span><span class="wd">最后一批，收边角</span></div>
+
+    <div class="item">
+      <div class="it"><span class="id">P2-1</span>空态 / 加载 / 禁用态统一</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>空状态、逐行加载、按钮禁用三态在四个页面用同一套规范（文案 + 布局 + 色彩）；「开始生成」前置条件不满足时给出原因提示。</dd>
+        <dt>文件</dt><dd>各页面组件 + <code>ui/widgets/workspace_surface.py</code>（共用样式）</dd>
+        <dt>验证</dt><dd>空目录、空历史、无任务三种空态截图；禁用态交互冒烟。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P2-2</span>深色对比度全局审计</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>正文 ≥ 4.5:1、大字 ≥ 3:1、辅助文字至少 3:1；重点检查表头、时间戳、侧栏说明、日志正文。</dd>
+        <dt>改法</dt><dd>基于主题 token 的对比度映射调整（<code>DARK_TEXT_MAP</code> 提亮档位微调）。</dd>
+        <dt>文件</dt><dd><code>ui/materials.py</code>、<code>ui/palettes.py</code></dd>
+        <dt>验证</dt><dd>关键组合对比度抽样清单（附数值）。</dd>
+      </dl>
+    </div>
+    <div class="item">
+      <div class="it"><span class="id">P2-3</span>「生成参数与任务详情」弹窗瘦身</div>
+      <dl class="kv">
+        <dt>目标</dt><dd>当前任务卡移至弹窗顶部（先看进度再改参数）；数据源卡与参数卡分区标题化；消除 1030px &gt; 820px 的强制滚动（内容分级折叠）。</dd>
+        <dt>文件</dt><dd><code>ui/pages/workspace_page.py</code>（controls_dialog 布局）、<code>ui/widgets/params_card.py</code></dd>
+        <dt>验证</dt><dd>弹窗单屏不滚动可达主要功能区；参数修改流程不回归。</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="verify">
+  <h2><span class="sn">08</span>验收与实施节奏</h2>
+  <p class="sec-sub">沿用本项目「改一批、验一批、推一批」的节奏。</p>
+  <ul class="tight">
+    <li><strong>批次 1（P0）</strong>：布局骨架四项。验收 = 工作台三态（空 / 运行 / 展开导航）截图对比 + 全量回归 + 真实点击冒烟。</li>
+    <li><strong>批次 2（P1）</strong>：规范层四项。验收 = 表格四档宽度对齐实测 + 历史 / 设置 / 日志截图对比 + 全量回归。</li>
+    <li><strong>批次 3（P2）</strong>：打磨三项。验收 = 对比度清单 + 空态 / 禁用态截图 + 弹窗流程冒烟。</li>
+    <li><strong>每批通用门槛</strong>：视觉改动的文件在提交信息里逐项列出；任何交互行为变化（如取消确认）同步补 UI 测试；批次结束更新本方案状态。</li>
+  </ul>
+  <p class="prose">整体估时（含验证）：批次 1 约 1 天、批次 2 约 1–1.5 天、批次 3 约半天。三项都不改业务逻辑，可独立回退。</p>
+
+  <h3>附 · 关键实测数据摘录</h3>
+  <pre class="dump">窗口 1400x880 实测
+  概览区        y=142  高 72   <span class="dim">(8 卡平铺，卡宽 160)</span>
+  目录配置行    y=232  高 56
+  任务队列      y=306  高 398  <span class="dim">(表头 34 / 行高 52 / 进度条 87x4)</span>
+  执行日志      y=712  高 140  <span class="dim">(收起态仅 44)</span>
+  「生成参数与任务详情」弹窗  980x820
+    数据源 246 + 参数卡 423 + 当前任务 225 + 最近完成 96 = 约 1030px  <span class="dim">(超出可视高度，必须滚动)</span>
+  侧栏导航 64px；设置页侧栏 196px；历史页表格 12 列</pre>
+</section>
+
+<footer class="colophon" id="colophon">
+  <h2 style="font-size:18px;margin-bottom:12px;">09 · 素材索引</h2>
+  <div class="fblk">
+    <ul class="tight">
+      <li>升级示意（目标稿）：<a href="v16 yanlin 工作台升级示意.html">v16 yanlin 工作台升级示意.html</a></li>
+      <li>评审截图（8 场景 x 全屏/窗口）：<span class="mono">.cluster/r21/shots/</span></li>
+      <li>逐屏评审记录：<span class="mono">.cluster/r21/recog/</span></li>
+      <li>几何实测数据：<span class="mono">.cluster/r21/dump_layout.log</span></li>
+    </ul>
+    <p class="mono" style="margin-top:18px;">YanlinMatrix · UI 排版诊断与升级方案 · v16 · 2026-09-22 · AutoClaw</p>
+  </div>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

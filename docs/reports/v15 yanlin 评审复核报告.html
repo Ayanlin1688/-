@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>言林智创矩阵 · 评审复核报告（v15）</title>
+<style>
+  :root{
+    --paper:#F8F8F5; --paper-2:#FCFCFA; --ink:#17191C; --ink-2:#5D6570; --ink-3:#8A9099;
+    --hair:#DBDBD4; --hair-2:#E7E7E0; --rust:#A63A2A; --wash:#F0EFE9;
+    --term-bg:#14171A; --term-ink:#E9E7E1; --ok:#3E6B4F;
+    --sans:"Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif;
+    --mono:"Cascadia Code",Consolas,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;}
+  a{color:var(--rust);text-decoration:none;} a:hover{text-decoration:underline;text-underline-offset:3px;}
+  code,.mono{font-family:var(--mono);font-size:.78em;letter-spacing:.01em;}
+  code{background:var(--wash);border:1px solid var(--hair-2);border-radius:3px;padding:.08em .38em;white-space:nowrap;}
+
+  .cover{max-width:1080px;margin:0 auto;padding:72px 36px 44px;}
+  .kicker{font-size:12px;letter-spacing:.14em;color:var(--ink-2);text-transform:uppercase;}
+  h1{font-size:42px;line-height:1.18;font-weight:600;letter-spacing:-.015em;margin:18px 0 14px;}
+  .lede{font-size:17px;line-height:1.8;color:var(--ink-2);max-width:46em;margin:0 0 26px;}
+  .lede strong{color:var(--ink);font-weight:600;}
+  .meta-row{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:12px 0;display:flex;flex-wrap:wrap;gap:8px 28px;font-size:13px;color:var(--ink-2);}
+  .meta-row .mono{font-size:12px;}
+  .cover-note{margin-top:14px;font-size:12.5px;color:var(--ink-3);max-width:52em;}
+
+  .shell{max-width:1240px;margin:0 auto;padding:8px 36px 80px;display:grid;grid-template-columns:220px minmax(0,1fr);gap:52px;}
+  nav.toc{position:sticky;top:28px;align-self:start;font-size:13.5px;line-height:2.05;padding-top:6px;}
+  nav.toc .toc-title{font-size:11px;letter-spacing:.14em;color:var(--ink-3);text-transform:uppercase;margin-bottom:8px;}
+  nav.toc a{color:var(--ink-2);display:block;}
+  nav.toc a:hover{color:var(--ink);text-decoration:none;}
+
+  main{min-width:0;}
+  section{padding:34px 0 26px;border-top:1px solid var(--hair);}
+  section:first-child{border-top:none;padding-top:8px;}
+  h2{font-size:25px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;}
+  h2 .sn{color:var(--rust);font-family:var(--mono);font-size:.62em;font-weight:500;margin-right:12px;vertical-align:2px;}
+  .sec-sub{color:var(--ink-3);font-size:13px;margin:0 0 20px;}
+  p{max-width:46em;}
+  .prose{max-width:46em;}
+
+  .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);background:var(--paper-2);margin:20px 0 24px;}
+  .metric{padding:16px 18px 14px;border-right:1px solid var(--hair);}
+  .metric:last-child{border-right:none;}
+  .metric .mv{font-family:var(--mono);font-size:30px;line-height:1;font-weight:500;}
+  .metric .mv.ok{color:var(--ok);}
+  .metric .mv.warn{color:var(--rust);}
+  .metric .ml{font-size:12px;color:var(--ink-3);margin-top:8px;letter-spacing:.03em;}
+  .metric .md{font-size:11.5px;color:var(--ink-3);margin-top:2px;}
+
+  .callout{border-left:2px solid var(--rust);padding:4px 0 4px 16px;margin:22px 0;max-width:44em;}
+  .callout p{margin:0;font-size:14.5px;}
+  .callout.ok{border-left-color:var(--ok);}
+
+  .tbl-wrap{overflow-x:auto;margin:18px 0 26px;border:1px solid var(--hair);background:var(--paper-2);}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.6;}
+  th{font-size:11.5px;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;text-align:left;font-weight:600;padding:10px 14px;border-bottom:1px solid var(--hair);white-space:nowrap;}
+  td{padding:11px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td.id{font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--ink-2);}
+  .st{font-size:12px;white-space:nowrap;font-family:var(--mono);}
+  .st.done{color:var(--ok);}
+  .st.plan{color:var(--rust);}
+  .st.keep{color:var(--ink-3);}
+
+  h3{font-size:17px;font-weight:600;margin:30px 0 6px;}
+  h3 .mono{font-size:12px;color:var(--ink-3);font-weight:400;margin-left:10px;}
+
+  pre.term{background:var(--term-bg);color:var(--term-ink);font-family:var(--mono);font-size:12.5px;line-height:1.72;padding:18px 20px;border-left:2px solid var(--rust);overflow-x:auto;margin:14px 0 18px;}
+  pre.term .g{color:#9BB89B;}
+  pre.term .dim{color:#8B8F94;}
+
+  ul.tight,ol.tight{padding-left:20px;margin:12px 0;max-width:46em;}
+  ul.tight li,ol.tight li{margin:7px 0;}
+  .check li::marker{color:var(--ok);content:"✓ ";}
+
+  footer.colophon{margin-top:56px;border-top:1px solid var(--hair);padding:26px 0 0;font-size:13px;color:var(--ink-2);}
+  footer .fblk{max-width:52em;}
+  footer .mono{font-size:11.5px;color:var(--ink-3);}
+
+  @media (max-width:1020px){
+    .shell{grid-template-columns:1fr;gap:0;}
+    nav.toc{position:static;padding:0 0 20px;border-bottom:1px solid var(--hair);}
+    nav.toc a{display:inline-block;margin-right:16px;}
+    .metrics{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .metric:nth-child(2n){border-right:none;}
+    .metric{border-bottom:1px solid var(--hair);}
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="kicker">内部工程文档 · Re-audit &amp; Fix Closure</div>
+  <h1>言林智创矩阵 · 评审复核报告</h1>
+  <p class="lede">对 v14 全量评审（HEAD <span class="mono">abb2345</span>）的全部 30 项发现执行了三波修复：<strong>26 项已修复并验证</strong>（三次全量回归全绿：448 → 461 → 467 项），3 项按产品决策保留，1 项（阴影性能重构）转入独立排期。两条关键缺陷（兄弟弃用死锁、非 ASCII 激活码）均以「实证复现 → 修复 → 回归用例锁定」方式闭环。</p>
+  <div class="meta-row">
+    <span>复核日期&nbsp;<span class="mono">2026-09-22</span></span>
+    <span>代码范围&nbsp;<span class="mono">abb2345 → bff1a88</span></span>
+    <span>报告版本&nbsp;<span class="mono">v15</span></span>
+    <span>状态&nbsp;修复闭环完成 · 已同步 GitHub</span>
+  </div>
+  <p class="cover-note">三波提交：<span class="mono">cfe0698</span>（波次一）→ <span class="mono">6c259d7</span>（波次二）→ <span class="mono">bff1a88</span>（波次三）。全部行号引用以 abb2345 为准；复核证据见文末索引。</p>
+</header>
+
+<div class="shell">
+<nav class="toc">
+  <div class="toc-title">目录</div>
+  <a href="#summary">01 · 复核摘要</a>
+  <a href="#waves">02 · 三波修复与验证</a>
+  <a href="#evidence">03 · 实证详录</a>
+  <a href="#tests">04 · 测试演进</a>
+  <a href="#remaining">05 · 剩余与建议</a>
+  <a href="#colophon">06 · 复核方式</a>
+</nav>
+
+<main>
+
+<section id="summary">
+  <h2><span class="sn">01</span>复核摘要</h2>
+  <p class="sec-sub">口径：每一项均有提交记录、测试护栏与可复核材料。</p>
+  <div class="metrics">
+    <div class="metric"><div class="mv ok">26</div><div class="ml">已修复并验证</div><div class="md">含 2 项实证双确认</div></div>
+    <div class="metric"><div class="mv">3</div><div class="ml">产品决策保留</div><div class="md">试用期本地 / 绘制边界 / 提示联动</div></div>
+    <div class="metric"><div class="mv warn">1</div><div class="ml">独立排期</div><div class="md">UI-P2-2 阴影重构</div></div>
+    <div class="metric"><div class="mv ok">0</div><div class="ml">复发</div><div class="md">三次全量回归全绿</div></div>
+  </div>
+  <div class="callout ok"><p><strong>关键闭环：</strong>「跳过已提交的兄弟任务 → 等待任务被静默判重」死锁已修复并实证：修复后等待者放行接管提交（<span class="mono">POST /videos = 2</span>），两种调度顺序均有回归用例。<strong>表头与数据列</strong>在 4 档窗口宽度下实现 12 列逐像素对齐。</p></div>
+  <ul class="tight">
+    <li><strong>发行安全升级</strong>：冻结发行版只接受 YL2 非对称签名激活码（YL1 共享密钥仅在源码/测试链路保留）——自签绕过路径关闭。</li>
+    <li><strong>无人值守就绪</strong>：单实例守卫（同数据目录互斥）+ 扫描可取消 + 日志上限 + 注册表压缩——24h 挂机的资源曲线与状态一致性均有机制保障。</li>
+    <li><strong>发布工程闭环</strong>：CI 接入启动冒烟与产物冒烟；签名顺序修正；安装器补齐图标/关闭请求/条件 EULA。</li>
+  </ul>
+</section>
+
+<section id="waves">
+  <h2><span class="sn">02</span>三波修复与验证</h2>
+  <p class="sec-sub">先低风险见效 → 再补测试护航 → 最后产品决策与排期。</p>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>波次</th><th>提交</th><th>内容</th><th>验证</th></tr></thead>
+    <tbody>
+      <tr><td class="id">波次一</td><td class="id">cfe0698</td><td>历史页/列表重建泄漏与 100 条渲染上限；SurfaceShadow 除零守卫；激活非 ASCII 校验 + 兜底提示；诊断包脱敏补全；配置损坏备份 + 提示；历史库 maintain 容错与 records(0) 边界；发布签名顺序；设置页定时器收尾</td><td class="st done">441 + 7 = 448 全绿</td></tr>
+      <tr><td class="id">波次二</td><td class="id">6c259d7</td><td>兄弟弃用死锁放行（reserve ignore_ids + 状态机重构）；表头逐像素对齐（4 处协同）；主题注册表原位压缩；日志 5000 条上限；自愈重绘扩展；跳过意图保留（交接窗口+排队）；扫描检查点；当前任务卡主题色；Motion 悬空守卫；CI 双冒烟；main.py 冻结兜底</td><td class="st done">461 全绿（+13 护栏）</td></tr>
+      <tr><td class="id">波次三</td><td class="id">bff1a88</td><td>YL1 发行门控（冻结版仅 YL2）；单实例守卫（同数据目录互斥、重复启动前置窗口）；UI-P2-2 转入排期</td><td class="st done">467 全绿（+6 护栏）</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>逐项状态（30 项）</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>状态</th><th>条目</th></tr></thead>
+    <tbody>
+      <tr><td class="st done">已修复</td><td>UI-P1-1、UI-P1-2、UI-P2-1、UI-P2-3、UI-P2-4、UI-P2-5、CC-P2-1、DT-P2-1、NT-P2-1、NT-P2-2、PK-P2-1、PK-P2-2、UI-P3-1、UI-P3-2、UI-P3-3、CC-P3-1、CC-P3-2、DT-P3-1、DT-P3-2、DT-P3-3、DT-P3-4、NT-P3-2、PK-P3-1、PK-P3-2、PK-P3-3、附加-1（26 项）</td></tr>
+      <tr><td class="st keep">保留</td><td>NT-P3-1（试用期纯本地——首发阶段为产品增长留量）、UI-P3-4（绘制异常边界——已由自愈重绘兜底）、CC-P3-3（提示联动——行为已正确，文案微调延后）</td></tr>
+      <tr><td class="st plan">排期</td><td>UI-P2-2（SurfaceShadow 性能重构——独立分支 + 视觉回归，见 surface_shadow_schedule.md）</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="evidence">
+  <h2><span class="sn">03</span>实证详录</h2>
+  <p class="sec-sub">修复前后均有可复现证据（脚本与输出留档）。</p>
+
+  <h3>CC-P2-1 · 兄弟弃用死锁 → 放行接管（修复后实测）<span class="mono">repro_sibling_skip_v2.py</span></h3>
+  <pre class="term">phase reached: True statuses: ['uploading', 'processing']
+submitter: 1 waiter: 0
+waiter took over: <span class="g">True</span> statuses: [<span class="g">('processing', '')</span>, ('skipped', '已跳过')]
+POST /videos count: <span class="g">2</span>        <span class="dim">← 修复前为 1；等待者成功接管提交</span>
+duplicate_of: [None, None]</pre>
+  <p class="prose">三次连跑覆盖两种调度顺序（谁先提交均验证）；回归用例 <span class="mono">tests/test_sibling_abandon.py</span> 固化两个场景（跳过提交者 → 等待者接管；跳过等待者 → 提交者不受影响）。</p>
+
+  <h3>UI-P3-2 · 表头对齐（修复后离屏实测）<span class="mono">measure_table6.py</span></h3>
+  <pre class="term">width=760  diff = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]   <span class="dim">← 修复前 -7 ~ +32px 漂移</span>
+width=900  diff = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+width=1100 diff = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+width=1400 diff = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]</pre>
+  <p class="prose">根因三连环：列表样式给行控件 8px 内边距（锚点错位）→ 内容宽不一致（布局层再分配）→ QGridLayout 按控件弹性压缩（表头/行分配不同）。修复：真实行控件锚点 + resolve_widths 不足时收缩 + 逐格锁定列宽。回归用例并入 <span class="mono">test_audit_wave2.py</span>。</p>
+
+  <h3>NT-P2-1 / PK-P2-2 · 门控与单实例（自动化验证）</h3>
+  <pre class="term"><span class="g">test_frozen_build_rejects_hmac_demo_keys</span> ... ok    <span class="dim">← 冻结版拒绝 YL1 演示码</span>
+<span class="g">test_frozen_build_still_accepts_yl2_keys</span> ... ok    <span class="dim">← 冻结版正常收 YL2 正式码</span>
+<span class="g">test_second_instance_detected_and_activation_requested</span> ... ok  <span class="dim">← 重复启动被拦 + 前置信号触发</span></pre>
+</section>
+
+<section id="tests">
+  <h2><span class="sn">04</span>测试演进</h2>
+  <p class="sec-sub">护栏随修复同步增长；三次全量回归均在 CI 同款命令下全绿。</p>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>节点</th><th>测试数</th><th>用时</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>评审基线（abb2345）</td><td class="mono">441</td><td class="mono">500s</td><td class="st done">全绿</td></tr>
+      <tr><td>波次一后（cfe0698）</td><td class="mono">448（+7）</td><td class="mono">500s</td><td class="st done">全绿</td></tr>
+      <tr><td>波次二后（6c259d7）</td><td class="mono">461（+13）</td><td class="mono">496s</td><td class="st done">全绿</td></tr>
+      <tr><td>波次三后（bff1a88）</td><td class="mono">467（+6）</td><td class="mono">502s</td><td class="st done">全绿</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="prose">新增护栏：<span class="mono">test_audit_wave1.py</span>（7）、<span class="mono">test_sibling_abandon.py</span>（2）、<span class="mono">test_audit_wave2.py</span>（11）、<span class="mono">test_audit_wave3.py</span>（6）——覆盖两条缺陷的全部复现路径与全部行为改变的边界。</p>
+</section>
+
+<section id="remaining">
+  <h2><span class="sn">05</span>剩余与建议</h2>
+  <p class="sec-sub">上线前最后三件事。</p>
+  <ol class="tight">
+    <li><strong>重打包发行版</strong>：全部修复在源码链路验证完毕，建议尽快构建新版本安装包。注意——新打包版将拒绝 YL1 演示激活码（正式客户 YL2 不受影响）；若还需发放演示码，请先用 <span class="mono">make_license.py --private-key</span> 发 YL2 版本。</li>
+    <li><strong>enforce 闸门评估</strong>：许可拦截开关（"正式发售前一个开关启用"）建议在试运行稳定后放开；试用期本地化（NT-P3-1）届时可一并评估升级。</li>
+    <li><strong>UI-P2-2 专项</strong>：先跑基线测量（帧时探针 + 挂载点盘点 53 处），再按排期文档两步走（减挂载 → paintEvent 直绘）。</li>
+  </ol>
+</section>
+
+<footer class="colophon" id="colophon">
+  <h2 style="font-size:18px;margin-bottom:12px;">06 · 复核方式</h2>
+  <div class="fblk">
+    <p>全部原始材料位于工作区 <span class="mono">.cluster/r19/</span>：</p>
+    <ul class="tight">
+      <li>修复凭证：<span class="mono">commit_msg_wave1/2/3.txt</span>；提交链 <span class="mono">cfe0698 → 6c259d7 → bff1a88</span>（本地 = 远端 main）</li>
+      <li>实证脚本与输出：<span class="mono">repro/repro_sibling_skip_v2.py · result_v2_run1..3.txt · tmp/r19/measure_table6.log</span></li>
+      <li>排期文档：<span class="mono">audit/surface_shadow_schedule.md</span>；总汇总：<span class="mono">audit/00_MASTER.md</span></li>
+    </ul>
+    <p class="mono" style="margin-top:18px;">YanlinMatrix · Internal Engineering Dossier · v15 · 2026-09-22 · AutoClaw</p>
+  </div>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

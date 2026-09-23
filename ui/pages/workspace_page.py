@@ -198,9 +198,10 @@ class WorkspacePage(QWidget):
         self.directory_bar.match_requested.connect(self.data_source.open_match_dialog)
         for card in (self.data_source, self.params_card, self.current_task):
             card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        # 弹窗信息架构：当前任务进度置顶（先看进度再调参数），数据源与参数随后。
+        center_layout.addWidget(self.current_task)
         center_layout.addWidget(self.data_source)
         center_layout.addWidget(self.params_card)
-        center_layout.addWidget(self.current_task)
         self.center_scroll = ScrollArea()
         self.center_scroll.setFrameShape(QScrollArea.NoFrame)
         self.center_scroll.setWidgetResizable(True)
@@ -575,7 +576,9 @@ class WorkspacePage(QWidget):
                 self.params_card.refresh_catalog()
             finally:
                 self.params_card.blockSignals(blocker)
-        self.start_button.setEnabled(not running and not self._redownloading and not self.closing.is_set())
+        enabled = not running and not self._redownloading and not self.closing.is_set()
+        self.start_button.setEnabled(enabled)
+        self.start_button.setToolTip('' if enabled else tr('运行中不可重复启动'))
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
         self.current_task.skip_button.setEnabled(running and self.current_task.task_info.get('status') in ACTIVE)

@@ -137,6 +137,10 @@ class ExpandedTaskRow(QWidget):
         self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip(tr('更多操作')); self.more_button.setProperty('studioKeepWidth', True); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
         cells=(number_box,self.title,self.product,self.model_label,self.ratio,self.resolution,self.duration,self.images_button,ph,self.timing,self.status_label,self.more_button)
         self._cells=cells
+        # 对齐规范：文本列左、时间列右、比例/分辨率/时长居中（单元格逐格锁宽后由内容对齐决定观感）。
+        self.ratio.setAlignment(Qt.AlignCenter); self.resolution.setAlignment(Qt.AlignCenter)
+        self.duration.setAlignment(Qt.AlignCenter); self.percentage.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.timing.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         for column,cell in enumerate(cells):
             if column in (10,11):
                 grid_align=Qt.AlignVCenter | (Qt.AlignLeft if column==10 else Qt.AlignHCenter)
@@ -263,10 +267,13 @@ class WorkspaceTaskTable(TaskQueuePanel):
             head=label(tr(txt),12,'#9AA6B8')
             self._header_cells.append(head)
             font=head.font(); font.setLetterSpacing(QFont.AbsoluteSpacing,0.6); font.setWeight(QFont.Medium); head.setFont(font)
-            if column==11:
-                self._header_grid.addWidget(head,0,column,Qt.AlignVCenter|Qt.AlignHCenter)
+            if column in (0,1,2,3):
+                head.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            elif column == 9:
+                head.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             else:
-                self._header_grid.addWidget(head,0,column)
+                head.setAlignment(Qt.AlignCenter)
+            self._header_grid.addWidget(head,0,column)
         lay.addWidget(self._header_host)
         self.list=ListWidget(); self.list.setSpacing(0); self.list.setFrameShape(self.list.NoFrame); self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.list.setVerticalScrollMode(self.list.ScrollPerPixel)
         try:

@@ -253,22 +253,22 @@ class SettingsPage(QWidget):
 
         def add_head(text):
             head = CaptionLabel(text)
-            head.setStyleSheet('color:rgba(237,237,240,0.38); font-size:11px; padding-left:6px;')
-            layout.addWidget(head); layout.addSpacing(2)
+            head.setStyleSheet('color:rgba(237,237,240,0.55); font-size:11px; letter-spacing:0.08em; padding-left:6px;')
+            layout.addWidget(head); layout.addSpacing(4)
 
         # —— 账号与许可 ——
         add_head('账号与许可')
         add_entry('许可与激活', 'license')
-        layout.addSpacing(10)
+        layout.addSpacing(16)
         # —— 外观 ——
         add_head('外观')
         add_entry('外观与语言', 'appearance')
-        layout.addSpacing(10)
+        layout.addSpacing(16)
         # —— 模型与生成 ——
         add_head('模型与生成')
         add_entry('模型池', 'pool')
         add_entry('默认参数', 'defaults')
-        layout.addSpacing(10)
+        layout.addSpacing(16)
         # —— 网络与数据：中转站管理 + 每站一条 + 当前线路 + GitHub 同步 ——
         add_head('网络与数据')
         add_entry('中转站管理', 'stations')
@@ -285,7 +285,7 @@ class SettingsPage(QWidget):
         self._sync_station_nav()
         add_entry('当前线路', 'api')
         add_entry('GitHub 同步', 'sync')
-        layout.addSpacing(10)
+        layout.addSpacing(16)
         # —— 高级 ——
         add_head('高级')
         add_entry('任务策略', 'task')

@@ -9,6 +9,12 @@ from ..file_actions import open_local
 HISTORY_DISPLAY_LIMIT = 100  # 历史页只渲染最近 N 条（页脚文案同步承诺）
 
 
+def _stamp(value):
+    """时间戳单行化：'2026-09-22T10:01:00' → '09-22 10:01'（列宽友好，不折行）。"""
+    text = str(value or '').replace('T', ' ')
+    return text[5:16] if len(text) >= 16 else (text or '—')
+
+
 class HistoryPage(QWidget):
     redownload_requested = pyqtSignal(object)
     resolve_requested = pyqtSignal(object)
@@ -29,7 +35,19 @@ class HistoryPage(QWidget):
         header.addWidget(self.open_button); root.addLayout(header)
         columns = [tr('序号'), tr('产品'), tr('任务名'), tr('模型'), tr('状态'), tr('提交时间'), tr('完成时间'), tr('文件大小'), tr('操作')]
         self.table = TableWidget(); self.table.setColumnCount(len(columns)); self.table.setHorizontalHeaderLabels(columns)
+        # 对齐规范：产品/任务名/模型左、提交/完成/大小右、其余居中（与数据行一致）。
+        for column in range(len(columns)):
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is None:
+                continue
+            if column in (1, 2, 3):
+                header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            elif column in (5, 6, 7):
+                header_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            else:
+                header_item.setTextAlignment(Qt.AlignCenter)
         self.table.setBorderVisible(True); self.table.setBorderRadius(8); self.table.setEditTriggers(self.table.NoEditTriggers)
+        self.table.setWordWrap(False)  # 单行显示：长内容截断而不折行（行高恒定 54）
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setDefaultSectionSize(54)
         root.addWidget(self.table, 1)
         self.empty_view = self._build_empty_view()
@@ -107,18 +125,24 @@ class HistoryPage(QWidget):
             status = tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
             self._row_status.append(status)
             values = [str(len(self.records)-row), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
-                      task.get('created_at', '').replace('T', '\n') or '—', task.get('finished_at', '').replace('T', '\n') or '—',
+                      _stamp(task.get('created_at')), _stamp(task.get('finished_at')),
                       f"{task['size_bytes']/1024/1024:.1f} MB" if task.get('size_bytes') else '—']
             for column, value in enumerate(values):
                 if column == 4:
                     tag = QLabel(value); tag.setAlignment(Qt.AlignCenter)
                     bg, fg = self._tag_colors(task.get('status'))
-                    tag.setStyleSheet(f'color:{fg}; background:{bg}; border-radius:9px; padding:1px 10px;')
+                    tag.setStyleSheet(f'color:{fg}; background:{bg}; border-radius:6px; padding:2px 10px;')
                     wrap = QWidget(); wrap_row = QHBoxLayout(wrap); wrap_row.setContentsMargins(0, 6, 0, 6)
                     wrap_row.addWidget(tag, 0, Qt.AlignCenter)
                     self.table.setCellWidget(row, 4, wrap)
                     continue
-                item = QTableWidgetItem(value); item.setTextAlignment(Qt.AlignCenter)
+                item = QTableWidgetItem(value)
+                if column in (1, 2, 3):
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                elif column in (5, 6, 7):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    item.setTextAlignment(Qt.AlignCenter)
                 item.setToolTip(task.get('error', '') or task.get('task_id', ''))
                 self.table.setItem(row, column, item)
             action = QWidget(); layout = QHBoxLayout(action); layout.setContentsMargins(4, 2, 4, 2)

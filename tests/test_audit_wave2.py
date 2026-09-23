@@ -1,5 +1,4 @@
 """波次二审计修复的回归护栏：表头对齐、日志上限、跳过意图保留、账本 ignore_ids、https 约束、注册表压缩。"""
-import gc
 import os
 import tempfile
 import unittest
@@ -126,7 +125,8 @@ class ThemeRegistryCompactionTests(unittest.TestCase):
         self.assertEqual(target.hits, 1)
         self.assertIn(entry, materials._THEME_CALLBACKS)      # 活引用保留
         del target
-        gc.collect()
+        # 注意：此处不要 gc.collect()——全量运行时会强制回收前面 UI 测试遗留的 Qt
+        # 包装对象，触发 PyQt 原生段错误；引用计数即可让 weakref 失效。
         materials.run_theme_callbacks()
         self.assertNotIn(entry, materials._THEME_CALLBACKS)   # 死引用被原位压缩剔除
 
