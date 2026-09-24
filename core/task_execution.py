@@ -39,6 +39,10 @@ def video_cache_expired(error):
     return 'cache has expired' in text or '视频缓存已过期' in text
 
 
+class VideoUnavailable(RuntimeError):
+    """A recovered task id can no longer provide a video file."""
+
+
 class TaskExecution:
     def __init__(self, owner, index, task, model):
         self.owner = owner
@@ -135,6 +139,8 @@ class TaskExecution:
             strategy = self.config['task_strategy']
             retries = max(0, int(strategy.get('max_retries', 3))) if strategy.get('auto_retry', False) else 0
             failover = self.pool.enabled and bool(self.pool.names) and self.config['model_pool'].get('auto_failover', False)
+            self.recovered_id = self.task.get('task_id') or ''
+            self._resubmitted = False
             for attempt in range(retries + 1):
                 self.control.check()
                 self.task.setdefault('attempts', []).append(dict(number=attempt+1, model=self.model, task_id=self.task.get('task_id', ''), status='running', started_at=stamp()))
@@ -167,13 +173,45 @@ class TaskExecution:
                 except Exception as error:
                     message = self.owner.redact(error)
                     entry.update(status='failed', task_id=self.task.get('task_id', ''), phase=self.phase, error=message, finished_at=stamp())
-                    if self.phase == 'download' and video_cache_expired(error) and self.task.get('task_id'):
+                    if self.phase == 'download' and video_cache_expired(error) and self.task.get('task_id') and not self._can_replace_exhausted(error):
                         self.task['result_url'] = ''
                         message = '视频缓存已过期，无法继续下载；已保留原任务号，未重新提交'
                         entry['error'] = message
                         self.log(f'任务{self.index+1} download失败：{message}', 'error')
                         self.log(f'任务{self.index+1}：标记失败并保存现场（错误与尝试记录已入账），队列继续下一个任务', 'warning')
                         self.terminal('failed', message)
+                        return
+                    if self._can_replace_exhausted(error):
+                        self._release_exhausted_task(message)
+                        entry = dict(number=attempt + 2, model=self.model, task_id='', status='running', started_at=stamp())
+                        self.task.setdefault('attempts', []).append(entry)
+                        try:
+                            self._attempt(original, client, uploader, downloader, diagnostics)
+                        except Cancelled:
+                            raise
+                        except DuplicateSubmission:
+                            raise
+                        except PromptConversionFailed:
+                            raise
+                        except SubmissionUncertain as uncertain:
+                            message = '无法确认是否创建成功，已暂停此任务，禁止自动重新创建：' + self.owner.redact(uncertain)
+                            entry.update(status='submission_unknown', phase='submit', error=message, finished_at=stamp())
+                            self.owner.submission_error(getattr(uncertain, 'status_code', None))
+                            self.terminal('submission_unknown', message)
+                            self.log(message, 'error')
+                            return
+                        except Exception as replaced:
+                            error = replaced
+                            message = self.owner.redact(error)
+                            entry.update(status='failed', task_id=self.task.get('task_id', ''), phase=self.phase, error=message, finished_at=stamp())
+                            self.log(f'任务{self.index+1}：旧任务号解除后重新提交失败：{message}', 'error')
+                            self.terminal('failed', message)
+                            return
+                        entry.update(status='completed', task_id=self.task.get('task_id', ''), finished_at=stamp())
+                        if self.model in self.pool.names:
+                            self.pool.succeeded(self.model)
+                        self.progress(100, eta=0)
+                        self.terminal('completed')
                         return
                     if self.phase == 'download' and self.task.get('task_id') and getattr(error, 'status_code', None) in {401, 403}:
                         self.task['result_url'] = ''
@@ -240,6 +278,37 @@ class TaskExecution:
         finally:
             client.close(); uploader.close(); downloader.close(); diagnostics.close()
             self.control.release(self.index)
+
+    def _recovered_video_already_finished(self):
+        if not self.recovered_id or self.task.get('task_id') != self.recovered_id or self._resubmitted:
+            return False
+        return any(item.get('status') == 'completed' and item.get('task_id') == self.recovered_id
+                   for item in self.task.get('attempts') or [] if isinstance(item, dict))
+
+    def _can_replace_exhausted(self, error):
+        if self._resubmitted or not self.recovered_id or self.task.get('task_id') != self.recovered_id:
+            return False
+        if video_cache_expired(error):
+            return True
+        return str(error).startswith('完成响应没有视频下载地址')
+
+    def _release_exhausted_task(self, reason):
+        old_id = self.task.get('task_id') or self.recovered_id
+        detail = '视频缓存已过期' if 'cache has expired' in reason.lower() or '视频缓存已过期' in reason else '上游已无视频地址'
+        self.log(f'任务{self.index+1}：旧任务号 {old_id} {detail}，解除绑定并重新提交', 'warning')
+        self.task['exhausted_task_id'] = old_id
+        self.task['video_unavailable'] = True
+        self.task.update(task_id='', result_url='', result_path='', filename='', error='')
+        self.task.pop('remote_failed', None)
+        self.task.pop('submit_idempotency_key', None)
+        self.task.pop('submit_idempotency_signature', None)
+        if self.task.get('ledger_id') and self.owner.ledger is not None:
+            self.task.update(status='failed', error=f'旧任务号 {old_id} 已无视频')
+            self.owner.ledger.save(self.task, 'failed')
+            self.task.pop('ledger_id', None)
+        self.intent_sent = False
+        self.phase = 'validation'
+        self._resubmitted = True
 
     def _attempt(self, original, client, uploader, downloader, diagnostics):
         task = self.task
@@ -452,12 +521,16 @@ class TaskExecution:
                     raise RemoteGenerationFailed('远端生成失败：' + str(extract(result['raw'], ('error', 'message')) or result['raw']))
                 if result['status'] == 'completed':
                     if not result['result_url']:
+                        if self._recovered_video_already_finished():
+                            raise VideoUnavailable('完成响应没有视频下载地址')
                         if missing_url_since is None:
                             missing_url_since = now
                         if now - missing_url_since <= 45:
                             self.log(f'{prefix}：任务已完成，下载地址尚未返回，继续查询', 'warning')
                             self.control.delay(poll_interval)
                             continue
+                        if self._can_replace_exhausted(RuntimeError('完成响应没有视频下载地址')):
+                            raise VideoUnavailable('完成响应没有视频下载地址')
                         raise RuntimeError('完成响应没有视频下载地址')
                     self.publish(record=True, status='downloading', result_url=result['result_url'])
                     break

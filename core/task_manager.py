@@ -293,7 +293,7 @@ class TaskWorker(QThread):
                         missing_file = True
                     if missing_file and old.get('task_id'):
                         task.update(status='queued', error='')
-                        self.log(f'任务{sequence}：历史视频文件缺失，沿用 task_id={old.get("task_id")} 重新下载，不重新提交', 'warning')
+                        self.log(f'任务{sequence}：历史视频文件缺失，先查询 task_id={old.get("task_id")}；若上游已无视频，本次重新提交', 'warning')
                     else:
                         task.update(status='duplicate', duplicate_of=old.get('local_id'), duplicate_record=copy.deepcopy(old),
                                     error='检测到相同任务，跳过避免重复扣费')
