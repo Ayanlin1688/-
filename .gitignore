@@ -54,3 +54,6 @@ codex-*.txt
 docs/*investigation.md
 docs/*validation.md
 docs/superpowers/
+
+# Literal environment-variable folders accidentally created in the repo
+%SystemDrive%/
