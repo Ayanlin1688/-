@@ -212,7 +212,9 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
         self.root = Path(temporary.name) / 'repository'
         self.root.mkdir()
         self.remote = Path(temporary.name) / 'remote.git'
+        self.mirror = Path(temporary.name) / 'mirror.git'
         self.git('init', '--bare', str(self.remote))
+        self.git('init', '--bare', str(self.mirror))
         self.git('init', '-b', 'main')
         self.git('config', 'user.name', 'test')
         self.git('config', 'user.email', 'test@example.invalid')
@@ -230,10 +232,11 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
             with self.subTest(name=name):
                 (self.root / name).write_bytes(b'private task history')
                 self.git('add', '-f', name)
-                sync = RepositorySync(self.root, expected_origin=str(self.remote), retry_delay=0)
+                sync = RepositorySync(self.root, expected_origin=str(self.remote), expected_mirror=str(self.mirror), retry_delay=0)
                 with self.assertRaises(GitSyncError):
                     sync.sync('fix: protect local history')
                 self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
+                self.assertEqual(self.git('ls-remote', 'ayanlin', 'refs/heads/main'), '')
                 self.git('rm', '--cached', name)
                 (self.root / name).unlink()
 
@@ -249,7 +252,7 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
                 (self.root / 'diagnostic.txt').write_text(secret, encoding='utf-8')
 
                 def local_sync(root, secrets, **kwargs):
-                    return RepositorySync(root, secrets, expected_origin=str(self.remote), retry_delay=0, **kwargs)
+                    return RepositorySync(root, secrets, expected_origin=str(self.remote), expected_mirror=str(self.mirror), retry_delay=0, **kwargs)
 
                 with patch.object(sync_github, 'ROOT', self.root), \
                         patch.object(sync_github, 'ConfigManager', return_value=manager), \
@@ -259,6 +262,7 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
                     result = sync_github.main()
                 self.assertEqual(result, 1)
                 self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
+                self.assertEqual(self.git('ls-remote', 'ayanlin', 'refs/heads/main'), '')
 
 
 if __name__ == '__main__':

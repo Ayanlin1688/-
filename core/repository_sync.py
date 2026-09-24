@@ -10,6 +10,8 @@ import time
 from .log_redaction import redact_text
 
 GITHUB_REPOSITORY = 'https://github.com/admin11044/StoryboardVideoStudio.git'
+GITHUB_MIRROR_REPOSITORY = 'https://github.com/Ayanlin1688/-.git'
+MIRROR_REMOTE_NAME = 'ayanlin'
 
 
 class GitSyncError(RuntimeError):
@@ -36,11 +38,13 @@ def repository_secrets(config):
 class RepositorySync:
     _lock = threading.Lock()
 
-    def __init__(self, root=None, secrets=(), log=None, expected_origin=GITHUB_REPOSITORY, retry_delay=2):
+    def __init__(self, root=None, secrets=(), log=None, expected_origin=GITHUB_REPOSITORY,
+                 expected_mirror=GITHUB_MIRROR_REPOSITORY, retry_delay=2):
         self.root = Path(root or Path(__file__).resolve().parent.parent).resolve()
         self.secrets = tuple(secret for secret in secrets if secret)
         self.log = log or (lambda *_: None)
         self.expected_origin = expected_origin
+        self.expected_mirror = expected_mirror
         self.retry_delay = retry_delay
 
     def _git(self, args, timeout=45, allow_codes=(0,), raw=False):
@@ -108,6 +112,26 @@ class RepositorySync:
                     self._check_content(name + ' @ ' + commit[:12], self._git(['cat-file', 'blob', oid], raw=True))
                     checked.add(oid)
 
+    def _ensure_mirror_remote(self):
+        expected = self.expected_mirror.rstrip('/')
+        names = [name for name in self._git(['remote']).splitlines() if name]
+        if MIRROR_REMOTE_NAME not in names:
+            self._git(['remote', 'add', MIRROR_REMOTE_NAME, self.expected_mirror])
+            return
+        current = self._git(['remote', 'get-url', MIRROR_REMOTE_NAME]).rstrip('/')
+        if current != expected:
+            raise GitSyncError('ayanlin与项目授权仓库不一致，停止同步')
+
+    def _push_and_verify(self, remote, commit):
+        args = ['push', '-u', remote, 'main'] if remote == 'origin' else ['push', remote, 'main']
+        try:
+            self._git(args, timeout=90)
+            remote_head = self._git(['ls-remote', remote, 'refs/heads/main'])
+        except GitSyncError as error:
+            raise GitSyncError(f'{remote}推送失败：{error}') from None
+        if not remote_head or remote_head.split()[0] != commit:
+            raise GitSyncError(f'{remote}远端commit尚未与本地一致')
+
     def sync(self, message='refactor: 同步软件代码修改'):
         if not self._lock.acquire(blocking=False):
             raise GitSyncError('已有GitHub同步正在运行')
@@ -119,6 +143,7 @@ class RepositorySync:
                 raise GitSyncError('请先切换到main分支再同步')
             if self._git(['remote', 'get-url', 'origin']).rstrip('/') != self.expected_origin.rstrip('/'):
                 raise GitSyncError('origin与项目授权仓库不一致，停止同步')
+            self._ensure_mirror_remote()
             for name in ('config.json', 'models_cache.json', 'history.sqlite3', 'history.sqlite3-wal', 'history.sqlite3-shm',
                          'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
                 self._git(['check-ignore', '--no-index', name])
@@ -132,18 +157,23 @@ class RepositorySync:
                 self._git(['commit', '-m', message])
             commit = self._git(['rev-parse', 'HEAD'])
             self._check_pending_history()
+            verified = []
             for attempt in range(3):
                 try:
-                    self._git(['push', '-u', 'origin', 'main'], timeout=90)
-                    remote = self._git(['ls-remote', 'origin', 'refs/heads/main'])
-                    if not remote or remote.split()[0] != commit:
-                        raise GitSyncError('远端commit尚未与本地一致')
-                    self.log('已同步到GitHub，最新commit: ' + commit[:12], 'success')
-                    return dict(commit=commit, changed=changed, attempts=attempt + 1)
+                    for remote in ('origin', MIRROR_REMOTE_NAME):
+                        if remote in verified:
+                            continue
+                        self._push_and_verify(remote, commit)
+                        verified.append(remote)
+                    self.log('已同步到GitHub，最新commit: ' + commit, 'success')
+                    return dict(commit=commit, changed=changed, attempts=attempt + 1, remotes=tuple(verified))
                 except GitSyncError as error:
                     if attempt == 2:
-                        raise GitSyncError(f'推送失败（共3次尝试）：{error}。本地提交已保留；请检查网络/GitHub登录后重试。') from None
-                    self.log(f'GitHub推送失败，准备重试{attempt+1}/2：{error}', 'warning')
+                        done = '、'.join(verified) or '无'
+                        raise GitSyncError(
+                            f'推送失败（共3次尝试）：{error}。已核验远端：{done}。本地提交已保留；请检查网络/GitHub登录后重试。'
+                        ) from None
+                    self.log(f'GitHub推送失败，准备重试{attempt + 1}/2：{error}', 'warning')
                     time.sleep(self.retry_delay)
         finally:
             self._lock.release()

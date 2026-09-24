@@ -145,7 +145,7 @@ H3默认显示1080p/2K/4K，video-v2和video-v3默认720p，video-v3-480p显示4
 
 ## GitHub 同步
 
-目标为私人仓库 `admin11044/StoryboardVideoStudio`，分支 `main`。设置页“同步到GitHub”按钮在后台检查敏感文件、执行 add/commit/push 并核对远端提交；推送失败间隔 2 秒重试，最多 3 次，结果用 InfoBar 和日志提示。
+同步目标是两个仓库的 `main`：`origin` 保持私人仓库 `admin11044/StoryboardVideoStudio`，第二远端 `ayanlin` 为 `Ayanlin1688/-`。缺少 `ayanlin` 时自动添加；URL 不一致则停止，不替换 `origin`，也不强制推送。设置页“同步到GitHub”按钮在后台检查敏感文件、只执行一次 add/commit，然后依次推送并核对两个远端；失败的一侧间隔 2 秒重试，最多 3 次，已成功的一侧不会再次提交。结果用 InfoBar 和日志提示。
 
 ```bat
 python -X utf8 scripts\sync_github.py

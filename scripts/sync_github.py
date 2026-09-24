@@ -1,4 +1,4 @@
-"""Commit verified changes and push to the project's authorized private repository."""
+"""Commit verified changes once, then push origin and ayanlin without replacing origin."""
 import argparse
 from pathlib import Path
 import sys
