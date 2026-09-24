@@ -89,6 +89,8 @@ class MainWindow(FluentWindow):
         self.settings_page.api_credentials_changed.connect(self.model_catalog.credentials_changed)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
         self.settings_page.appearance_changed.connect(self.apply_appearance)
+        self.settings_page.generation_defaults_changed.connect(self._settings_generation_changed)
+        self.workspace_page.params_card.values_changed.connect(self._workspace_generation_changed)
         QTimer.singleShot(0, self.model_catalog.start)
         QTimer.singleShot(0, self._sync_window_frame)
         QTimer.singleShot(80, self.apply_appearance)
@@ -153,6 +155,22 @@ class MainWindow(FluentWindow):
         self.workspace_page.append_log('许可状态：' + status['detail'], 'info')
         if status['state'] in {'expired', 'invalid'}:
             InfoBar.warning(tr('许可提示'), status['detail'], parent=self, duration=8000)
+
+    def _settings_generation_changed(self):
+        if getattr(self.settings_page, '_applying_saved', False):
+            return
+        page = self.workspace_page
+        previous = page.params_card.model.currentText()
+        page.params_card.apply_saved_workspace()
+        page._refresh_row_parameters()
+        if page.params_card.model.currentText() != previous:
+            page.scan_sources()
+
+    def _workspace_generation_changed(self, key, _value):
+        if getattr(self.workspace_page.params_card, '_applying_saved', False):
+            return
+        if key in ('model', 'aspect_ratio', 'resolution', 'duration', 'poll_interval'):
+            self.settings_page.apply_saved_generation_defaults()
 
     def apply_appearance(self):
         """应用外观设置（主题 / 高斯模糊 / 语言），切换立即生效；主题未变化时不重复全量刷新。"""

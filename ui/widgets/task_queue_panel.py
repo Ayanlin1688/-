@@ -1,6 +1,7 @@
 """Task queue driven by scheduler snapshots."""
 from PyQt5.QtCore import Qt, pyqtSignal
 from core.task_manager import STATUS_TEXT, TERMINAL, ACTIVE
+from core.i18n import tr
 
 COLORS = {'已完成': '#67c23a', '生成中': '#409eff', '等待中': '#e6a23c', '失败': '#f56c6c',
           '重试中': '#e6a23c', '等待冷却': '#e6a23c',
@@ -80,7 +81,7 @@ class TaskQueuePanel(QWidget):
         root.setSpacing(10)
         root.addWidget(StrongBodyLabel("任务队列"))
         self.filter_box = ComboBox()
-        self.filter_box.addItems(["全部", "等待中", "生成中", "重试中", "等待冷却", "已完成", "失败", "重复", "提交待确认", "已跳过", "已取消", "已暂停"])
+        self.filter_box.addItems([tr('全部'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已跳过'), tr('已取消')])
         root.addWidget(self.filter_box)
         self.reset_models_button = PushButton(FIF.SYNC, '重置模型识别')
         self.reset_models_button.setToolTip('全部重置为自动识别')
@@ -131,8 +132,8 @@ class TaskQueuePanel(QWidget):
     def _filter(self, status):
         group_matches = {}
         for index, task in enumerate(self._tasks):
-            current = STATUS_TEXT.get(task.get('status', 'waiting'), '等待中')
-            matches = status == '全部' or current == status or (status == '生成中' and task.get('status') in ACTIVE)
+            current = tr(STATUS_TEXT.get(task.get('status', 'waiting'), '等待中'))
+            matches = status == tr('全部') or current == status or (status == tr('生成中') and task.get('status') in ACTIVE)
             product = task.get('product', '')
             group_matches[product] = group_matches.get(product, False) or matches
             item = self._task_items.get(index)

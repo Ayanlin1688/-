@@ -582,6 +582,7 @@ class WorkspacePage(QWidget):
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
         self.current_task.skip_button.setEnabled(running and self.current_task.task_info.get('status') in ACTIVE)
+        self.task_monitor.skip_button.setEnabled(running and self.task_monitor.task_info.get('status') in ACTIVE)
         self.current_task.cancel_button.setEnabled(not running and not self._redownloading and bool(self.current_task.task_info.get('task_id')))
         self.params_card.setEnabled(not running)
         self.data_source.setEnabled(not running)

@@ -72,6 +72,22 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(ConfigManager(path).load_config()['download_settings']['naming_rule'], '{task_id}.mp4')
 
 
+    def test_generation_defaults_follow_the_parameters_that_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'config.json'
+            manager = ConfigManager(path)
+            manager.load_config()
+            manager.update(('defaults', 'duration'), 11)
+            self.assertEqual(manager.config['workspace']['duration'], 11)
+            manager.update(('workspace', 'poll_interval'), 9)
+            self.assertEqual(manager.config['workspace']['poll_interval'], 9)
+            self.assertEqual(manager.config['defaults']['poll_interval'], 5)
+            path.write_text(json.dumps({'workspace': {'duration': 12, 'model': 'video-v2'}, 'defaults': {'duration': 4, 'model': 'video-v1'}}), encoding='utf-8')
+            loaded = ConfigManager(path).load_config()
+            self.assertEqual(loaded['workspace']['duration'], 12)
+            self.assertEqual(loaded['defaults']['duration'], 4)
+            self.assertEqual(loaded['defaults']['model'], 'video-v1')
+
 class DataDirectoryTests(unittest.TestCase):
     def test_default_path_uses_appdata_and_env_override(self):
         with tempfile.TemporaryDirectory() as temp:

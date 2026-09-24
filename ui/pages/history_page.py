@@ -29,7 +29,7 @@ class HistoryPage(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(26, 16, 26, 20); root.setSpacing(16)
         header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel(tr('任务历史'))); title_box.addWidget(CaptionLabel(tr('查看生成记录 · 重新下载会沿用 task_id，不重复提交')))
         header.addLayout(title_box); header.addStretch(1)
-        self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('已完成'), tr('生成中'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过')]); header.addWidget(self.filter_box)
+        self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         header.addWidget(self.open_button); root.addLayout(header)

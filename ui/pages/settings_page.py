@@ -58,6 +58,7 @@ class SettingsPage(QWidget):
     task_settings_changed = pyqtSignal()
     detection_changed = pyqtSignal()
     appearance_changed = pyqtSignal()
+    generation_defaults_changed = pyqtSignal()
 
     class _SettingsScrollProxy:
         """滚动代理：保持旧接口（ensureWidgetVisible / verticalScrollBar / widget），
@@ -870,6 +871,10 @@ class SettingsPage(QWidget):
         self.default_poll = self._spin(group, "默认轮询间隔（秒）", ("defaults", "poll_interval"), 3, 60)
         self.default_model.currentTextChanged.connect(self._refresh_default_options)
         self.default_duration.valueChanged.connect(self._refresh_default_options)
+        for control in (self.default_model, self.default_ratio, self.default_resolution):
+            control.currentTextChanged.connect(self._emit_generation_defaults)
+        self.default_duration.valueChanged.connect(self._emit_generation_defaults)
+        self.default_poll.valueChanged.connect(self._emit_generation_defaults)
         self._refresh_default_options()
 
     def _refresh_default_options(self, *_):
@@ -879,6 +884,37 @@ class SettingsPage(QWidget):
             if self.config_manager.config['defaults'][key] != value:
                 self.config_manager.update(('defaults', key), value)
 
+    def _emit_generation_defaults(self, *_args):
+        if not getattr(self, '_applying_saved', False):
+            self.generation_defaults_changed.emit()
+
+    def apply_saved_generation_defaults(self):
+        if getattr(self, '_applying_saved', False):
+            return
+        self._applying_saved = True
+        try:
+            defaults = self.config_manager.config['workspace']
+            blocked = [QSignalBlocker(self.default_model), QSignalBlocker(self.default_ratio),
+                       QSignalBlocker(self.default_resolution), QSignalBlocker(self.default_duration),
+                       QSignalBlocker(self.default_poll)]
+            self.default_model.set_models(catalog_snapshot(self.config_manager), defaults.get('model', ''))
+            apply_model_options(self.default_model.currentText(), self.default_ratio, self.default_resolution,
+                                self.default_duration, catalog=catalog_snapshot(self.config_manager))
+            self._select_saved_choice(self.default_ratio, defaults.get('aspect_ratio', ''))
+            self._select_saved_choice(self.default_resolution, defaults.get('resolution', ''))
+            duration = int(defaults.get('duration') or self.default_duration.value())
+            if self.default_duration.minimum() <= duration <= self.default_duration.maximum():
+                self.default_duration.setValue(duration)
+            self.default_poll.setValue(int(defaults.get('poll_interval') or 5))
+            del blocked
+            self._refresh_default_options()
+        finally:
+            self._applying_saved = False
+    def _select_saved_choice(self, control, value):
+        text = str(value or '')
+        choices = [control.itemText(index) for index in range(control.count())]
+        if text in choices:
+            control.setCurrentText(text)
     def _build_appearance(self):
         group = self._group("外观")
         self.appearance_group = group

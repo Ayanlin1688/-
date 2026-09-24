@@ -124,7 +124,16 @@ class ParamsCard(QWidget):
         catalog = catalog_snapshot(self.config_manager)
         workspace = self.config_manager.config['workspace']
         before = {key: workspace[key] for key in ('aspect_ratio', 'resolution', 'duration')}
-        values = apply_model_options(model, self.ratio, self.resolution, self.duration, self.audio, self.seed, catalog)
+        blocked = [QSignalBlocker(self.ratio), QSignalBlocker(self.resolution), QSignalBlocker(self.duration)]
+        apply_model_options(model, self.ratio, self.resolution, self.duration, self.audio, self.seed, catalog)
+        self._select_saved(self.ratio, before['aspect_ratio'])
+        self._select_saved(self.resolution, before['resolution'])
+        saved_duration = before['duration']
+        allowed_durations = model_options(model, catalog).get('durations') or ()
+        if type(saved_duration) is int and saved_duration in allowed_durations:
+            self.duration.setValue(saved_duration)
+        del blocked
+        values = dict(aspect_ratio=self.ratio.currentText(), resolution=self.resolution.currentText(), duration=self.duration.value())
         changes = []
         labels = {'aspect_ratio': tr('比例'), 'resolution': tr('分辨率'), 'duration': tr('时长')}
         for key, value in values.items():
@@ -155,6 +164,31 @@ class ParamsCard(QWidget):
             self.values_changed.emit('model', selected)
         self._refresh_model_options()
 
+    def apply_saved_workspace(self):
+        if getattr(self, '_applying_saved', False):
+            return
+        self._applying_saved = True
+        try:
+            workspace = self.config_manager.config['workspace']
+            blocked = [QSignalBlocker(self.model), QSignalBlocker(self.ratio), QSignalBlocker(self.resolution),
+                       QSignalBlocker(self.duration), QSignalBlocker(self.poll), QSignalBlocker(self.audio), QSignalBlocker(self.seed)]
+            self.model.set_models(catalog_snapshot(self.config_manager), workspace.get('model', ''))
+            apply_model_options(self.model.currentText(), self.ratio, self.resolution, self.duration, self.audio, self.seed, catalog_snapshot(self.config_manager))
+            self._select_saved(self.ratio, workspace.get('aspect_ratio', ''))
+            self._select_saved(self.resolution, workspace.get('resolution', ''))
+            duration = int(workspace.get('duration') or self.duration.value())
+            if self.duration.minimum() <= duration <= self.duration.maximum():
+                self.duration.setValue(duration)
+            self.poll.setValue(int(workspace.get('poll_interval') or 5))
+            del blocked
+            self._refresh_model_options()
+        finally:
+            self._applying_saved = False
+    def _select_saved(self, control, value):
+        text = str(value or '')
+        choices = [control.itemText(index) for index in range(control.count())]
+        if text in choices:
+            control.setCurrentText(text)
     def toggle_advanced(self) -> None:
         self._advanced_animation.stop()
         self._toggle_generation = getattr(self, '_toggle_generation', 0) + 1

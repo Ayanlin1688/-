@@ -32,7 +32,7 @@ class TaskMonitorBar(QFrame):
         'processing': 'state_active',
         'uploading': 'state_active',
         'submitting': 'state_active',
-        'downloading': 'state_active',
+        'downloading': 'state_active', 'queued': 'state_active', 'cooling': 'state_wait', 'paused': 'state_wait',
         'retry_wait': 'state_wait',
         'submission_unknown': 'state_wait',
     }

@@ -314,6 +314,10 @@ class ConfigManager:
             if keys in {('workspace', workspace_key), ('task_strategy', strategy_key)}:
                 self.config['workspace'][workspace_key] = value
                 self.config['task_strategy'][strategy_key] = value
+        generation_keys = ('model', 'aspect_ratio', 'resolution', 'duration', 'poll_interval')
+        if len(keys) == 2 and keys[0] == 'defaults' and keys[1] in generation_keys:
+            self.config['workspace'][keys[1]] = value
+            self.config['defaults'][keys[1]] = value
         if save:
             try:
                 self.save_config()

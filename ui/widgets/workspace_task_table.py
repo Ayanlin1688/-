@@ -143,7 +143,7 @@ class ExpandedTaskRow(QWidget):
         self.timing.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         for column,cell in enumerate(cells):
             if column in (10,11):
-                grid_align=Qt.AlignVCenter | (Qt.AlignLeft if column==10 else Qt.AlignHCenter)
+                grid_align=Qt.AlignVCenter | Qt.AlignHCenter
                 self.grid.addWidget(cell,0,column,grid_align)
             else:
                 self.grid.addWidget(cell,0,column)
@@ -186,7 +186,9 @@ class ExpandedTaskRow(QWidget):
             text=tr('未匹配'); col=YELLOW
         chip=QColor(col)
         metrics=QFontMetrics(self.status_label.font())
-        self.status_label.setFixedWidth(min(112, metrics.horizontalAdvance(text)+20))
+        chip_width=min(112, metrics.horizontalAdvance(text)+20)
+        limit=self.grid.columnMinimumWidth(10) or COLUMN_SPEC[10][1]
+        self.status_label.setFixedWidth(min(chip_width, limit))
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f'color:{col};background:rgba({chip.red()},{chip.green()},{chip.blue()},0.14);border-radius:6px;padding:0 2px;')
         val=100 if s=='completed' else max(0,min(100,int(t.get('progress',0)))); self.progress.setValue(val); self.progress.setError(s=='failed'); self.percentage.setText(f'{val}%')
@@ -250,7 +252,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
         root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0); self.surface=WorkspaceCard(); lay=QVBoxLayout(self.surface); lay.setContentsMargins(1,1,1,1); lay.setSpacing(0)
         tools=QHBoxLayout(); tools.setContentsMargins(16,10,16,10); tools.setSpacing(8)
         tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
-        self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('重试中'),tr('等待冷却'),tr('已完成'),tr('失败'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
+        self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('下载中'),tr('重试中'),tr('等待冷却'),tr('已暂停'),tr('已完成'),tr('失败'),tr('重复'),tr('提交待确认'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
         # 低频与破坏性操作收进「更多操作」菜单，头部只留高频入口（筛选 + 匹配详情）。
         self.reset_models_button=style_button(PushButton(tr('重置模型识别'))); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested)
         self.params_button=style_button(PushButton(FIF.SETTING,tr('生成参数'))); self.params_button.setFixedHeight(32)
@@ -392,8 +394,9 @@ class WorkspaceTaskTable(TaskQueuePanel):
                     item.setData(Qt.UserRole+1, i)
                     item.setData(Qt.UserRole, tr(STATUS_TEXT.get(task.get('status','waiting'), task.get('status','waiting'))))
             self.count_label.setText(f'{len(incoming)} {tr("个任务")}')
-            self.list.setVisible(bool(incoming)); self.empty_label.setVisible(not incoming)
+            self.list.setVisible(bool(incoming))
             self._filter(self.filter_box.currentText())
+            self._apply_column_widths()
             return
         # 显式销毁旧行控件：list.clear() 只删条目，setItemWidget 挂载的部件不会随之释放。
         for row in self.rows:

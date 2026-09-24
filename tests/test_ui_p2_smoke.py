@@ -86,5 +86,17 @@ class AuditP2SmokeTests(unittest.TestCase):
         print('\n'.join(report))
 
 
+    def test_settings_default_duration_reaches_workspace(self):
+        temp, window = self._window()
+        try:
+            window.settings_page.default_duration.setValue(11)
+            QTest.qWait(50)
+            self.assertEqual(window.config_manager.config['workspace']['duration'], 11)
+            self.assertEqual(window.workspace_page.params_card.duration.value(), 11)
+            self.assertEqual(window.settings_page.default_duration.value(), 11)
+        finally:
+            window.close(); window.deleteLater(); QTest.qWait(150)
+            temp.cleanup()
+
 if __name__ == '__main__':
     unittest.main()

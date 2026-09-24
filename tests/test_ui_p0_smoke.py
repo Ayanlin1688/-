@@ -154,5 +154,11 @@ class WorkspaceP0SmokeTests(unittest.TestCase):
             temp.cleanup()
 
 
+    def test_monitor_state_colors_cover_active_and_wait(self):
+        from ui.widgets.task_monitor_bar import TaskMonitorBar
+        self.assertEqual(TaskMonitorBar._STATE_KEYS['queued'], 'state_active')
+        self.assertEqual(TaskMonitorBar._STATE_KEYS['cooling'], 'state_wait')
+        self.assertEqual(TaskMonitorBar._STATE_KEYS['paused'], 'state_wait')
+
 if __name__ == '__main__':
     unittest.main()
