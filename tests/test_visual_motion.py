@@ -216,3 +216,36 @@ class VisualMotionTests(unittest.TestCase):
             self.assertLess(background.lightness(), 30)
         finally:
             dialog.close(); dialog.deleteLater(); QTest.qWait(30)
+
+
+class DeletedMotionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_leave_and_amount_ignore_deleted_button_and_card(self):
+        from PyQt5 import sip
+        from ui.components.custom_widgets import StudioCard
+        from ui.motion import WidgetMotion, set_reduced_motion
+        host = QWidget(); host.resize(320, 200); host.show()
+        button = TransparentToolButton(host); button.setGeometry(8, 8, 36, 36); button.show()
+        card = StudioCard(host); card.setGeometry(56, 8, 180, 72); card.show()
+        motions = (WidgetMotion(button), WidgetMotion(card, card=True))
+        set_reduced_motion(True)
+        try:
+            for motion in motions:
+                QApplication.sendEvent(motion.widget, QEvent(QEvent.Enter))
+                ghost = QWidget()
+                motion.widget = ghost
+                ghost.deleteLater()
+            QTest.qWait(40)
+            for motion in motions:
+                self.assertTrue(sip.isdeleted(motion.widget))
+                motion.eventFilter(motion.widget, QEvent(QEvent.Leave))
+                motion.amount = 0
+                motion.press = 1
+                motion.reset()
+                motion._apply()
+        finally:
+            set_reduced_motion(False)
+            host.deleteLater(); QTest.qWait(20)

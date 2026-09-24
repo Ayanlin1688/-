@@ -31,6 +31,14 @@ class PromptConversionFailed(ValueError):
     """A lossy or invalid local conversion cannot be repaired by model failover."""
 
 
+def video_cache_expired(error):
+    """Provider file is gone; repeating the same download URL cannot recover it."""
+    if getattr(error, 'status_code', None) != 404:
+        return False
+    text = f'{error}\n{getattr(error, "body", "")}'.lower()
+    return 'cache has expired' in text or '视频缓存已过期' in text
+
+
 class TaskExecution:
     def __init__(self, owner, index, task, model):
         self.owner = owner
@@ -159,6 +167,14 @@ class TaskExecution:
                 except Exception as error:
                     message = self.owner.redact(error)
                     entry.update(status='failed', task_id=self.task.get('task_id', ''), phase=self.phase, error=message, finished_at=stamp())
+                    if self.phase == 'download' and video_cache_expired(error) and self.task.get('task_id'):
+                        self.task['result_url'] = ''
+                        message = '视频缓存已过期，无法继续下载；已保留原任务号，未重新提交'
+                        entry['error'] = message
+                        self.log(f'任务{self.index+1} download失败：{message}', 'error')
+                        self.log(f'任务{self.index+1}：标记失败并保存现场（错误与尝试记录已入账），队列继续下一个任务', 'warning')
+                        self.terminal('failed', message)
+                        return
                     if self.phase == 'download' and self.task.get('task_id') and getattr(error, 'status_code', None) in {401, 403}:
                         self.task['result_url'] = ''
                         self.log('下载地址已失效；下次重试将查询已有 task_id 获取新地址', 'warning')

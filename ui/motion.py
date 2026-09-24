@@ -34,6 +34,15 @@ def reduced_motion() -> bool:
     return _reduced_motion
 
 
+def _qt_alive(widget) -> bool:
+    if widget is None:
+        return False
+    try:
+        return not sip.isdeleted(widget)
+    except (RuntimeError, ReferenceError):
+        return False
+
+
 class HoverWash(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
@@ -87,16 +96,27 @@ class WidgetMotion(QObject):
     @amount.setter
     def amount(self, value):
         self._value = value
+        if not _qt_alive(self.widget):
+            return
         if self.shadow:
             try:
                 self.shadow.hover = value; self.shadow.update()
             except RuntimeError:
                 self.shadow = None  # 宿主已析构：丢弃悬空 effect 引用
         if self.wash:
-            self.wash.amount = value; self.wash.update()
+            if not _qt_alive(self.wash):
+                self.wash = None
+            else:
+                try:
+                    self.wash.amount = value; self.wash.update()
+                except RuntimeError:
+                    self.wash = None
         self._apply()
-        if self.card:
-            self.widget.update()
+        if self.card and _qt_alive(self.widget):
+            try:
+                self.widget.update()
+            except RuntimeError:
+                pass
 
     @pyqtProperty(float)
     def press(self):
@@ -119,6 +139,8 @@ class WidgetMotion(QObject):
         animation.setEndValue(value); animation.start()
 
     def _apply(self):
+        if not _qt_alive(self.widget):
+            return
         self._internal = True
         try:
             rect = QRect(self._base)
@@ -131,15 +153,30 @@ class WidgetMotion(QObject):
                 rect.moveCenter(self._base.center()+QPoint(0, round(self.press)))
             self.widget.setGeometry(rect)
             if self.wash:
-                self.wash.setGeometry(self.widget.rect()); self.wash.raise_()
+                if not _qt_alive(self.wash):
+                    self.wash = None
+                else:
+                    self.wash.setGeometry(self.widget.rect()); self.wash.raise_()
+        except RuntimeError:
+            self.wash = None
+            self.shadow = None
         finally:
             self._internal = False
 
     def reset(self):
-        self.animation.stop(); self.press_animation.stop()
+        try:
+            self.animation.stop(); self.press_animation.stop()
+        except RuntimeError:
+            return
         self.hovered = False; self._value = 0; self._press = 0
         if self.wash:
-            self.wash.amount = 0; self.wash.update()
+            if not _qt_alive(self.wash):
+                self.wash = None
+            else:
+                try:
+                    self.wash.amount = 0; self.wash.update()
+                except RuntimeError:
+                    self.wash = None
         if self.shadow:
             try:
                 self.shadow.hover = 0; self.shadow.update()
@@ -159,21 +196,29 @@ class WidgetMotion(QObject):
             pass
 
     def eventFilter(self, obj, event):
-        kind = event.type()
-        if kind in (QEvent.Move, QEvent.Resize) and not self._internal:
-            self._base = QRect(obj.geometry())
-            if self.wash:
-                self.wash.setGeometry(obj.rect())
-        elif kind == QEvent.Enter and obj.isEnabled():
-            self.hovered = True; self._animate(self.animation, 1.)
-        elif kind == QEvent.Leave:
-            self.hovered = False; self._animate(self.animation, 0.)
-        elif kind == QEvent.MouseButtonPress and obj.isEnabled() and not self.card:
-            self._animate(self.press_animation, 1.)
-        elif kind == QEvent.MouseButtonRelease and not self.card:
-            self._animate(self.press_animation, 0.)
-        elif kind in (QEvent.Hide, QEvent.EnabledChange):
-            self.reset()
+        if not _qt_alive(obj) or not _qt_alive(self.widget):
+            return False
+        try:
+            kind = event.type()
+            if kind in (QEvent.Move, QEvent.Resize) and not self._internal:
+                self._base = QRect(obj.geometry())
+                if self.wash and _qt_alive(self.wash):
+                    self.wash.setGeometry(obj.rect())
+            elif kind == QEvent.Enter and obj.isEnabled():
+                self.hovered = True; self._animate(self.animation, 1.)
+            elif kind == QEvent.Leave:
+                self.hovered = False; self._animate(self.animation, 0.)
+            elif kind == QEvent.MouseButtonPress and obj.isEnabled() and not self.card:
+                self._animate(self.press_animation, 1.)
+            elif kind == QEvent.MouseButtonRelease and not self.card:
+                self._animate(self.press_animation, 0.)
+            elif kind in (QEvent.Hide, QEvent.EnabledChange):
+                self.reset()
+        except RuntimeError:
+            try:
+                self.animation.stop(); self.press_animation.stop()
+            except RuntimeError:
+                pass
         return False
 
 

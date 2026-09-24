@@ -188,8 +188,9 @@ class RefreshDownloadHandler(BaseHTTPRequestHandler):
             data = json.dumps(dict(status='completed', result_url=self.server.base + destination)).encode('utf-8')
             status = 200
         else:
-            data = b'renewed-video-bytes'
             status = self.server.expired_status if self.path == '/expired' else 200
+            body = getattr(self.server, 'expired_body', None) if self.path == '/expired' else None
+            data = body if isinstance(body, bytes) else b'renewed-video-bytes'
         self.send_response(status)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -197,7 +198,7 @@ class RefreshDownloadHandler(BaseHTTPRequestHandler):
 
 
 class ExpiredDownloadRecoveryTests(unittest.TestCase):
-    def run_case(self, status, keep_expired=False):
+    def run_case(self, status, keep_expired=False, retries=1, expired_body=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prompts = root / 'prompts'
@@ -207,6 +208,7 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
             server.base = f'http://127.0.0.1:{server.server_port}'
             server.expired_status = status
             server.keep_expired = keep_expired
+            server.expired_body = expired_body
             server.gets, server.posts = [], []
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -214,7 +216,7 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
                 config = copy.deepcopy(DEFAULT_CONFIG)
                 config['paths'] = dict(prompts=str(prompts), images='', output=str(root / 'output'))
                 config['api'].update(base_url=server.base, api_key='local-test')
-                config['task_strategy'].update(max_concurrency=1, auto_retry=True, max_retries=1,
+                config['task_strategy'].update(max_concurrency=1, auto_retry=True, max_retries=retries,
                                                retry_interval=0, unmatched_prompt='仍提交文生视频')
                 worker = TaskWorker(config, [])
                 worker._scan()
@@ -252,6 +254,25 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
         self.assertEqual(gets, ['/expired', '/videos/existing-paid-task', '/expired'])
         self.assertEqual(posts, [])
         self.assertFalse(task['result_url'])
+
+    def test_plain_404_retries_the_same_url_without_refresh(self):
+        task, gets, posts, _ = self.run_case(404)
+        self.assertEqual(task['status'], 'failed')
+        self.assertEqual(task['task_id'], 'existing-paid-task')
+        self.assertEqual(gets, ['/expired', '/expired'])
+        self.assertEqual(posts, [])
+        self.assertTrue(task['result_url'])
+
+    def test_expired_video_cache_fails_once_without_new_submit(self):
+        body = b'{"error":{"message":"Video cache has expired","type":"invalid_request_error"}}'
+        task, gets, posts, _ = self.run_case(404, retries=3, expired_body=body)
+        self.assertEqual(task['status'], 'failed')
+        self.assertEqual(task['task_id'], 'existing-paid-task')
+        self.assertEqual(gets, ['/expired'])
+        self.assertEqual(posts, [])
+        self.assertFalse(task['result_url'])
+        self.assertIn('视频缓存已过期', task['error'])
+        self.assertEqual(len(task['attempts']), 1)
 
 
 class ActiveTaskGateRecoveryTests(unittest.TestCase):
