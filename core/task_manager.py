@@ -173,6 +173,9 @@ class TaskWorker(QThread):
             selected = {str(Path(path).resolve()) for path in self.config['_only_prompt_paths']}
             self.tasks = [task for task in self.tasks if str(Path(task['prompt_path']).resolve()) in selected]
         annotate_tasks(self.tasks, self.config)
+        for task in self.tasks:
+            if task.get('model_fallback_reason'):
+                self.log(task['model_fallback_reason'], 'warning')
         for warning in matcher.warnings:
             self.log(warning, 'warning')
         if self.config.get('_task_limit'):
@@ -283,8 +286,17 @@ class TaskWorker(QThread):
                 if not task.get('task_id'):
                     task.update(status='submission_unknown', error=old.get('error') or '提交结果未确认，禁止再次创建；请先核对服务端')
                 elif old['status'] == 'completed':
-                    task.update(status='duplicate', duplicate_of=old.get('local_id'), duplicate_record=copy.deepcopy(old),
-                                error='检测到相同任务，跳过避免重复扣费')
+                    result = Path(str(old.get('result_path') or ''))
+                    try:
+                        missing_file = (not result.is_file()) or result.stat().st_size <= 0
+                    except OSError:
+                        missing_file = True
+                    if missing_file and old.get('task_id'):
+                        task.update(status='queued', error='')
+                        self.log(f'任务{sequence}：历史视频文件缺失，沿用 task_id={old.get("task_id")} 重新下载，不重新提交', 'warning')
+                    else:
+                        task.update(status='duplicate', duplicate_of=old.get('local_id'), duplicate_record=copy.deepcopy(old),
+                                    error='检测到相同任务，跳过避免重复扣费')
                 else:
                     task.update(status='queued', error='')
         matched = sum(t['matched'] for t in self.tasks)

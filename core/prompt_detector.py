@@ -45,11 +45,35 @@ def detect_model(prompt_text) -> str:
     return ''
 
 
+def _catalog_can_submit(model, catalog):
+    """Return whether *model* can be submitted with the current catalog.
+
+    A missing catalog keeps the historical detector behavior. A present catalog
+    that does not list the model, or lists it as non-video / unknown protocol,
+    must not become the task model.
+    """
+    if catalog is None or not model:
+        return True
+    from .model_parameters import model_options
+    try:
+        options = model_options(model, catalog)
+    except ValueError:
+        return False
+    if options.get('available') is False:
+        return False
+    if options.get('kind') not in (None, 'video'):
+        return False
+    if options.get('protocol_known') is False:
+        return False
+    return True
+
+
 def annotate_tasks(tasks, config):
     """Use the same per-file resolution at scan and batch startup; keep images intact."""
     settings = config.get('prompt_detection', {})
     enabled = settings.get('enabled', False)
     workspace = config['workspace']['model']
+    catalog = config.get('_model_catalog')
     overrides = {os.path.normcase(str(Path(path).resolve())): model
                  for path, model in config.get('model_overrides', {}).items()}
     for task in tasks:
@@ -60,16 +84,22 @@ def annotate_tasks(tasks, config):
             detected = ''
             task['model_detection_error'] = f'提示词模型识别失败：{error}'
         manual = overrides.get(os.path.normcase(str(Path(task['prompt_path']).resolve())), '')
+        fallback_reason = ''
         if enabled and manual:
             model, source = manual, 'manual'
-        elif enabled and detected:
+        elif enabled and detected and _catalog_can_submit(detected, catalog):
             model, source = detected, 'auto'
+        elif enabled and detected:
+            model = settings.get('fallback_model') or workspace
+            source = 'fallback'
+            fallback_reason = f'识别模型 {detected} 不在当前可用视频模型中，已改用 {model}'
         elif enabled:
             model, source = settings.get('fallback_model') or workspace, 'fallback'
         else:
             model, source = workspace, 'workspace'
         task.update(detected_model=detected, requested_model=model, model=model,
-                    model_source=source, model_locked=source == 'manual')
+                    model_source=source, model_locked=source == 'manual',
+                    model_fallback_reason=fallback_reason)
     return tasks
 
 

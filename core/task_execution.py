@@ -340,7 +340,7 @@ class TaskExecution:
                     self.log(message, 'warning')
                     raise DuplicateSubmission(message)
                 task['ledger_id'] = saved['ledger_id']
-            with self.owner.gate.permit(self.control):
+            with self.owner.gate.permit(self.control) as seen_epoch:
                 self.log(f'{prefix}获取提交许可，开始上传')
                 self.phase = 'upload'
                 originals = [diagnostics.inspect_local(path, i+1) for i, path in enumerate(image_paths)] if self.owner.debug_mode else []
@@ -390,7 +390,7 @@ class TaskExecution:
                 if getattr(client, 'last_submit_status', 200) == 429 or getattr(client, 'last_submit_status', 200) >= 500:
                     self.owner.submission_error(client.last_submit_status)
                 else:
-                    self.owner.gate.succeeded()
+                    self.owner.gate.succeeded(seen_epoch)
                 self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
         else:
             self.log(f"沿用已有task_id={task['task_id']}继续轮询，不重复创建")
@@ -403,6 +403,7 @@ class TaskExecution:
             last_progress = None
             unchanged_since = poll_started
             last_stall_notice = poll_started
+            missing_url_since = None
             while True:
                 self.control.check()
                 if time.monotonic() >= deadline:
@@ -435,9 +436,16 @@ class TaskExecution:
                     raise RemoteGenerationFailed('远端生成失败：' + str(extract(result['raw'], ('error', 'message')) or result['raw']))
                 if result['status'] == 'completed':
                     if not result['result_url']:
+                        if missing_url_since is None:
+                            missing_url_since = now
+                        if now - missing_url_since <= 45:
+                            self.log(f'{prefix}：任务已完成，下载地址尚未返回，继续查询', 'warning')
+                            self.control.delay(poll_interval)
+                            continue
                         raise RuntimeError('完成响应没有视频下载地址')
                     self.publish(record=True, status='downloading', result_url=result['result_url'])
                     break
+                missing_url_since = None
                 self.control.delay(poll_interval)
                 poll_interval = min(30.0, poll_interval * 1.5)
         self.phase = 'download'

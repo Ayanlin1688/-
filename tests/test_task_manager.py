@@ -86,6 +86,21 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(len(self.server.calls), submitted)
         self.assertEqual([t['status'] for t in self.manager.tasks], ['duplicate'] * 3)
 
+
+    def test_missing_completed_file_redownloads_without_new_submission(self):
+        self.manager.start_tasks(self.config)
+        wait_until(lambda: not self.manager.is_running)
+        self.assertEqual([task['status'] for task in self.manager.tasks], ['completed'] * 3)
+        created = len([row for row in self.server.calls if row[0] == '/videos'])
+        for task in self.manager.tasks:
+            Path(task['result_path']).unlink()
+        self.manager = TaskManager()
+        self.manager.start_tasks(self.config)
+        wait_until(lambda: not self.manager.is_running)
+        self.assertEqual([task['status'] for task in self.manager.tasks], ['completed'] * 3)
+        self.assertTrue(all(Path(task['result_path']).is_file() and Path(task['result_path']).stat().st_size > 0 for task in self.manager.tasks))
+        self.assertEqual(len([row for row in self.server.calls if row[0] == '/videos']), created)
+
     def test_upload_failure_continues_and_retains_task_id_on_download_error(self):
         (Path(self.config['paths']['images']) / '1汽车.png').write_bytes(b'bad-image')
         self.config['download_settings']['naming_rule'] = '{不支持}.mp4'

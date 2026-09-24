@@ -25,6 +25,7 @@ class SubmissionGate:
         self.paused_until = 0.0
         self.on_recover = None
         self.lock = threading.Lock()
+        self._epoch = 0
         self._permits = deque()
 
     @contextmanager
@@ -37,6 +38,7 @@ class SubmissionGate:
         ticket = object()
         with self.lock:
             self._permits.append(ticket)
+            seen_epoch = self._epoch
         try:
             while True:
                 control.check()
@@ -47,7 +49,7 @@ class SubmissionGate:
                 control.delay(.05)
             self.wait(control)
             control.before_task()
-            yield
+            yield seen_epoch
         finally:
             with self.lock:
                 self._permits.remove(ticket)
@@ -57,6 +59,7 @@ class SubmissionGate:
             if status_code != 429 and not (status_code and 500 <= status_code < 600):
                 self.consecutive_429 = 0
                 return 0
+            self._epoch += 1
             self.failures += 1
             seconds = min(60, 5 * 2 ** min(self.failures - 1, 4))
             self.deadline = max(self.deadline, self.now() + seconds)
@@ -76,8 +79,11 @@ class SubmissionGate:
                 self.consecutive_429 = 0
             return seconds
 
-    def succeeded(self):
+    def succeeded(self, seen_epoch=None):
         with self.lock:
+            # A create that queued before this 429/5xx burst must not reopen admission.
+            if seen_epoch is not None and seen_epoch != self._epoch:
+                return False
             self.failures = 0
             self.consecutive_429 = 0
             # 成功即视为渠道健康：清退避窗口，并发上限逐级回升到初始值。

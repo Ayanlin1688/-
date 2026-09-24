@@ -6,7 +6,7 @@ import json
 import os
 import re
 import tempfile
-from .http_client import HttpClient
+from .http_client import HttpClient, RequestError, Cancelled
 
 
 def safe_filename(name):
@@ -28,6 +28,36 @@ def build_filename(rule, task, sequence):
         return safe_filename(rule.format_map(values))
     except (KeyError, ValueError) as error:
         raise ValueError(f'下载命名规则无效：{error}') from error
+
+
+DOWNLOAD_TIMEOUT = (10, 120)
+DOWNLOAD_ATTEMPTS = 4
+
+
+class IncompleteDownload(IOError):
+    pass
+
+
+def _retryable_download(error):
+    if isinstance(error, IncompleteDownload):
+        return True
+    if isinstance(error, IOError) and '下载响应不是视频' in str(error):
+        return False
+    if getattr(error, 'status_code', None) is not None:
+        return False
+    return isinstance(error, (RequestError, OSError, TimeoutError))
+
+
+def _body_length(response):
+    content_range = response.headers.get('Content-Range', '')
+    if '/' in content_range:
+        total = content_range.rsplit('/', 1)[-1].strip()
+        if total.isdigit():
+            return int(total)
+    if response.status_code == 206:
+        return 0
+    length = response.headers.get('Content-Length', '')
+    return int(length) if str(length).isdigit() else 0
 
 
 class VideoDownloader(HttpClient):
@@ -95,57 +125,87 @@ class VideoDownloader(HttpClient):
                 self.log(f'已核验当前任务的视频，跳过下载：{destination}', 'info')
                 return str(destination)
             self.check_cancel()
-            # Never forward the provider Bearer key to a returned CDN URL.
-            with self.request('GET', url, authenticated=False, stream=True, headers={'Accept-Encoding': 'identity'}) as response:
-                content_type = response.headers.get('Content-Type', '').partition(';')[0].strip().lower()
-                if content_type.startswith('text/') or content_type in {'application/json', 'application/xml'} or content_type.endswith(('+json', '+xml')):
-                    raise IOError(f'下载响应不是视频：Content-Type={content_type}')
-                length = int(response.headers.get('Content-Length', 0))
-                descriptor, partial = tempfile.mkstemp(prefix='.' + destination.stem[:40], suffix='.part', dir=folder)
-                count, last_percent = 0, -1
-                digest = hashlib.sha256()
-                with os.fdopen(descriptor, 'wb') as stream:
-                    for chunk in response.iter_content(chunk_size=64 * 1024):
-                        self.check_cancel()
-                        if not chunk:
-                            continue
-                        stream.write(chunk)
-                        digest.update(chunk)
-                        count += len(chunk)
-                        percent = min(100, int(count * 100 / length)) if length else None
-                        if percent is not None and percent >= last_percent + 5:
-                            self.log(f'下载进度：{percent}%', 'info')
-                            last_percent = percent
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                self.check_cancel()
-                if not count or (length and not response.headers.get('Content-Encoding') and count != length):
-                    raise IOError(f'下载不完整：预期 {length} 字节，收到 {count} 字节')
-                while True:
-                    self.check_cancel()
-                    destination, owned = self._destination(folder, filename, identity)
-                    if owned and not self.overwrite_existing:
-                        return str(destination)
-                    if owned and self.overwrite_existing:
-                        os.replace(partial, destination)
-                        partial = None
-                    else:
-                        try:
-                            # Exclusive publication handles another process taking this name mid-download.
-                            if os.name == 'nt':
-                                os.rename(partial, destination)
-                                partial = None
-                            else:
-                                os.link(partial, destination)
-                        except FileExistsError:
-                            continue
-                    self._save_ownership(destination, identity, count, digest.hexdigest())
+            descriptor, partial = tempfile.mkstemp(prefix='.' + destination.stem[:40], suffix='.part', dir=folder)
+            os.close(descriptor)
+            state = dict(count=0, digest=hashlib.sha256(), last_percent=-1, length=0)
+            error = None
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                try:
+                    self._transfer(url, partial, state)
+                    error = None
                     break
-                self.log(f'下载完成：{destination} ({count / 1024 / 1024:.2f} MB)', 'success')
-                return str(destination)
+                except Cancelled:
+                    raise
+                except Exception as transfer_error:
+                    error = transfer_error
+                    if attempt + 1 >= DOWNLOAD_ATTEMPTS or not _retryable_download(transfer_error):
+                        raise
+                    self.log(f'下载中断，保留已下载 {state["count"]} 字节后继续：{transfer_error}', 'warning')
+            if error is not None:
+                raise error
+            count = state['count']
+            while True:
+                self.check_cancel()
+                destination, owned = self._destination(folder, filename, identity)
+                if owned and not self.overwrite_existing:
+                    return str(destination)
+                if owned and self.overwrite_existing:
+                    os.replace(partial, destination)
+                    partial = None
+                else:
+                    try:
+                        # Exclusive publication handles another process taking this name mid-download.
+                        if os.name == 'nt':
+                            os.rename(partial, destination)
+                            partial = None
+                        else:
+                            os.link(partial, destination)
+                    except FileExistsError:
+                        continue
+                self._save_ownership(destination, identity, count, state['digest'].hexdigest())
+                break
+            self.log(f'下载完成：{destination} ({count / 1024 / 1024:.2f} MB)', 'success')
+            return str(destination)
         except Exception as error:
             self.log(f'下载失败：{error}', 'error')
             raise
         finally:
             if partial and Path(partial).exists():
                 Path(partial).unlink()
+
+    def _transfer(self, url, partial, state):
+        headers = {'Accept-Encoding': 'identity'}
+        if state['count']:
+            headers['Range'] = f'bytes={state["count"]}-'
+        with self.request('GET', url, authenticated=False, stream=True, headers=headers, timeout=DOWNLOAD_TIMEOUT) as response:
+            if state['count'] and response.status_code == 200:
+                state.update(count=0, digest=hashlib.sha256(), last_percent=-1, length=0)
+            elif state['count'] and response.status_code != 206:
+                raise RequestError(f'续传被拒绝：HTTP {response.status_code}', response.status_code)
+            content_type = response.headers.get('Content-Type', '').partition(';')[0].strip().lower()
+            if content_type.startswith('text/') or content_type in {'application/json', 'application/xml'} or content_type.endswith(('+json', '+xml')):
+                raise IOError(f'下载响应不是视频：Content-Type={content_type}')
+            total = _body_length(response)
+            if total:
+                state['length'] = total
+            with open(partial, 'r+b') as stream:
+                stream.seek(state['count'])
+                stream.truncate(state['count'])
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    self.check_cancel()
+                    if not chunk:
+                        continue
+                    stream.write(chunk)
+                    state['digest'].update(chunk)
+                    state['count'] += len(chunk)
+                    length = state['length']
+                    percent = min(100, int(state['count'] * 100 / length)) if length else None
+                    if percent is not None and percent >= state['last_percent'] + 5:
+                        self.log(f'下载进度：{percent}%', 'info')
+                        state['last_percent'] = percent
+                stream.flush()
+                os.fsync(stream.fileno())
+            length = state['length']
+            encoded = bool(response.headers.get('Content-Encoding'))
+        if not state['count'] or (length and not encoded and state['count'] != length):
+            raise IncompleteDownload(f'下载不完整：预期 {length} 字节，收到 {state["count"]} 字节')

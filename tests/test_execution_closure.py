@@ -140,5 +140,22 @@ class ExecutionClosureTests(unittest.TestCase):
         self.assertTrue(second.is_set())
 
 
+    def test_completed_without_url_keeps_polling_same_task(self):
+        with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
+            config = self.config(Path(directory), server)
+            config['task_strategy'].update(auto_retry=False, max_retries=0)
+            config['workspace'].update(poll_interval=.01, poll_timeout=5)
+            server.suppress_result_url = 1
+            worker = TaskWorker(config, [])
+            logs = []
+            worker.log_message.connect(lambda message, level: logs.append(message))
+            worker.run()
+            task = worker.tasks[0]
+            self.assertEqual(task['status'], 'completed', task)
+            self.assertGreaterEqual(server.polls.get(task['task_id'], 0), 3)
+            self.assertEqual(len([row for row in server.calls if row[0] == '/videos']), 1)
+            self.assertTrue(any('下载地址尚未返回' in message for message in logs), logs)
+
+
 if __name__ == '__main__':
     unittest.main()

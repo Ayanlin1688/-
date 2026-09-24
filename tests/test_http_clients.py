@@ -46,6 +46,31 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(data) + (50 if self.path == '/truncated' else 0)))
             self.end_headers()
             self.wfile.write(data)
+        elif self.path == '/resume':
+            data = b'R' * 300000
+            start = 0
+            range_header = self.headers.get('Range')
+            if range_header:
+                self.server.ranges.append(range_header)
+                start = int(range_header.split('=', 1)[1].split('-', 1)[0])
+            if start == 0:
+                part = data[:65536]
+                self.close_connection = True
+                self.send_response(200)
+                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Length', str(len(data)))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(part)
+                return
+            rest = data[start:]
+            self.send_response(206)
+            self.send_header('Content-Type', 'video/mp4')
+            self.send_header('Content-Range', f'bytes {start}-{len(data) - 1}/{len(data)}')
+            self.send_header('Content-Length', str(len(rest)))
+            self.end_headers()
+            self.wfile.write(rest)
         elif self.path == '/models' or 'connection-check' in self.path:
             self.respond({'data': []}, 401 if self.server.reject else 200)
         else:
@@ -54,6 +79,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.server.polls[task] = n
             if self.server.always_processing or n == 1:
                 self.respond({'data': {'status': 'PROCESSING', 'progress': '45%'}})
+            elif getattr(self.server, 'suppress_result_url', 0) > 0:
+                self.server.suppress_result_url -= 1
+                self.respond({'data': {'status': 'succeeded', 'progress': 100}})
             else:
                 self.respond({'data': {'status': 'succeeded', 'progress': 100,
                                       'result_url': self.server.base + '/download',
@@ -65,6 +93,7 @@ class LocalServer:
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), FixtureHandler)
         self.server.calls = []; self.server.gets = []; self.server.polls = {}
         self.server.reject = False; self.server.always_processing = False
+        self.server.ranges = []; self.server.suppress_result_url = 0
         self.server.base = f'http://127.0.0.1:{self.server.server_port}'
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -166,6 +195,11 @@ class HttpTests(unittest.TestCase):
                 downloader.download_video(server.base + '/download', root, 'cancelled.mp4')
             self.assertFalse((root / 'cancelled.mp4').exists())
             self.assertFalse(list(root.glob('*.part')))
+            downloader.check_cancel = lambda: None
+            resumed = Path(downloader.download_video(server.base + '/resume', root, '断点.mp4'))
+            self.assertEqual(resumed.read_bytes(), b'R' * 300000)
+            self.assertTrue(server.ranges)
+            self.assertTrue(server.ranges[0].startswith('bytes='))
             uploader.close(); downloader.close()
 
 

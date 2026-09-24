@@ -48,11 +48,11 @@ class ConcurrentLimitHandler(FixtureHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         self.server.calls.append((self.path, dict(self.headers), body))
-        number = int(json.loads(body)['prompt'].split()[-1])
-        # Admission serializes upload/create; remote generation still overlaps.
-        if number == 1:
+        # The first admitted create succeeds; later creates are rate limited.
+        # Prompt order is not the admission order, so do not special-case task 1.
+        if not getattr(self.server, 'winner_sent', False):
+            self.server.winner_sent = True
             return self.respond({'task_id': 'running-before-limit'})
-        time.sleep(.1 + number * .02)
         return self.respond({'error': 'too many requests'}, 429)
 
 
@@ -173,10 +173,14 @@ class SubmissionSafetyTests(unittest.TestCase):
             self.assertEqual(self.manager.worker.gate.limit, 1)
             self.assertEqual(len(server.calls), 4)
             self.assertEqual(self.manager.tasks[4]['status'], 'waiting')
+            frozen = len(server.calls)
             before = server.polls.get('running-before-limit', 0)
             wait_until(lambda: server.polls.get('running-before-limit', 0) > before)
+            self.assertEqual(len(server.calls), frozen)
+            self.assertEqual(sum(task.get('task_id') == 'running-before-limit' for task in self.manager.tasks), 1)
             server.always_processing = False
-            wait_until(lambda: self.manager.tasks[0]['status'] == 'completed')
+            wait_until(lambda: any(task.get('task_id') == 'running-before-limit' and task.get('status') == 'completed'
+                                   for task in self.manager.tasks), timeout=45000)
             self.assertEqual(len(server.calls), 4)
             self.manager.cancel_all()
             wait_until(lambda: not self.manager.is_running)
@@ -251,6 +255,35 @@ class GateRecoveryTests(unittest.TestCase):
         self.assertEqual(len(resumed), 1)
         self.assertGreaterEqual(resumed[0], 5.0)
         self.assertGreater(control.delays, 0)
+
+    def test_stale_success_does_not_reopen_rate_limit(self):
+        clock = [0.0]
+        gate = SubmissionGate(4, now=lambda: clock[0], probe_seconds=10)
+
+        class Control:
+            def check(self):
+                pass
+
+            def delay(self, seconds):
+                pass
+
+            def before_task(self):
+                pass
+
+        with gate.permit(Control()) as seen:
+            queued_epoch = seen
+        for _ in range(3):
+            gate.failed(429)
+        self.assertTrue(gate.paused)
+        self.assertFalse(gate.succeeded(queued_epoch))
+        self.assertTrue(gate.paused)
+        self.assertEqual(gate.limit, 1)
+        self.assertEqual(gate.consecutive_429, 3)
+        clock[0] = gate.paused_until
+        self.assertTrue(gate.auto_resume())
+        gate.succeeded()
+        self.assertEqual(gate.limit, 2)
+        self.assertEqual(gate.consecutive_429, 0)
 
     def test_rate_limited_queue_auto_recovers_without_manual_resume(self):
         temp = tempfile.TemporaryDirectory()

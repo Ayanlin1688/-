@@ -59,6 +59,24 @@ class PromptDetectorTests(unittest.TestCase):
             self.assertEqual(tasks[0]['requested_model'], config['workspace']['model'])
             self.assertEqual(tasks[0]['model_source'], 'workspace')
 
+    def test_unavailable_detected_model_falls_back_to_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '1.txt'
+            path.write_text('The camera glides past the product with soft studio light and shows every detail. ' * 4, encoding='utf-8')
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            config['workspace']['model'] = 'MiniMax-H3'
+            config['_model_catalog'] = {'MiniMax-H3': {
+                'id': 'MiniMax-H3', 'name': 'MiniMax-H3', 'kind': 'video', 'family': 'MiniMax-H3',
+                'available': True, 'protocol_known': True, 'ratios': ['9:16'], 'resolutions': ['1080p'],
+                'durations': list(range(4, 16)), 'audio': False, 'seed': False, 'max_images': 9,
+            }}
+            tasks = [dict(prompt_path=str(path), images=[])]
+            annotate_tasks(tasks, config)
+            self.assertEqual(tasks[0]['detected_model'], 'grok-imagine-1.5-video')
+            self.assertEqual(tasks[0]['requested_model'], 'MiniMax-H3')
+            self.assertEqual(tasks[0]['model_source'], 'fallback')
+            self.assertIn('grok-imagine-1.5-video', tasks[0]['model_fallback_reason'])
+
     def test_unrecognized_uses_configured_fallback_or_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'1.txt'; path.write_text('subject_definitions: single', encoding='utf-8')

@@ -81,3 +81,36 @@ class UploadFixTests(unittest.TestCase):
         self.assertFalse(results['video']['ok'])
         self.assertTrue(results['upload']['ok'])
         uploader.test_connection.assert_called_once()
+
+
+    def test_oversized_reference_is_normalized_before_upload(self):
+        from PyQt5.QtGui import QImage
+        from PyQt5.QtWidgets import QApplication
+        from core.image_uploader import fit_reference_image, MAX_REFERENCE_RATIO, MAX_REFERENCE_SIDE
+        QApplication.instance() or QApplication([])
+        image = QImage(8000, 1000, QImage.Format_RGB32)
+        image.fill(0xFF224466)
+        fitted, changed = fit_reference_image(image)
+        self.assertTrue(changed)
+        self.assertLessEqual(max(fitted.width(), fitted.height()), MAX_REFERENCE_SIDE)
+        self.assertGreaterEqual(min(fitted.width(), fitted.height()), 256)
+        ratio = fitted.width() / fitted.height()
+        self.assertGreaterEqual(ratio, 0.4)
+        self.assertLessEqual(ratio, MAX_REFERENCE_RATIO + 0.001)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'big.png'
+            self.assertTrue(image.save(str(path), 'PNG'))
+            captured = []
+
+            def send(method, url, **kwargs):
+                captured.append(kwargs['files']['files'][1].read())
+                return response(200, {'url': 'https://image/big.jpg'})
+
+            session = Mock()
+            session.request.side_effect = send
+            self.assertEqual(ImageUploader('https://image/upload', 'key', session=session).upload_image(path), 'https://image/big.jpg')
+            uploaded = QImage.fromData(captured[0])
+            self.assertFalse(uploaded.isNull())
+            self.assertLessEqual(max(uploaded.width(), uploaded.height()), MAX_REFERENCE_SIDE)
+            self.assertLessEqual(uploaded.width() / uploaded.height(), MAX_REFERENCE_RATIO + 0.02)
+            self.assertNotEqual(captured[0], path.read_bytes())
