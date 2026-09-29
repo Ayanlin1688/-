@@ -37,6 +37,8 @@ class MainWindow(FluentWindow):
         self._window_margin = 8
         self._window_radius = 12
         self._frame_margin = None
+        self._fullscreen_restore_geometry = None
+        self._fullscreen_restore_maximized = False
         self._glass_material = 'gradient'
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
@@ -578,7 +580,7 @@ class MainWindow(FluentWindow):
         state = self.windowState()
         if state & Qt.WindowFullScreen:
             return 0
-        if state & Qt.WindowMaximized or self._native_window_is_maximized():
+        if state & Qt.WindowMaximized:
             return 0
         return self._window_margin
 
@@ -608,8 +610,8 @@ class MainWindow(FluentWindow):
         try:
             state = self.windowState()
             maximized = (
-                not bool(state & Qt.WindowFullScreen)
-                and (bool(state & Qt.WindowMaximized) or self._native_window_is_maximized())
+                bool(state & Qt.WindowFullScreen)
+                or bool(state & Qt.WindowMaximized)
             )
             self.titleBar.maxBtn.setMaxState(maximized)
         except Exception:
@@ -704,19 +706,16 @@ class MainWindow(FluentWindow):
         event.ignore()
 
     def _studio_toggle_maximized(self):
-        """最大化/还原切换：统一处理按钮、双击和全屏状态。"""
-        currently_fullscreen = self.isFullScreen()
-        currently_maximized = self.isMaximized() or self._native_window_is_maximized()
-        target_max = not currently_maximized
-        if currently_fullscreen:
-            target_max = False
+        """标题栏按钮切换全屏，并可靠恢复到进入全屏前的窗口状态。"""
+        target_fullscreen = not self.isFullScreen()
         self._max_toggle_generation = getattr(self, '_max_toggle_generation', 0) + 1
         generation = self._max_toggle_generation
-        self._apply_max_state(target_max)
+        self._apply_fullscreen_state(target_fullscreen)
         self._release_titlebar_mouse()
-        QTimer.singleShot(160, lambda: self._verify_max_state(target_max, generation))
+        QTimer.singleShot(160, lambda: self._verify_fullscreen_state(target_fullscreen, generation))
 
     def _apply_max_state(self, maximized: bool):
+        """保留给外部调用方的 Qt 最大化兼容入口。"""
         if self.isFullScreen():
             self.showNormal()
         if maximized:
@@ -728,25 +727,110 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(40, self._sync_window_frame)
         self.update()
 
+    def _screen_geometry(self, fullscreen: bool):
+        screen = self.windowHandle().screen() if self.windowHandle() is not None else QApplication.primaryScreen()
+        if screen is None:
+            return None
+        return screen.geometry() if fullscreen else screen.availableGeometry()
+
+    def _window_geometry_matches(self, fullscreen: bool) -> bool:
+        target = self._screen_geometry(fullscreen)
+        if target is None:
+            return True
+        actual = self.geometry()
+        return (
+            abs(actual.x() - target.x()) <= 2
+            and abs(actual.y() - target.y()) <= 2
+            and abs(actual.width() - target.width()) <= 2
+            and abs(actual.height() - target.height()) <= 2
+        )
+
+    def _fullscreen_state_matches(self, target_fullscreen: bool) -> bool:
+        if self.isFullScreen() != target_fullscreen:
+            return False
+        if target_fullscreen:
+            return self._window_geometry_matches(True)
+        return self.isMaximized() == bool(self._fullscreen_restore_maximized)
+
+    def _apply_fullscreen_state(self, fullscreen: bool):
+        if fullscreen:
+            if not self.isFullScreen():
+                self._fullscreen_restore_maximized = self.isMaximized()
+                normal_geometry = self.normalGeometry()
+                if normal_geometry.isValid():
+                    self._fullscreen_restore_geometry = normal_geometry
+                elif not self.isMaximized() and self.geometry().isValid():
+                    self._fullscreen_restore_geometry = self.geometry()
+            if self.isMaximized():
+                self.showNormal()
+            self.showFullScreen()
+        else:
+            restore_maximized = bool(self._fullscreen_restore_maximized)
+            restore_geometry = self._fullscreen_restore_geometry
+            self.showNormal()
+            if restore_maximized:
+                self.showMaximized()
+            elif restore_geometry is not None and restore_geometry.isValid():
+                self.setGeometry(restore_geometry)
+        self._sync_window_state_controls()
+        QTimer.singleShot(0, self._sync_window_frame)
+        QTimer.singleShot(40, self._sync_window_frame)
+        self.update()
+
+    def _verify_fullscreen_state(self, target_fullscreen: bool, generation=None, attempt=0):
+        try:
+            if generation is not None and generation != getattr(self, '_max_toggle_generation', 0):
+                return
+            if self._fullscreen_state_matches(target_fullscreen):
+                self._sync_window_state_controls()
+                self._sync_window_frame()
+                if not target_fullscreen:
+                    self._fullscreen_restore_geometry = None
+                    self._fullscreen_restore_maximized = False
+                return
+            if attempt < 2:
+                self._apply_fullscreen_state(target_fullscreen)
+                QTimer.singleShot(
+                    100,
+                    lambda: self._verify_fullscreen_state(target_fullscreen, generation, attempt + 1),
+                )
+                return
+            if attempt >= 3:
+                self._sync_window_state_controls()
+                self._sync_window_frame()
+                return
+            if not target_fullscreen:
+                self._force_max_state_win32(bool(self._fullscreen_restore_maximized))
+            self._apply_fullscreen_state(target_fullscreen)
+            QTimer.singleShot(
+                100,
+                lambda: self._verify_fullscreen_state(target_fullscreen, generation, attempt + 1),
+            )
+        except Exception:
+            pass
+
     def _verify_max_state(self, target_max: bool, generation=None):
         try:
             if generation is not None and generation != getattr(self, '_max_toggle_generation', 0):
                 # 后续又发生了新的切换，旧校验不得推翻新的意图（快速连点竞态）。
                 return
             state_matches = (
-                (self.isMaximized() or self._native_window_is_maximized()) == target_max
+                self.isMaximized() == target_max
                 and not self.isFullScreen()
+                and (not target_max or self._window_geometry_matches(False))
             )
             if not state_matches:
                 self._apply_max_state(target_max)
                 state_matches = (
-                    (self.isMaximized() or self._native_window_is_maximized()) == target_max
+                    self.isMaximized() == target_max
                     and not self.isFullScreen()
+                    and (not target_max or self._window_geometry_matches(False))
                 )
                 if not state_matches:
                     self._force_max_state_win32(target_max)
                     QTimer.singleShot(0, self._sync_window_frame)
                     QTimer.singleShot(40, self._sync_window_frame)
+                    QTimer.singleShot(120, lambda: self._verify_max_state(target_max, generation))
         except Exception:
             pass
 

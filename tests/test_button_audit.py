@@ -224,9 +224,11 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertFalse(self.config.config['appearance']['nav_expanded'])
         with patch.object(self.window, '_release_titlebar_mouse'):
             self.window.titleBar.maxBtn.click()
-            self.assertTrue(self.window.isMaximized())
+            QTest.qWait(180)
+            self.assertTrue(self.window.isFullScreen())
             self.window.titleBar.maxBtn.click()
             QTest.qWait(200)
+            self.assertFalse(self.window.isFullScreen())
             self.assertFalse(self.window.isMaximized())
 
     def test_brand_avatar_minimize_and_close_buttons(self):
