@@ -42,6 +42,17 @@ class WindowControlTests(unittest.TestCase):
         self.assertFalse(self.window.isMaximized())
         self.assertFalse(btn._isMax)
 
+    def test_maximize_button_click_toggles_window_state(self):
+        btn = self.window.titleBar.maxBtn
+        QTest.mouseClick(btn, Qt.LeftButton)
+        QTest.qWait(180)
+        self.assertTrue(self.window.isMaximized())
+        self.assertTrue(btn._isMax)
+        QTest.mouseClick(btn, Qt.LeftButton)
+        QTest.qWait(180)
+        self.assertFalse(self.window.isMaximized())
+        self.assertFalse(btn._isMax)
+
     def test_rapid_double_toggle_lands_on_restored_state(self):
         # 快速连点（间隔小于 160ms 校验窗口）必须最终落在“还原”状态：
         # 修复前，第一次点击的延迟校验会把第二次点击的还原结果重新最大化（竞态）。

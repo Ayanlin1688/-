@@ -576,13 +576,41 @@ class MainWindow(FluentWindow):
 
     def _window_margins_px(self):
         state = self.windowState()
-        edge_to_edge = state & (Qt.WindowMaximized | Qt.WindowFullScreen)
-        return 0 if edge_to_edge else self._window_margin
+        if state & Qt.WindowFullScreen:
+            return 0
+        if state & Qt.WindowMaximized or self._native_window_is_maximized():
+            return 0
+        return self._window_margin
+
+    def _native_window_is_maximized(self) -> bool:
+        if sys.platform != 'win32':
+            return False
+        try:
+            from qframelesswindow.utils.win32_utils import isMaximized
+            return bool(isMaximized(self.winId()))
+        except Exception:
+            return False
+
+    def _refresh_native_window_frame(self) -> None:
+        """让无边框窗口在状态切换后重新计算 Win32 非客户区。"""
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+
+            hwnd = int(self.winId())
+            flags = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
+        except Exception:
+            pass
 
     def _sync_window_state_controls(self) -> None:
         try:
             state = self.windowState()
-            maximized = bool(state & Qt.WindowMaximized) and not bool(state & Qt.WindowFullScreen)
+            maximized = (
+                not bool(state & Qt.WindowFullScreen)
+                and (bool(state & Qt.WindowMaximized) or self._native_window_is_maximized())
+            )
             self.titleBar.maxBtn.setMaxState(maximized)
         except Exception:
             pass
@@ -602,6 +630,7 @@ class MainWindow(FluentWindow):
                 self.titleBar.setGeometry(*geometry)
         except Exception:
             pass
+        self._refresh_native_window_frame()
         self.update()
 
     def resizeEvent(self, event):
@@ -676,8 +705,10 @@ class MainWindow(FluentWindow):
 
     def _studio_toggle_maximized(self):
         """最大化/还原切换：统一处理按钮、双击和全屏状态。"""
-        target_max = not self.isMaximized()
-        if self.isFullScreen():
+        currently_fullscreen = self.isFullScreen()
+        currently_maximized = self.isMaximized() or self._native_window_is_maximized()
+        target_max = not currently_maximized
+        if currently_fullscreen:
             target_max = False
         self._max_toggle_generation = getattr(self, '_max_toggle_generation', 0) + 1
         generation = self._max_toggle_generation
@@ -694,6 +725,7 @@ class MainWindow(FluentWindow):
             self.showNormal()
         self._sync_window_state_controls()
         QTimer.singleShot(0, self._sync_window_frame)
+        QTimer.singleShot(40, self._sync_window_frame)
         self.update()
 
     def _verify_max_state(self, target_max: bool, generation=None):
@@ -701,13 +733,20 @@ class MainWindow(FluentWindow):
             if generation is not None and generation != getattr(self, '_max_toggle_generation', 0):
                 # 后续又发生了新的切换，旧校验不得推翻新的意图（快速连点竞态）。
                 return
-            state_matches = self.isMaximized() == target_max and not self.isFullScreen()
+            state_matches = (
+                (self.isMaximized() or self._native_window_is_maximized()) == target_max
+                and not self.isFullScreen()
+            )
             if not state_matches:
                 self._apply_max_state(target_max)
-                state_matches = self.isMaximized() == target_max and not self.isFullScreen()
+                state_matches = (
+                    (self.isMaximized() or self._native_window_is_maximized()) == target_max
+                    and not self.isFullScreen()
+                )
                 if not state_matches:
                     self._force_max_state_win32(target_max)
                     QTimer.singleShot(0, self._sync_window_frame)
+                    QTimer.singleShot(40, self._sync_window_frame)
         except Exception:
             pass
 
