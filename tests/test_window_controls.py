@@ -1,10 +1,12 @@
-"""Window-control regressions: maximize toggle, rapid-toggle race, icon sync (R7)."""
+"""Window-control regressions: maximize, fullscreen, double-click and state sync."""
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from PyQt5.QtCore import QEvent, QPointF, Qt
+from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 from core.config_manager import ConfigManager
@@ -49,6 +51,34 @@ class WindowControlTests(unittest.TestCase):
         QTest.qWait(450)
         self.assertFalse(self.window.isMaximized())
         self.assertFalse(self.window.titleBar.maxBtn._isMax)
+
+    def test_fullscreen_round_trip_restores_frame_and_button_state(self):
+        self.window.showFullScreen()
+        QTest.qWait(120)
+        self.assertTrue(self.window.isFullScreen())
+        self.assertEqual(self.window._frame_margin, 0)
+        self.assertEqual(self.window.titleBar.geometry().x(), 0)
+        self.assertFalse(self.window.titleBar.maxBtn._isMax)
+
+        self.window.showNormal()
+        QTest.qWait(120)
+        self.assertFalse(self.window.isFullScreen())
+        self.assertEqual(self.window._frame_margin, self.window._window_margin)
+        self.assertEqual(self.window.titleBar.geometry().x(), self.window._window_margin)
+        self.assertFalse(self.window.titleBar.maxBtn._isMax)
+
+    def test_titlebar_double_click_uses_studio_toggle(self):
+        event = QMouseEvent(
+            QEvent.MouseButtonDblClick,
+            QPointF(300, 20),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        self.window.titleBar.mouseDoubleClickEvent(event)
+        QTest.qWait(120)
+        self.assertTrue(self.window.isMaximized())
+        self.assertTrue(self.window.titleBar.maxBtn._isMax)
 
 
 if __name__ == '__main__':

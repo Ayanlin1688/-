@@ -17,6 +17,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "PyQt-Fluent-Widgets", "--upgrade"])
     from qfluentwidgets import Theme, setTheme
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 
@@ -28,6 +29,24 @@ def _asset_path(name: str) -> Path:
     """兼容开发态与 PyInstaller 冻结态的资源定位。"""
     base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
     return base / 'assets' / name
+
+
+def _bring_window_to_front(window) -> None:
+    """Raise an existing instance without changing its current window state."""
+    state = window.windowState()
+    was_fullscreen = bool(state & Qt.WindowFullScreen)
+    was_maximized = bool(state & Qt.WindowMaximized)
+    was_minimized = bool(state & Qt.WindowMinimized)
+    if was_minimized:
+        window.showNormal()
+        if was_fullscreen:
+            window.showFullScreen()
+        elif was_maximized:
+            window.showMaximized()
+    elif not window.isVisible():
+        window.show()
+    window.raise_()
+    window.activateWindow()
 
 
 def main() -> int:
@@ -62,13 +81,7 @@ def main() -> int:
     if splash is not None:
         app.processEvents()
     window = MainWindow(config_manager)
-
-    def _bring_to_front():
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
-
-    guard.activation_requested.connect(_bring_to_front)
+    guard.activation_requested.connect(lambda: _bring_window_to_front(window))
     window.show()
     if splash is not None:
         splash.finish(window)

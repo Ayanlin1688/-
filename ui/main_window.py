@@ -325,6 +325,8 @@ class MainWindow(FluentWindow):
             except Exception:
                 pass
             max_button.clicked.connect(self._studio_toggle_maximized)
+            self.titleBar.setDoubleClickEnabled(False)
+            self.titleBar.mouseDoubleClickEvent = self._studio_titlebar_double_click
         except Exception:
             pass
         # 关于入口由底部头像承担，导航栏保持纯图标三入口。
@@ -573,7 +575,17 @@ class MainWindow(FluentWindow):
         return self._glass_material
 
     def _window_margins_px(self):
-        return 0 if (self.isMaximized() or self.isFullScreen()) else self._window_margin
+        state = self.windowState()
+        edge_to_edge = state & (Qt.WindowMaximized | Qt.WindowFullScreen)
+        return 0 if edge_to_edge else self._window_margin
+
+    def _sync_window_state_controls(self) -> None:
+        try:
+            state = self.windowState()
+            maximized = bool(state & Qt.WindowMaximized) and not bool(state & Qt.WindowFullScreen)
+            self.titleBar.maxBtn.setMaxState(maximized)
+        except Exception:
+            pass
 
     def _sync_window_frame(self) -> None:
         """把标题栏与内容同步到圆角内缩区，并在最大化时放大到整屏。"""
@@ -585,7 +597,9 @@ class MainWindow(FluentWindow):
             except Exception:
                 pass
         try:
-            self.titleBar.setGeometry(margin, margin, max(0, self.width() - 2 * margin), self.titleBar.height())
+            geometry = (margin, margin, max(0, self.width() - 2 * margin), self.titleBar.height())
+            if self.titleBar.geometry().getRect() != geometry:
+                self.titleBar.setGeometry(*geometry)
         except Exception:
             pass
         self.update()
@@ -598,10 +612,7 @@ class MainWindow(FluentWindow):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
             QTimer.singleShot(0, self._sync_window_frame)
-            try:
-                self.titleBar.maxBtn.setMaxState(self.isMaximized())
-            except Exception:
-                pass
+            QTimer.singleShot(0, self._sync_window_state_controls)
         if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange, QEvent.Show):
             # 激活/恢复/显示后补一次重绘：修复“后台期间绘制节流”造成的屏幕残留空白。
             QTimer.singleShot(120, self._integrity_repaint)
@@ -656,9 +667,18 @@ class MainWindow(FluentWindow):
         except Exception:
             pass
 
+    def _studio_titlebar_double_click(self, event):
+        if event.button() == Qt.LeftButton and self.titleBar.canDrag(event.pos()):
+            self._studio_toggle_maximized()
+            event.accept()
+            return
+        event.ignore()
+
     def _studio_toggle_maximized(self):
-        """最大化/还原切换：带状态校验重试、代数防竞态、Win32 兜底与鼠标释放卫生。"""
+        """最大化/还原切换：统一处理按钮、双击和全屏状态。"""
         target_max = not self.isMaximized()
+        if self.isFullScreen():
+            target_max = False
         self._max_toggle_generation = getattr(self, '_max_toggle_generation', 0) + 1
         generation = self._max_toggle_generation
         self._apply_max_state(target_max)
@@ -666,14 +686,14 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(160, lambda: self._verify_max_state(target_max, generation))
 
     def _apply_max_state(self, maximized: bool):
+        if self.isFullScreen():
+            self.showNormal()
         if maximized:
             self.showMaximized()
         else:
             self.showNormal()
-        try:
-            self.titleBar.maxBtn.setMaxState(self.isMaximized())
-        except Exception:
-            pass
+        self._sync_window_state_controls()
+        QTimer.singleShot(0, self._sync_window_frame)
         self.update()
 
     def _verify_max_state(self, target_max: bool, generation=None):
@@ -681,10 +701,13 @@ class MainWindow(FluentWindow):
             if generation is not None and generation != getattr(self, '_max_toggle_generation', 0):
                 # 后续又发生了新的切换，旧校验不得推翻新的意图（快速连点竞态）。
                 return
-            if self.isMaximized() != target_max:
+            state_matches = self.isMaximized() == target_max and not self.isFullScreen()
+            if not state_matches:
                 self._apply_max_state(target_max)
-                if self.isMaximized() != target_max:
+                state_matches = self.isMaximized() == target_max and not self.isFullScreen()
+                if not state_matches:
                     self._force_max_state_win32(target_max)
+                    QTimer.singleShot(0, self._sync_window_frame)
         except Exception:
             pass
 
