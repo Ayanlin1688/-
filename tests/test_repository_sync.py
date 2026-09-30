@@ -20,7 +20,7 @@ class RepositorySyncTests(unittest.TestCase):
         self.git('config', 'user.name', 'test')
         self.git('config', 'user.email', 'test@example.invalid')
         self.git('remote', 'add', 'origin', str(self.remote))
-        self.git('remote', 'add', 'ayanlin', str(self.mirror))
+        self.git('remote', 'add', 'legacy', str(self.mirror))
         self.git('config', 'core.autocrlf', 'false')
         ignore = Path(__file__).resolve().parent.parent / '.gitignore'
         (self.root / '.gitignore').write_bytes(ignore.read_bytes())
@@ -34,18 +34,18 @@ class RepositorySyncTests(unittest.TestCase):
         return subprocess.check_output(['git', *args], cwd=cwd or self.root, stderr=subprocess.STDOUT).decode('utf-8').strip()
 
     def assert_remote_commit(self, commit):
-        for remote in ('origin', 'ayanlin'):
+        for remote in ('origin', 'legacy'):
             self.assertEqual(self.git('ls-remote', remote, 'refs/heads/main').split()[0], commit)
 
     def assert_remotes_empty(self):
-        for remote in ('origin', 'ayanlin'):
+        for remote in ('origin', 'legacy'):
             self.assertEqual(self.git('ls-remote', remote, 'refs/heads/main'), '')
 
     def test_commits_and_pushes_only_code_and_can_push_unchanged_tree(self):
         result = self.sync.sync('feat: 测试同步完整代码')
         self.assertEqual(result['commit'], self.git('rev-parse', 'HEAD'))
         self.assert_remote_commit(result['commit'])
-        self.assertEqual(result['remotes'], ('origin', 'ayanlin'))
+        self.assertEqual(result['remotes'], ('origin', 'legacy'))
         self.assertEqual(self.git('rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main')
         self.assertEqual(set(self.git('ls-files').splitlines()), {'.gitignore', 'main.py'})
         self.assertFalse(self.sync.sync('refactor: 同步代码')['changed'])
@@ -94,7 +94,7 @@ class RepositorySyncTests(unittest.TestCase):
             return real(args, **kwargs)
         with patch.object(self.sync, '_git', side_effect=intermittent):
             result = self.sync.sync('feat: 重试同步')
-        self.assertEqual(attempts, ['origin', 'origin', 'origin', 'ayanlin'])
+        self.assertEqual(attempts, ['origin', 'origin', 'origin', 'legacy'])
         self.assertEqual(result['attempts'], 3)
         self.assert_remote_commit(result['commit'])
 
@@ -107,39 +107,39 @@ class RepositorySyncTests(unittest.TestCase):
             if args[0] == 'push':
                 remote = args[2] if args[1] == '-u' else args[1]
                 pushes.append(remote)
-                if remote == 'ayanlin' and pushes.count('ayanlin') == 1:
+                if remote == 'legacy' and pushes.count('legacy') == 1:
                     raise GitSyncError('temporary mirror failure')
             return real(args, **kwargs)
         with patch.object(self.sync, '_git', side_effect=flaky):
             result = self.sync.sync('fix: 镜像重试不重复提交')
         self.assertEqual(commits, ['fix: 镜像重试不重复提交'])
-        self.assertEqual(pushes, ['origin', 'ayanlin', 'ayanlin'])
+        self.assertEqual(pushes, ['origin', 'legacy', 'legacy'])
         self.assertEqual(result['attempts'], 2)
         self.assert_remote_commit(result['commit'])
         self.assertEqual(self.git('rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main')
 
     def test_missing_mirror_remote_is_added_without_changing_origin(self):
-        self.git('remote', 'remove', 'ayanlin')
+        self.git('remote', 'remove', 'legacy')
         result = self.sync.sync('feat: 自动添加第二仓库')
         self.assertEqual(self.git('remote', 'get-url', 'origin'), str(self.remote))
-        self.assertEqual(self.git('remote', 'get-url', 'ayanlin'), str(self.mirror))
+        self.assertEqual(self.git('remote', 'get-url', 'legacy'), str(self.mirror))
         self.assert_remote_commit(result['commit'])
         self.assertEqual(self.git('rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main')
 
     def test_mirror_url_mismatch_stops_before_commit_or_push(self):
-        self.git('remote', 'set-url', 'ayanlin', 'https://example.invalid/other.git')
+        self.git('remote', 'set-url', 'legacy', 'https://example.invalid/other.git')
         with self.assertRaises(GitSyncError) as caught:
             self.sync.sync('fix: 阻止错误镜像')
-        self.assertIn('ayanlin', str(caught.exception))
+        self.assertIn('legacy', str(caught.exception))
         self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
         failed = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=self.root, capture_output=True)
         self.assertNotEqual(failed.returncode, 0)
 
     def test_authorized_repositories_keep_origin_and_name_the_mirror(self):
         from core.repository_sync import GITHUB_REPOSITORY, GITHUB_MIRROR_REPOSITORY, MIRROR_REMOTE_NAME
-        self.assertEqual(GITHUB_REPOSITORY, 'https://github.com/admin11044/StoryboardVideoStudio.git')
-        self.assertEqual(GITHUB_MIRROR_REPOSITORY, 'https://github.com/Ayanlin1688/-.git')
-        self.assertEqual(MIRROR_REMOTE_NAME, 'ayanlin')
+        self.assertEqual(GITHUB_REPOSITORY, 'https://github.com/Ayanlin1688/-.git')
+        self.assertEqual(GITHUB_MIRROR_REPOSITORY, 'https://github.com/admin11044/StoryboardVideoStudio.git')
+        self.assertEqual(MIRROR_REMOTE_NAME, 'legacy')
 
     def test_secret_deleted_at_head_is_still_blocked_in_pending_commit_history(self):
         (self.root / 'main.py').write_text('key="local-secret-key"\n', encoding='utf-8')

@@ -115,6 +115,7 @@ class SubmissionLedger:
                 state = 'released'
             else:
                 raise ValueError('必须提供已有 task_id 或明确确认服务端未创建')
+            task['ledger_state'] = state
             db.execute('UPDATE submissions SET state=?, record=?, updated=? WHERE id=?',
                        (state, self._encode(task), time.time(), record_id))
             return task

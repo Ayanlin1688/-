@@ -9,9 +9,9 @@ import time
 
 from .log_redaction import redact_text
 
-GITHUB_REPOSITORY = 'https://github.com/admin11044/StoryboardVideoStudio.git'
-GITHUB_MIRROR_REPOSITORY = 'https://github.com/Ayanlin1688/-.git'
-MIRROR_REMOTE_NAME = 'ayanlin'
+GITHUB_REPOSITORY = 'https://github.com/Ayanlin1688/-.git'
+GITHUB_MIRROR_REPOSITORY = 'https://github.com/admin11044/StoryboardVideoStudio.git'
+MIRROR_REMOTE_NAME = 'legacy'
 
 
 class GitSyncError(RuntimeError):
@@ -120,7 +120,7 @@ class RepositorySync:
             return
         current = self._git(['remote', 'get-url', MIRROR_REMOTE_NAME]).rstrip('/')
         if current != expected:
-            raise GitSyncError('ayanlin与项目授权仓库不一致，停止同步')
+            raise GitSyncError('legacy与旧仓库地址不一致，停止同步')
 
     def _push_and_verify(self, remote, commit):
         args = ['push', '-u', remote, 'main'] if remote == 'origin' else ['push', remote, 'main']

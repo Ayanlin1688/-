@@ -145,7 +145,7 @@ H3默认显示1080p/2K/4K，video-v2和video-v3默认720p，video-v3-480p显示4
 
 ## GitHub 同步
 
-同步目标是两个仓库的 `main`：`origin` 保持私人仓库 `admin11044/StoryboardVideoStudio`，第二远端 `ayanlin` 为 `Ayanlin1688/-`。缺少 `ayanlin` 时自动添加；URL 不一致则停止，不替换 `origin`，也不强制推送。设置页“同步到GitHub”按钮在后台检查敏感文件、只执行一次 add/commit，然后依次推送并核对两个远端；失败的一侧间隔 2 秒重试，最多 3 次，已成功的一侧不会再次提交。结果用 InfoBar 和日志提示。
+同步目标是两个仓库的 `main`：`origin` 优先同步管理仓库 `Ayanlin1688/-`，第二远端 `legacy` 同步旧仓库 `admin11044/StoryboardVideoStudio`。缺少 `legacy` 时自动添加；URL 不一致则停止，不替换 `origin`，也不强制推送。设置页“同步到GitHub”按钮在后台检查敏感文件、只执行一次 add/commit，然后优先推送并核对 `origin`，再推送并核对 `legacy`；失败的一侧间隔 2 秒重试，最多 3 次，已成功的一侧不会再次提交。结果用 InfoBar 和日志提示。
 
 ```bat
 python -X utf8 scripts\sync_github.py
@@ -157,7 +157,7 @@ python -X utf8 scripts\sync_github.py
 python -X utf8 scripts\sync_github.py --message-file temp\commit-message.txt
 ```
 
-说明使用中文，前缀为 `feat:`、`fix:`、`refactor:`、`docs:`。没有代码改动时也会推送已有本地提交。Git 登录由系统凭据工具处理，首次认证请在终端完成 `gh auth login` 和 `gh auth setup-git`，或通过 Git Credential Manager 登录。应用内后台同步不会弹终端索取密码。网络需要代理时配置本机 Git 代理，不把凭据写进 origin URL。
+说明使用中文，前缀为 `feat:`、`fix:`、`refactor:`、`docs:`。没有代码改动时也会推送已有本地提交。Git 登录由系统凭据工具处理，首次认证请在终端完成 `gh auth login` 和 `gh auth setup-git`，或通过 Git Credential Manager 登录。应用内后台同步不会弹终端索取密码。网络需要代理时配置本机 Git 代理，不把凭据写进远端 URL。
 
 `AGENTS.md` 已记录后续每批代码修改验证完成后自动提交推送的开发约定。软件不监视磁盘并提交正在编辑的半成品；设置变更只写本地配置。
 

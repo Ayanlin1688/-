@@ -39,18 +39,25 @@ class HistoryStore:
         self.lock = threading.RLock()
         self._cache = []
         self._positions = {}
+        self.persistence_available = False
+        self.persistence_error = ''
         self.last_maintain_error = ''  # 最近一次整理失败原因（空 = 正常）
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock:
-            conn = self._open()
-            try:
-                conn.executescript(_SCHEMA)
-                conn.commit()
-            finally:
-                conn.close()
-            self._load()
-            self._trim()
-            self.maintain()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.lock:
+                conn = self._open()
+                try:
+                    conn.executescript(_SCHEMA)
+                    conn.commit()
+                finally:
+                    conn.close()
+                self.persistence_available = True
+                self._load()
+                self._trim()
+                self.maintain()
+        except (OSError, sqlite3.Error) as error:
+            self._disable_persistence(error)
+            self._load_readonly()
 
     # —— 连接与落盘（按操作开关，不持有长期句柄） ——
     def _open(self):
@@ -62,44 +69,73 @@ class HistoryStore:
             pass
         return conn
 
-    def _write(self, records):
-        stamp_value = time.time()
-        conn = self._open()
-        try:
-            with conn:
-                for record in records:
-                    conn.execute(
-                        'INSERT INTO history(local_id, updated_at, status, product, payload) '
-                        'VALUES(?,?,?,?,?) '
-                        'ON CONFLICT(local_id) DO UPDATE SET updated_at=excluded.updated_at, '
-                        'status=excluded.status, product=excluded.product, payload=excluded.payload',
-                        (str(record.get('local_id')), stamp_value, str(record.get('status') or ''),
-                         str(record.get('product') or ''),
-                         json.dumps(record, ensure_ascii=False, default=str)))
-        finally:
-            conn.close()
+    def _open_readonly(self):
+        return sqlite3.connect(
+            self.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5
+        )
 
-    # —— 内部 ——
-    def _load(self):
-        self._cache = []
-        self._positions = {}
-        conn = self._open()
-        try:
-            rows = conn.execute('SELECT payload FROM history ORDER BY sequence ASC').fetchall()
-        finally:
-            conn.close()
+    def _disable_persistence(self, error):
+        self.persistence_available = False
+        self.persistence_error = str(error)
+
+    def _load_rows(self, conn):
+        rows = conn.execute('SELECT payload FROM history ORDER BY sequence ASC').fetchall()
+        records = []
         for (payload,) in rows:
             try:
                 record = json.loads(payload)
             except ValueError:
                 continue
-            if not isinstance(record, dict):
-                continue
-            key = record.get('local_id')
-            if not key:
-                continue
-            self._positions[key] = len(self._cache)
-            self._cache.append(record)
+            if isinstance(record, dict) and record.get('local_id'):
+                records.append(record)
+        self._cache = records
+        self._positions = {
+            record.get('local_id'): index for index, record in enumerate(records)
+        }
+
+    def _write(self, records):
+        if not self.persistence_available:
+            return False
+        stamp_value = time.time()
+        try:
+            conn = self._open()
+            try:
+                with conn:
+                    for record in records:
+                        conn.execute(
+                            'INSERT INTO history(local_id, updated_at, status, product, payload) '
+                            'VALUES(?,?,?,?,?) '
+                            'ON CONFLICT(local_id) DO UPDATE SET updated_at=excluded.updated_at, '
+                            'status=excluded.status, product=excluded.product, payload=excluded.payload',
+                            (str(record.get('local_id')), stamp_value, str(record.get('status') or ''),
+                             str(record.get('product') or ''),
+                             json.dumps(record, ensure_ascii=False, default=str)))
+            finally:
+                conn.close()
+            return True
+        except (OSError, sqlite3.Error) as error:
+            self._disable_persistence(error)
+            return False
+
+    # —— 内部 ——
+    def _load(self):
+        conn = self._open()
+        try:
+            self._load_rows(conn)
+        finally:
+            conn.close()
+
+    def _load_readonly(self):
+        try:
+            if not self.path.is_file():
+                return
+            conn = self._open_readonly()
+            try:
+                self._load_rows(conn)
+            finally:
+                conn.close()
+        except (OSError, sqlite3.Error):
+            return
 
     def _trim(self):
         extra = len(self._cache) - self.keep
@@ -108,13 +144,18 @@ class HistoryStore:
         removed = self._cache[:extra]
         self._cache = self._cache[extra:]
         self._positions = {record.get('local_id'): index for index, record in enumerate(self._cache)}
-        conn = self._open()
         try:
-            with conn:
-                for record in removed:
-                    conn.execute('DELETE FROM history WHERE local_id=?', (record.get('local_id'),))
-        finally:
-            conn.close()
+            if not self.persistence_available:
+                return extra
+            conn = self._open()
+            try:
+                with conn:
+                    for record in removed:
+                        conn.execute('DELETE FROM history WHERE local_id=?', (record.get('local_id'),))
+            finally:
+                conn.close()
+        except (OSError, sqlite3.Error) as error:
+            self._disable_persistence(error)
         return extra
 
     def maintain(self, interval_days=7):
@@ -125,7 +166,7 @@ class HistoryStore:
         with self.lock:
             try:
                 conn = self._open()
-            except sqlite3.Error as error:
+            except (OSError, sqlite3.Error) as error:
                 self.last_maintain_error = str(error)
                 return False
             try:

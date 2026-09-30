@@ -311,9 +311,10 @@ class ReferenceStrip(ScrollArea):
         self.setWidget(self.content); self.content.setAutoFillBackground(False)
 
     def set_paths(self, paths):
-        if list(paths) == self.paths and self.row.count():
+        paths = list(paths or [])
+        if paths == self.paths:
             return
-        self.paths = list(paths)
+        self.paths = paths
         while self.row.count():
             item = self.row.takeAt(0)
             if item.widget():

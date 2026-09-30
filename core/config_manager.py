@@ -240,7 +240,8 @@ class ConfigManager:
                     try:
                         store = self.history_store()
                         imported = store.upsert_many(stored)
-                        if imported >= len(stored) or store.count() >= len(stored):
+                        if (store.persistence_available
+                                and (imported >= len(stored) or store.count() >= len(stored))):
                             self.config['migrations'] = dict(self.config.get('migrations') or {}, history_to_sqlite=True)
                             self.config['history'] = []
                             try:

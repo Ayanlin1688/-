@@ -43,6 +43,15 @@ def _qt_alive(widget) -> bool:
         return False
 
 
+def _stop_animation(animation):
+    if not _qt_alive(animation):
+        return
+    try:
+        animation.stop()
+    except RuntimeError:
+        return
+
+
 class HoverWash(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
@@ -63,6 +72,7 @@ class WidgetMotion(QObject):
     def __init__(self, widget, card=False, primary=False):
         super().__init__(widget)
         self.widget = widget; self.card = card
+        self._detached = False
         self._value = 0.; self._press = 0.; self._internal = False
         self._base = QRect(widget.geometry())
         self.hovered = False
@@ -88,6 +98,14 @@ class WidgetMotion(QObject):
         if self.shadow:
             widget.setGraphicsEffect(self.shadow)
         widget.installEventFilter(self)
+        widget.destroyed.connect(self._on_widget_destroyed)
+
+    def _on_widget_destroyed(self):
+        self._detached = True
+        _stop_animation(self.animation)
+        _stop_animation(self.press_animation)
+        self.wash = None
+        self.shadow = None
 
     @pyqtProperty(float)
     def amount(self):
@@ -96,7 +114,7 @@ class WidgetMotion(QObject):
     @amount.setter
     def amount(self, value):
         self._value = value
-        if not _qt_alive(self.widget):
+        if self._detached or not _qt_alive(self.widget):
             return
         if self.shadow:
             try:
@@ -124,10 +142,14 @@ class WidgetMotion(QObject):
 
     @press.setter
     def press(self, value):
-        self._press = value; self._apply()
+        self._press = value
+        if not self._detached:
+            self._apply()
 
     def _animate(self, animation, value):
-        animation.stop()
+        if self._detached or not _qt_alive(self.widget) or not _qt_alive(animation):
+            return
+        _stop_animation(animation)
         if reduced_motion():
             # 减弱动效：不播过渡，直接落到目标状态。
             if animation is self.animation:
@@ -135,11 +157,14 @@ class WidgetMotion(QObject):
             else:
                 self.press = value
             return
-        animation.setStartValue(self.amount if animation is self.animation else self.press)
-        animation.setEndValue(value); animation.start()
+        try:
+            animation.setStartValue(self.amount if animation is self.animation else self.press)
+            animation.setEndValue(value); animation.start()
+        except RuntimeError:
+            self._detached = True
 
     def _apply(self):
-        if not _qt_alive(self.widget):
+        if self._detached or not _qt_alive(self.widget):
             return
         self._internal = True
         try:
@@ -164,10 +189,9 @@ class WidgetMotion(QObject):
             self._internal = False
 
     def reset(self):
-        try:
-            self.animation.stop(); self.press_animation.stop()
-        except RuntimeError:
+        if self._detached:
             return
+        _stop_animation(self.animation); _stop_animation(self.press_animation)
         self.hovered = False; self._value = 0; self._press = 0
         if self.wash:
             if not _qt_alive(self.wash):
@@ -186,17 +210,15 @@ class WidgetMotion(QObject):
 
     def detach(self):
         """显式解绑：停止动画并移除事件过滤器（重复样式化时替换旧实例）。"""
-        try:
-            self.animation.stop(); self.press_animation.stop()
-        except RuntimeError:
-            pass
+        self._detached = True
+        _stop_animation(self.animation); _stop_animation(self.press_animation)
         try:
             self.widget.removeEventFilter(self)
         except (RuntimeError, TypeError):
             pass
 
     def eventFilter(self, obj, event):
-        if not _qt_alive(obj) or not _qt_alive(self.widget):
+        if self._detached or not _qt_alive(obj) or not _qt_alive(self.widget):
             return False
         try:
             kind = event.type()
@@ -245,13 +267,17 @@ class VisualClock(QObject):
     def tick(self):
         active = False
         for item in list(self.items):
-            if sip.isdeleted(item):
+            if not _qt_alive(item):
                 self.items.discard(item); continue
-            visible = item.isVisible() and not item.window().isMinimized() and not item.visibleRegion().isEmpty()
-            moving = visible and item.can_animate()
-            item.set_running(moving)
-            if moving:
-                item.update(); active = True
+            try:
+                window = item.window()
+                visible = item.isVisible() and not window.isMinimized() and not item.visibleRegion().isEmpty()
+                moving = visible and item.can_animate()
+                item.set_running(moving)
+                if moving:
+                    item.update(); active = True
+            except (RuntimeError, ReferenceError):
+                self.items.discard(item)
         if not active:
             self.timer.stop()
 
@@ -284,7 +310,8 @@ class Shimmer(QWidget):
             self._clock = clock_for(self); self._clock.add(self)
 
     def can_animate(self):
-        return (not reduced_motion() and self.bar.minimum() < self.bar.value() < self.bar.maximum()
+        return (_qt_alive(self.bar) and not reduced_motion()
+                and self.bar.minimum() < self.bar.value() < self.bar.maximum()
                 and not self.bar.isError() and not self.bar.isPaused())
 
     def set_running(self, running):

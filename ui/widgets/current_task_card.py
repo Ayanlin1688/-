@@ -41,6 +41,7 @@ class CurrentTaskCard(QWidget):
     def update_task(self, index, task):
         self.task_info = task
         self.resolve_button.setVisible(task.get('status') == 'submission_unknown')
+        self.resolve_button.setEnabled(task.get('status') == 'submission_unknown')
         failed = task.get('status') == 'failed'
         self.progress.setError(failed)
         # Tint the track too: an upload failure may occur while progress is still 0%.
@@ -53,6 +54,14 @@ class CurrentTaskCard(QWidget):
         self.title.setText(f"{index + 1:02d} · {task['prompt_name']} · {tr(STATUS_TEXT.get(task['status'], task['status']))}")
         self.details.setText(f"参考图 {len(task.get('images', []))} 张    模型 {task['model']}\n任务ID：{task.get('task_id') or '待提交'}")
         self._update_debug_summary()
+
+    def set_action_state(self, running=False, redownloading=False, closing=False):
+        """Synchronize current-task actions with the page lifecycle."""
+        busy = bool(running or redownloading or closing)
+        status = self.task_info.get('status')
+        self.resolve_button.setEnabled(status == 'submission_unknown' and not busy)
+        self.skip_button.setEnabled(bool(running and status in {'queued', 'uploading', 'submitting', 'processing', 'downloading'}))
+        self.cancel_button.setEnabled(bool(self.task_info.get('task_id')) and not busy)
 
     def set_debug_mode(self, enabled):
         self.debug_mode = bool(enabled)

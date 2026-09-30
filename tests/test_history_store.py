@@ -10,6 +10,16 @@ from core.history_store import HistoryStore
 
 
 class HistoryStoreTests(unittest.TestCase):
+    def test_unavailable_database_falls_back_to_memory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            blocked = Path(temp) / 'history.sqlite3'
+            blocked.mkdir()
+            store = HistoryStore(blocked)
+            self.assertFalse(store.persistence_available)
+            self.assertTrue(store.persistence_error)
+            store.upsert({'local_id': 'memory-only', 'status': 'queued'})
+            self.assertEqual(store.records()[0]['local_id'], 'memory-only')
+
     def test_upsert_records_and_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'history.sqlite3'

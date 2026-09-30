@@ -564,7 +564,7 @@ class WorkspacePage(QWidget):
             self._started_at = time.monotonic()
         elif not running and self._started_at is not None:
             self._elapsed = time.monotonic()-self._started_at; self._started_at = None
-        self.queue_panel.busy = running or self._redownloading
+        self.queue_panel.set_busy(running or self._redownloading)
         for card in self.summary.cards[:3]:
             card.choose_button.setEnabled(not running)
         self.queue_panel.match_button.setEnabled(not running)
@@ -581,9 +581,9 @@ class WorkspacePage(QWidget):
         self.start_button.setToolTip('' if enabled else tr('运行中不可重复启动'))
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
-        self.current_task.skip_button.setEnabled(running and self.current_task.task_info.get('status') in ACTIVE)
+        self.current_task.set_action_state(running=running, redownloading=self._redownloading,
+                                            closing=self.closing.is_set())
         self.task_monitor.skip_button.setEnabled(running and self.task_monitor.task_info.get('status') in ACTIVE)
-        self.current_task.cancel_button.setEnabled(not running and not self._redownloading and bool(self.current_task.task_info.get('task_id')))
         self.params_card.setEnabled(not running)
         self.data_source.setEnabled(not running)
         self.queue_panel.set_models_editable(not running)
@@ -610,7 +610,9 @@ class WorkspacePage(QWidget):
 
     def _current_changed(self, index, task):
         self.current_task.update_task(index, task)
-        self.current_task.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
+        self.current_task.set_action_state(running=self.task_manager.is_running,
+                                            redownloading=self._redownloading,
+                                            closing=self.closing.is_set())
         self.task_monitor.update_task(index, task)
         self.task_monitor.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
         self.queue_panel.select_task(index)
@@ -769,10 +771,12 @@ class WorkspacePage(QWidget):
         if not dialog.exec():
             return
         try:
+            action_index = dialog.action.currentIndex()
+            confirmed_task_id = dialog.task_id.text().strip() if action_index == 1 else ''
             ledger = SubmissionLedger(ledger_path(config))
             result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
-                                    task_id=dialog.task_id.text() if dialog.action.currentIndex() == 1 else '',
-                                    confirmed_not_created=dialog.action.currentIndex() == 2)
+                                    task_id=confirmed_task_id,
+                                    confirmed_not_created=action_index == 2)
             self._record(result)
             for index, task in enumerate(self.task_manager.tasks):
                 candidate = task.get('duplicate_record') or task
@@ -780,9 +784,28 @@ class WorkspacePage(QWidget):
                     self.task_manager.tasks[index] = copy.deepcopy(result)
                     self._current_changed(index, result)
             self._tasks_updated(self.task_manager.tasks)
-            self.append_log('确认结果已保存；填写已有ID的任务将仅查询原任务，不重新创建', 'info')
+            if confirmed_task_id:
+                self.append_log('确认结果已保存；正在仅查询并下载已有 task_id，不重新创建任务', 'info')
+                QTimer.singleShot(0, lambda task=copy.deepcopy(result): self.redownload(task))
+            elif action_index == 2:
+                self.append_log('已确认服务端未创建；仅重试当前提示词，不重新提交其他任务', 'info')
+                self._resume_confirmed_submission(result)
         except Exception as error:
             InfoBar.error('未保存确认结果', str(error), parent=self, duration=6500)
+
+    def _resume_confirmed_submission(self, record):
+        """Start only the explicitly released prompt after confirmation."""
+        prompt_path = record.get('prompt_path')
+        if not prompt_path:
+            self.append_log('待确认记录缺少提示词路径，无法自动继续生成', 'error')
+            return
+        config = runtime_config(self.config_manager)
+        config['_only_prompt_paths'] = [prompt_path]
+        try:
+            self.task_manager.start_tasks(config)
+        except Exception as error:
+            self.append_log(f'确认后无法继续当前任务：{error}', 'error')
+            InfoBar.warning('未继续当前任务', str(error), parent=self, duration=6000)
 
     def regenerate(self, record):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():

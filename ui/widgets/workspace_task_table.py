@@ -248,7 +248,7 @@ class ExpandedTaskRow(QWidget):
 class WorkspaceTaskTable(TaskQueuePanel):
     action_requested=pyqtSignal(int,str); reorder_requested=pyqtSignal(int,object); preview_requested=pyqtSignal(str); select_prompts_requested=pyqtSignal()
     def __init__(self,defaults,parent=None):
-        QWidget.__init__(self,parent); self.defaults=defaults; self._tasks=[]; self.rows=[]; self._catalog={}; self._default_model=''; self.models_editable=True; self.busy=False; self._task_items={}; self._collapsed=set(); self._widths=[]
+        QWidget.__init__(self,parent); self.defaults=defaults; self._tasks=[]; self.rows=[]; self._catalog={}; self._default_model=''; self.models_editable=True; self.busy=False; self._task_items={}; self._collapsed=set(); self._widths=[]; self._layout_signature=None
         root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0); self.surface=WorkspaceCard(); lay=QVBoxLayout(self.surface); lay.setContentsMargins(1,1,1,1); lay.setSpacing(0)
         tools=QHBoxLayout(); tools.setContentsMargins(16,10,16,10); tools.setSpacing(8)
         tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
@@ -357,7 +357,11 @@ class WorkspaceTaskTable(TaskQueuePanel):
         """表头与所有数据行使用同一解析结果，保证逐像素对齐。"""
         origin, content = self._row_geometry()
         widths = resolve_widths(content)
+        signature = (origin, content)
+        if signature == self._layout_signature and widths == self._widths:
+            return
         self._widths = widths
+        self._layout_signature = signature
         try:
             host = self._header_host
             left = max(0, origin + 16 - host.x())
@@ -387,15 +391,22 @@ class WorkspaceTaskTable(TaskQueuePanel):
         # thumbnails and transient animations survive state refreshes.
         if self.rows and old_keys == new_keys and len(self.rows) == len(incoming):
             self._tasks=incoming
+            status_changed = False
             for i, (task, row) in enumerate(zip(incoming, self.rows)):
                 row.index=i; row.update_task(task)
                 item=self._task_items.get(i)
                 if item is not None:
+                    status_text = tr(STATUS_TEXT.get(task.get('status','waiting'), task.get('status','waiting')))
+                    status_changed = status_changed or item.data(Qt.UserRole) != status_text
                     item.setData(Qt.UserRole+1, i)
-                    item.setData(Qt.UserRole, tr(STATUS_TEXT.get(task.get('status','waiting'), task.get('status','waiting'))))
+                    item.setData(Qt.UserRole, status_text)
+                    item.setToolTip((task.get('prompt_name') or '') + '\n' + task.get('error', ''))
             self.count_label.setText(f'{len(incoming)} {tr("个任务")}')
             self.list.setVisible(bool(incoming))
-            self._filter(self.filter_box.currentText())
+            self.empty_panel.setVisible(not incoming)
+            self._update_product_summary(incoming)
+            if status_changed:
+                self._filter(self.filter_box.currentText())
             self._apply_column_widths()
             return
         # 显式销毁旧行控件：list.clear() 只删条目，setItemWidget 挂载的部件不会随之释放。
@@ -407,7 +418,20 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
             it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,56)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
-        self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); products={t.get('product') or '未分组' for t in tasks}; done=sum(all(t.get('status') in TERMINAL for t in tasks if (t.get('product') or '未分组')==p) for p in products); self.product_progress_label.setText(f"{tr('产品')} {done}/{len(products)}"); self._filter(self.filter_box.currentText()); self._apply_column_widths()
+        self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); self._update_product_summary(self._tasks); self._filter(self.filter_box.currentText()); self._apply_column_widths()
+
+    def _update_product_summary(self, tasks):
+        products = {task.get('product') or '未分组' for task in tasks}
+        completed = sum(
+            all(task.get('status') in TERMINAL for task in tasks if (task.get('product') or '未分组') == product)
+            for product in products
+        )
+        self.product_progress_label.setText(f"{tr('产品')} {completed}/{len(products)}")
+
+    def set_busy(self, busy):
+        self.busy = bool(busy)
+        for row in self.rows:
+            row.set_editable(self.models_editable, self.busy)
     def build_more_menu(self):
         """构建「更多操作」菜单（独立出来便于复用与测试）。"""
         menu = RoundMenu(parent=self)
@@ -437,7 +461,10 @@ class WorkspaceTaskTable(TaskQueuePanel):
     def select_task(self,i):
         if self.task_item(i): self.list.setCurrentItem(self.task_item(i))
     def set_model_catalog(self,c,d): self._catalog=c; self._default_model=d
-    def set_models_editable(self,e): self.models_editable=bool(e); self.reset_models_button.setEnabled(bool(e))
+    def set_models_editable(self,e):
+        self.models_editable=bool(e); self.reset_models_button.setEnabled(bool(e))
+        for row in self.rows:
+            row.set_editable(self.models_editable, self.busy)
     def _selected_task_changed(self,c,p):
         if c is not None and isinstance(c.data(Qt.UserRole+1),int): self.task_selected.emit(c.data(Qt.UserRole+1))
     def _context_menu(self,pos):
