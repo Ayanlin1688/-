@@ -7,7 +7,7 @@ Yanlin Smart-Creation Matrix 是一款 Windows 桌面批量视频生成工具，
 安装 Python 3.12 和 Git for Windows。私人仓库需要先通过 Git Credential Manager 或 `gh auth login` 登录有访问权限的 GitHub 账号。
 
 ```bat
-git clone https://github.com/admin11044/StoryboardVideoStudio.git
+git clone https://github.com/Ayanlin1688/-.git StoryboardVideoStudio
 cd StoryboardVideoStudio
 python -m venv .venv
 .venv\Scripts\activate

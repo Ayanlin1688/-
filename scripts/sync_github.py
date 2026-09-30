@@ -1,4 +1,4 @@
-"""Commit verified changes once, then push origin and ayanlin without replacing origin."""
+"""Commit verified changes once, then push origin first and legacy second."""
 import argparse
 from pathlib import Path
 import sys

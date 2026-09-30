@@ -236,7 +236,7 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
                 with self.assertRaises(GitSyncError):
                     sync.sync('fix: protect local history')
                 self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
-                self.assertEqual(self.git('ls-remote', 'ayanlin', 'refs/heads/main'), '')
+                self.assertEqual(self.git('ls-remote', 'legacy', 'refs/heads/main'), '')
                 self.git('rm', '--cached', name)
                 (self.root / name).unlink()
 
@@ -262,7 +262,7 @@ class RepositoryProtectionReviewTests(unittest.TestCase):
                     result = sync_github.main()
                 self.assertEqual(result, 1)
                 self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/main'), '')
-                self.assertEqual(self.git('ls-remote', 'ayanlin', 'refs/heads/main'), '')
+                self.assertEqual(self.git('ls-remote', 'legacy', 'refs/heads/main'), '')
 
 
 if __name__ == '__main__':
