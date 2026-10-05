@@ -166,7 +166,7 @@ def license_status(config, today=None) -> dict:
     except (TypeError, ValueError):
         days = DEFAULT_TRIAL_DAYS
     left = (start + timedelta(days=days) - today).days
-    if left >= 0:
+    if left > 0:
         return {'state': 'trial', 'days_left': left, 'detail': f'试用中：剩余 {left} 天（共 {days} 天）'}
     return {'state': 'expired', 'days_left': 0, 'detail': f'试用已结束（共 {days} 天），请激活后继续使用'}
 

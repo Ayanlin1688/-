@@ -149,6 +149,10 @@ def main() -> int:
     parser.add_argument('--no-build', action='store_true', help='跳过 PyInstaller，直接复用现有 dist 产物')
     parser.add_argument('--installer', action='store_true', help='构建 Inno Setup 安装器（需本机已安装）')
     args = parser.parse_args()
+    subprocess.check_call([
+        sys.executable, '-X', 'utf8', '-m', 'unittest',
+        'tests.test_release_clean', 'tests.test_licensing', '-v',
+    ], cwd=ROOT)
     DIST.mkdir(parents=True, exist_ok=True)
     bundle = DIST / EXE_NAME
     if not args.no_build:
@@ -157,6 +161,10 @@ def main() -> int:
         raise SystemExit('没有可用产物；先执行完整构建')
     maybe_sign([bundle / f'{EXE_NAME}.exe'])  # 先签名主程序，再打包，保证 zip 内分发的是已签名 exe
     zip_path = make_zip(bundle)
+    subprocess.check_call([
+        sys.executable, '-X', 'utf8', str(ROOT / 'scripts' / 'check_release_clean.py'),
+        '--bundle', str(bundle), '--zip', str(zip_path),
+    ], cwd=ROOT)
     manifest = make_manifest(zip_path)
     print(f'[ok] 便携包：{zip_path}')
     print(f'[ok] 版本清单：{manifest}')
