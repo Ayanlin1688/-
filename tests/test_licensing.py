@@ -64,6 +64,8 @@ class LicensingTests(unittest.TestCase):
 
     def test_gate_only_blocks_when_enforced_and_expired(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
+        self.assertTrue(config['license']['enforce'])
+        config['license']['enforce'] = False
         config['license']['trial_started'] = '2020-01-01'
         today = date(2026, 6, 1)
         self.assertIsNone(gate_block(config, today=today))  # 演示模式不拦
@@ -74,6 +76,10 @@ class LicensingTests(unittest.TestCase):
         config['license']['key'] = make_key('客户D')
         config['license']['trial_started'] = '2020-01-01'
         self.assertIsNone(gate_block(config, today=today))  # 已激活放行
+        config['license']['key'] = 'YL2.broken.key'
+        self.assertIsNotNone(gate_block(config, today=today))
+        config['license']['enforce'] = False
+        self.assertIsNone(gate_block(config, today=today))
 
     # —— YL2 非对称签名（2026-10 密钥轮换；测试样例运行时生成） ——
     def test_yl2_dynamic_keypair(self):

@@ -2,4 +2,4 @@
 
 APP_NAME = 'Yanlin Smart-Creation Matrix'
 APP_NAME_CN = '言林智创矩阵'
-APP_VERSION = '3.4.1'
+APP_VERSION = '3.4.2'

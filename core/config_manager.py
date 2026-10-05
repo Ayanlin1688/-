@@ -71,7 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False},
     "diagnostics": {"debug_mode": False},
     "updates": {"manifest_url": "", "check_on_start": True},
-    "license": {"key": "", "trial_started": "", "trial_days": 14, "enforce": False},
+    "license": {"key": "", "trial_started": "", "trial_days": 14, "enforce": True},
     "prompt_detection": {"enabled": True, "fallback_model": ""},
     "prompt_conversion": {"enabled": True, "preserve_original": True, "prefer_same_format": True},
     "model_overrides": {},
