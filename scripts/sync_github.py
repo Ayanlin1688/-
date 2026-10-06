@@ -1,4 +1,4 @@
-"""Commit verified changes once, then push origin first and legacy second."""
+"""Commit verified changes once, then push only to origin."""
 import argparse
 from pathlib import Path
 import sys

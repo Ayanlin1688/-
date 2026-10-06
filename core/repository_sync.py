@@ -10,8 +10,6 @@ import time
 from .log_redaction import redact_text
 
 GITHUB_REPOSITORY = 'https://github.com/Ayanlin1688/-.git'
-GITHUB_MIRROR_REPOSITORY = 'https://github.com/admin11044/StoryboardVideoStudio.git'
-MIRROR_REMOTE_NAME = 'legacy'
 
 
 class GitSyncError(RuntimeError):
@@ -39,12 +37,11 @@ class RepositorySync:
     _lock = threading.Lock()
 
     def __init__(self, root=None, secrets=(), log=None, expected_origin=GITHUB_REPOSITORY,
-                 expected_mirror=GITHUB_MIRROR_REPOSITORY, retry_delay=2):
+                 retry_delay=2):
         self.root = Path(root or Path(__file__).resolve().parent.parent).resolve()
         self.secrets = tuple(secret for secret in secrets if secret)
         self.log = log or (lambda *_: None)
         self.expected_origin = expected_origin
-        self.expected_mirror = expected_mirror
         self.retry_delay = retry_delay
 
     def _git(self, args, timeout=45, allow_codes=(0,), raw=False):
@@ -106,21 +103,11 @@ class RepositorySync:
                 mode, kind, oid = metadata.split()
                 if self._sensitive_path(name):
                     raise GitSyncError('已阻止待推送历史中的敏感文件：' + name + ' @ ' + commit[:12])
-                if kind != 'blob' or mode == '120000':
+                if kind != 'blob' or mode == '12000':
                     raise GitSyncError('已阻止待推送历史中的链接/子模块：' + name)
                 if oid not in checked:
                     self._check_content(name + ' @ ' + commit[:12], self._git(['cat-file', 'blob', oid], raw=True))
                     checked.add(oid)
-
-    def _ensure_mirror_remote(self):
-        expected = self.expected_mirror.rstrip('/')
-        names = [name for name in self._git(['remote']).splitlines() if name]
-        if MIRROR_REMOTE_NAME not in names:
-            self._git(['remote', 'add', MIRROR_REMOTE_NAME, self.expected_mirror])
-            return
-        current = self._git(['remote', 'get-url', MIRROR_REMOTE_NAME]).rstrip('/')
-        if current != expected:
-            raise GitSyncError('legacy与旧仓库地址不一致，停止同步')
 
     def _push_and_verify(self, remote, commit):
         args = ['push', '-u', remote, 'main'] if remote == 'origin' else ['push', remote, 'main']
@@ -143,7 +130,6 @@ class RepositorySync:
                 raise GitSyncError('请先切换到main分支再同步')
             if self._git(['remote', 'get-url', 'origin']).rstrip('/') != self.expected_origin.rstrip('/'):
                 raise GitSyncError('origin与项目授权仓库不一致，停止同步')
-            self._ensure_mirror_remote()
             for name in ('config.json', 'models_cache.json', 'history.sqlite3', 'history.sqlite3-wal', 'history.sqlite3-shm',
                          'sample.mp4', 'sample.log', '__pycache__/sample.pyc', 'screenshots/sample.png', 'temp/sample.txt'):
                 self._git(['check-ignore', '--no-index', name])
@@ -160,13 +146,10 @@ class RepositorySync:
             verified = []
             for attempt in range(3):
                 try:
-                    for remote in ('origin', MIRROR_REMOTE_NAME):
-                        if remote in verified:
-                            continue
-                        self._push_and_verify(remote, commit)
-                        verified.append(remote)
+                    self._push_and_verify('origin', commit)
+                    verified.append('origin')
                     self.log('已同步到GitHub，最新commit: ' + commit, 'success')
-                    return dict(commit=commit, changed=changed, attempts=attempt + 1, remotes=tuple(verified))
+                    return dict(commit=commit, changed=changed, attempts=attempt + 1, remotes=('origin',))
                 except GitSyncError as error:
                     if attempt == 2:
                         done = '、'.join(verified) or '无'

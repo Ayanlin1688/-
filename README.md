@@ -145,7 +145,7 @@ H3默认显示1080p/2K/4K，video-v2和video-v3默认720p，video-v3-480p显示4
 
 ## GitHub 同步
 
-同步目标是两个仓库的 `main`：`origin` 优先同步管理仓库 `Ayanlin1688/-`，第二远端 `legacy` 同步旧仓库 `admin11044/StoryboardVideoStudio`。缺少 `legacy` 时自动添加；URL 不一致则停止，不替换 `origin`，也不强制推送。设置页“同步到GitHub”按钮在后台检查敏感文件、只执行一次 add/commit，然后优先推送并核对 `origin`，再推送并核对 `legacy`；失败的一侧间隔 2 秒重试，最多 3 次，已成功的一侧不会再次提交。结果用 InfoBar 和日志提示。
+同步目标仅为本人管理仓库 `origin`（`Ayanlin1688/-`）的 `main`；不再向旧仓库 `admin11044/StoryboardVideoStudio`（原 `legacy` 镜像）推送，也不会自动添加该远端。不替换 `origin`，也不强制推送。设置页“同步到GitHub”按钮在后台检查敏感文件、只执行一次 add/commit，然后推送并核对 `origin/main`；失败时间隔 2 秒重试，最多 3 次，不会重复提交。提交身份固定为 `Ayanlin1688 <329457281+Ayanlin1688@users.noreply.github.com>`。结果用 InfoBar 和日志提示。
 
 ```bat
 python -X utf8 scripts\sync_github.py
