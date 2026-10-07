@@ -30,10 +30,13 @@ class CurrentTaskCard(QWidget):
         self.cancel_button = PushButton(FIF.SYNC, tr('重新下载'))
         self.resolve_button = PushButton(FIF.INFO, tr('处理待确认'))
         self.resolve_button.setVisible(False)
+        self.resolve_button.setToolTip(tr('没有待确认提交'))
         self.cancel_button.setToolTip(tr('已有 task_id 时仅查询并下载，不重新创建任务'))
         buttons.addWidget(self.resolve_button); buttons.addWidget(self.skip_button); buttons.addWidget(self.cancel_button); root.addLayout(buttons)
         self.task_info = {}
         self.skip_button.setEnabled(False); self.cancel_button.setEnabled(False)
+        self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
+        self.cancel_button.setToolTip(tr('当前任务尚无可查询的 task_id'))
 
     def update_counts(self, running, waiting):
         self.concurrency_label.setText(f'正在生成{running}个，排队{waiting}个')
@@ -59,9 +62,16 @@ class CurrentTaskCard(QWidget):
         """Synchronize current-task actions with the page lifecycle."""
         busy = bool(running or redownloading or closing)
         status = self.task_info.get('status')
-        self.resolve_button.setEnabled(status == 'submission_unknown' and not busy)
-        self.skip_button.setEnabled(bool(running and status in {'queued', 'uploading', 'submitting', 'processing', 'downloading'}))
-        self.cancel_button.setEnabled(bool(self.task_info.get('task_id')) and not busy)
+        resolve_enabled = status == 'submission_unknown' and not busy
+        skip_enabled = bool(running and status in {'queued', 'uploading', 'submitting', 'processing', 'downloading'})
+        cancel_enabled = bool(self.task_info.get('task_id')) and not busy
+        self.resolve_button.setEnabled(resolve_enabled)
+        self.skip_button.setEnabled(skip_enabled)
+        self.cancel_button.setEnabled(cancel_enabled)
+        busy_reason = tr('请先暂停并结束当前队列或下载') if busy else ''
+        self.resolve_button.setToolTip('' if resolve_enabled else (busy_reason or tr('当前任务不是提交待确认状态')))
+        self.skip_button.setToolTip('' if skip_enabled else (busy_reason or tr('只有运行中的活动任务可以跳过')))
+        self.cancel_button.setToolTip('' if cancel_enabled else (busy_reason or tr('当前任务没有可查询的 task_id')))
 
     def set_debug_mode(self, enabled):
         self.debug_mode = bool(enabled)

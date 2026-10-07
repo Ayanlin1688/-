@@ -112,3 +112,12 @@ class WorkspaceDirectoryBar(QWidget):
         else:
             tone = '#9C6B0A' if is_light() else '#E5B94E'
         self.match_status.setTextColor(QColor(tone), QColor(tone))
+
+    def set_busy(self, busy):
+        busy = bool(busy)
+        reason = tr('队列、匹配扫描或下载进行中，完成后可选择目录或查看匹配详情')
+        for field in self.fields.values():
+            field.setEnabled(not busy)
+            field.setToolTip(reason if busy else tr('选择目录'))
+        self.match_button.setEnabled(not busy)
+        self.match_button.setToolTip(reason if busy else tr('查看每个提示词绑定的参考图'))

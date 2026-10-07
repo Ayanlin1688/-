@@ -26,14 +26,20 @@ def apply_model_options(model, ratio, resolution, duration, audio=None, seed=Non
         control.setCurrentText(current)
         del blocker
         control.setEnabled(len(choices) > 1)
-        control.setToolTip(tr('支持') + '：' + ' / '.join(choices))
+        if len(choices) > 1:
+            control.setToolTip(tr('支持') + '：' + ' / '.join(choices))
+        else:
+            control.setToolTip(tr('此模型仅支持') + '：' + choices[0] + tr('，无需切换'))
     allowed = options['durations']
     allowed = sorted(allowed or [])
     duration.setEnabled(bool(allowed))
+    duration.setToolTip(
+        tr('此模型没有可用时长，无法调整') if not allowed else duration.toolTip())
     if not allowed:
         for control in (audio, seed):
             if control is not None:
                 control.setEnabled(False)
+                control.setToolTip(tr('此模型没有可用时长，该参数不会发送'))
         return dict(aspect_ratio=ratio.currentText(), resolution=resolution.currentText(), duration=duration.value())
     current = min(allowed, key=lambda value: (abs(value - duration.value()), -value))
     blocker = QSignalBlocker(duration)

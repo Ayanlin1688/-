@@ -1070,19 +1070,21 @@ class SettingsPage(QWidget):
     def _build_sync(self):
         group = self._group('GitHub代码同步')
         self.sync_group = group
-        self.sync_button = PushButton(FIF.SYNC, '同步到GitHub')
-        self.sync_button.setToolTip('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传')
+        self.sync_button = PushButton(FIF.SYNC, tr('同步到GitHub'))
+        self.sync_button.setToolTip(tr('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传'))
         self.sync_button.clicked.connect(self.sync_github)
         group.addSettingCard(CustomSettingCard('GitHub 私人仓库同步', self.sync_button, FIF.SYNC))
     def sync_github(self):
         self.sync_button.setEnabled(False)
-        self.sync_button.setText('正在同步...')
+        self.sync_button.setText(tr('正在同步...'))
+        self.sync_button.setToolTip(tr('正在同步到GitHub，完成后恢复'))
         config = copy.deepcopy(self.config_manager.config)
         def work():
             secrets = repository_secrets(config)
             return RepositorySync(secrets=secrets, log=self.jobs.log_message.emit).sync()
         def reset():
-            self.sync_button.setEnabled(True); self.sync_button.setText('同步到GitHub')
+            self.sync_button.setEnabled(True); self.sync_button.setText(tr('同步到GitHub'))
+            self.sync_button.setToolTip(tr('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传'))
         def done(result):
             reset()
             from qfluentwidgets import InfoBar
@@ -1188,8 +1190,10 @@ class SettingsPage(QWidget):
                 if dot is not None:
                     dot.set_color('#92929b')
                 check.setEnabled(False)
+                check.setToolTip(tr('该模型当前不可用：已下架、不是视频模型或协议待确认，请同步模型或选择其他模型'))
                 continue
             check.setEnabled(True)
+            check.setToolTip(tr('启用或停用此模型'))
             cooling = model.get('status') == '冷却中'
             remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
             label.setText(f'冷却中 {remaining}秒' if cooling else '健康')
@@ -1222,7 +1226,10 @@ class SettingsPage(QWidget):
         if controller is None:
             return
         self.sync_models_button.setEnabled(not controller.syncing)
-        self.sync_models_button.setText('正在同步...' if controller.syncing else '同步上游模型')
+        self.sync_models_button.setText(tr('正在同步...') if controller.syncing else tr('同步上游模型'))
+        self.sync_models_button.setToolTip(
+            tr('模型同步进行中，完成后恢复') if controller.syncing else
+            tr('从上游刷新可用模型列表'))
         fetched = controller.catalog.fetched_at
         text = datetime.fromtimestamp(fetched).strftime('%Y-%m-%d %H:%M:%S') if fetched else '尚未同步'
         self.last_model_sync.setText('上次同步：' + text)
@@ -1242,6 +1249,7 @@ class SettingsPage(QWidget):
         config = copy.deepcopy(self.config_manager.config)
         self.test_button.setEnabled(False)
         self.test_button.setText('正在测试...')
+        self.test_button.setToolTip(tr('正在测试连接，完成后恢复'))
         def check():
             client = ApiClient(config['api']['base_url'], config['api']['api_key'], log=self.jobs.log_message.emit)
             uploader = ImageUploader.from_config(config, log=self.jobs.log_message.emit)
@@ -1253,6 +1261,7 @@ class SettingsPage(QWidget):
         def finish(result):
             self.test_button.setEnabled(True)
             self.test_button.setText('测试连接')
+            self.test_button.setToolTip(tr('测试当前线路的视频和上传连接'))
             self.last_connection_result = result
             messages = []
             for name, title in (('video', '视频 API'), ('upload', '上传 API')):

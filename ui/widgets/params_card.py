@@ -88,6 +88,8 @@ class ParamsCard(QWidget):
         self._advanced_animation.setEasingCurve(QEasingCurve.InOutCubic)
         self._advanced_animation.finished.connect(self._finish_toggle)
         controls = {"model": self.model, "aspect_ratio": self.ratio, "resolution": self.resolution, "duration": self.duration, "generate_audio": self.audio, "poll_interval": self.poll, "max_retries": self.retries, "skip_threshold": self.threshold, "seed": self.seed}
+        self._interactive_controls = [self.expand_button, *controls.values()]
+        self._normal_tooltips = {control: control.toolTip() for control in self._interactive_controls}
         for key, control in controls.items():
             if hasattr(control, "currentTextChanged"):
                 control.currentTextChanged.connect(lambda value, k=key: self._save(k, value))
@@ -101,6 +103,13 @@ class ParamsCard(QWidget):
                 control.stateChanged.connect(lambda value, k=key: self._save(k, bool(value)))
         self._refresh_model_options()
         self.refresh_task_settings()
+
+    def set_busy(self, busy):
+        busy = bool(busy)
+        reason = tr('队列、匹配扫描或下载进行中，完成后可编辑生成参数')
+        self.setEnabled(not busy)
+        for control in self._interactive_controls:
+            control.setToolTip(reason if busy else self._normal_tooltips.get(control, ''))
 
     def refresh_task_settings(self):
         for widget, key in ((self.retries, 'max_retries'), (self.threshold, 'failure_skip_threshold')):

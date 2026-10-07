@@ -885,6 +885,7 @@ class MainWindow(FluentWindow):
         self.workspace_page.history_changed.connect(self.history_page.update_history)
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
+        self.history_page.batch_resolve_requested.connect(self.workspace_page.resolve_submissions)
         self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
         self.history_page.create_requested.connect(lambda: self.switchTo(self.workspace_page))
         self._nav_items = [
@@ -974,6 +975,8 @@ class MainWindow(FluentWindow):
 
     def _background_busy(self):
         return (self.workspace_page.task_manager.is_running or self.workspace_page.jobs.busy
+                or self.workspace_page.history_jobs.busy or self.workspace_page.log_drawer.jobs.busy
+                or bool(self.workspace_page._history_pending)
                 or self.settings_page.jobs.busy or self.model_catalog.jobs.busy)
 
     def closeEvent(self, event):
@@ -986,6 +989,7 @@ class MainWindow(FluentWindow):
                 self._closing = True
                 self.workspace_page.shutdown()
                 self.settings_page.setEnabled(False)
+                self.settings_page.setToolTip(tr('正在安全退出，等待后台任务完成后关闭'))
                 self.workspace_page.append_log('正在安全退出，等待后台请求返回或超时...', 'warning')
                 self._close_timer.start()
             return

@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QListWidgetItem, QSizePolicy
-from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, PrimaryPushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF)
+from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, PrimaryPushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF, InfoBar)
 from qfluentwidgets.common.config import isDarkTheme
 from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
 from core.i18n import tr
@@ -224,7 +224,16 @@ class ExpandedTaskRow(QWidget):
 
     def leaveEvent(self, event):
         self._hover = False; self.update(); super().leaveEvent(event)
-    def set_editable(self,e,busy=False): self.editable=e; self.busy=busy; self.images_button.setEnabled(not busy)
+    def set_editable(self,e,busy=False):
+        self.editable=e; self.busy=busy
+        self.images_button.setEnabled(not busy)
+        self.images_button.setToolTip(
+            tr('正在扫描匹配、运行队列或下载中，完成后可查看参考图') if busy else
+            tr('查看每个提示词绑定的参考图'))
+        self.more_button.setEnabled(not busy)
+        self.more_button.setToolTip(
+            tr('正在扫描匹配、运行队列或下载中，完成后可使用更多操作') if busy else
+            tr('更多操作'))
     def paintEvent(self,e):
         s=self.task.get('status'); p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         if s in ACTIVE:
@@ -430,20 +439,35 @@ class WorkspaceTaskTable(TaskQueuePanel):
 
     def set_busy(self, busy):
         self.busy = bool(busy)
+        self.more_button.setEnabled(not self.busy)
+        self.more_button.setToolTip(
+            tr('队列、匹配扫描或下载进行中，完成后可使用更多操作') if self.busy else
+            tr('更多操作'))
+        self.params_button.setEnabled(not self.busy)
+        self.params_button.setToolTip(
+            tr('队列、匹配扫描或下载进行中，完成后可编辑参数') if self.busy else
+            tr('生成参数'))
         for row in self.rows:
             row.set_editable(self.models_editable, self.busy)
     def build_more_menu(self):
         """构建「更多操作」菜单（独立出来便于复用与测试）。"""
         menu = RoundMenu(parent=self)
-        for text, handler in ((tr('重置模型识别'), self.reset_models_requested.emit),
-                              (tr('生成参数'), self.params_button.click),
-                              (tr('取消全部'), self.cancel_button.click)):
+        actions = ((tr('重置模型识别'), self.reset_models_requested.emit),
+                   (tr('生成参数'), self.params_button.click),
+                   (tr('取消全部'), self.cancel_button.click))
+        for text, handler in actions:
             action = Action(text, menu)
+            if text == tr('重置模型识别') and not self.models_editable:
+                action.setEnabled(False)
+                action.setToolTip(tr('队列运行中，完成后可重置模型'))
             action.triggered.connect(lambda checked=False, _handler=handler: _handler())
             menu.addAction(action)
         return menu
 
     def _open_more_menu(self):
+        if self.busy:
+            InfoBar.info(tr('当前无法操作'), tr('队列、匹配扫描或下载进行中，完成后可使用更多操作'), parent=self, duration=4000)
+            return
         menu = self.build_more_menu()
         menu.exec(self.more_button.mapToGlobal(QPoint(0, self.more_button.height() + 4)))
 
@@ -463,13 +487,20 @@ class WorkspaceTaskTable(TaskQueuePanel):
     def set_model_catalog(self,c,d): self._catalog=c; self._default_model=d
     def set_models_editable(self,e):
         self.models_editable=bool(e); self.reset_models_button.setEnabled(bool(e))
+        self.reset_models_button.setToolTip(
+            tr('队列或匹配扫描进行中，完成后可重置模型') if not e else
+            tr('全部重置为自动识别'))
         for row in self.rows:
             row.set_editable(self.models_editable, self.busy)
     def _selected_task_changed(self,c,p):
         if c is not None and isinstance(c.data(Qt.UserRole+1),int): self.task_selected.emit(c.data(Qt.UserRole+1))
     def _context_menu(self,pos):
+        if self.busy:
+            InfoBar.info(tr('当前无法操作'), tr('队列、匹配扫描或下载进行中，完成后可查看任务操作'), parent=self, duration=3500)
+            return
         it=self.list.itemAt(pos); i=it.data(Qt.UserRole+1) if it else None
         if isinstance(i,int): self.action_requested.emit(i,'menu')
+        else: InfoBar.info(tr('没有可操作的任务'), tr('请先选择一条任务后再打开更多操作'), parent=self, duration=3000)
     def action_menu(self,i):
         m=RoundMenu(parent=self)
         for text,a in [('重试','retry'),('跳过','skip'),('查看日志','logs'),('打开文件夹','folder'),('任务详情 / 确认提交','details')]:

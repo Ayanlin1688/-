@@ -11,6 +11,7 @@ from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QHBoxLayout, QFileDialog
 
 from ..components.custom_widgets import ComboBox, PushButton, TextBrowser, TransparentToolButton, CaptionLabel
+from core.background import BackgroundJobs
 from core.i18n import tr
 from ..tokens import MOTION
 
@@ -24,6 +25,8 @@ class LogDrawer(QWidget):
         self._expanded = True
         self.entries = []
         self.debug_mode = False
+        self.jobs = BackgroundJobs(self)
+        self._export_busy = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -45,6 +48,8 @@ class LogDrawer(QWidget):
         header_layout.addWidget(self.filter_box)
         export_button = PushButton("导出")
         clear_button = PushButton("清空")
+        self.export_button = export_button
+        self.clear_button = clear_button
         export_button.clicked.connect(self.export)
         clear_button.clicked.connect(self.clear)
         header_layout.addWidget(export_button)
@@ -101,16 +106,44 @@ class LogDrawer(QWidget):
         self.browser.clear()
 
     def export(self):
+        if self._export_busy:
+            self.append_log(tr('日志正在导出，请稍候'), 'info')
+            return
         path, _ = QFileDialog.getSaveFileName(self, tr("导出日志"), "execution.log", tr("日志 (*.log *.txt)"))
         if not path:
             return
+        snapshot = list(self.entries)
+        include_debug = self.debug_mode
+        self._export_busy = True
+        self.export_button.setEnabled(False)
+        self.export_button.setToolTip(tr('正在导出日志，完成后恢复'))
+
+        def write_log():
+            content = "\n".join(
+                f"[{timestamp}] [{level.upper()}] {message}"
+                for timestamp, message, level in snapshot
+                if include_debug or level != 'debug')
+            Path(path).write_text(content, encoding="utf-8")
+            return path
+
+        def restore():
+            self._export_busy = False
+            self.export_button.setEnabled(True)
+            self.export_button.setToolTip(tr('导出'))
+
+        def done(exported_path):
+            restore()
+            self.append_log(f"日志已导出：{exported_path}", "success")
+
+        def failed(message):
+            restore()
+            self.append_log(f"日志导出失败：{message}", "error")
+
         try:
-            Path(path).write_text("\n".join(f"[{t}] [{level.upper()}] {message}" for t, message, level in self.entries
-                                          if self.debug_mode or level != 'debug'), encoding="utf-8")
-        except OSError as error:
+            self.jobs.start(write_log, done, failed)
+        except Exception as error:
+            restore()
             self.append_log(f"日志导出失败：{error}", "error")
-        else:
-            self.append_log(f"日志已导出：{path}", "success")
 
     def toggle(self) -> None:
         self._animation.stop()

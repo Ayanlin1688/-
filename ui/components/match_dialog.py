@@ -16,6 +16,7 @@ from .model_selector import ModelComboBox, catalog_snapshot
 from core.prompt_detector import annotate_tasks
 from core.prompt_converter import convert_for_model
 from core.task_state import parameters_for_model, submission_images
+from core.i18n import tr
 
 
 class MatchDialog(StudioDialog):
@@ -126,7 +127,13 @@ class MatchDialog(StudioDialog):
         self.detected_model_label.setText('自动识别模型：' + detected)
         self.model_combo.set_models(catalog_snapshot(self.config_manager), self.model_overrides.get(key, ''),
                                     automatic=True, keep_missing=True)
-        self.model_combo.setEnabled(bool(self.config_manager and self.config_manager.config.get('prompt_detection', {}).get('enabled', False)))
+        model_selection_enabled = bool(
+            self.config_manager and
+            self.config_manager.config.get('prompt_detection', {}).get('enabled', False))
+        self.model_combo.setEnabled(model_selection_enabled)
+        self.model_combo.setToolTip(
+            tr('选择本条提示词使用的模型') if model_selection_enabled else
+            tr('自动识别已关闭，模型选择不可用；请先在设置中开启自动识别'))
         paths = self.bindings.get(key, [])
         for path in paths:
             self._append_picture(path)

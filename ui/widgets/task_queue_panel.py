@@ -13,7 +13,7 @@ from core.model_catalog import builtin_models
 from ..components.model_selector import usable, model_label
 
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QGridLayout, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
-from qfluentwidgets import IconWidget, FluentIcon as FIF, RoundMenu, Action, PushButton
+from qfluentwidgets import IconWidget, FluentIcon as FIF, RoundMenu, Action, PushButton, InfoBar
 
 from ..components.custom_widgets import BodyLabel, ComboBox, CaptionLabel, StrongBodyLabel, make_card
 
@@ -206,6 +206,9 @@ class TaskQueuePanel(QWidget):
     def set_models_editable(self, editable):
         self.models_editable = bool(editable)
         self.reset_models_button.setEnabled(editable)
+        self.reset_models_button.setToolTip(
+            tr('队列运行中，完成后可重置模型') if not editable else
+            tr('全部重置为自动识别'))
 
     def model_menu_for(self, index):
         menu = RoundMenu('强制使用模型', self)
@@ -214,6 +217,10 @@ class TaskQueuePanel(QWidget):
             action.setData(model)
             action.setToolTip(record.get('description') or model)
             action.setEnabled(self.models_editable and usable(record))
+            if not self.models_editable:
+                action.setToolTip(tr('队列运行中，完成后可修改模型'))
+            elif not usable(record):
+                action.setToolTip(tr('该模型当前不可用，请同步模型或选择其他模型'))
             action.triggered.connect(lambda checked=False, value=model: self.model_override_requested.emit(index, value))
             menu.addAction(action)
         return menu
@@ -221,7 +228,11 @@ class TaskQueuePanel(QWidget):
     def _show_model_menu(self, position):
         item = self.list.itemAt(position)
         index = item.data(Qt.UserRole + 1) if item is not None else None
-        if not self.models_editable or not isinstance(index, int):
+        if not isinstance(index, int):
+            InfoBar.info(tr('没有可操作的任务'), tr('请先选择一条任务后再修改模型'), parent=self, duration=3000)
+            return
+        if not self.models_editable:
+            InfoBar.info(tr('当前无法修改模型'), tr('队列运行中，完成后可修改模型'), parent=self, duration=4000)
             return
         menu = RoundMenu(parent=self)
         menu.addMenu(self.model_menu_for(index))

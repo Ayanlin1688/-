@@ -19,7 +19,7 @@ from ..components.model_selector import catalog_snapshot, usable
 from core.api_client import ApiClient
 from core.http_client import Cancelled
 from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
-from ..components.submission_dialog import SubmissionRecoveryDialog
+from ..components.submission_dialog import SubmissionRecoveryDialog, SubmissionRecoveryBatchDialog
 from core.video_downloader import VideoDownloader, build_filename
 from core.licensing import gate_block
 from core.i18n import tr
@@ -58,13 +58,20 @@ class WorkspacePage(QWidget):
         self.config_manager = config_manager
         self.task_manager = TaskManager(self)
         self.jobs = BackgroundJobs(self)
+        self.history_jobs = BackgroundJobs(self)
         self.closing = threading.Event()
         self._scan_version = 0
         self._redownloading = False
+        self._redownload_queue = []
+        self._batch_recovery_prompts = []
         self._catalog_pending = False
         self._started_at = None
         self._elapsed = 0
         self._metrics_busy = False
+        self._interactive_scan_busy = False
+        self._history_cache = list(config_manager.history_records())
+        self._history_pending = []
+        self._history_write_busy = False
         from core.run_log import RunLog
         self.run_log = RunLog(Path(self.config_manager.path).parent / 'logs')
         self._watch_timer = QTimer(self)
@@ -103,7 +110,7 @@ class WorkspacePage(QWidget):
         self.data_source.overrides_changed.connect(self.scan_sources)
         self.params_card.values_changed.connect(lambda key, value: self.scan_sources() if key == 'model' else None)
         self.params_card.values_changed.connect(lambda *_: self._refresh_row_parameters())
-        self.recent_panel.update_history(config_manager.history_records())
+        self.recent_panel.update_history(self._history_cache)
         self._running_changed(False)
         self.append_log('工作台已加载：支持模型池、自动重试和并发控制；关闭模型池时使用工作台所选模型', 'info')
         QTimer.singleShot(0, self.scan_sources)
@@ -225,8 +232,58 @@ class WorkspacePage(QWidget):
         self.controls_dialog.show(); self.controls_dialog.raise_(); self.controls_dialog.activateWindow()
 
     def choose_directory(self, key):
-        if not self.task_manager.is_running:
-            self.data_source._choose(key, self.data_source.fields[key])
+        if self.task_manager.is_running or self._interactive_scan_busy or self._redownloading:
+            InfoBar.info(tr('当前无法选择目录'), tr('请先等待当前队列、匹配扫描或下载结束'), parent=self, duration=4000)
+            return
+        self.data_source._choose(key, self.data_source.fields[key])
+
+    def _set_interactive_scan_busy(self, busy, restore_status=True):
+        """Lock controls while the user-initiated matcher runs off the UI thread."""
+        self._interactive_scan_busy = bool(busy)
+        blocked = self._interactive_scan_busy or self.task_manager.is_running or self._redownloading
+        if self._interactive_scan_busy:
+            self._interactive_scan_restore_status = bool(restore_status)
+            if restore_status:
+                self._interactive_scan_status_text = self.data_source.status_label.text()
+            self.data_source.status_label.setText(tr('正在扫描匹配...'))
+            self.status_text.setText(tr('正在扫描匹配...'))
+        else:
+            previous_status = getattr(self, '_interactive_scan_status_text', None)
+            if previous_status is not None and getattr(self, '_interactive_scan_restore_status', True):
+                self.data_source.status_label.setText(previous_status)
+            self._interactive_scan_status_text = None
+            self._interactive_scan_restore_status = True
+            self.status_text.setText(tr('批量生成中') if self.task_manager.is_running else tr('就绪'))
+        self.start_button.setEnabled(not blocked and not self.closing.is_set())
+        busy_tip = '' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后恢复')
+        self.start_button.setToolTip(busy_tip)
+        self.queue_panel.match_button.setEnabled(not blocked)
+        self.queue_panel.match_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可查看匹配详情'))
+        self.queue_panel.more_button.setEnabled(not blocked)
+        self.queue_panel.more_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可使用更多操作'))
+        self.queue_panel.params_button.setEnabled(not blocked)
+        self.queue_panel.params_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可编辑参数'))
+        self.queue_panel.reset_models_button.setEnabled(not blocked)
+        self.queue_panel.reset_models_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可重置模型'))
+        self.directory_bar.match_button.setEnabled(not blocked)
+        self.directory_bar.match_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可查看匹配详情'))
+        self.data_source.match_button.setEnabled(not blocked)
+        self.data_source.match_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可查看匹配详情'))
+        for button in self.data_source.choose_buttons:
+            button.setEnabled(not blocked)
+            button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可选择目录'))
+        self.params_card.set_busy(blocked)
+        self.queue_panel.set_busy(blocked)
+        self.queue_panel.set_models_editable(not blocked)
+        self.directory_bar.set_busy(blocked)
+        for card in self.summary.cards[:3]:
+            card.choose_button.setEnabled(not blocked)
+            card.choose_button.setToolTip('' if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可选择目录'))
+        for row in self.queue_panel.rows:
+            row.more_button.setEnabled(not blocked)
+            row.more_button.setToolTip(tr('更多操作') if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可使用'))
+            row.images_button.setEnabled(not blocked)
+            row.images_button.setToolTip(tr('查看每个提示词绑定的参考图') if not blocked else tr('正在扫描匹配、运行队列或下载中，完成后可查看'))
 
     def _auto_save_changed(self, enabled):
         self.config_manager.update(('workspace_view', 'auto_save'), bool(enabled))
@@ -294,7 +351,7 @@ class WorkspacePage(QWidget):
         elapsed = time.monotonic()-self._started_at if self._started_at is not None else self._elapsed
         tasks = self.queue_panel._tasks
         running = self.task_manager.is_running
-        self.summary.update_tasks(tasks, self.config_manager.history_records(), elapsed, running)
+        self.summary.update_tasks(tasks, self._history_cache, elapsed, running)
         self._update_status_strip(tasks, elapsed, running)
 
     def _update_status_strip(self, tasks, elapsed, running):
@@ -325,17 +382,20 @@ class WorkspacePage(QWidget):
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks
         if self.task_manager.is_running or self._redownloading or not 0 <= index < len(tasks):
+            InfoBar.info(tr('当前无法调整参考图'), tr('请先结束当前队列或下载，再调整图片顺序'), parent=self, duration=4000)
             return
         task = tasks[index]
         if task.get('status') in ACTIVE or Counter(paths) != Counter(task.get('images', [])):
             self.append_log('参考图顺序未保存：排序不能增加或移除图片', 'warning'); return
         key = task.get('prompt_path')
         if not key:
+            InfoBar.warning(tr('无法保存图片顺序'), tr('该任务缺少提示词路径'), parent=self, duration=4000)
             return
         previous = dict(self.config_manager.config.get('match_overrides', {}))
         overrides = dict(previous); overrides[key] = list(paths)
         if not self.config_manager.update(('match_overrides',), overrides):
             self.config_manager.update(('match_overrides',), previous, save=False)
+            InfoBar.error(tr('保存失败'), tr('参考图顺序未能保存，请查看执行日志'), parent=self, duration=4500)
             return
         task = copy.deepcopy(task); task['images'] = list(paths)
         updated = list(tasks); updated[index] = task; self._tasks_updated(updated)
@@ -350,12 +410,20 @@ class WorkspacePage(QWidget):
         self.image_preview = ImagePreview(path, self.window()); self.image_preview.show()
 
     def task_action(self, index, action):
+        if self._interactive_scan_busy:
+            InfoBar.info(tr('正在扫描匹配'), tr('请等待当前扫描完成'), parent=self, duration=3000)
+            return
+        if action == 'menu' and (self.task_manager.is_running or self._redownloading):
+            InfoBar.info(tr('当前无法打开任务操作'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
+            return
         if not 0 <= index < len(self.queue_panel._tasks):
             return
         task = self.queue_panel._tasks[index]
         if action == 'match':
             if not self.task_manager.is_running:
                 self.data_source.open_match_dialog(task.get('prompt_path'))
+            else:
+                InfoBar.info(tr('当前无法打开匹配详情'), tr('请先暂停并结束当前队列'), parent=self, duration=4000)
         elif action == 'menu':
             menu = self.queue_panel.action_menu(index)
             button = self.queue_panel.rows[index].more_button
@@ -376,14 +444,18 @@ class WorkspacePage(QWidget):
         elif action == 'skip':
             if self.task_manager.is_running and task.get('status') in ACTIVE:
                 self.task_manager.select_current(index); self.task_manager.skip_current()
+            else:
+                InfoBar.info(tr('当前无法跳过任务'), tr('只有运行中的活动任务可以跳过'), parent=self, duration=4000)
         elif action == 'retry':
             if self.task_manager.is_running or self._redownloading:
+                InfoBar.info(tr('当前无法重试'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
                 return
             if task.get('status') == 'submission_unknown':
                 self.resolve_submission(task); return
             if task.get('status') == 'completed':
                 self.regenerate(task); return
             if not task.get('prompt_path'):
+                InfoBar.warning(tr('无法重试'), tr('该任务缺少提示词路径'), parent=self, duration=4000)
                 return
             config = runtime_config(self.config_manager)
             config['_only_prompt_paths'] = [task['prompt_path']]
@@ -410,11 +482,27 @@ class WorkspacePage(QWidget):
             self.task_manager.worker.debug_mode = bool(enabled)
 
     def scan_sources(self):
+        if self._interactive_scan_busy:
+            if self._watch_pending_scan:
+                self.append_log('无人值守监听：已有匹配扫描进行中，本次扫描将在下一轮监听重试', 'info')
+                self._arm_watch()
+            else:
+                InfoBar.info(tr('正在扫描匹配'), tr('请等待当前扫描完成，扫描结束后可再次匹配'), parent=self, duration=3000)
+            return
         self._scan_version += 1
         version = self._scan_version
         from_watch = self._watch_pending_scan
         self._watch_pending_scan = False
-        if self.closing.is_set() or self.task_manager.is_running:
+        if self.closing.is_set():
+            return
+        if self.task_manager.is_running or self._redownloading:
+            if from_watch:
+                self.append_log('无人值守监听：队列或下载仍在运行，本次扫描将在下一轮监听重试', 'info')
+                self._arm_watch()
+            else:
+                InfoBar.info(tr('当前无法匹配'),
+                             tr('请先暂停并结束当前队列或下载，再重新匹配'),
+                             parent=self, duration=4000)
             return
         self.summary.update_paths(self.config_manager.config['paths'])
         self.refresh_metrics()
@@ -424,7 +512,7 @@ class WorkspacePage(QWidget):
             self._tasks_updated([])
             self._arm_watch()
             return
-        self.data_source.status_label.setText('正在扫描匹配...')
+        self._set_interactive_scan_busy(True, restore_status=False)
         def scan():
             matcher = StoryboardMatcher.from_config(config)
             matched = matcher.scan_and_match(config['paths'])
@@ -433,41 +521,52 @@ class WorkspacePage(QWidget):
             automatic = automatic_matcher.scan_and_match(config['paths'])
             return matched, automatic, matcher.warnings
         def done(result):
-            if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
-                return
-            self._watch_retry = 0
-            matched, automatic, warnings = result
-            self.data_source.set_matches(matched, automatic)
-            self._tasks_updated(matched)
-            for warning in warnings:
-                self.append_log(warning, 'warning')
-            count = sum(t['matched'] for t in matched)
-            self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
-            for task in matched:
-                name = Path(task['prompt_path']).name
-                if not task['images']:
-                    self.append_log(f'未匹配：{name}，原因：{task.get("skip_reason") or "没有找到同名、前缀或同序号图片"}', 'warning')
-                model = task.get('requested_model') or config['workspace']['model']
-                limit = len(submission_images(task, model, config.get('_model_catalog')))
-                if limit < len(task['images']):
-                    self.append_log(f'提示词{name}绑定了{len(task["images"])}张图，模型{model}最多支持{limit}张，已自动截取前{limit}张', 'warning')
-            self._watch_note_scan(matched, from_watch)
+            try:
+                if version != self._scan_version or self.task_manager.is_running or self.closing.is_set():
+                    return
+                self._watch_retry = 0
+                matched, automatic, warnings = result
+                self.data_source.set_matches(matched, automatic)
+                self._tasks_updated(matched)
+                for warning in warnings:
+                    self.append_log(warning, 'warning')
+                count = sum(t['matched'] for t in matched)
+                self.append_log(f'扫描匹配完成：共{len(matched)}个提示词，{count}个已匹配，{len(matched)-count}个未匹配', 'info')
+                for task in matched:
+                    name = Path(task['prompt_path']).name
+                    if not task['images']:
+                        self.append_log(f'未匹配：{name}，原因：{task.get("skip_reason") or "没有找到同名、前缀或同序号图片"}', 'warning')
+                    model = task.get('requested_model') or config['workspace']['model']
+                    limit = len(submission_images(task, model, config.get('_model_catalog')))
+                    if limit < len(task['images']):
+                        self.append_log(f'提示词{name}绑定了{len(task["images"])}张图，模型{model}最多支持{limit}张，已自动截取前{limit}张', 'warning')
+                self._watch_note_scan(matched, from_watch)
+            finally:
+                self._set_interactive_scan_busy(False, restore_status=False)
         def failed(message):
-            if version != self._scan_version or self.closing.is_set() or self.task_manager.is_running:
-                return
-            self.data_source.set_matches([], [])
-            self._tasks_updated([])
-            self.data_source.status_label.setText('扫描失败，请检查目录')
-            self.append_log(message, 'error')
-            # 无人值守监听：一次扫描失败不能让挂机静默停摆，按退避重挂。
-            interval = self._watch_interval()
-            if interval <= 0:
-                return
-            self._watch_retry = min(self._watch_retry + 1, 5)
-            delay = min(300, 30 * 2 ** (self._watch_retry - 1))
-            self._watch_timer.start(delay * 1000)
-            self.append_log(f'无人值守监听：本次重扫失败，{delay} 秒后自动重试（第 {self._watch_retry} 次）', 'warning')
-        self.jobs.start(scan, done, failed)
+            try:
+                if version != self._scan_version or self.closing.is_set() or self.task_manager.is_running:
+                    return
+                self.data_source.set_matches([], [])
+                self._tasks_updated([])
+                self.data_source.status_label.setText('扫描失败，请检查目录')
+                self.append_log(message, 'error')
+                # 无人值守监听：一次扫描失败不能让挂机静默停摆，按退避重挂。
+                interval = self._watch_interval()
+                if interval <= 0:
+                    return
+                self._watch_retry = min(self._watch_retry + 1, 5)
+                delay = min(300, 30 * 2 ** (self._watch_retry - 1))
+                self._watch_timer.start(delay * 1000)
+                self.append_log(f'无人值守监听：本次重扫失败，{delay} 秒后自动重试（第 {self._watch_retry} 次）', 'warning')
+            finally:
+                self._set_interactive_scan_busy(False, restore_status=False)
+        try:
+            self.jobs.start(scan, done, failed)
+        except Exception as error:
+            self._set_interactive_scan_busy(False, restore_status=False)
+            self.append_log(f'无法开始匹配扫描：{error}', 'error')
+            InfoBar.warning(tr('匹配扫描未开始'), str(error), parent=self, duration=4500)
 
     def _choose_unmatched_policy(self, tasks):
         dialog = StudioDialog(self, '未匹配参考图')
@@ -496,6 +595,11 @@ class WorkspacePage(QWidget):
 
     def start_generation(self, interactive=False):
         if self.closing.is_set() or self._redownloading or self.task_manager.is_running:
+            if interactive:
+                InfoBar.info(tr('当前无法开始生成'), tr('请先结束当前队列或下载，再开始新的生成任务'), parent=self, duration=4000)
+            return
+        if interactive and self._interactive_scan_busy:
+            InfoBar.info(tr('正在扫描匹配'), tr('请等待当前扫描完成'), parent=self, duration=3000)
             return
         block = gate_block(self.config_manager.config)
         if block:
@@ -505,8 +609,28 @@ class WorkspacePage(QWidget):
         self.append_log('开始生成：检查配置并准备后台队列', 'info')
         try:
             config = runtime_config(self.config_manager)
-            if interactive:
-                matches = StoryboardMatcher.from_config(config).scan_and_match(config['paths'])
+        except Exception as error:
+            self.append_log(f'无法开始：{error}', 'error')
+            InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
+            return
+        if not interactive:
+            try:
+                self._scan_version += 1
+                self.task_manager.start_tasks(config)
+            except Exception as error:
+                self.append_log(f'无法开始：{error}', 'error')
+                InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
+            return
+
+        self._set_interactive_scan_busy(True)
+
+        def scan():
+            return StoryboardMatcher.from_config(config).scan_and_match(config['paths'])
+
+        def done(matches):
+            try:
+                if self.closing.is_set() or self.task_manager.is_running:
+                    return
                 missing = [task for task in matches if not task.get('images')]
                 if missing:
                     policy = self._choose_unmatched_policy(missing)
@@ -514,13 +638,33 @@ class WorkspacePage(QWidget):
                         self.append_log('已取消生成，请在匹配详情补充参考图', 'info')
                         return
                     config['task_strategy']['unmatched_prompt'] = policy
-            self._scan_version += 1
-            self.task_manager.start_tasks(config)
+                self._scan_version += 1
+                self.task_manager.start_tasks(config)
+            except Exception as error:
+                self.append_log(f'无法开始：{error}', 'error')
+                InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
+            finally:
+                self._set_interactive_scan_busy(False)
+
+        def failed(message):
+            try:
+                if not self.closing.is_set():
+                    self.append_log(f'匹配扫描失败：{message}', 'error')
+                    InfoBar.warning('匹配扫描失败', str(message), parent=self, duration=5000)
+            finally:
+                self._set_interactive_scan_busy(False)
+
+        try:
+            self.jobs.start(scan, done, failed)
         except Exception as error:
-            self.append_log(f'无法开始：{error}', 'error')
+            self._set_interactive_scan_busy(False)
+            self.append_log(f'无法开始匹配扫描：{error}', 'error')
             InfoBar.warning('尚未开始', str(error), parent=self, duration=4500)
 
     def toggle_pause(self):
+        if not self.task_manager.is_running:
+            InfoBar.info(tr('当前没有运行中的队列'), tr('请先开始生成任务，再使用暂停或继续'), parent=self, duration=4000)
+            return
         if self.task_manager.is_paused:
             self.task_manager.resume_tasks()
         else:
@@ -536,8 +680,10 @@ class WorkspacePage(QWidget):
     def force_task_model(self, index, model):
         tasks = self.queue_panel._tasks
         if self.task_manager.is_running or not 0 <= index < len(tasks):
+            InfoBar.info(tr('当前无法修改模型'), tr('请先结束队列，并选择有效任务'), parent=self, duration=4000)
             return
         if model and not usable(catalog_snapshot(self.config_manager).get(model, {})):
+            InfoBar.warning(tr('模型不可用'), tr('请先同步模型或选择其他可用模型'), parent=self, duration=4500)
             return
         overrides = dict(self.config_manager.config.get('model_overrides', {}))
         path = tasks[index]['prompt_path']
@@ -549,9 +695,11 @@ class WorkspacePage(QWidget):
         self.scan_sources()
 
     def reset_task_models(self):
-        if not self.task_manager.is_running:
-            self.config_manager.update(('model_overrides',), {})
-            self.scan_sources()
+        if self.task_manager.is_running or self._interactive_scan_busy:
+            InfoBar.info(tr('当前无法重置模型'), tr('请先暂停并结束当前队列或匹配扫描'), parent=self, duration=4000)
+            return
+        self.config_manager.update(('model_overrides',), {})
+        self.scan_sources()
 
     def _running_changed(self, running):
         worker = self.task_manager.worker
@@ -564,10 +712,13 @@ class WorkspacePage(QWidget):
             self._started_at = time.monotonic()
         elif not running and self._started_at is not None:
             self._elapsed = time.monotonic()-self._started_at; self._started_at = None
-        self.queue_panel.set_busy(running or self._redownloading)
+        busy = running or self._redownloading or self._interactive_scan_busy
+        self.queue_panel.set_busy(busy)
         for card in self.summary.cards[:3]:
-            card.choose_button.setEnabled(not running)
-        self.queue_panel.match_button.setEnabled(not running)
+            card.choose_button.setEnabled(not busy)
+            card.choose_button.setToolTip('' if not busy else tr('队列、扫描或下载进行中，完成后可选择目录'))
+        self.queue_panel.match_button.setEnabled(not busy)
+        self.queue_panel.match_button.setToolTip('' if not busy else tr('队列、扫描或下载进行中，完成后可查看匹配详情'))
         if not running and self._catalog_pending and not self.closing.is_set():
             self._catalog_pending = False
             # Refresh controls without replacing completed rows with a new scan.
@@ -576,17 +727,24 @@ class WorkspacePage(QWidget):
                 self.params_card.refresh_catalog()
             finally:
                 self.params_card.blockSignals(blocker)
-        enabled = not running and not self._redownloading and not self.closing.is_set()
+        enabled = not busy and not self.closing.is_set()
         self.start_button.setEnabled(enabled)
-        self.start_button.setToolTip('' if enabled else tr('运行中不可重复启动'))
+        self.start_button.setToolTip('' if enabled else tr('队列、匹配扫描或下载进行中，完成后可开始生成'))
         self.pause_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
+        self.pause_button.setToolTip('' if running else tr('当前没有运行中的队列可暂停或继续'))
+        self.cancel_button.setToolTip('' if running else tr('当前没有运行中的队列可取消'))
         self.current_task.set_action_state(running=running, redownloading=self._redownloading,
                                             closing=self.closing.is_set())
-        self.task_monitor.skip_button.setEnabled(running and self.task_monitor.task_info.get('status') in ACTIVE)
-        self.params_card.setEnabled(not running)
-        self.data_source.setEnabled(not running)
-        self.queue_panel.set_models_editable(not running)
+        monitor_skip_enabled = bool(running and self.task_monitor.task_info.get('status') in ACTIVE)
+        self.task_monitor.skip_button.setEnabled(monitor_skip_enabled)
+        self.task_monitor.skip_button.setToolTip(
+            '' if monitor_skip_enabled else
+            tr('只有运行中的活动任务可以跳过'))
+        self.params_card.set_busy(busy)
+        self.data_source.set_busy(busy)
+        self.directory_bar.set_busy(busy)
+        self.queue_panel.set_models_editable(not busy)
         self._update_summary()
 
     def _row_progress(self, index, value, elapsed, eta):
@@ -614,7 +772,10 @@ class WorkspacePage(QWidget):
                                             redownloading=self._redownloading,
                                             closing=self.closing.is_set())
         self.task_monitor.update_task(index, task)
-        self.task_monitor.skip_button.setEnabled(self.task_manager.is_running and task.get('status') in ACTIVE)
+        monitor_skip_enabled = bool(self.task_manager.is_running and task.get('status') in ACTIVE)
+        self.task_monitor.skip_button.setEnabled(monitor_skip_enabled)
+        self.task_monitor.skip_button.setToolTip(
+            '' if monitor_skip_enabled else tr('只有运行中的活动任务可以跳过'))
         self.queue_panel.select_task(index)
         product = task.get('product') or '未分组'
         task_index = task.get('product_task_index', index + 1)
@@ -651,15 +812,58 @@ class WorkspacePage(QWidget):
             self.task_monitor.show_idle()
         self._update_summary()
 
-    def _record(self, record):
-        try:
-            self.config_manager.history_upsert(record)
-        except Exception as error:
-            self.append_log(f'历史记录写入失败：{error}', 'error')
-        history = self.config_manager.history_records()
-        self.history_changed.emit(history)
-        self.recent_panel.update_history(history)
+    def _publish_history(self, history):
+        self._history_cache = list(history)
+        self.history_changed.emit(self._history_cache)
+        self.recent_panel.update_history(self._history_cache)
         self._update_summary()
+
+    def _merge_history_record(self, record):
+        history = list(self._history_cache)
+        local_id = record.get('local_id')
+        for index, existing in enumerate(history):
+            if existing.get('local_id') == local_id:
+                history[index] = copy.deepcopy(record)
+                break
+        else:
+            history.append(copy.deepcopy(record))
+        return history
+
+    def _drain_history_writes(self):
+        if self._history_write_busy or not self._history_pending:
+            return
+        batch = self._history_pending
+        self._history_pending = []
+        self._history_write_busy = True
+
+        def write_batch():
+            for record in batch:
+                self.config_manager.history_upsert(record)
+            return self.config_manager.history_records()
+
+        def done(history):
+            self._history_write_busy = False
+            if not self.closing.is_set():
+                self._publish_history(history)
+                self.refresh_metrics()
+            self._drain_history_writes()
+
+        def failed(message):
+            self._history_write_busy = False
+            self._history_pending[0:0] = batch
+            self.append_log(f'历史记录写入失败：{message}', 'error')
+
+        try:
+            self.history_jobs.start(write_batch, done, failed)
+        except Exception as error:
+            self._history_write_busy = False
+            self._history_pending[0:0] = batch
+            self.append_log(f'历史记录后台任务无法启动：{error}', 'error')
+
+    def _record(self, record):
+        self._publish_history(self._merge_history_record(record))
+        self._history_pending.append(copy.deepcopy(record))
+        self._drain_history_writes()
         self.refresh_metrics()
         if record['status'] == 'completed' and self.config_manager.config['task_strategy']['open_folder_after_download'] and not self.closing.is_set():
             open_local(record['result_path'], self.append_log, folder=True)
@@ -698,7 +902,7 @@ class WorkspacePage(QWidget):
         if self.closing.is_set() or self._watch_interval() <= 0:
             self._watch_timer.stop()
             return
-        if self.task_manager.is_running or self._redownloading:
+        if self.task_manager.is_running or self._redownloading or self._interactive_scan_busy:
             self._arm_watch()
             return
         self._watch_pending_scan = True
@@ -759,10 +963,13 @@ class WorkspacePage(QWidget):
     def resolve_submission(self, record):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
             self.append_log('请先暂停并结束当前队列，再处理待确认提交', 'warning')
+            InfoBar.warning(tr('暂不能处理待确认提交'),
+                            tr('请先暂停并结束当前队列，再处理待确认提交'),
+                            parent=self, duration=6500)
             return
         config = runtime_config(self.config_manager)
         pending = record.get('duplicate_record') or record
-        dialog = SubmissionRecoveryDialog(self.window())
+        dialog = SubmissionRecoveryDialog(self.window(), pending)
         if pending.get('legacy_task_id'):
             hint = CaptionLabel('旧记录候选ID：' + str(pending['legacy_task_id']) +
                                 '。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。')
@@ -777,13 +984,7 @@ class WorkspacePage(QWidget):
             result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
                                     task_id=confirmed_task_id,
                                     confirmed_not_created=action_index == 2)
-            self._record(result)
-            for index, task in enumerate(self.task_manager.tasks):
-                candidate = task.get('duplicate_record') or task
-                if candidate.get('ledger_id') == pending.get('ledger_id'):
-                    self.task_manager.tasks[index] = copy.deepcopy(result)
-                    self._current_changed(index, result)
-            self._tasks_updated(self.task_manager.tasks)
+            self._apply_resolved_submission(result, pending)
             if confirmed_task_id:
                 self.append_log('确认结果已保存；正在仅查询并下载已有 task_id，不重新创建任务', 'info')
                 QTimer.singleShot(0, lambda task=copy.deepcopy(result): self.redownload(task))
@@ -793,14 +994,72 @@ class WorkspacePage(QWidget):
         except Exception as error:
             InfoBar.error('未保存确认结果', str(error), parent=self, duration=6500)
 
-    def _resume_confirmed_submission(self, record):
-        """Start only the explicitly released prompt after confirmation."""
-        prompt_path = record.get('prompt_path')
-        if not prompt_path:
-            self.append_log('待确认记录缺少提示词路径，无法自动继续生成', 'error')
+    def _apply_resolved_submission(self, result, pending=None):
+        """Apply one ledger resolution to history and the live queue."""
+        self._record(result)
+        target_id = (pending or result).get('ledger_id')
+        for index, task in enumerate(self.task_manager.tasks):
+            candidate = task.get('duplicate_record') or task
+            if candidate.get('ledger_id') == target_id:
+                self.task_manager.tasks[index] = copy.deepcopy(result)
+                self._current_changed(index, result)
+        self._tasks_updated(self.task_manager.tasks)
+
+    def resolve_submissions(self, records):
+        """Resolve multiple unknown submissions without ever performing implicit POSTs."""
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+            InfoBar.warning(tr('暂不能处理待确认提交'), tr('请先暂停并结束当前队列，再处理待确认提交'), parent=self, duration=6500)
+            return
+        pending = [record.get('duplicate_record') or record for record in (records or [])
+                   if record.get('status') == 'submission_unknown' or record.get('ledger_state') in {'unknown', 'submitting', 'reserved'}]
+        if not pending:
+            InfoBar.info(tr('没有待确认提交'), tr('当前没有需要核对的提交记录'), parent=self, duration=4000)
             return
         config = runtime_config(self.config_manager)
-        config['_only_prompt_paths'] = [prompt_path]
+        dialog = SubmissionRecoveryBatchDialog(pending, self.window())
+        if not dialog.exec():
+            return
+        selections = dialog.selections()
+        ledger = SubmissionLedger(ledger_path(config))
+        redownloads = []
+        prompts = []
+        try:
+            for record, action_index, task_id in selections:
+                if action_index == 0:
+                    continue
+                result = ledger.resolve(record.get('ledger_id'), account_scope(config),
+                                        task_id=task_id if action_index == 1 else '',
+                                        confirmed_not_created=action_index == 2)
+                self._apply_resolved_submission(result, record)
+                if action_index == 1:
+                    redownloads.append(result)
+                else:
+                    prompts.append(result.get('prompt_path'))
+            self._batch_recovery_prompts = [path for path in prompts if path]
+            self._redownload_queue = list(redownloads)
+            if self._redownload_queue:
+                self._start_next_redownload()
+            elif self._batch_recovery_prompts:
+                self._resume_confirmed_submissions(self._batch_recovery_prompts)
+            InfoBar.success(tr('待确认结果已保存'), tr('已按逐条选择安排后续查询或重试，未选择的记录仍保持待确认'), parent=self, duration=6000)
+        except Exception as error:
+            self._redownload_queue = []
+            self._batch_recovery_prompts = []
+            InfoBar.error(tr('批量保存失败'), str(error), parent=self, duration=6500)
+
+    def _resume_confirmed_submission(self, record):
+        prompt_path = record.get('prompt_path') if isinstance(record, dict) else record
+        self._resume_confirmed_submissions([prompt_path] if prompt_path else [])
+
+    def _resume_confirmed_submissions(self, prompt_paths):
+        """Start only the explicitly released prompt after confirmation."""
+        prompt_paths = [path for path in dict.fromkeys(prompt_paths or []) if path]
+        if not prompt_paths:
+            self.append_log('待确认记录缺少提示词路径，无法自动继续生成', 'error')
+            InfoBar.warning(tr('未继续当前任务'), tr('待确认记录缺少提示词路径，无法继续生成'), parent=self, duration=5000)
+            return
+        config = runtime_config(self.config_manager)
+        config['_only_prompt_paths'] = prompt_paths
         try:
             self.task_manager.start_tasks(config)
         except Exception as error:
@@ -809,10 +1068,12 @@ class WorkspacePage(QWidget):
 
     def regenerate(self, record):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+            InfoBar.info(tr('当前无法重新生成'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
             return
         from qfluentwidgets import Dialog
         original = record.get('duplicate_record') or record
         if original.get('status') != 'completed':
+            InfoBar.info(tr('无法重新生成'), tr('只有已完成任务可以重新生成'), parent=self, duration=4000)
             return
         dialog = Dialog('重新生成确认', '该任务已生成过，是否重新生成？这会创建一个新的付费任务。', self.window())
         dialog.yesButton.setText('确认重新生成')
@@ -832,12 +1093,14 @@ class WorkspacePage(QWidget):
         except Exception as error:
             InfoBar.warning('未开始重新生成', str(error), parent=self, duration=6000)
 
-    def redownload(self, record):
+    def redownload(self, record, _on_complete=None):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
             self.append_log('请等待当前队列或下载结束后再重新下载', 'warning')
+            InfoBar.info(tr('当前无法重新下载'), tr('请等待当前队列或下载结束后再重新下载'), parent=self, duration=4500)
             return
         if not record.get('task_id'):
             self.append_log('此记录没有远端 task_id，无法重新下载', 'warning')
+            InfoBar.warning(tr('无法重新下载'), tr('此记录没有远端 task_id，不能创建新任务'), parent=self, duration=4500)
             return
         config = runtime_config(self.config_manager)
         task = copy.deepcopy(record)
@@ -850,6 +1113,7 @@ class WorkspacePage(QWidget):
             return
         if task.get('api_base_url', config['api']['base_url']).strip().rstrip('/') != config['api']['base_url'].strip().rstrip('/'):
             self.append_log('此任务来自其他 API 地址，请先在设置中切回原接口及对应密钥：' + task['api_base_url'], 'warning')
+            InfoBar.warning(tr('请先核对任务接口'), tr('该任务来自其他 API 地址，已停止下载且不会重新提交'), parent=self, duration=6500)
             return
         self._redownloading = True
         self._running_changed(False)
@@ -877,7 +1141,7 @@ class WorkspacePage(QWidget):
                 folder = task.get('output_dir') or config['paths']['output']
                 if not folder:
                     raise ValueError('请先选择视频保存目录')
-                index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(self.config_manager.history_records()) if row.get('local_id') == task.get('local_id')), 1)
+                index = task.get('product_task_index') or task.get('sequence') or next((i+1 for i, row in enumerate(self._history_cache) if row.get('local_id') == task.get('local_id')), 1)
                 filename = task.get('filename') or build_filename(config['download_settings']['naming_rule'], task, index)
                 task['result_path'] = downloader.download_video(result['result_url'], folder, filename,
                                                                generation_key=(task['api_scope'], task['task_id']))
@@ -899,10 +1163,40 @@ class WorkspacePage(QWidget):
                     self._current_changed(index, result)
             self.queue_panel.update_tasks(self.task_manager.tasks)
             reset()
+            if _on_complete:
+                _on_complete(True, result)
         def failed(message):
             self.append_log(f'重新下载失败：{message}', 'error')
             reset()
+            if _on_complete:
+                _on_complete(False, message)
         self.jobs.start(download, done, failed)
+        return True
+
+    def _start_next_redownload(self):
+        if self.closing.is_set():
+            self._redownload_queue = []
+            self._batch_recovery_prompts = []
+            return
+        if not self._redownload_queue:
+            prompts = self._batch_recovery_prompts
+            self._batch_recovery_prompts = []
+            if prompts:
+                self._resume_confirmed_submissions(prompts)
+            return
+        task = self._redownload_queue.pop(0)
+        if not self.redownload(task, self._batch_redownload_finished):
+            self._redownload_queue = []
+            self._batch_recovery_prompts = []
+            InfoBar.error(tr('批量下载已停止'), tr('其中一条任务无法开始下载，其他任务未自动重试'), parent=self, duration=6500)
+
+    def _batch_redownload_finished(self, success, detail):
+        if not success:
+            self._redownload_queue = []
+            self._batch_recovery_prompts = []
+            InfoBar.warning(tr('批量下载未完成'), str(detail), parent=self, duration=6500)
+            return
+        QTimer.singleShot(0, self._start_next_redownload)
 
     def shutdown(self):
         self.closing.set()
@@ -914,3 +1208,4 @@ class WorkspacePage(QWidget):
         self._scan_version += 1
         self.task_manager.cancel_all()
         self._running_changed(self.task_manager.is_running)
+        self._drain_history_writes()

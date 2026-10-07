@@ -94,6 +94,7 @@ class TaskMonitorBar(QFrame):
         for button in (self.skip_button, self.details_button):
             button.setFixedHeight(30)
         self.skip_button.setEnabled(False)
+        self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
         self.skip_button.clicked.connect(self.skip_clicked)
         self.details_button.clicked.connect(self.details_clicked)
         root.addWidget(self.skip_button)
@@ -164,3 +165,4 @@ class TaskMonitorBar(QFrame):
         self.dot.active = False
         self.dot.update()
         self.skip_button.setEnabled(False)
+        self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
