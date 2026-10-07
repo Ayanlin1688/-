@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sys
+import os
+import threading
+import time
 
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent
@@ -979,7 +982,33 @@ class MainWindow(FluentWindow):
                 or bool(self.workspace_page._history_pending)
                 or self.settings_page.jobs.busy or self.model_catalog.jobs.busy)
 
+    def _close_child_dialogs(self):
+        """Reject all child dialogs so no modal loop can hold the app open."""
+        workspace = getattr(self, 'workspace_page', None)
+        if workspace is not None:
+            workspace._close_child_dialogs()
+        try:
+            from PyQt5.QtWidgets import QDialog
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QDialog) and widget is not self:
+                    try:
+                        widget.done(0)
+                        widget.close()
+                        widget.deleteLater()
+                    except RuntimeError:
+                        pass
+        except Exception:
+            pass
+
     def closeEvent(self, event):
+        if self._closing:
+            self._close_child_dialogs()
+            # 接受第二次关闭事件即可让主窗口正常退出。这里不能提前调用
+            # QApplication.quit()，否则共享进程中的后续 QDialog.exec_()
+            # 会立即返回；真实应用会在最后一个可见顶层窗口关闭后自动退出。
+            event.accept()
+            return
+        self._close_child_dialogs()
         self.schedule_timer.stop()
         self.settings_page.stop_timers()
         self.model_catalog.shutdown()
@@ -991,6 +1020,7 @@ class MainWindow(FluentWindow):
                 self.settings_page.setEnabled(False)
                 self.settings_page.setToolTip(tr('正在安全退出，等待后台任务完成后关闭'))
                 self.workspace_page.append_log('正在安全退出，等待后台请求返回或超时...', 'warning')
+                self._close_deadline = time.monotonic() + 3.0
                 self._close_timer.start()
             return
         self.workspace_page.shutdown()
@@ -1000,3 +1030,13 @@ class MainWindow(FluentWindow):
         if not self._background_busy():
             self._close_timer.stop()
             self.close()
+        elif time.monotonic() >= getattr(self, '_close_deadline', float('inf')):
+            self._close_timer.stop()
+            self.workspace_page.append_log('后台任务超过安全退出时限，强制退出应用', 'error')
+            self.workspace_page.task_manager.force_stop()
+            for jobs in (self.workspace_page.jobs, self.workspace_page.history_jobs,
+                         self.workspace_page.log_drawer.jobs, self.settings_page.jobs,
+                         self.model_catalog.jobs):
+                jobs.force_stop()
+            QApplication.quit()
+            threading.Timer(0.5, lambda: os._exit(0), daemon=True).start()

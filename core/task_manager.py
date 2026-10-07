@@ -567,6 +567,27 @@ class TaskManager(QObject):
             self.worker.control.set('cancelled', True)
             self.log_message.emit('正在停止本地处理；正在进行的网络请求会在返回或超时后退出', 'warning')
 
+    def force_stop(self):
+        """Last-resort queue shutdown used only after the application close deadline."""
+        worker, self.worker = self.worker, None
+        self.is_running = False
+        self.is_paused = False
+        if worker is None:
+            return
+        try:
+            worker.control.set('cancelled', True)
+            worker.disconnect()
+        except RuntimeError:
+            return
+        try:
+            if worker.isRunning():
+                worker.terminate()
+                worker.wait(500)
+            if not worker.isRunning():
+                worker.deleteLater()
+        except RuntimeError:
+            pass
+
     def skip_current(self):
         if self.is_running:
             self.worker.control.skip_for(self.current_index)

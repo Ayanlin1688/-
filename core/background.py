@@ -39,6 +39,32 @@ class BackgroundJobs(QObject):
         worker.start()
         return worker
 
+    def request_stop(self):
+        """Ask active workers to stop before the application begins closing."""
+        for worker in list(self.workers):
+            try:
+                if worker.isRunning():
+                    worker.requestInterruption()
+            except RuntimeError:
+                continue
+
+    def force_stop(self, wait_ms=500):
+        """Stop remaining workers so QApplication can exit without live QThreads."""
+        for worker in list(self.workers):
+            try:
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(max(0, int(wait_ms)))
+            except RuntimeError:
+                continue
+        for worker in list(self.workers):
+            try:
+                if not sip.isdeleted(worker):
+                    worker.deleteLater()
+            except RuntimeError:
+                continue
+        self.workers.clear()
+
     def _finished(self, worker):
         # 竞态兜底：窗口销毁收尾时，回调可能晚于 C++ 对象释放送达；对已失效的
         # 对象调用 deleteLater/emit 会抛 RuntimeError，并被 PyQt 升级为 qFatal

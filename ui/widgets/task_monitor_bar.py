@@ -25,6 +25,7 @@ def _dual(key):
 class TaskMonitorBar(QFrame):
     skip_clicked = pyqtSignal()
     details_clicked = pyqtSignal()
+    resolve_clicked = pyqtSignal(object)
 
     _STATE_KEYS = {
         'failed': 'state_failed',
@@ -91,14 +92,19 @@ class TaskMonitorBar(QFrame):
 
         self.skip_button = style_button(PushButton(FIF.SKIP_FORWARD, tr('跳过')))
         self.details_button = style_button(PushButton(FIF.INFO, tr('详情')))
-        for button in (self.skip_button, self.details_button):
+        self.resolve_button = style_button(PushButton(FIF.INFO, tr('处理待确认')))
+        for button in (self.skip_button, self.details_button, self.resolve_button):
             button.setFixedHeight(30)
         self.skip_button.setEnabled(False)
         self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
         self.skip_button.clicked.connect(self.skip_clicked)
         self.details_button.clicked.connect(self.details_clicked)
+        self.resolve_button.setVisible(False)
+        self.resolve_button.setToolTip(tr('当前没有待确认提交'))
+        self.resolve_button.clicked.connect(lambda: self.resolve_clicked.emit(self.task_info))
         root.addWidget(self.skip_button)
         root.addWidget(self.details_button)
+        root.addWidget(self.resolve_button)
 
         register_theme_callback(self._refresh_style)
 
@@ -145,6 +151,10 @@ class TaskMonitorBar(QFrame):
         self.model_chip.setVisible(bool(model))
         self.dot.active = status in ACTIVE
         self.dot.update()
+        is_unknown = status == 'submission_unknown'
+        self.resolve_button.setVisible(is_unknown)
+        self.resolve_button.setEnabled(is_unknown)
+        self.resolve_button.setToolTip(tr('处理该条提交待确认记录') if is_unknown else tr('当前没有待确认提交'))
 
     def update_progress(self, progress, elapsed, eta):
         self.progress.setValue(int(progress))
@@ -166,3 +176,6 @@ class TaskMonitorBar(QFrame):
         self.dot.update()
         self.skip_button.setEnabled(False)
         self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
+        self.resolve_button.setVisible(False)
+        self.resolve_button.setEnabled(False)
+        self.resolve_button.setToolTip(tr('当前没有待确认提交'))

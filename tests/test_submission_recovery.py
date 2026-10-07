@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QWidget, QAbstractButton
 from core.config_manager import ConfigManager
@@ -121,6 +121,23 @@ class RecoveryDialogTests(unittest.TestCase):
             dialog.close()
             parent.close()
             dialog.deleteLater()
+            parent.deleteLater()
+
+    def test_batch_save_button_accepts_after_explicit_choice(self):
+        parent = QWidget()
+        dialog = SubmissionRecoveryBatchDialog(
+            [dict(local_id='one', status='submission_unknown')], parent)
+        finished = []
+        dialog.finished.connect(finished.append)
+        try:
+            QTimer.singleShot(0, lambda: (
+                dialog._rows[0]['action'].setCurrentIndex(2),
+                dialog.yesButton.click()))
+            result = dialog.exec()
+            self.assertEqual(result, 1)
+            self.assertEqual(finished, [1])
+        finally:
+            parent.close()
             parent.deleteLater()
 
 

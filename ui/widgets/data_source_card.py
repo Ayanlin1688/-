@@ -21,6 +21,8 @@ class DataSourceCard(QWidget):
         self.choose_buttons = []
         self.matches = []
         self.automatic_matches = []
+        self.before_match_dialog = None
+        self.active_match_dialog = None
         card = make_card()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -94,12 +96,24 @@ class DataSourceCard(QWidget):
         )
 
     def open_match_dialog(self, prompt_path=None) -> None:
+        if self.active_match_dialog is not None and self.active_match_dialog.isVisible():
+            self.active_match_dialog.raise_()
+            self.active_match_dialog.activateWindow()
+            return
+        if self.before_match_dialog is not None:
+            if not self.before_match_dialog(prompt_path):
+                return
         self.log_callback("打开匹配详情", "info")
         dialog = MatchDialog(self.window(), self.log_callback, self.config_manager, self.matches, self.automatic_matches)
+        self.active_match_dialog = dialog
         if isinstance(prompt_path, str):
             for index, task in enumerate(dialog.matches):
                 if task.get('prompt_path') == prompt_path:
                     dialog.prompt_list.setCurrentRow(index)
                     break
         dialog.saved.connect(self.overrides_changed)
-        dialog.exec_()
+        try:
+            dialog.exec_()
+        finally:
+            self.active_match_dialog = None
+            dialog.deleteLater()

@@ -29,7 +29,7 @@ COLUMN_SPEC = [
     ('progress', 118, 230, 2, 'left'),
     ('timing', 96, 150, 1, 'left'),
     ('status', 84, 116, 0, 'left'),
-    ('actions', 36, 36, 0, 'center'),
+    ('actions', 142, 142, 0, 'center'),
 ]
 HEADERS = ['#', '提示词', '产品', '模型', '比例', '分辨率', '时长', '参考图', '进度', '用时/剩余', '状态', '']
 CELL_SPACING = 16
@@ -134,8 +134,10 @@ class ExpandedTaskRow(QWidget):
         ph=QWidget(); pl=QHBoxLayout(ph); pl.setContentsMargins(0,0,0,0); pl.setSpacing(8); self.progress=TaskProgress(); self.percentage=label('0%',11,MUTED,mono=True); self.percentage.setFixedWidth(35); pl.addWidget(self.progress,1); pl.addWidget(self.percentage)
         self.timing=label('—',12,MUTED,mono=True)
         self.status_label=label('',11); self.status_label.setFixedHeight(22); self.status_label.setAlignment(Qt.AlignCenter)
+        self.resolve_button=style_button(PushButton(FIF.INFO,tr('处理待确认'))); self.resolve_button.setFixedHeight(30); self.resolve_button.setToolTip(tr('处理该条提交待确认记录')); self.resolve_button.clicked.connect(lambda:self.action_requested.emit(self.index,'resolve'))
         self.more_button=style_button(TransparentToolButton(FIF.MORE)); self.more_button.setFixedSize(30,30); self.more_button.setToolTip(tr('更多操作')); self.more_button.setProperty('studioKeepWidth', True); self.more_button.clicked.connect(lambda:self.action_requested.emit(self.index,'menu'))
-        cells=(number_box,self.title,self.product,self.model_label,self.ratio,self.resolution,self.duration,self.images_button,ph,self.timing,self.status_label,self.more_button)
+        action_box=QWidget(); action_layout=QHBoxLayout(action_box); action_layout.setContentsMargins(0,0,0,0); action_layout.setSpacing(4); action_layout.addWidget(self.resolve_button); action_layout.addWidget(self.more_button)
+        cells=(number_box,self.title,self.product,self.model_label,self.ratio,self.resolution,self.duration,self.images_button,ph,self.timing,self.status_label,action_box)
         self._cells=cells
         # 对齐规范：文本列左、时间列右、比例/分辨率/时长居中（单元格逐格锁宽后由内容对齐决定观感）。
         self.ratio.setAlignment(Qt.AlignCenter); self.resolution.setAlignment(Qt.AlignCenter)
@@ -204,6 +206,13 @@ class ExpandedTaskRow(QWidget):
             self.timing.setText(f'{seconds//60}分{seconds%60}秒')
             self.timing.setToolTip(f'已轮询{seconds//60}分{seconds%60}秒')
         self.progress.setPaused(s not in ACTIVE)
+        is_unknown = s == 'submission_unknown'
+        self.resolve_button.setVisible(is_unknown)
+        self.resolve_button.setEnabled(is_unknown and not self.busy)
+        self.resolve_button.setToolTip(
+            tr('处理该条提交待确认记录') if is_unknown and not self.busy else
+            tr('队列、匹配扫描或下载进行中，完成后可处理待确认提交') if is_unknown else
+            tr('当前任务不是提交待确认状态'))
         if hasattr(self, 'references'):
             self.references.set_editable(self.editable and not self.busy)
             self.references.set_paths(t.get('images', []))
@@ -234,6 +243,11 @@ class ExpandedTaskRow(QWidget):
         self.more_button.setToolTip(
             tr('正在扫描匹配、运行队列或下载中，完成后可使用更多操作') if busy else
             tr('更多操作'))
+        if self.task.get('status') == 'submission_unknown':
+            self.resolve_button.setEnabled(not busy)
+            self.resolve_button.setToolTip(
+                tr('队列、匹配扫描或下载进行中，完成后可处理待确认提交') if busy else
+                tr('处理该条提交待确认记录'))
     def paintEvent(self,e):
         s=self.task.get('status'); p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         if s in ACTIVE:

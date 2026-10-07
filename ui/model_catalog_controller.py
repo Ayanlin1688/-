@@ -133,3 +133,4 @@ class ModelCatalogController(QObject):
         self._closing = True
         self._version += 1
         self.debounce.stop()
+        self.jobs.request_stop()

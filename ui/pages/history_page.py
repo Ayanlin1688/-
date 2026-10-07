@@ -27,6 +27,7 @@ class HistoryPage(QWidget):
         self.setObjectName('historyPage')
         self.log_callback = log_callback
         self.config_manager = config_manager
+        self._recovery_busy = False
         root = QVBoxLayout(self); root.setContentsMargins(26, 16, 26, 20); root.setSpacing(16)
         header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel(tr('任务历史'))); title_box.addWidget(CaptionLabel(tr('查看生成记录 · 重新下载会沿用 task_id，不重复提交')))
         header.addLayout(title_box); header.addStretch(1)
@@ -117,10 +118,12 @@ class HistoryPage(QWidget):
         gb = sum((t.get('size_bytes') or 0) for t in records) / 1024**3
         self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=total, gb=gb))
         self.footer.setVisible(has_records)
-        self.batch_resolve_button.setEnabled(any(t.get('status') == 'submission_unknown' for t in records))
+        has_pending = any(t.get('status') == 'submission_unknown' for t in records)
+        self.batch_resolve_button.setEnabled(has_pending and not self._recovery_busy)
         self.batch_resolve_button.setToolTip(
+            tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
             tr('处理所有待确认提交；每条都需明确选择，不会静默重复提交')
-            if self.batch_resolve_button.isEnabled() else tr('当前没有待确认提交'))
+            if has_pending else tr('当前没有待确认提交'))
         if self._try_update_existing_rows(display):
             self._filter(self.filter_box.currentText())
             return
@@ -171,7 +174,10 @@ class HistoryPage(QWidget):
             layout.addWidget(open_file); layout.addWidget(retry)
             if task.get('status') == 'submission_unknown':
                 resolve = TransparentToolButton(FIF.INFO)
-                resolve.setToolTip(tr('处理待确认提交'))
+                resolve.setEnabled(not self._recovery_busy)
+                resolve.setToolTip(
+                    tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
+                    tr('处理待确认提交'))
                 resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
                 layout.addWidget(resolve)
             elif task.get('status') in {'completed', 'duplicate'}:
@@ -232,19 +238,24 @@ class HistoryPage(QWidget):
                     retry.clicked.connect(lambda _, t=task: self.redownload_requested.emit(t))
                 current_resolve = task.get('status') == 'submission_unknown'
                 resolve = next((button for button in buttons if button.toolTip() == tr('处理待确认提交')), None)
+                if resolve is None:
+                    resolve = next((button for button in buttons if button.toolTip() ==
+                                    tr('待确认弹窗打开中，请先完成或关闭当前核对')), None)
                 if current_resolve and resolve is None:
                     resolve = TransparentToolButton(FIF.INFO, action)
-                    resolve.setToolTip(tr('处理待确认提交'))
-                    resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
                     action.layout().addWidget(resolve)
-                elif not current_resolve and resolve is not None:
-                    resolve.setParent(None); resolve.deleteLater()
-                elif resolve is not None:
+                if current_resolve and resolve is not None:
+                    resolve.setEnabled(not self._recovery_busy)
+                    resolve.setToolTip(
+                        tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
+                        tr('处理待确认提交'))
                     try:
                         resolve.clicked.disconnect()
                     except TypeError:
                         pass
                     resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
+                elif not current_resolve and resolve is not None:
+                    resolve.setParent(None); resolve.deleteLater()
                 regenerate = next((button for button in buttons if button.toolTip() == tr('重新生成（需确认，会创建新任务）')), None)
                 if task.get('status') in {'completed', 'duplicate'} and regenerate is None:
                     regenerate = TransparentToolButton(FIF.PLAY, action)
@@ -261,10 +272,32 @@ class HistoryPage(QWidget):
                     regenerate.clicked.connect(lambda _, t=task: self.regenerate_requested.emit(t))
         return True
 
+    def set_recovery_busy(self, busy):
+        """Disable history-page recovery entry points while a dialog is open."""
+        self._recovery_busy = bool(busy)
+        has_pending = any(t.get('status') == 'submission_unknown'
+                          for t in getattr(self, 'records', []))
+        self.batch_resolve_button.setEnabled(has_pending and not self._recovery_busy)
+        self.batch_resolve_button.setToolTip(
+            tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
+            tr('处理所有待确认提交；每条都需明确选择，不会静默重复提交')
+            if has_pending else tr('当前没有待确认提交'))
+        for row in range(self.table.rowCount()):
+            action = self.table.cellWidget(row, self.table.columnCount() - 1)
+            if action is None:
+                continue
+            for button in action.findChildren(TransparentToolButton):
+                if button.toolTip() in {tr('处理待确认提交'),
+                                        tr('待确认弹窗打开中，请先完成或关闭当前核对')}:
+                    button.setEnabled(not self._recovery_busy)
+                    button.setToolTip(
+                        tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
+                        tr('处理待确认提交'))
+
     def _request_batch_resolve(self):
         pending = [task for task in getattr(self, 'records', []) if task.get('status') == 'submission_unknown']
         if not pending:
-            self.batch_resolve_button.setToolTip(tr('当前没有待确认提交'))
+            self.batch_resolve_button.setToolTip(tr('当前没有待确认提交；队列结束并产生待确认记录后可使用'))
             return
         self.batch_resolve_requested.emit(pending)
 

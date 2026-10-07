@@ -32,6 +32,13 @@ class BackgroundJobsRaceTests(unittest.TestCase):
         sip.delete(jobs)
         jobs._finished(worker)  # 对象已随窗口销毁：不得再触发任何 C++ 侧调用
 
+    def test_force_stop_clears_workers_without_leaving_a_running_thread(self):
+        jobs = BackgroundJobs()
+        worker = FunctionWorker(lambda: None, jobs)
+        jobs.workers.append(worker)
+        jobs.force_stop()
+        self.assertEqual(jobs.workers, [])
+
 
 if __name__ == '__main__':
     unittest.main()

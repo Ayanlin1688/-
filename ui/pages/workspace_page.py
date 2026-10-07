@@ -7,7 +7,7 @@ import threading
 import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy, QFrame
-from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget, MessageBoxBase, SubtitleLabel
+from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget
 from ..components.studio_dialog import StudioDialog
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
@@ -37,16 +37,25 @@ from ..widgets.workspace_directory_bar import WorkspaceDirectoryBar
 from ..widgets.workspace_surface import ImagePreview, BreathingDot, label, style_button, BLUE, GREEN, MUTED, RED
 
 
-class _CancelAllDialog(MessageBoxBase):
+class _CancelAllDialog(StudioDialog):
     """取消全部任务的二次确认：破坏性操作不再一点即发。"""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.viewLayout.addWidget(SubtitleLabel(tr('取消全部任务？')))
+        super().__init__(parent, tr('取消全部任务？'))
+        self.viewLayout = self.body_layout
+        self.resize(560, 230)
+        self.viewLayout.addWidget(CaptionLabel(tr('取消全部任务？')))
         self.viewLayout.addWidget(CaptionLabel(
             tr('正在进行的任务将停止本地处理，远端任务可能继续执行；排队中的任务将被跳过。')))
-        self.yesButton.setText(tr('确认取消'))
-        self.cancelButton.setText(tr('返回'))
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        self.cancelButton = PushButton(tr('返回'))
+        self.yesButton = PushButton(tr('确认取消'))
+        self.cancelButton.clicked.connect(self.reject)
+        self.yesButton.clicked.connect(self.accept)
+        footer.addWidget(self.cancelButton)
+        footer.addWidget(self.yesButton)
+        self.viewLayout.addLayout(footer)
 
 
 class WorkspacePage(QWidget):
@@ -69,6 +78,9 @@ class WorkspacePage(QWidget):
         self._elapsed = 0
         self._metrics_busy = False
         self._interactive_scan_busy = False
+        self._active_recovery_dialog = None
+        self._recovery_open_pending = False
+        self._pending_recovery_records = []
         self._history_cache = list(config_manager.history_records())
         self._history_pending = []
         self._history_write_busy = False
@@ -88,6 +100,7 @@ class WorkspacePage(QWidget):
         self.current_task.skip_button.clicked.connect(manager.skip_current)
         self.task_monitor.skip_clicked.connect(manager.skip_current)
         self.task_monitor.details_clicked.connect(self.open_controls)
+        self.task_monitor.resolve_clicked.connect(self.resolve_submission)
         self.current_task.cancel_button.clicked.connect(lambda: self.redownload(self.current_task.task_info))
         self.current_task.resolve_button.clicked.connect(lambda: self.resolve_submission(self.current_task.task_info))
         self.queue_panel.task_selected.connect(manager.select_current)
@@ -172,6 +185,24 @@ class WorkspacePage(QWidget):
         # 常驻任务监看带：当前任务与实时进度提升到主界面第一屏（完整详情仍在弹窗）。
         self.task_monitor = TaskMonitorBar()
         root.addWidget(self.task_monitor)
+        self.recovery_bar = QFrame()
+        self.recovery_bar.setObjectName('submissionRecoveryBar')
+        self.recovery_bar.setStyleSheet(
+            '#submissionRecoveryBar{background:rgba(240,169,59,.14);'
+            'border:1px solid rgba(240,169,59,.42);border-radius:8px;}')
+        recovery_layout = QHBoxLayout(self.recovery_bar)
+        recovery_layout.setContentsMargins(14, 7, 14, 7)
+        recovery_layout.setSpacing(10)
+        self.recovery_label = CaptionLabel()
+        self.recovery_label.setWordWrap(True)
+        recovery_layout.addWidget(self.recovery_label, 1)
+        self.recovery_button = PushButton(FIF.INFO, tr('逐条核对'))
+        self.recovery_button.setFixedHeight(32)
+        self.recovery_button.setToolTip(tr('逐条处理所有提交待确认记录'))
+        self.recovery_button.clicked.connect(self._open_pending_recovery)
+        recovery_layout.addWidget(self.recovery_button)
+        root.addWidget(self.recovery_bar)
+        self.recovery_bar.hide()
         self.product_progress_label = label('当前：—，总进度：产品 0/0', 11)
         self.product_progress = ProgressBar()
         self.product_progress.hide()
@@ -201,6 +232,7 @@ class WorkspacePage(QWidget):
         dialog_layout = self.controls_dialog.body_layout
         center = QWidget(); center_layout = QVBoxLayout(center); center_layout.setContentsMargins(4, 4, 4, 4); center_layout.setSpacing(16)
         self.data_source = DataSourceCard(self.config_manager, self.append_log); self.params_card = ParamsCard(self.config_manager); self.current_task = CurrentTaskCard(self.append_log)
+        self.data_source.before_match_dialog = self._prepare_match_dialog
         # Wire the match-details action only after the data source card exists.
         self.directory_bar.match_requested.connect(self.data_source.open_match_dialog)
         for card in (self.data_source, self.params_card, self.current_task):
@@ -229,7 +261,123 @@ class WorkspacePage(QWidget):
         pass
 
     def open_controls(self):
+        if self._active_recovery_dialog is not None and self._active_recovery_dialog.isVisible():
+            InfoBar.info(tr('待确认弹窗正在处理'), tr('请先完成或关闭当前待确认弹窗'), parent=self, duration=3500)
+            return
+        active_match = getattr(self.data_source, 'active_match_dialog', None)
+        if active_match is not None and active_match.isVisible():
+            active_match.reject()
         self.controls_dialog.show(); self.controls_dialog.raise_(); self.controls_dialog.activateWindow()
+
+    def _prepare_match_dialog(self, prompt_path=None):
+        """Close the non-modal details window before opening match details."""
+        if self._active_recovery_dialog is not None and self._active_recovery_dialog.isVisible():
+            InfoBar.info(tr('待确认弹窗正在处理'), tr('请先完成或关闭当前待确认弹窗'), parent=self, duration=3500)
+            return False
+        if self.controls_dialog.isVisible():
+            self.controls_dialog.close()
+            QTimer.singleShot(0, lambda path=prompt_path: self.data_source.open_match_dialog(path))
+            return False
+        return True
+
+    def _prepare_recovery_dialog(self, on_ready=None):
+        """Ensure recovery is always parented by the main window alone."""
+        if self._active_recovery_dialog is not None and self._active_recovery_dialog.isVisible():
+            InfoBar.info(tr('待确认弹窗已打开'), tr('请先完成当前核对，不能重复打开多个弹窗'), parent=self, duration=3500)
+            return False
+        if self._recovery_open_pending:
+            InfoBar.info(tr('待确认弹窗正在打开'), tr('请稍候，不能重复打开多个弹窗'), parent=self, duration=2500)
+            return False
+        closed_dialog = False
+        if self.controls_dialog.isVisible():
+            self.controls_dialog.close()
+            closed_dialog = True
+        active_match = getattr(self.data_source, 'active_match_dialog', None)
+        if active_match is not None and active_match.isVisible():
+            active_match.reject()
+            closed_dialog = True
+        if closed_dialog:
+            self._recovery_open_pending = True
+            if on_ready is not None:
+                def continue_recovery():
+                    self._recovery_open_pending = False
+                    on_ready()
+                QTimer.singleShot(0, continue_recovery)
+            return False
+        return True
+
+    def _set_recovery_entry_busy(self, busy):
+        """Lock every workspace entry that could create another dialog."""
+        busy = bool(busy)
+        self.controls_dialog.setEnabled(not busy)
+        history_page = getattr(self.window(), 'history_page', None)
+        if history_page is not None:
+            history_page.set_recovery_busy(busy)
+        self.queue_panel.match_button.setEnabled(not busy and not self.task_manager.is_running)
+        self.queue_panel.match_button.setToolTip(
+            tr('待确认弹窗打开中，完成或关闭后可查看匹配详情') if busy else
+            tr('队列、扫描或下载进行中，完成后可查看匹配详情') if self.task_manager.is_running else '')
+        self.queue_panel.more_button.setEnabled(not busy and not self.task_manager.is_running)
+        self.queue_panel.more_button.setToolTip(
+            tr('待确认弹窗打开中，完成或关闭后可使用更多操作') if busy else
+            tr('队列、扫描或下载进行中，完成后可使用更多操作') if self.task_manager.is_running else
+            tr('更多操作'))
+        self.task_monitor.details_button.setEnabled(not busy)
+        self.task_monitor.details_button.setToolTip(
+            tr('待确认弹窗打开中，完成或关闭后可查看详情') if busy else tr('查看当前任务详情'))
+        self.task_monitor.resolve_button.setEnabled(
+            not busy and not self.task_manager.is_running and not self._redownloading and
+            self.task_monitor.task_info.get('status') == 'submission_unknown')
+        self.task_monitor.resolve_button.setToolTip(
+            tr('待确认弹窗打开中，完成或关闭后可继续处理') if busy else
+            tr('请先暂停并结束当前队列或下载') if self.task_manager.is_running or self._redownloading else
+            tr('处理该条提交待确认记录'))
+        self.current_task.resolve_button.setEnabled(
+            not busy and not self.task_manager.is_running and not self._redownloading and
+            self.current_task.task_info.get('status') == 'submission_unknown')
+        self.current_task.resolve_button.setToolTip(
+            tr('待确认弹窗打开中，完成或关闭后可继续处理') if busy else
+            tr('请先暂停并结束当前队列或下载') if self.task_manager.is_running or self._redownloading else
+            tr('处理该条提交待确认记录'))
+        self.recovery_button.setEnabled(
+            not busy and not self.task_manager.is_running and not self._redownloading and
+            bool(self._pending_recovery_records))
+        self.recovery_button.setToolTip(
+            tr('待确认弹窗打开中，请先完成或关闭当前核对') if busy else
+            tr('请先暂停并结束当前队列或下载') if self.task_manager.is_running or self._redownloading else
+            tr('逐条处理所有提交待确认记录'))
+
+    def _pending_records(self):
+        records = []
+        seen = set()
+        for source in list(self.task_manager.tasks) + list(self._history_cache):
+            record = source.get('duplicate_record') or source
+            if (source.get('status') != 'submission_unknown' and
+                    record.get('status') != 'submission_unknown' and
+                    source.get('ledger_state') not in {'unknown', 'submitting', 'reserved'} and
+                    record.get('ledger_state') not in {'unknown', 'submitting', 'reserved'}):
+                continue
+            key = record.get('ledger_id') or record.get('local_id') or record.get('prompt_path')
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(record)
+        return records
+
+    def _update_recovery_bar(self, tasks=None):
+        records = self._pending_records() if tasks is None else self._pending_records()
+        self._pending_recovery_records = records
+        visible = bool(records) and not self.closing.is_set()
+        self.recovery_bar.setVisible(visible)
+        self.recovery_label.setText(
+            tr('有 {count} 条提交待确认，队列已阻止重复创建，请逐条核对后继续。').format(count=len(records)))
+        self.recovery_button.setEnabled(visible and not self.task_manager.is_running and not self._redownloading)
+        self.recovery_button.setToolTip(
+            tr('请先暂停并结束当前队列或下载') if visible and not self.recovery_button.isEnabled()
+            else tr('逐条处理所有提交待确认记录'))
+
+    def _open_pending_recovery(self):
+        self.resolve_submissions(self._pending_records())
 
     def choose_directory(self, key):
         if self.task_manager.is_running or self._interactive_scan_busy or self._redownloading:
@@ -376,8 +524,11 @@ class WorkspacePage(QWidget):
             self.task_manager.cancel_all()
             return
         dialog = _CancelAllDialog(self)
-        if dialog.exec():
-            self.task_manager.cancel_all()
+        try:
+            if dialog.exec():
+                self.task_manager.cancel_all()
+        finally:
+            dialog.deleteLater()
 
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks
@@ -417,9 +568,12 @@ class WorkspacePage(QWidget):
             InfoBar.info(tr('当前无法打开任务操作'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
             return
         if not 0 <= index < len(self.queue_panel._tasks):
+            InfoBar.info(tr('任务已变化'), tr('该任务行已刷新，请重新选择后再操作'), parent=self, duration=3000)
             return
         task = self.queue_panel._tasks[index]
-        if action == 'match':
+        if action == 'resolve':
+            self.resolve_submission(task)
+        elif action == 'match':
             if not self.task_manager.is_running:
                 self.data_source.open_match_dialog(task.get('prompt_path'))
             else:
@@ -702,6 +856,10 @@ class WorkspacePage(QWidget):
         self.scan_sources()
 
     def _running_changed(self, running):
+        # 关闭流程会先取消后台任务；此后仍可能有排队信号到达，不能再触碰
+        # 正在销毁的 Qt 控件，否则会出现 wrapped C/C++ object deleted。
+        if self.closing.is_set():
+            return
         worker = self.task_manager.worker
         if running and worker is not None and worker is not getattr(self, '_progress_worker', None):
             # Download progress does not publish a full queue snapshot. Listen
@@ -741,6 +899,12 @@ class WorkspacePage(QWidget):
         self.task_monitor.skip_button.setToolTip(
             '' if monitor_skip_enabled else
             tr('只有运行中的活动任务可以跳过'))
+        monitor_resolve_enabled = bool(not busy and self.task_monitor.task_info.get('status') == 'submission_unknown')
+        self.task_monitor.resolve_button.setEnabled(monitor_resolve_enabled)
+        self.task_monitor.resolve_button.setToolTip(
+            tr('处理该条提交待确认记录') if monitor_resolve_enabled else
+            tr('请先暂停并结束当前队列或下载') if self.task_monitor.task_info.get('status') == 'submission_unknown' else
+            tr('当前没有待确认提交'))
         self.params_card.set_busy(busy)
         self.data_source.set_busy(busy)
         self.directory_bar.set_busy(busy)
@@ -767,6 +931,8 @@ class WorkspacePage(QWidget):
         return f'{clock(elapsed)} / {clock(eta)}'
 
     def _current_changed(self, index, task):
+        if self.closing.is_set():
+            return
         self.current_task.update_task(index, task)
         self.current_task.set_action_state(running=self.task_manager.is_running,
                                             redownloading=self._redownloading,
@@ -776,6 +942,13 @@ class WorkspacePage(QWidget):
         self.task_monitor.skip_button.setEnabled(monitor_skip_enabled)
         self.task_monitor.skip_button.setToolTip(
             '' if monitor_skip_enabled else tr('只有运行中的活动任务可以跳过'))
+        monitor_resolve_enabled = bool(not self.task_manager.is_running and not self._redownloading and
+                                       task.get('status') == 'submission_unknown')
+        self.task_monitor.resolve_button.setVisible(task.get('status') == 'submission_unknown')
+        self.task_monitor.resolve_button.setEnabled(monitor_resolve_enabled)
+        self.task_monitor.resolve_button.setToolTip(
+            tr('处理该条提交待确认记录') if monitor_resolve_enabled else
+            tr('请先暂停并结束当前队列或下载'))
         self.queue_panel.select_task(index)
         product = task.get('product') or '未分组'
         task_index = task.get('product_task_index', index + 1)
@@ -787,6 +960,8 @@ class WorkspacePage(QWidget):
         )
 
     def _tasks_updated(self, tasks):
+        if self.closing.is_set():
+            return
         config = self.config_manager.config
         catalog = catalog_snapshot(self.config_manager)
         self.queue_panel.set_model_catalog(catalog, config['workspace']['model'])
@@ -810,6 +985,7 @@ class WorkspacePage(QWidget):
         if not tasks:
             self.product_progress_label.setText('当前：—，总进度：产品 0/0')
             self.task_monitor.show_idle()
+        self._update_recovery_bar(tasks)
         self._update_summary()
 
     def _publish_history(self, history):
@@ -881,6 +1057,7 @@ class WorkspacePage(QWidget):
                 InfoBar.warning('防重复提交', f'已跳过{duplicates}个重复任务，避免重复扣费', parent=self, duration=6000)
             if uncertain:
                 InfoBar.warning('提交待确认', '提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。', parent=self, duration=8000)
+        self._update_recovery_bar(self.task_manager.tasks)
         self._arm_watch()
 
     def _watch_interval(self):
@@ -967,15 +1144,28 @@ class WorkspacePage(QWidget):
                             tr('请先暂停并结束当前队列，再处理待确认提交'),
                             parent=self, duration=6500)
             return
+        if not self._prepare_recovery_dialog(
+                lambda pending=copy.deepcopy(record): self.resolve_submission(pending)):
+            return
         config = runtime_config(self.config_manager)
         pending = record.get('duplicate_record') or record
         dialog = SubmissionRecoveryDialog(self.window(), pending)
+        self._recovery_open_pending = False
+        self._active_recovery_dialog = dialog
+        self._set_recovery_entry_busy(True)
         if pending.get('legacy_task_id'):
             hint = CaptionLabel('旧记录候选ID：' + str(pending['legacy_task_id']) +
                                 '。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。')
             hint.setWordWrap(True)
             dialog.viewLayout.addWidget(hint)
-        if not dialog.exec():
+        try:
+            accepted = dialog.exec()
+        finally:
+            self._active_recovery_dialog = None
+            self._set_recovery_entry_busy(False)
+            dialog.deleteLater()
+        if not accepted:
+            self._update_recovery_bar()
             return
         try:
             action_index = dialog.action.currentIndex()
@@ -993,6 +1183,8 @@ class WorkspacePage(QWidget):
                 self._resume_confirmed_submission(result)
         except Exception as error:
             InfoBar.error('未保存确认结果', str(error), parent=self, duration=6500)
+        finally:
+            self._update_recovery_bar()
 
     def _apply_resolved_submission(self, result, pending=None):
         """Apply one ledger resolution to history and the live queue."""
@@ -1010,14 +1202,39 @@ class WorkspacePage(QWidget):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
             InfoBar.warning(tr('暂不能处理待确认提交'), tr('请先暂停并结束当前队列，再处理待确认提交'), parent=self, duration=6500)
             return
-        pending = [record.get('duplicate_record') or record for record in (records or [])
-                   if record.get('status') == 'submission_unknown' or record.get('ledger_state') in {'unknown', 'submitting', 'reserved'}]
+        pending = []
+        seen = set()
+        for source in records or []:
+            record = source.get('duplicate_record') or source
+            if (source.get('status') != 'submission_unknown' and
+                    record.get('status') != 'submission_unknown' and
+                    source.get('ledger_state') not in {'unknown', 'submitting', 'reserved'} and
+                    record.get('ledger_state') not in {'unknown', 'submitting', 'reserved'}):
+                continue
+            key = record.get('ledger_id') or record.get('local_id') or record.get('prompt_path')
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append(record)
         if not pending:
             InfoBar.info(tr('没有待确认提交'), tr('当前没有需要核对的提交记录'), parent=self, duration=4000)
             return
+        if not self._prepare_recovery_dialog(
+                lambda pending=copy.deepcopy(records or []): self.resolve_submissions(pending)):
+            return
         config = runtime_config(self.config_manager)
         dialog = SubmissionRecoveryBatchDialog(pending, self.window())
-        if not dialog.exec():
+        self._recovery_open_pending = False
+        self._active_recovery_dialog = dialog
+        self._set_recovery_entry_busy(True)
+        try:
+            accepted = dialog.exec()
+        finally:
+            self._active_recovery_dialog = None
+            self._set_recovery_entry_busy(False)
+            dialog.deleteLater()
+        if not accepted:
+            self._update_recovery_bar()
             return
         selections = dialog.selections()
         ledger = SubmissionLedger(ledger_path(config))
@@ -1046,6 +1263,8 @@ class WorkspacePage(QWidget):
             self._redownload_queue = []
             self._batch_recovery_prompts = []
             InfoBar.error(tr('批量保存失败'), str(error), parent=self, duration=6500)
+        finally:
+            self._update_recovery_bar()
 
     def _resume_confirmed_submission(self, record):
         prompt_path = record.get('prompt_path') if isinstance(record, dict) else record
@@ -1070,16 +1289,28 @@ class WorkspacePage(QWidget):
         if self.task_manager.is_running or self._redownloading or self.closing.is_set():
             InfoBar.info(tr('当前无法重新生成'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
             return
-        from qfluentwidgets import Dialog
         original = record.get('duplicate_record') or record
         if original.get('status') != 'completed':
             InfoBar.info(tr('无法重新生成'), tr('只有已完成任务可以重新生成'), parent=self, duration=4000)
             return
-        dialog = Dialog('重新生成确认', '该任务已生成过，是否重新生成？这会创建一个新的付费任务。', self.window())
-        dialog.yesButton.setText('确认重新生成')
-        dialog.cancelButton.setText('不重新生成')
-        dialog.cancelButton.setFocus()
-        if not dialog.exec():
+        dialog = StudioDialog(self.window(), tr('重新生成确认'))
+        dialog.resize(560, 240)
+        dialog.body_layout.addWidget(CaptionLabel(tr('该任务已生成过，是否重新生成？这会创建一个新的付费任务。')))
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel = PushButton(tr('不重新生成'))
+        confirm = PushButton(tr('确认重新生成'))
+        cancel.clicked.connect(dialog.reject)
+        confirm.clicked.connect(dialog.accept)
+        footer.addWidget(cancel)
+        footer.addWidget(confirm)
+        dialog.body_layout.addLayout(footer)
+        cancel.setFocus()
+        try:
+            accepted = dialog.exec_()
+        finally:
+            dialog.deleteLater()
+        if not accepted:
             return
         config = runtime_config(self.config_manager)
         config['_rerun_signatures'] = [original['signature']]
@@ -1202,10 +1433,41 @@ class WorkspacePage(QWidget):
         self.closing.set()
         self.stats_timer.stop(); self.metrics_timer.stop()
         self._watch_timer.stop()
-        self.controls_dialog.close()
-        if hasattr(self, 'image_preview'):
-            self.image_preview.close()
+        self._close_child_dialogs()
+        self.jobs.request_stop()
+        self.history_jobs.request_stop()
+        self.log_drawer.jobs.request_stop()
         self._scan_version += 1
         self.task_manager.cancel_all()
         self._running_changed(self.task_manager.is_running)
         self._drain_history_writes()
+
+    def _close_child_dialogs(self):
+        """Close every workspace dialog before the main window starts exiting."""
+        dialogs = [getattr(self, 'controls_dialog', None),
+                   getattr(self, 'image_preview', None),
+                   getattr(self, '_active_recovery_dialog', None),
+                   getattr(getattr(self, 'data_source', None), 'active_match_dialog', None)]
+        try:
+            from PyQt5.QtWidgets import QApplication, QDialog
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QDialog) and widget is not self.window() and widget not in dialogs:
+                    dialogs.append(widget)
+        except Exception:
+            pass
+        for dialog in dialogs:
+            if dialog is None:
+                continue
+            try:
+                if hasattr(dialog, 'done'):
+                    dialog.done(0)
+                else:
+                    dialog.close()
+            except RuntimeError:
+                continue
+            try:
+                dialog.close()
+                dialog.deleteLater()
+            except RuntimeError:
+                pass
+        self._active_recovery_dialog = None
