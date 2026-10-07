@@ -123,6 +123,7 @@ class InteractionTests(unittest.TestCase):
         out = Path(self.temp.name) / "execution.log"
         with patch.object(QFileDialog, "getSaveFileName", return_value=(str(out), "")):
             logs.export()
+        wait_until(lambda: not logs.jobs.busy, timeout=5000)
         self.assertIn("开始生成", out.read_text(encoding="utf-8"))
         logs.clear()
         self.assertEqual(logs.browser.toPlainText(), "")

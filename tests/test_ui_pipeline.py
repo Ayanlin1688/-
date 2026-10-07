@@ -9,8 +9,12 @@ from PyQt5.QtWidgets import QApplication, QLabel
 from PyQt5.QtTest import QTest
 from core.config_manager import ConfigManager
 from ui.main_window import MainWindow
-from test_task_manager import wait_until
-from test_http_clients import LocalServer
+try:
+    from .test_task_manager import wait_until
+    from .test_http_clients import LocalServer
+except ImportError:
+    from test_task_manager import wait_until
+    from test_http_clients import LocalServer
 
 
 class PipelineUiTests(unittest.TestCase):
@@ -38,7 +42,11 @@ class PipelineUiTests(unittest.TestCase):
             self.assertTrue(window.settings_page.test_button.isEnabled())
             workspace.start_button.click()
             self.assertFalse(workspace.start_button.isEnabled())
+            wait_until(lambda: not workspace.jobs.busy and not workspace._interactive_scan_busy,
+                       timeout=30000)
             wait_until(lambda: not workspace.task_manager.is_running, timeout=90000)
+            wait_until(lambda: not workspace.history_jobs.busy and not workspace._history_pending,
+                       timeout=10000)
             self.assertEqual(window.history_page.table.rowCount(), 1)
             status_cell = window.history_page.table.cellWidget(0, 4)
             status_tag = status_cell.findChild(QLabel) if status_cell is not None else None

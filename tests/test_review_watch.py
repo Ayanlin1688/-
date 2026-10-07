@@ -12,7 +12,10 @@ from PyQt5.QtWidgets import QApplication
 
 from core.config_manager import ConfigManager
 from ui.pages.workspace_page import WorkspacePage
-from test_task_manager import wait_until
+try:
+    from .test_task_manager import wait_until
+except ImportError:
+    from test_task_manager import wait_until
 
 
 class WatchCallbackRegressionTests(unittest.TestCase):
@@ -71,23 +74,37 @@ class WatchCallbackRegressionTests(unittest.TestCase):
     def test_stale_manual_scan_cannot_consume_watch_trigger(self):
         self.page.scan_sources()
         self.page._watch_fired()
+        self.assertEqual(len(self.callbacks), 1)
         self.callbacks[0][0](self.result)
-        self.callbacks[1][0](self.result)
-        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(self.callbacks), 1)
+        self.assertEqual(self.requests, [])
 
     def test_stale_failure_cannot_consume_watch_trigger(self):
         self.page.scan_sources()
         self.page._watch_fired()
+        self.assertEqual(len(self.callbacks), 1)
         self.callbacks[0][1]('obsolete scan failed')
-        self.callbacks[1][0](self.result)
-        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(self.callbacks), 1)
+        self.assertEqual(self.requests, [])
+
+    def test_reentrant_scan_is_reported_and_releases_busy_state(self):
+        with patch('ui.pages.workspace_page.InfoBar.info') as info:
+            self.page.scan_sources()
+            self.assertTrue(self.page._interactive_scan_busy)
+            self.assertFalse(self.page.start_button.isEnabled())
+            self.page.scan_sources()
+            info.assert_called_once()
+            self.assertEqual(len(self.callbacks), 1)
+        self.callbacks[0][0](self.result)
+        self.assertFalse(self.page._interactive_scan_busy)
+        self.assertTrue(self.page.start_button.isEnabled())
 
     def test_manual_scan_superseding_watch_rearms_listener(self):
         self.page._watch_fired()
         self.page.scan_sources()
+        self.assertEqual(len(self.callbacks), 1)
         self.callbacks[0][0](self.result)
-        self.callbacks[1][0](self.result)
-        self.assertEqual(self.requests, [])
+        self.assertEqual(len(self.requests), 1)
         self.assertTrue(self.page._watch_timer.isActive())
 
 

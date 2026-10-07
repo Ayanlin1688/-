@@ -15,7 +15,10 @@ from qfluentwidgets import LineEdit
 from core.config_manager import ConfigManager
 from ui.main_window import MainWindow
 from ui.pages.workspace_page import WorkspacePage
-from test_task_manager import wait_until
+try:
+    from .test_task_manager import wait_until
+except ImportError:
+    from test_task_manager import wait_until
 
 
 class ButtonAuditTests(unittest.TestCase):
@@ -201,8 +204,8 @@ class ButtonAuditTests(unittest.TestCase):
         unknown = dict(task, status='submission_unknown', task_id='', result_path='')
         history.update_history([unknown])
         row = history.table.cellWidget(0, 8)
-        self.assertFalse(self.button(row, tooltip='打开文件').isEnabled())
-        self.assertFalse(self.button(row, tooltip='重新查询并下载（不创建新任务）').isEnabled())
+        self.assertFalse(self.button(row, tooltip='打开文件（暂无本地文件，任务完成下载后可打开）').isEnabled())
+        self.assertFalse(self.button(row, tooltip='当前没有可查询的远端 task_id').isEnabled())
         self.button(row, tooltip='处理待确认提交').click()
         self.history_handlers['resolve_submission'].assert_called_once_with(self.window.workspace_page, unknown)
         history.update_history([])

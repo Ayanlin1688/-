@@ -70,6 +70,7 @@ class ModelUiTests(unittest.TestCase):
                 card = window.workspace_page.params_card
                 self.assertIsNone(card.model.currentData())
                 self.assertFalse(card.duration.isEnabled())
+                self.assertIn('没有可用时长', card.duration.toolTip())
                 self.assertEqual(card.ratio.count(), 0)
                 self.assertEqual(card.resolution.count(), 0)
             finally:
@@ -206,7 +207,7 @@ class ModelUiTests(unittest.TestCase):
                 wait_until(lambda: len(workspace.queue_panel._tasks) == 1)
                 with patch.object(workspace, '_choose_unmatched_policy', return_value='仍提交文生视频'):
                     workspace.start_button.click()
-                wait_until(lambda: len(server.jobs) == 1)
+                    wait_until(lambda: len(server.jobs) == 1)
                 client = ApiClient(metadata.base, 'fixture-key')
                 try:
                     controller = window.model_catalog
@@ -258,6 +259,10 @@ class ModelUiTests(unittest.TestCase):
                 self.assertEqual(self.config.config['model_overrides'][str(prompts/'1.txt')], 'video-v3')
                 dialog._save()
                 self.assertEqual(self.config.config['model_overrides'][str(prompts/'1.txt')], 'video-v2')
+                self.config.config['prompt_detection']['enabled'] = False
+                dialog._show_details(0)
+                self.assertFalse(dialog.model_combo.isEnabled())
+                self.assertIn('设置中开启自动识别', dialog.model_combo.toolTip())
                 dialog.reset_models()
                 dialog._save()
                 self.assertEqual(self.config.config['model_overrides'], {})

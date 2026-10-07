@@ -9,6 +9,7 @@ from PyQt5.QtCore import QTimer
 from qfluentwidgets import PushButton
 from core.config_manager import ConfigManager
 from ui.pages.workspace_page import WorkspacePage
+from test_task_manager import wait_until
 
 
 class UnmatchedPreflightTests(unittest.TestCase):
@@ -49,10 +50,12 @@ class UnmatchedPreflightTests(unittest.TestCase):
             try:
                 with patch.object(page, '_choose_unmatched_policy', return_value=None, create=True) as choice, patch.object(page.task_manager, 'start_tasks') as start:
                     page.start_generation(interactive=True)
+                    wait_until(lambda: not page.jobs.busy and not page._interactive_scan_busy, timeout=5000)
                     choice.assert_called_once()
                     start.assert_not_called()
                 with patch.object(page, '_choose_unmatched_policy', return_value='仍提交文生视频'), patch.object(page.task_manager, 'start_tasks') as start:
                     page.start_generation(interactive=True)
+                    wait_until(lambda: not page.jobs.busy and not page._interactive_scan_busy, timeout=5000)
                     self.assertEqual(start.call_args.args[0]['task_strategy']['unmatched_prompt'], '仍提交文生视频')
                     self.assertEqual(cfg.config['task_strategy']['unmatched_prompt'], '跳过并警告')
             finally:
