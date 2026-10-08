@@ -6,7 +6,8 @@ QFramelessWidgets 自带的对话框标题栏没有标题文字且在 Windows 10
 
 import math
 
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5 import sip
+from PyQt5.QtCore import Qt, QRectF, QObject
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -16,6 +17,22 @@ from core.i18n import tr
 
 WINDOW_RADIUS = 12
 WINDOW_MARGIN = 8
+
+
+def is_dialog_alive(dialog):
+    return dialog is not None and (not isinstance(dialog, QObject) or not sip.isdeleted(dialog))
+
+
+def safe_delete_dialog(dialog):
+    """由所有者安排一次销毁，兼容已失效或已安排销毁的弹窗。"""
+    try:
+        if not is_dialog_alive(dialog) or getattr(dialog, '_studio_delete_pending', False) is True:
+            return False
+        dialog.deleteLater()
+        dialog._studio_delete_pending = True
+        return True
+    except RuntimeError:
+        return False
 
 
 def dialog_label(text='', size=13, color='#F4F5F7', bold=False):

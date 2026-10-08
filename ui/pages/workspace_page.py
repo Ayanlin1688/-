@@ -8,7 +8,7 @@ import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy, QFrame
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget
-from ..components.studio_dialog import StudioDialog
+from ..components.studio_dialog import StudioDialog, is_dialog_alive, safe_delete_dialog
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
@@ -309,7 +309,8 @@ class WorkspacePage(QWidget):
     def _set_recovery_entry_busy(self, busy):
         """Lock every workspace entry that could create another dialog."""
         busy = bool(busy)
-        self.controls_dialog.setEnabled(not busy)
+        if is_dialog_alive(self.controls_dialog):
+            self.controls_dialog.setEnabled(not busy)
         history_page = getattr(self.window(), 'history_page', None)
         if history_page is not None:
             history_page.set_recovery_busy(busy)
@@ -528,7 +529,7 @@ class WorkspacePage(QWidget):
             if dialog.exec():
                 self.task_manager.cancel_all()
         finally:
-            dialog.deleteLater()
+            safe_delete_dialog(dialog)
 
     def reorder_references(self, index, paths):
         tasks = self.queue_panel._tasks
@@ -556,8 +557,9 @@ class WorkspacePage(QWidget):
         self.append_log(f'{task["prompt_name"]}：已保存 {len(paths)} 张参考图顺序，对应 Picture 1–{len(paths)}', 'success')
 
     def preview_image(self, path):
-        if hasattr(self, 'image_preview'):
-            self.image_preview.close(); self.image_preview.deleteLater()
+        if is_dialog_alive(getattr(self, 'image_preview', None)):
+            self.image_preview.close()
+            safe_delete_dialog(self.image_preview)
         self.image_preview = ImagePreview(path, self.window()); self.image_preview.show()
 
     def task_action(self, index, action):
@@ -743,8 +745,10 @@ class WorkspacePage(QWidget):
         cancel.clicked.connect(dialog.reject)
         dialog.body_layout.addWidget(cancel)
         cancel.setFocus()
-        dialog.exec_()
-        dialog.deleteLater()
+        try:
+            dialog.exec_()
+        finally:
+            safe_delete_dialog(dialog)
         return selected[0]
 
     def start_generation(self, interactive=False):
@@ -1158,18 +1162,28 @@ class WorkspacePage(QWidget):
                                 '。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。')
             hint.setWordWrap(True)
             dialog.viewLayout.addWidget(hint)
+        accepted = False
+        action_index = 0
+        confirmed_task_id = ''
         try:
             accepted = dialog.exec()
+            if accepted:
+                if not is_dialog_alive(dialog):
+                    raise RuntimeError(tr('待确认弹窗已关闭，未保存确认结果'))
+                action_index = dialog.action.currentIndex()
+                confirmed_task_id = dialog.task_id.text().strip() if action_index == 1 else ''
+        except RuntimeError as error:
+            accepted = False
+            self.append_log(str(error), 'warning')
+            InfoBar.warning(tr('未保存确认结果'), tr('弹窗已失效，请重新核对；未提交任何任务'), parent=self, duration=6500)
         finally:
             self._active_recovery_dialog = None
             self._set_recovery_entry_busy(False)
-            dialog.deleteLater()
+            safe_delete_dialog(dialog)
         if not accepted:
             self._update_recovery_bar()
             return
         try:
-            action_index = dialog.action.currentIndex()
-            confirmed_task_id = dialog.task_id.text().strip() if action_index == 1 else ''
             ledger = SubmissionLedger(ledger_path(config))
             result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
                                     task_id=confirmed_task_id,
@@ -1227,16 +1241,25 @@ class WorkspacePage(QWidget):
         self._recovery_open_pending = False
         self._active_recovery_dialog = dialog
         self._set_recovery_entry_busy(True)
+        accepted = False
+        selections = []
         try:
             accepted = dialog.exec()
+            if accepted:
+                if not is_dialog_alive(dialog):
+                    raise RuntimeError(tr('批量待确认弹窗已关闭，未保存确认结果'))
+                selections = dialog.selections()
+        except RuntimeError as error:
+            accepted = False
+            self.append_log(str(error), 'warning')
+            InfoBar.warning(tr('未保存确认结果'), tr('弹窗已失效，请重新核对；未提交任何任务'), parent=self, duration=6500)
         finally:
             self._active_recovery_dialog = None
             self._set_recovery_entry_busy(False)
-            dialog.deleteLater()
+            safe_delete_dialog(dialog)
         if not accepted:
             self._update_recovery_bar()
             return
-        selections = dialog.selections()
         ledger = SubmissionLedger(ledger_path(config))
         redownloads = []
         prompts = []
@@ -1309,7 +1332,7 @@ class WorkspacePage(QWidget):
         try:
             accepted = dialog.exec_()
         finally:
-            dialog.deleteLater()
+            safe_delete_dialog(dialog)
         if not accepted:
             return
         config = runtime_config(self.config_manager)
@@ -1467,7 +1490,7 @@ class WorkspacePage(QWidget):
                 continue
             try:
                 dialog.close()
-                dialog.deleteLater()
+                safe_delete_dialog(dialog)
             except RuntimeError:
                 pass
         self._active_recovery_dialog = None

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, ComboBox, LineEdit, PushButton, SubtitleLabel
 
@@ -38,7 +38,6 @@ class _RecoveryDialogBase(StudioDialog):
         footer.addWidget(self.yesButton)
         self.body_layout.addLayout(footer)
         self.buttonLayout = footer
-        self.finished.connect(lambda _result: QTimer.singleShot(0, self.deleteLater))
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

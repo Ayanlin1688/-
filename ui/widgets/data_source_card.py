@@ -8,6 +8,7 @@ from ..components.custom_widgets import CaptionLabel, LineEdit, PushButton, Stro
 from core.i18n import tr
 from qfluentwidgets import FluentIcon as FIF
 from ..components.match_dialog import MatchDialog
+from ..components.studio_dialog import safe_delete_dialog
 
 
 class DataSourceCard(QWidget):
@@ -116,4 +117,4 @@ class DataSourceCard(QWidget):
             dialog.exec_()
         finally:
             self.active_match_dialog = None
-            dialog.deleteLater()
+            safe_delete_dialog(dialog)

@@ -19,6 +19,7 @@ from core.version import APP_NAME, APP_VERSION
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
 from .components.custom_widgets import ensure_ui_font
+from .components.studio_dialog import safe_delete_dialog
 from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
@@ -994,7 +995,7 @@ class MainWindow(FluentWindow):
                     try:
                         widget.done(0)
                         widget.close()
-                        widget.deleteLater()
+                        safe_delete_dialog(widget)
                     except RuntimeError:
                         pass
         except Exception:
@@ -1039,4 +1040,6 @@ class MainWindow(FluentWindow):
                          self.model_catalog.jobs):
                 jobs.force_stop()
             QApplication.quit()
-            threading.Timer(0.5, lambda: os._exit(0), daemon=True).start()
+            _force_timer = threading.Timer(0.5, lambda: os._exit(0))
+            _force_timer.daemon = True
+            _force_timer.start()
