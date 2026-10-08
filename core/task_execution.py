@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 
 from .aigc import write_aigc_metadata
-from .api_client import ApiClient, SubmissionUncertain
+from .api_client import ApiClient, SubmissionUncertain, _is_definitive_precreation_rejection
 from .http_client import Cancelled, extract
 from .image_uploader import ImageUploader
 from .log_redaction import redact_structure
@@ -221,16 +221,11 @@ class TaskExecution:
                         self.task['remote_failed'] = True
                     if self.phase == 'submit' and self.intent_sent:
                         status = getattr(error, 'status_code', None)
-                        if status not in {400, 422}:
+                        if not self._mark_precreation_rejected(error):
                             self.owner.submission_error(status)
                             self.terminal('submission_unknown', message)
                             self.log('提交结果不确定，禁止自动重新创建：' + message, 'error')
                             return
-                        self.intent_sent = False
-                        self.owner.ledger.save(self.task, 'rejected')
-                        self.task.pop('ledger_id', None)
-                        self.task.pop('submit_idempotency_key', None)
-                        self.task.pop('submit_idempotency_signature', None)
                     model_failure = self.phase in {'validation', 'submit'} or remote_failed
                     in_pool = self.model in self.pool.names
                     remaining = self.pool.failed(self.model, force_cooldown=bool(failover)) if model_failure and in_pool else 0
@@ -309,6 +304,21 @@ class TaskExecution:
         self.intent_sent = False
         self.phase = 'validation'
         self._resubmitted = True
+
+    def _mark_precreation_rejected(self, error):
+        """Release the durable intent only for a proven pre-creation failure."""
+        if self.phase != 'submit' or not self.intent_sent:
+            return False
+        status = getattr(error, 'status_code', None)
+        body = getattr(error, 'body', '') or str(error)
+        if status not in {400, 422} and not _is_definitive_precreation_rejection(status, body):
+            return False
+        self.intent_sent = False
+        self.owner.ledger.save(self.task, 'rejected')
+        self.task.pop('ledger_id', None)
+        self.task.pop('submit_idempotency_key', None)
+        self.task.pop('submit_idempotency_signature', None)
+        return True
 
     def _attempt(self, original, client, uploader, downloader, diagnostics):
         task = self.task

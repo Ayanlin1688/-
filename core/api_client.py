@@ -23,6 +23,99 @@ class SubmissionUncertain(RequestError):
     pass
 
 
+_PRECREATION_STATUS_CODES = {401, 402, 403}
+_QUOTA_MARKERS = (
+    'insufficient_user_quota', 'insufficient_quota', 'quota', 'balance', 'arrears',
+    '额度', '余额', '欠费', '预扣费',
+)
+_AUTH_MARKERS = (
+    'invalid_api_key', 'unauthorized', 'unauthenticated', 'authentication',
+    'permission', 'api key', 'token', '鉴权', '授权', '密钥无效',
+)
+_FORBIDDEN_CONTEXT_MARKERS = (
+    'authentication', 'unauthorized', 'permission', 'api key', 'token', '鉴权', '授权', '密钥',
+)
+
+
+def _error_text_parts(payload):
+    """Flatten nested provider errors, including JSON stored in message strings."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield str(key)
+            yield from _error_text_parts(value)
+        return
+    if isinstance(payload, (list, tuple)):
+        for value in payload:
+            yield from _error_text_parts(value)
+        return
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text:
+            try:
+                nested = json.loads(text)
+            except (TypeError, ValueError):
+                nested = None
+            if isinstance(nested, (dict, list)):
+                yield from _error_text_parts(nested)
+            yield payload
+        return
+    if payload is not None:
+        yield str(payload)
+
+
+def _has_task_identifier(payload):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in {'task_id', 'id'} and value is not None and not isinstance(value, bool) and str(value).strip():
+                return True
+            if _has_task_identifier(value):
+                return True
+    elif isinstance(payload, (list, tuple)):
+        return any(_has_task_identifier(value) for value in payload)
+    elif isinstance(payload, str):
+        try:
+            nested = json.loads(payload)
+        except (TypeError, ValueError):
+            return False
+        return _has_task_identifier(nested)
+    return False
+
+
+def _precreation_rejection_kind(status_code, payload):
+    """Return quota/auth for a certain pre-creation rejection, otherwise ''."""
+    if status_code not in _PRECREATION_STATUS_CODES or _has_task_identifier(payload):
+        return ''
+    text = ' '.join(_error_text_parts(payload)).casefold()
+    if any(marker.casefold() in text for marker in _QUOTA_MARKERS):
+        return 'quota'
+    if any(marker.casefold() in text for marker in _AUTH_MARKERS):
+        return 'auth'
+    # "forbidden" alone is deliberately insufficient: WAF and routing failures
+    # must remain uncertain unless the response also carries auth semantics.
+    if 'forbidden' in text and any(marker.casefold() in text for marker in _FORBIDDEN_CONTEXT_MARKERS):
+        return 'auth'
+    return ''
+
+
+def _is_definitive_precreation_rejection(status_code, payload):
+    """Whether a response proves the provider rejected creation before a task existed."""
+    return bool(_precreation_rejection_kind(status_code, payload))
+
+
+def _precreation_rejection_message(status_code, payload):
+    kind = _precreation_rejection_kind(status_code, payload)
+    detail = '；'.join(dict.fromkeys(_error_text_parts(payload))) or '上游未提供详细原因'
+    if len(detail) > 1600:
+        detail = detail[:1597] + '...'
+    if kind == 'quota':
+        action = '请充值后重新生成'
+        label = '服务商返回额度不足'
+    else:
+        action = '请检查 API Key/权限后重新生成'
+        label = '服务商鉴权失败'
+    return f'{label}（HTTP {status_code}）：{detail}；本次未创建任务、未扣费；{action}'
+
+
 def _has_error_object(payload):
     return isinstance(payload, dict) and isinstance(payload.get('error'), (dict, str))
 
@@ -111,14 +204,24 @@ class ApiClient(HttpClient):
                 try:
                     raw = self.json(response)
                 except RequestError as error:
+                    safe_text = self.redact(response.text)
+                    if _is_definitive_precreation_rejection(response.status_code, safe_text):
+                        raise RequestError(
+                            _precreation_rejection_message(response.status_code, safe_text),
+                            response.status_code, safe_text) from None
                     raise SubmissionUncertain(str(error), response.status_code) from None
                 task_id = extract(raw, ('task_id', 'id'))
                 if isinstance(task_id, (str, int)) and not isinstance(task_id, bool) and str(task_id).strip():
                     return str(task_id).strip()
-                message = f'HTTP {response.status_code}: 创建响应缺少 task_id/id：{self.redact(response.text)}'
+                safe_text = self.redact(response.text)
+                message = f'HTTP {response.status_code}: 创建响应缺少 task_id/id：{safe_text}'
                 if response.status_code in {400, 422}:
-                    raise RequestError(message, response.status_code, self.redact(response.text))
-                raise SubmissionUncertain(message, response.status_code, self.redact(response.text))
+                    raise RequestError(message, response.status_code, safe_text)
+                if _is_definitive_precreation_rejection(response.status_code, safe_text):
+                    raise RequestError(
+                        _precreation_rejection_message(response.status_code, safe_text),
+                        response.status_code, safe_text)
+                raise SubmissionUncertain(message, response.status_code, safe_text)
         except Exception as error:
             self.log(f'提交失败：{self.redact(error)}', 'error')
             raise

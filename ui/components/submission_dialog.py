@@ -18,8 +18,12 @@ def _context_text(record):
     submitted_at = (record.get('submitted_at') or record.get('created_at') or
                     record.get('finished_at') or record.get('updated_at') or '—')
     product = record.get('product') or '—'
-    return tr('产品名：{product}\n提示词文件：{prompt_name}\n模型：{model}\n提交时间：{submitted_at}').format(
-        product=product, prompt_name=prompt_name, model=model, submitted_at=submitted_at)
+    error = str(record.get('error') or '').strip()
+    if len(error) > 600:
+        error = error[:597] + '...'
+    summary = tr('\n上次上游返回摘要：{error}').format(error=error) if error else ''
+    return tr('产品名：{product}\n提示词文件：{prompt_name}\n模型：{model}\n提交时间：{submitted_at}{summary}').format(
+        product=product, prompt_name=prompt_name, model=model, submitted_at=submitted_at, summary=summary)
 
 
 class _RecoveryDialogBase(StudioDialog):

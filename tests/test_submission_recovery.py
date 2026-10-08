@@ -22,8 +22,12 @@ class RecoveryDialogTests(unittest.TestCase):
     def test_default_cannot_authorize_resubmission_and_id_must_be_nonempty(self):
         parent = QWidget()
         parent.resize(800, 600)
-        dialog = SubmissionRecoveryDialog(parent)
+        dialog = SubmissionRecoveryDialog(parent, dict(
+            product='车载风扇', prompt_path='提示词5.txt', model='video-v3',
+            submitted_at='2026-10-07 15:51:18', status='submission_unknown',
+            error='服务商返回额度不足：余额 ¥0.152000'))
         try:
+            self.assertIn('上次上游返回摘要：服务商返回额度不足', dialog.context_label.text())
             self.assertEqual(dialog.action.currentIndex(), 0)
             self.assertFalse(dialog.yesButton.isEnabled())
             dialog.action.setCurrentIndex(1)

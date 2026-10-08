@@ -8,11 +8,15 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication
 from core.config_manager import DEFAULT_CONFIG
 from core.submission_safety import SubmissionGate
+from core.api_client import ApiClient, SubmissionUncertain, _is_definitive_precreation_rejection
+from core.http_client import RequestError
+from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
 from core.task_manager import TaskManager
 from core.task_state import task_signature
 from test_http_clients import LocalServer, FixtureHandler
@@ -24,7 +28,7 @@ class SafetyHandler(FixtureHandler):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         self.server.calls.append((self.path, dict(self.headers), body))
         if self.server.create_status:
-            response = {'error': 'ambiguous provider failure'}
+            response = self.server.response_payload or {'error': 'ambiguous provider failure'}
             if self.server.error_id:
                 response['task_id'] = self.server.error_id
             return self.respond(response, self.server.create_status)
@@ -40,6 +44,7 @@ class SafetyServer(LocalServer):
         server.RequestHandlerClass = SafetyHandler
         server.create_status = 0
         server.error_id = ''
+        server.response_payload = None
         server.drop_response = False
         return server
 
@@ -128,6 +133,103 @@ class SubmissionSafetyTests(unittest.TestCase):
                     task = self.run_batch(server)
                     self.assertEqual(len(server.calls) - before, 1)
                     self.assertEqual(task['status'], 'submission_unknown')
+
+    def test_nested_quota_rejection_is_failed_and_can_be_retried(self):
+        payload = {
+            'code': 'fail_to_fetch_task',
+            'message': json.dumps({
+                'code': 'insufficient_user_quota',
+                'message': '预扣费额度失败：用户剩余额度 ¥0.152000，需要预扣费额度 ¥1.800000',
+                'data': None,
+            }, ensure_ascii=False),
+            'data': None,
+        }
+        self.config['task_strategy']['auto_retry'] = False
+        with SafetyServer() as server:
+            server.create_status = 403
+            server.response_payload = payload
+            failed = self.run_batch(server)
+            self.assertEqual(failed['status'], 'failed')
+            self.assertIn('额度不足', failed['error'])
+            self.assertIn('¥0.152000', failed['error'])
+            records = SubmissionLedger(ledger_path(self.config)).records(account_scope(self.config))
+            self.assertTrue(records)
+            self.assertNotIn(records[-1]['ledger_state'], {'unknown', 'reserved', 'submitting'})
+
+            server.create_status = 0
+            server.response_payload = None
+            self.manager = TaskManager()
+            retried = self.run_batch(server)
+            self.assertEqual(retried['status'], 'completed')
+            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), 2)
+
+    def test_nested_auth_rejection_is_failed_and_can_be_retried(self):
+        self.config['task_strategy']['auto_retry'] = False
+        with SafetyServer() as server:
+            server.create_status = 401
+            server.response_payload = {
+                'code': 'unauthorized',
+                'message': 'invalid_api_key：鉴权失败，请检查 API Key',
+                'data': None,
+            }
+            failed = self.run_batch(server)
+            self.assertEqual(failed['status'], 'failed')
+            self.assertIn('鉴权失败', failed['error'])
+            records = SubmissionLedger(ledger_path(self.config)).records(account_scope(self.config))
+            self.assertNotIn(records[-1]['ledger_state'], {'unknown', 'reserved', 'submitting'})
+
+            server.create_status = 0
+            server.response_payload = None
+            self.manager = TaskManager()
+            retried = self.run_batch(server)
+            self.assertEqual(retried['status'], 'completed')
+            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), 2)
+
+    def test_unknown_403_and_non_definitive_responses_keep_duplicate_guard(self):
+        self.config['task_strategy']['auto_retry'] = False
+        with SafetyServer() as server:
+            server.create_status = 403
+            server.response_payload = {'code': 'waf_block', 'message': 'request blocked by gateway', 'data': None}
+            first = self.run_batch(server)
+            self.assertEqual(first['status'], 'submission_unknown')
+            records = SubmissionLedger(ledger_path(self.config)).records(account_scope(self.config))
+            self.assertEqual(records[-1]['ledger_state'], 'unknown')
+            before = len([path for path, _, _ in server.calls if path == '/videos'])
+            self.manager = TaskManager()
+            second = self.run_batch(server)
+            self.assertEqual(second['status'], 'submission_unknown')
+            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), before)
+
+    def test_500_429_and_200_without_id_remain_uncertain(self):
+        self.config['task_strategy']['auto_retry'] = False
+        with SafetyServer() as server:
+            for status in (500, 429, 200):
+                self.prompt.write_text(f'non definitive response {status}', encoding='utf-8')
+                server.create_status = status
+                server.response_payload = {'code': 'provider_failure', 'message': '暂时无法确认', 'data': None}
+                with self.subTest(status=status):
+                    task = self.run_batch(server)
+                    self.assertEqual(task['status'], 'submission_unknown')
+                    records = SubmissionLedger(ledger_path(self.config)).records(account_scope(self.config))
+                    self.assertEqual(records[-1]['ledger_state'], 'unknown')
+
+    def test_timeout_path_remains_submission_uncertain(self):
+        client = ApiClient('http://fixture.invalid', 'local-fixture', log=lambda *args: None)
+        client.request = Mock(side_effect=RequestError('连接超时'))
+        params = dict(duration=8, aspect_ratio='16:9', resolution='720p', generate_audio=False)
+        with self.assertRaises(SubmissionUncertain):
+            client.create_task('video-v3', 'text', [], params)
+
+    def test_precreation_classifier_rejects_only_explicit_quota_or_auth(self):
+        nested = {
+            'code': 'fail_to_fetch_task',
+            'message': json.dumps({'code': 'insufficient_user_quota', 'message': '余额不足'}, ensure_ascii=False),
+        }
+        self.assertTrue(_is_definitive_precreation_rejection(403, nested))
+        self.assertTrue(_is_definitive_precreation_rejection(401, {'code': 'invalid_api_key'}))
+        self.assertFalse(_is_definitive_precreation_rejection(403, {'code': 'forbidden', 'message': 'WAF blocked'}))
+        self.assertFalse(_is_definitive_precreation_rejection(500, nested))
+        self.assertFalse(_is_definitive_precreation_rejection(403, dict(nested, task_id='already-created')))
 
     def test_error_response_id_is_recovered_without_new_post(self):
         with SafetyServer() as server:
