@@ -235,6 +235,25 @@ class HistoryStore:
                 self._trim()
         return len(batch)
 
+    def delete_many(self, local_ids):
+        """Delete rows atomically; database errors leave the cache unchanged."""
+        keys = tuple(dict.fromkeys(str(local_id) for local_id in local_ids))
+        if not keys:
+            return 0
+        selected = set(keys)
+        with self.lock:
+            conn = self._open()
+            try:
+                with conn:
+                    cursor = conn.executemany('DELETE FROM history WHERE local_id=?',
+                                              ((key,) for key in keys))
+                    removed = cursor.rowcount
+            finally:
+                conn.close()
+            self._cache = [record for record in self._cache if str(record.get('local_id')) not in selected]
+            self._positions = {record.get('local_id'): index for index, record in enumerate(self._cache)}
+            return removed
+
     def records(self, limit=None):
         with self.lock:
             if limit is None:

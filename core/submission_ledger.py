@@ -23,6 +23,23 @@ def ledger_path(config):
     return Path(config['paths']['prompts']).resolve().parent / '.storyboard-submissions.sqlite3'
 
 
+def is_orphan_uncertain(record, ledger, scope):
+    """Check recovery eligibility without creating or changing the ledger."""
+    if record.get('status') != 'submission_unknown':
+        return False
+    record_id = record.get('ledger_id')
+    if not record_id or not ledger.path.is_file():
+        return True
+    db = sqlite3.connect(ledger.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=10)
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='submissions'").fetchone() is None:
+            return True
+        row = db.execute('SELECT state FROM submissions WHERE id=? AND scope=?', (record_id, scope)).fetchone()
+        return row is None or row[0] not in {'unknown', 'submitting', 'reserved'}
+    finally:
+        db.close()
+
+
 class SubmissionLedger:
     def __init__(self, path):
         self.path = Path(path)
@@ -118,4 +135,20 @@ class SubmissionLedger:
             task['ledger_state'] = state
             db.execute('UPDATE submissions SET state=?, record=?, updated=? WHERE id=?',
                        (state, self._encode(task), time.time(), record_id))
+            return task
+
+    def discard(self, record_id, scope, *, reason=''):
+        """Explicitly discard an invalid uncertain intent without retrying it."""
+        with self._connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM submissions WHERE id=? AND scope=?', (record_id, scope)).fetchone()
+            if row is None or row['state'] not in {'unknown', 'submitting', 'reserved'}:
+                raise ValueError('此记录不是可作废的待确认提交')
+            task = self._record(row)
+            if task.get('task_id'):
+                raise ValueError('已有 task_id 的记录不能作废，请查询原任务')
+            task.update(status='failed', discarded=True, discard_reason=reason or '用户确认无效并作废',
+                        ledger_state='discarded')
+            db.execute('UPDATE submissions SET state=?, record=?, updated=? WHERE id=?',
+                       ('discarded', self._encode(task), time.time(), record_id))
             return task
