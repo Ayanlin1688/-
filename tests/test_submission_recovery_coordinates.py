@@ -18,7 +18,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QAbstractButton, QDialog, QScrollArea, QWidget
 
 from core.config_manager import ConfigManager
-from core.submission_ledger import account_scope
+from core.submission_ledger import SubmissionLedger, account_scope
 from ui.components.submission_dialog import SubmissionRecoveryBatchDialog, SubmissionRecoveryDialog
 from ui.main_window import MainWindow
 
@@ -417,6 +417,290 @@ class RecoveryCoordinateTests(unittest.TestCase):
         self.assertEqual(self.exec_results, [(SubmissionRecoveryBatchDialog, QDialog.Rejected)])
         self.ledger.resolve.assert_not_called()
         self.start_tasks.assert_not_called()
+
+    def test_single_discard_coordinates_require_confirmation_and_never_restart(self):
+        def discard_record(record_id, scope):
+            self.assertEqual(scope, account_scope(self.config.config))
+            record = copy.deepcopy(next(row for row in self.records if row['ledger_id'] == record_id))
+            return dict(record, status='failed', ledger_state='discarded', discarded=True,
+                        discard_reason='用户确认无效并作废')
+
+        self.ledger.discard.side_effect = discard_record
+
+        def discard(dialog):
+            self._choose(dialog.action, 3)
+            self.assertFalse(dialog.task_id.isVisible())
+            self.assertFalse(dialog.yesButton.isEnabled())
+            self.assertIn('作废需确认服务端未创建', dialog.reason_label.text())
+            self._mouse(dialog.yesButton)
+            self.assertTrue(dialog.isVisible())
+            self._mouse(dialog.discard_confirm)
+            self.assertTrue(dialog.discard_confirm.isChecked())
+            self.assertTrue(dialog.yesButton.isEnabled())
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.is_orphan_uncertain', return_value=False):
+            self._drive_recovery(lambda: self.page.resolve_submission(self.records[1]), discard)
+        self.assertEqual(self.exec_results, [(SubmissionRecoveryDialog, QDialog.Accepted)])
+        self.ledger.discard.assert_called_once_with('ledger-2', account_scope(self.config.config))
+        self.ledger.resolve.assert_not_called()
+        self.start_tasks.assert_not_called()
+        self.assertEqual([row['status'] for row in self.page.task_manager.tasks],
+                         ['submission_unknown', 'failed', 'submission_unknown'])
+        self.assertTrue(self.page.task_manager.tasks[1]['discarded'])
+        self.assertEqual(len(self.page._pending_records()), 2)
+
+    def test_batch_discard_coordinates_preserve_keep_pending_without_any_posts(self):
+        selections = []
+
+        def discard_record(record_id, scope):
+            record = copy.deepcopy(next(row for row in self.records if row['ledger_id'] == record_id))
+            return dict(record, status='failed', ledger_state='discarded', discarded=True,
+                        discard_reason='用户确认无效并作废')
+
+        self.ledger.discard.side_effect = discard_record
+
+        def select(dialog):
+            for entry in dialog._rows:
+                self._choose(entry['action'], 4)
+                self.assertFalse(entry['task_id'].isVisible())
+                self.assertFalse(dialog.yesButton.isEnabled())
+                self._mouse(entry['discard_confirm'])
+                self.assertTrue(entry['discard_confirm'].isChecked())
+            self._choose(dialog._rows[0]['action'], 1)
+            self.assertTrue(dialog.yesButton.isEnabled())
+            selections.extend(dialog.selections())
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.is_orphan_uncertain', return_value=False):
+            self._drive_recovery(lambda: self.page.resolve_submissions(self.records[:3]), select)
+        self.assertEqual([selection[1:] for selection in selections], [(0, ''), (3, ''), (3, '')])
+        self.assertEqual([call.args[0] for call in self.ledger.discard.call_args_list], ['ledger-2', 'ledger-3'])
+        self.ledger.resolve.assert_not_called()
+        self.start_tasks.assert_not_called()
+        self.assertEqual(self.page._pending_records(), [self.page.task_manager.tasks[0]])
+
+    def test_single_checked_discard_cancel_coordinates_never_touch_ledger(self):
+        def cancel(dialog):
+            self._choose(dialog.action, 3)
+            self._mouse(dialog.discard_confirm)
+            self.assertTrue(dialog.yesButton.isEnabled())
+            self._mouse(dialog.cancelButton)
+
+        self._drive_recovery(lambda: self.page.resolve_submission(self.records[0]), cancel)
+        self._assert_rejected_without_resolution()
+        self.ledger.discard.assert_not_called()
+
+    def test_batch_checked_discard_cancel_coordinates_never_touch_ledger(self):
+        def cancel(dialog):
+            for entry in dialog._rows:
+                self._choose(entry['action'], 4)
+                self._mouse(entry['discard_confirm'])
+            self.assertTrue(dialog.yesButton.isEnabled())
+            self._mouse(dialog.cancelButton)
+
+        self._drive_recovery(lambda: self.page.resolve_submissions(self.records[:3]), cancel)
+        self.assertEqual(self.exec_results, [(SubmissionRecoveryBatchDialog, QDialog.Rejected)])
+        self.ledger.discard.assert_not_called()
+        self.ledger.resolve.assert_not_called()
+        self.start_tasks.assert_not_called()
+
+    def test_single_orphan_discard_without_ledger_id_updates_only_its_local_record(self):
+        records = copy.deepcopy(self.records[:3])
+        for record in records:
+            record.pop('ledger_id')
+        self._set_pending(records)
+        ledger = SubmissionLedger(Path(self.temp.name) / 'orphan-ledger.sqlite3')
+
+        def discard(dialog):
+            self._choose(dialog.action, 3)
+            self._mouse(dialog.discard_confirm)
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.SubmissionLedger', return_value=ledger), \
+                patch.object(ledger, 'discard', wraps=ledger.discard) as discard_call, \
+                patch.object(ledger, 'resolve', wraps=ledger.resolve) as resolve_call:
+            self._drive_recovery(lambda: self.page.resolve_submission(records[1]), discard)
+            discard_call.assert_not_called()
+            resolve_call.assert_not_called()
+        self._wait(lambda: not self.page.history_jobs.busy, 'discarded orphan history was not saved')
+        self.assertEqual([row['status'] for row in self.page.task_manager.tasks],
+                         ['submission_unknown', 'failed', 'submission_unknown'])
+        saved = {row['local_id']: row for row in self.config.history_records()}
+        self.assertEqual(saved['local-2']['ledger_state'], 'discarded')
+        self.assertTrue(saved['local-2']['discarded'])
+        self.assertEqual(ledger.records(account_scope(self.config.config)), [])
+        self.start_tasks.assert_not_called()
+        self.assertEqual(len(self.page._pending_records()), 2)
+
+    def test_batch_orphan_discard_for_missing_and_terminal_ledger_rows_clears_pool(self):
+        ledger = SubmissionLedger(Path(self.temp.name) / 'orphan-ledger.sqlite3')
+        records = copy.deepcopy(self.records[:3])
+        records[0].pop('ledger_id')
+        records[2].update(prompt_sha256='terminal-prompt', signature='terminal-request')
+        _, terminal = ledger.reserve(records[2], account_scope(self.config.config))
+        ledger.save(terminal, 'rejected')
+        records[2]['ledger_id'] = terminal['ledger_id']
+        self._set_pending(records)
+        before = ledger.records(account_scope(self.config.config))
+
+        def discard(dialog):
+            for entry in dialog._rows:
+                self._choose(entry['action'], 4)
+                self._mouse(entry['discard_confirm'])
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.SubmissionLedger', return_value=ledger), \
+                patch.object(ledger, 'discard', wraps=ledger.discard) as discard_call, \
+                patch.object(ledger, 'resolve', wraps=ledger.resolve) as resolve_call:
+            self._drive_recovery(lambda: self.page.resolve_submissions(records), discard)
+            discard_call.assert_not_called()
+            resolve_call.assert_not_called()
+        self._wait(lambda: not self.page.history_jobs.busy, 'batch orphan history was not saved')
+        self.assertTrue(all(row.get('discarded') for row in self.page.task_manager.tasks))
+        self.assertTrue(all(row.get('discarded') for row in self.config.history_records()))
+        self.assertEqual(ledger.records(account_scope(self.config.config)), before)
+        self.assertEqual(self.page._pending_records(), [])
+        self.assertFalse(self.page.recovery_bar.isVisible())
+        self.start_tasks.assert_not_called()
+
+    def test_backend_known_task_id_rejects_discard_even_if_history_is_stale(self):
+        ledger = SubmissionLedger(Path(self.temp.name) / 'known-ledger.sqlite3')
+        record = dict(self.records[0], prompt_sha256='known-prompt', signature='known-request')
+        _, stored = ledger.reserve(record, account_scope(self.config.config))
+        stored.update(task_id='provider-created')
+        ledger.save(stored, 'unknown')
+        stale = dict(stored, task_id='')
+        self._set_pending([stale])
+
+        def discard(dialog):
+            self._choose(dialog.action, 3)
+            self._mouse(dialog.discard_confirm)
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.SubmissionLedger', return_value=ledger), \
+                patch('ui.pages.workspace_page.InfoBar.error') as error:
+            self._drive_recovery(lambda: self.page.resolve_submission(stale), discard)
+            error.assert_called_once()
+            self.assertIn('task_id', error.call_args.args[1])
+        self.assertEqual(ledger.records(account_scope(self.config.config))[0]['ledger_state'], 'unknown')
+        self.assertEqual(self.page.task_manager.tasks[0]['status'], 'submission_unknown')
+        self.assertEqual(len(self.page._pending_records()), 1)
+        self.start_tasks.assert_not_called()
+
+    def test_discard_disabled_menu_item_cannot_be_selected_by_coordinates(self):
+        record = dict(self.records[0], task_id='provider-created')
+        self._set_pending([record])
+
+        def single(dialog):
+            check_disabled(dialog, dialog.action, 3)
+
+        def batch(dialog):
+            check_disabled(dialog, dialog._rows[0]['action'], 4)
+
+        def check_disabled(dialog, combo, index):
+            self._mouse(combo)
+            QTest.qWait(120)
+            menu = combo.dropMenu
+            self.assertFalse(menu.actions()[index].isEnabled())
+            model_index = menu.view.model().index(index, 0)
+            menu.view.scrollTo(model_index)
+            QTest.qWait(20)
+            point = menu.view.viewport().mapToGlobal(menu.view.visualRect(model_index).center())
+            self._mouse(menu.view.viewport(), point)
+            self.assertEqual(combo.currentIndex(), 0)
+            self.assertFalse(dialog.yesButton.isEnabled())
+            menu.close()
+            QTest.qWait(120)
+            self._mouse(dialog.cancelButton)
+
+        self._drive_recovery(lambda: self.page.resolve_submission(record), single)
+        self._drive_recovery(lambda: self.page.resolve_submissions([record]), batch)
+        self.ledger.discard.assert_not_called()
+        self.ledger.resolve.assert_not_called()
+        self.start_tasks.assert_not_called()
+
+    def test_single_discard_coordinates_persist_real_ledger_and_allow_later_reservation(self):
+        ledger = SubmissionLedger(Path(self.temp.name) / 'valid-ledger.sqlite3')
+        record = dict(self.records[0], prompt_sha256='valid-prompt', signature='valid-request')
+        _, record = ledger.reserve(record, account_scope(self.config.config))
+        ledger.save(record, 'unknown')
+        self._set_pending([record])
+
+        def discard(dialog):
+            self._choose(dialog.action, 3)
+            self._mouse(dialog.discard_confirm)
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.SubmissionLedger', return_value=ledger), \
+                patch.object(ledger, 'discard', wraps=ledger.discard) as discard_call, \
+                patch.object(ledger, 'resolve', wraps=ledger.resolve) as resolve_call:
+            self._drive_recovery(lambda: self.page.resolve_submission(record), discard)
+            discard_call.assert_called_once_with(record['ledger_id'], account_scope(self.config.config))
+            resolve_call.assert_not_called()
+        self._wait(lambda: not self.page.history_jobs.busy, 'valid ledger discard history was not saved')
+        stored = SubmissionLedger(ledger.path).records(account_scope(self.config.config))[0]
+        self.assertEqual(stored['ledger_state'], 'discarded')
+        self.assertEqual(stored['status'], 'failed')
+        self.assertTrue(stored['discarded'])
+        self.assertTrue(self.config.history_records()[0]['discarded'])
+        self.assertEqual(self.page._pending_records(), [])
+        self.assertFalse(self.page.recovery_bar.isVisible())
+        self.start_tasks.assert_not_called()
+        fresh = dict(local_id='fresh', prompt_sha256='valid-prompt', signature='valid-request')
+        self.assertEqual(ledger.reserve(fresh, account_scope(self.config.config))[0], 'claimed')
+
+    def test_active_or_completed_ledger_cannot_be_discarded_using_stale_orphan_history(self):
+        ledger = SubmissionLedger(Path(self.temp.name) / 'active-ledger.sqlite3')
+        record = dict(self.records[0], prompt_sha256='active-prompt', signature='active-request')
+        _, stored = ledger.reserve(record, account_scope(self.config.config))
+        stored.update(task_id='provider-created')
+
+        def discard(dialog):
+            self._choose(dialog.action, 3)
+            self._mouse(dialog.discard_confirm)
+            self._mouse(dialog.yesButton)
+
+        for state in ('active', 'completed'):
+            with self.subTest(state=state):
+                ledger.save(stored, state)
+                stale = dict(stored, task_id='', ledger_state='unknown')
+                self._set_pending([stale])
+                with patch('ui.pages.workspace_page.SubmissionLedger', return_value=ledger), \
+                        patch('ui.pages.workspace_page.InfoBar.error') as error:
+                    self._drive_recovery(lambda: self.page.resolve_submission(stale), discard)
+                    error.assert_called_once()
+                    self.assertIn('不能作废', error.call_args.args[1])
+                self.assertEqual(ledger.records(account_scope(self.config.config))[0]['ledger_state'], state)
+                self.assertEqual(self.page.task_manager.tasks[0]['status'], 'submission_unknown')
+                self.assertEqual(len(self.page._pending_records()), 1)
+        self.start_tasks.assert_not_called()
+
+    def test_mixed_batch_discard_never_enters_query_or_retry_lists(self):
+        discarded_record = dict(self.records[0], status='failed', discarded=True, ledger_state='discarded')
+        self.ledger.discard.return_value = discarded_record
+
+        def choose(dialog):
+            self._choose(dialog._rows[0]['action'], 4)
+            self._mouse(dialog._rows[0]['discard_confirm'])
+            self._choose(dialog._rows[1]['action'], 2)
+            self._choose(dialog._rows[2]['action'], 3)
+            self._type_id(dialog._rows[2]['task_id'], 'remote-three')
+            self._mouse(dialog.yesButton)
+
+        with patch('ui.pages.workspace_page.is_orphan_uncertain', return_value=False), \
+                patch.object(self.page, 'redownload', return_value=True) as download:
+            self._drive_recovery(lambda: self.page.resolve_submissions(self.records[:3]), choose)
+            self.ledger.discard.assert_called_once_with('ledger-1', account_scope(self.config.config))
+            self.assertEqual([call.args[0] for call in self.ledger.resolve.call_args_list], ['ledger-2', 'ledger-3'])
+            self.assertEqual(self.page._batch_recovery_prompts, [self.records[1]['prompt_path']])
+            download.assert_called_once()
+            self.assertEqual(download.call_args.args[0]['ledger_id'], 'ledger-3')
+            self.start_tasks.assert_not_called()
+            download.call_args.args[1](True, download.call_args.args[0])
+            self._wait(lambda: self.start_tasks.called, 'explicit retry did not resume after download')
+            self.assertEqual(self.start_tasks.call_args.args[0]['_only_prompt_paths'], [self.records[1]['prompt_path']])
+            self.assertTrue(self.page.task_manager.tasks[0]['discarded'])
 
     def test_batch_title_close_coordinates_never_resolve_or_restart(self):
         self._drive_recovery(lambda: self.page.resolve_submissions(self.records[:3]),

@@ -4,10 +4,24 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, ComboBox, LineEdit, PushButton, SubtitleLabel
+from qfluentwidgets import CaptionLabel, CheckBox, ComboBox, LineEdit, PushButton, SubtitleLabel
 
 from core.i18n import tr
 from .studio_dialog import StudioDialog
+
+
+def _can_discard(record):
+    return not record.get('task_id') and record.get('status') in {'submission_unknown', 'failed'}
+
+
+def _discard_reason(record, confirmed):
+    if record.get('task_id'):
+        return tr('该记录已有 task_id，不能作废；请选择“已创建：仅查询下载”。')
+    if not _can_discard(record):
+        return tr('仅无 task_id 的待确认或创建前失败记录可作废。')
+    if not confirmed:
+        return tr('作废需确认服务端未创建，以防漏单/重复扣费')
+    return tr('将作废该条、移出待处理，不重试、不提交其他任务')
 
 
 def _context_text(record):
@@ -64,7 +78,9 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
         hint.setWordWrap(True)
         self.viewLayout.addWidget(hint)
         self.action = ComboBox()
-        self.action.addItems([tr('保持待确认'), tr('填写已创建的任务ID'), tr('我已确认服务端未创建任务')])
+        self.action.addItems([tr('保持待确认'), tr('填写已创建的任务ID'), tr('我已确认服务端未创建任务'),
+                              tr('作废：确认无效，移出待处理（不重试）')])
+        self.action.setItemEnabled(3, _can_discard(self.record))
         self.action.setMinimumWidth(420)
         self.action.setFocusPolicy(Qt.StrongFocus)
         self.action.setToolTip(tr('选择已在服务商后台核对后的处理方式'))
@@ -85,6 +101,8 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
         self.task_id.setPlaceholderText(tr('服务商返回的 task_id'))
         self.task_id.setMinimumWidth(420)
         self.viewLayout.addWidget(self.task_id)
+        self.discard_confirm = CheckBox(tr('我确认该任务未在服务商后台创建，作废后不再提示'))
+        self.viewLayout.addWidget(self.discard_confirm, 0, Qt.AlignLeft)
         self.reason_label = CaptionLabel()
         self.reason_label.setWordWrap(True)
         self.reason_label.setObjectName('submissionRecoveryReason')
@@ -92,6 +110,7 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
         self._add_footer()
         self.action.currentIndexChanged.connect(self._changed)
         self.task_id.textChanged.connect(self._changed)
+        self.discard_confirm.stateChanged.connect(self._changed)
         self.yesButton.clicked.connect(self._accept_if_valid)
         self.cancelButton.setFocus()
         self._changed()
@@ -107,12 +126,9 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
             self.accept()
 
     def _accept_if_valid(self):
-        if self.action.currentIndex() == 2:
+        self._changed()
+        if self.yesButton.isEnabled():
             self.accept()
-        elif self.action.currentIndex() == 1 and self.task_id.text().strip():
-            self.accept()
-        else:
-            self._changed()
 
     def _reason(self, index, task_id):
         if index == 1:
@@ -121,6 +137,10 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
             return tr('将仅查询并下载该 task_id，不会创建新任务。')
         if index == 2:
             return tr('将只重试当前这一条，不会提交其他任务。')
+        if index == 3:
+            return _discard_reason(self.record, self.discard_confirm.isChecked())
+        if self.record.get('task_id'):
+            return _discard_reason(self.record, False)
         return tr('请先选择上面的核对结果；关闭或暂不处理不会提交。')
 
     def _changed(self, *_):
@@ -128,7 +148,10 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
         task_id = self.task_id.text().strip()
         self.task_id.setVisible(index == 1)
         self.task_id.setEnabled(index == 1)
-        self.yesButton.setEnabled(index == 2 or (index == 1 and bool(task_id)))
+        self.discard_confirm.setVisible(index == 3)
+        self.discard_confirm.setEnabled(_can_discard(self.record))
+        self.yesButton.setEnabled(index == 2 or (index == 1 and bool(task_id)) or
+                                  (index == 3 and _can_discard(self.record) and self.discard_confirm.isChecked()))
         self.reason_label.setText(self._reason(index, task_id))
         self.yesButton.setToolTip('' if self.yesButton.isEnabled() else self.reason_label.text())
 
@@ -164,7 +187,7 @@ class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
         self.reason_label.setWordWrap(True)
         self.viewLayout.addWidget(self.reason_label)
         self._add_footer()
-        self.yesButton.clicked.connect(self.accept)
+        self.yesButton.clicked.connect(self._accept_if_valid)
         self.yesButton.setEnabled(False)
         self.yesButton.setToolTip(tr('请逐条选择处理结果后才能保存'))
         self.cancelButton.setFocus()
@@ -187,7 +210,9 @@ class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
             tr('保持待确认'),
             tr('未创建：仅重试这一条'),
             tr('已创建：填写 task_id，仅查询并下载'),
+            tr('作废：确认无效，移出待处理（不重试）'),
         ])
+        action.setItemEnabled(4, _can_discard(record))
         action.setMinimumWidth(330)
         controls.addWidget(action, 1)
         layout.addLayout(controls)
@@ -196,14 +221,22 @@ class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
         task_id.setVisible(False)
         task_id.setEnabled(False)
         layout.addWidget(task_id)
+        discard_confirm = CheckBox(tr('我确认该任务未在服务商后台创建，作废后不再提示'))
+        layout.addWidget(discard_confirm, 0, Qt.AlignLeft)
         reason = CaptionLabel()
         reason.setWordWrap(True)
         layout.addWidget(reason)
         self._content_layout.addWidget(frame)
-        entry = dict(record=record, action=action, task_id=task_id, reason=reason)
+        entry = dict(record=record, action=action, task_id=task_id, reason=reason, discard_confirm=discard_confirm)
         self._rows.append(entry)
         action.currentIndexChanged.connect(self._changed)
         task_id.textChanged.connect(self._changed)
+        discard_confirm.stateChanged.connect(self._changed)
+
+    def _accept_if_valid(self):
+        self._changed()
+        if self.yesButton.isEnabled():
+            self.accept()
 
     def _changed(self, *_):
         valid = True
@@ -212,30 +245,40 @@ class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
             task_id = entry['task_id'].text().strip()
             entry['task_id'].setVisible(index == 3)
             entry['task_id'].setEnabled(index == 3)
+            entry['discard_confirm'].setVisible(index == 4)
+            entry['discard_confirm'].setEnabled(_can_discard(entry['record']))
             if index == 0:
-                entry['reason'].setText(tr('请先选择：保持待确认、未创建或已创建。'))
+                entry['reason'].setText(_discard_reason(entry['record'], False) if entry['record'].get('task_id') else
+                                        tr('请先选择：保持待确认、未创建、已创建或作废。'))
                 valid = False
             elif index == 1:
                 entry['reason'].setText(tr('保持待确认：不调用提交接口，仍阻止该任务再次创建。'))
             elif index == 2:
                 entry['reason'].setText(tr('仅释放并重试这一条提示词，不会提交其他任务。'))
-            else:
+            elif index == 3:
                 entry['reason'].setText(
                     tr('将仅查询并下载该 task_id，不会重新创建任务。') if task_id else
                     tr('请填写服务商后台已创建的 task_id。'))
                 valid = valid and bool(task_id)
+            elif index == 4:
+                confirmed = entry['discard_confirm'].isChecked()
+                entry['reason'].setText(_discard_reason(entry['record'], confirmed))
+                valid = valid and _can_discard(entry['record']) and confirmed
+            else:
+                valid = False
         self.yesButton.setEnabled(bool(self._rows) and valid)
-        self.yesButton.setToolTip('' if self.yesButton.isEnabled() else tr('请逐条选择处理结果；已创建项还需填写 task_id'))
+        self.yesButton.setToolTip('' if self.yesButton.isEnabled() else
+                                  tr('请逐条选择处理结果；已创建项需填写 task_id，作废项需勾选服务端未创建确认'))
         self.reason_label.setText(
             tr('所有条目都已明确核对，可以保存；保存后仍将逐条执行并保留防重复提交保护。')
             if self.yesButton.isEnabled() else
-            tr('请逐条选择上面的核对结果；取消或关闭不会产生任何提交。'))
+            tr('请逐条选择上面的核对结果；已创建项需填写 task_id，作废项需勾选服务端未创建确认。取消或关闭不会产生任何提交。'))
 
     def selections(self):
         """Return (record, action, task_id), using single-dialog action indexes."""
         result = []
         for entry in self._rows:
             index = entry['action'].currentIndex()
-            action = {1: 0, 2: 2, 3: 1}.get(index, 0)
-            result.append((entry['record'], action, entry['task_id'].text().strip()))
+            action = {1: 0, 2: 2, 3: 1, 4: 3}.get(index, 0)
+            result.append((entry['record'], action, entry['task_id'].text().strip() if index != 4 else ''))
         return result

@@ -18,7 +18,7 @@ from ..model_catalog_controller import runtime_config
 from ..components.model_selector import catalog_snapshot, usable
 from core.api_client import ApiClient
 from core.http_client import Cancelled
-from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
+from core.submission_ledger import SubmissionLedger, account_scope, is_orphan_uncertain, ledger_path
 from ..components.submission_dialog import SubmissionRecoveryDialog, SubmissionRecoveryBatchDialog
 from core.video_downloader import VideoDownloader, build_filename
 from core.licensing import gate_block
@@ -1172,6 +1172,8 @@ class WorkspacePage(QWidget):
                     raise RuntimeError(tr('待确认弹窗已关闭，未保存确认结果'))
                 action_index = dialog.action.currentIndex()
                 confirmed_task_id = dialog.task_id.text().strip() if action_index == 1 else ''
+                if action_index == 3 and not dialog.discard_confirm.isChecked():
+                    raise RuntimeError(tr('作废需确认服务端未创建，以防漏单/重复扣费'))
         except RuntimeError as error:
             accepted = False
             self.append_log(str(error), 'warning')
@@ -1185,9 +1187,12 @@ class WorkspacePage(QWidget):
             return
         try:
             ledger = SubmissionLedger(ledger_path(config))
-            result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
-                                    task_id=confirmed_task_id,
-                                    confirmed_not_created=action_index == 2)
+            if action_index == 3:
+                result = self._discard_submission(ledger, account_scope(config), pending)
+            else:
+                result = ledger.resolve(pending.get('ledger_id'), account_scope(config),
+                                        task_id=confirmed_task_id,
+                                        confirmed_not_created=action_index == 2)
             self._apply_resolved_submission(result, pending)
             if confirmed_task_id:
                 self.append_log('确认结果已保存；正在仅查询并下载已有 task_id，不重新创建任务', 'info')
@@ -1195,18 +1200,34 @@ class WorkspacePage(QWidget):
             elif action_index == 2:
                 self.append_log('已确认服务端未创建；仅重试当前提示词，不重新提交其他任务', 'info')
                 self._resume_confirmed_submission(result)
+            elif action_index == 3:
+                self.append_log('已作废无效结果并移出待处理；不重试、不提交其他任务', 'info')
+                InfoBar.success(tr('无效结果已作废'), tr('已移出待处理，不重试、不提交其他任务'), parent=self, duration=5000)
         except Exception as error:
             InfoBar.error('未保存确认结果', str(error), parent=self, duration=6500)
         finally:
             self._update_recovery_bar()
 
+    def _discard_submission(self, ledger, scope, record):
+        if record.get('task_id') or record.get('status') not in {'submission_unknown', 'failed'}:
+            raise ValueError(tr('仅无 task_id 的待确认或创建前失败记录可作废；已创建任务请仅查询下载'))
+        if is_orphan_uncertain(dict(record, status='submission_unknown'), ledger, scope):
+            stored = next((row for row in ledger.records(scope) if row.get('ledger_id') == record.get('ledger_id')), None)
+            if stored and (stored.get('task_id') or stored.get('ledger_state') in {'active', 'completed'}):
+                raise ValueError(tr('账本中任务已创建或已有 task_id，不能作废；请仅查询下载'))
+            return dict(record, status='failed', discarded=True, discard_reason='用户确认无效并作废',
+                        ledger_state='discarded')
+        return ledger.discard(record.get('ledger_id'), scope)
+
     def _apply_resolved_submission(self, result, pending=None):
         """Apply one ledger resolution to history and the live queue."""
         self._record(result)
         target_id = (pending or result).get('ledger_id')
+        target_local_id = (pending or result).get('local_id')
         for index, task in enumerate(self.task_manager.tasks):
             candidate = task.get('duplicate_record') or task
-            if candidate.get('ledger_id') == target_id:
+            if (target_id and candidate.get('ledger_id') == target_id or
+                    not target_id and target_local_id and candidate.get('local_id') == target_local_id):
                 self.task_manager.tasks[index] = copy.deepcopy(result)
                 self._current_changed(index, result)
         self._tasks_updated(self.task_manager.tasks)
@@ -1249,6 +1270,9 @@ class WorkspacePage(QWidget):
                 if not is_dialog_alive(dialog):
                     raise RuntimeError(tr('批量待确认弹窗已关闭，未保存确认结果'))
                 selections = dialog.selections()
+                if any(entry['action'].currentIndex() == 4 and not entry['discard_confirm'].isChecked()
+                       for entry in dialog._rows):
+                    raise RuntimeError(tr('作废需确认服务端未创建，以防漏单/重复扣费'))
         except RuntimeError as error:
             accepted = False
             self.append_log(str(error), 'warning')
@@ -1267,21 +1291,26 @@ class WorkspacePage(QWidget):
             for record, action_index, task_id in selections:
                 if action_index == 0:
                     continue
-                result = ledger.resolve(record.get('ledger_id'), account_scope(config),
-                                        task_id=task_id if action_index == 1 else '',
-                                        confirmed_not_created=action_index == 2)
+                if action_index == 3:
+                    result = self._discard_submission(ledger, account_scope(config), record)
+                else:
+                    result = ledger.resolve(record.get('ledger_id'), account_scope(config),
+                                            task_id=task_id if action_index == 1 else '',
+                                            confirmed_not_created=action_index == 2)
                 self._apply_resolved_submission(result, record)
                 if action_index == 1:
                     redownloads.append(result)
-                else:
+                elif action_index == 2:
                     prompts.append(result.get('prompt_path'))
+                elif action_index == 3:
+                    self.append_log('已作废无效结果并移出待处理；不重试、不提交其他任务', 'info')
             self._batch_recovery_prompts = [path for path in prompts if path]
             self._redownload_queue = list(redownloads)
             if self._redownload_queue:
                 self._start_next_redownload()
             elif self._batch_recovery_prompts:
                 self._resume_confirmed_submissions(self._batch_recovery_prompts)
-            InfoBar.success(tr('待确认结果已保存'), tr('已按逐条选择安排后续查询或重试，未选择的记录仍保持待确认'), parent=self, duration=6000)
+            InfoBar.success(tr('待确认结果已保存'), tr('已按选择保存作废、查询或重试；作废项不提交，保持待确认项仍阻止再次创建'), parent=self, duration=6000)
         except Exception as error:
             self._redownload_queue = []
             self._batch_recovery_prompts = []
