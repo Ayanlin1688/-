@@ -317,7 +317,7 @@ class ProductUiTests(unittest.TestCase):
         records = [dict(tasks[0], model="video-v3", created_at="", finished_at="", result_path="", task_id="")]
         history.update_history(records)
         headers = [history.table.horizontalHeaderItem(i).text() for i in range(history.table.columnCount())]
-        self.assertEqual(headers[:6], ["选择", "序号", "产品", "任务名", "模型", "状态"])
+        self.assertEqual(headers[:6], ["", "序号", "产品", "任务名", "模型", "状态"])
         self.assertEqual(history.table.item(0, 2).text(), "产品1")
         history.filter_box.setCurrentText("已完成")
         self.assertFalse(history.table.isRowHidden(0))

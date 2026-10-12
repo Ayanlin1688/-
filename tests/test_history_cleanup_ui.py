@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import QEvent, Qt, QTimer
+from PyQt5.QtCore import QEvent, QRect, Qt, QTimer
+from PyQt5.QtGui import QColor, QImage, QPainter
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtWidgets import QApplication, QDialog, QStyle, QStyleOptionButton, QStyleOptionViewItem
 from qfluentwidgets import CheckBox
 
 from core.config_manager import ConfigManager
@@ -375,6 +376,87 @@ class HistoryCleanupUiTests(unittest.TestCase):
             recycle.assert_called_once()
         self.assertEqual(self.config.history_store().count(), 0)
 
+    def test_selection_header_is_textless_and_centered_inside_resized_section(self):
+        self.publish([self.record(size=0)])
+        self.window.switchTo(self.history)
+        QTest.qWait(40)
+        header = self.history.selection_header
+        checkbox = self.history.select_all
+        self.assertEqual(self.history.table.horizontalHeaderItem(0).text(), '')
+        self.assertEqual(checkbox.text(), '')
+        for column_width, window_width in ((36, 1100), (92, 1400), (160, 1200), (48, 1000)):
+            with self.subTest(column_width=column_width, window_width=window_width):
+                self.history.table.setColumnWidth(0, column_width)
+                self.window.resize(window_width, 800)
+                QTest.qWait(20)
+                section = QRect(header.sectionViewportPosition(0), 0,
+                                header.sectionSize(0), header.viewport().height())
+                self.assertTrue(section.contains(checkbox.geometry()))
+                self.assertLessEqual(abs(section.center().x() - checkbox.geometry().center().x()), 1)
+                self.assertLessEqual(abs(section.center().y() - checkbox.geometry().center().y()), 1)
+                option = QStyleOptionButton()
+                option.initFrom(checkbox)
+                indicator = checkbox.style().subElementRect(QStyle.SE_CheckBoxIndicator, option, checkbox)
+                self.assertLessEqual(abs(section.center().x() - checkbox.mapTo(header.viewport(), indicator.center()).x()), 1)
+                row_checkbox = self.history.table.cellWidget(0, 0).findChild(CheckBox)
+                self.assertLessEqual(abs(checkbox.mapToGlobal(checkbox.rect().center()).x()
+                                         - row_checkbox.mapToGlobal(row_checkbox.rect().center()).x()), 1)
+
+    def test_selection_hosts_are_transparent_borderless_and_keep_row_selection(self):
+        self.publish([self.record(size=0)])
+        self.window.switchTo(self.history)
+        QTest.qWait(40)
+        table = self.history.table
+        host = table.cellWidget(0, 0)
+        checkbox = host.findChild(CheckBox)
+        self.assertIn('border: none', host.styleSheet())
+        self.assertIn('background: transparent', host.styleSheet())
+        self.assertFalse(host.autoFillBackground())
+        self.assertEqual(host.layout().contentsMargins().left(), 0)
+        self.assertEqual(host.layout().spacing(), 0)
+        self.assertEqual(checkbox.text(), '')
+        self.assertLessEqual(abs(host.rect().center().x() - checkbox.geometry().center().x()), 1)
+        self.assertLessEqual(abs(host.rect().center().y() - checkbox.geometry().center().y()), 1)
+        self.assertEqual(checkbox.size(), self.history.select_all.size())
+        self.assertTrue(table.item(0, 0).flags() & Qt.ItemIsSelectable)
+        table.setCurrentCell(0, 0)
+        self.assertEqual(table.currentRow(), 0)
+        self.mouse(checkbox)
+        self.assertEqual(self.history._selected_ids, {'one'})
+
+    def test_selected_selection_cell_does_not_paint_left_indicator_or_focus_frame(self):
+        self.publish([self.record(size=0)])
+        self.window.switchTo(self.history)
+        QTest.qWait(40)
+        table = self.history.table
+        table.selectRow(0)
+        self.assertIn(0, table.delegate.selectedRows)
+        accent = QColor(255, 0, 255)
+        table.setCheckedColor(accent, accent)
+        image = QImage(table.columnWidth(0), table.rowHeight(0), QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        option = QStyleOptionViewItem(table.viewOptions())
+        option.rect = image.rect()
+        option.state |= QStyle.State_HasFocus | QStyle.State_Selected
+        painter = QPainter(image)
+        try:
+            with patch('PyQt5.QtWidgets.QStyledItemDelegate.paint') as base_paint:
+                table.itemDelegate().paint(painter, option, table.model().index(0, 0))
+                painted_option = base_paint.call_args.args[1]
+                self.assertFalse(painted_option.state & QStyle.State_HasFocus)
+        finally:
+            painter.end()
+        self.assertFalse(any(image.pixelColor(column, row) == accent
+                             for column in range(4, 8) for row in range(12, image.height() - 12)))
+        self.assertTrue(option.state & QStyle.State_HasFocus)
+        with patch('PyQt5.QtWidgets.QStyledItemDelegate.paint') as base_paint:
+            painter = QPainter(image)
+            try:
+                table.itemDelegate().paint(painter, QStyleOptionViewItem(option), table.model().index(0, 1))
+                self.assertTrue(base_paint.call_args.args[1].state & QStyle.State_HasFocus)
+            finally:
+                painter.end()
+
     def test_select_all_coordinates_count_only_eligible_rows_and_filter_clears_hidden_selection(self):
         rows = [self.record('one', 'failed', 0), self.record('two', 'completed', 0),
                 self.record('three', 'queued', 0)]
@@ -384,6 +466,12 @@ class HistoryCleanupUiTests(unittest.TestCase):
         self.mouse(self.history.select_all)
         self.assertEqual(self.history._selected_ids, {'one', 'two'})
         self.assertIn('（2）', self.history.delete_button.text())
+        selected_row = next(row for row, record in enumerate(self.history.records) if record['local_id'] == 'one')
+        self.mouse(self.history.table.cellWidget(selected_row, 0).findChild(CheckBox))
+        self.assertEqual(self.history.select_all.checkState(), Qt.PartiallyChecked)
+        self.mouse(self.history.select_all)
+        self.assertEqual(self.history._selected_ids, {'one', 'two'})
+        self.assertEqual(self.history.select_all.checkState(), Qt.Checked)
         self.history.filter_box.setCurrentText('失败')
         self.assertEqual(self.history._selected_ids, {'one'})
         self.assertEqual(self.history.select_all.checkState(), Qt.Checked)

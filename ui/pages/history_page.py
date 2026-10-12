@@ -1,7 +1,7 @@
 """Persisted task records and manual download recovery in a Fluent table."""
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel
-from qfluentwidgets import CheckBox, ComboBox, InfoBar, PushButton, TableWidget, TitleLabel, CaptionLabel, TransparentToolButton, IconWidget, StrongBodyLabel, FluentIcon as FIF
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel, QStyle, QStyleOptionButton, QStyleOptionViewItem
+from qfluentwidgets import CheckBox, ComboBox, InfoBar, PushButton, TableWidget, TableItemDelegate, TitleLabel, CaptionLabel, TransparentToolButton, IconWidget, StrongBodyLabel, setCustomStyleSheet, FluentIcon as FIF
 from core.background import BackgroundJobs
 from core.task_manager import STATUS_TEXT
 from core.i18n import tr
@@ -20,26 +20,66 @@ def _stamp(value):
 
 
 class SelectionCheckBox(CheckBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        rules = 'CheckBox { min-width: 0px; }'
+        setCustomStyleSheet(self, rules, rules)
+        self.ensurePolished()
+
     def nextCheckState(self):
         self.setCheckState(Qt.Unchecked if self.checkState() == Qt.Checked else Qt.Checked)
+
+
+class HistoryItemDelegate(TableItemDelegate):
+    def updateEditorGeometry(self, editor, option, index):
+        if index.column() == 0:
+            editor.setGeometry(option.rect)
+        else:
+            super().updateEditorGeometry(editor, option, index)
+
+    def _drawIndicator(self, painter, option, index):
+        if index.column() != 0:
+            super()._drawIndicator(painter, option, index)
+
+    def paint(self, painter, option, index):
+        if index.column() == 0:
+            option = QStyleOptionViewItem(option)
+            option.state &= ~QStyle.State_HasFocus
+        super().paint(painter, option, index)
 
 
 class SelectionHeader(QHeaderView):
     def __init__(self, parent):
         super().__init__(Qt.Horizontal, parent)
-        self.checkBox = SelectionCheckBox(tr('选择'), self.viewport())
+        self.checkBox = SelectionCheckBox(self.viewport())
+        option = QStyleOptionButton()
+        option.initFrom(self.checkBox)
+        indicator = self.checkBox.style().subElementRect(QStyle.SE_CheckBoxIndicator, option, self.checkBox)
+        self._checkbox_size = indicator.size() + QSize(2, 2)
+        self.checkBox.setFixedSize(self._checkbox_size)
         self.checkBox.setTristate(True)
         self.checkBox.setToolTip(tr('全选当前显示且可删除的记录'))
         self.sectionResized.connect(self._position)
+        self.sectionMoved.connect(self._position)
         self.geometriesChanged.connect(self._position)
 
     def _position(self, *_):
-        self.checkBox.adjustSize()
-        self.checkBox.move(self.sectionViewportPosition(0) + max(0, (self.sectionSize(0) - self.checkBox.width()) // 2),
-                           max(0, (self.height() - self.checkBox.height()) // 2))
+        visible = self.count() > 0 and not self.isSectionHidden(0)
+        self.checkBox.setVisible(visible)
+        if not visible:
+            return
+        width = min(self._checkbox_size.width(), self.sectionSize(0))
+        height = min(self._checkbox_size.height(), self.viewport().height())
+        self.checkBox.setFixedSize(width, height)
+        self.checkBox.move(self.sectionViewportPosition(0) + (self.sectionSize(0) - width) // 2,
+                           (self.viewport().height() - height) // 2)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._position()
+
+    def scrollContentsBy(self, horizontal, vertical):
+        super().scrollContentsBy(horizontal, vertical)
         self._position()
 
 
@@ -83,8 +123,9 @@ class HistoryPage(QWidget):
         actions.addWidget(self.clean_cache_button)
         actions.addStretch(1)
         root.addLayout(actions)
-        columns = [tr('选择'), tr('序号'), tr('产品'), tr('任务名'), tr('模型'), tr('状态'), tr('提交时间'), tr('完成时间'), tr('文件大小'), tr('操作')]
+        columns = ['', tr('序号'), tr('产品'), tr('任务名'), tr('模型'), tr('状态'), tr('提交时间'), tr('完成时间'), tr('文件大小'), tr('操作')]
         self.table = TableWidget()
+        self.table.setItemDelegate(HistoryItemDelegate(self.table))
         self.selection_header = SelectionHeader(self.table)
         self.table.setHorizontalHeader(self.selection_header)
         self.select_all = self.selection_header.checkBox
@@ -365,10 +406,15 @@ class HistoryPage(QWidget):
     def _add_selection(self, row, task):
         self.table.setItem(row, 0, QTableWidgetItem(''))
         host = QWidget()
+        host.setObjectName('historySelectionHost')
+        host.setAutoFillBackground(False)
+        host.setStyleSheet('QWidget#historySelectionHost { background: transparent; border: none; }')
         layout = QHBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
-        checkbox = CheckBox()
+        layout.setSpacing(0)
+        checkbox = SelectionCheckBox()
         checkbox.setObjectName('historySelection')
+        checkbox.setFixedSize(self.selection_header._checkbox_size)
         layout.addWidget(checkbox, 0, Qt.AlignCenter)
         self.table.setCellWidget(row, 0, host)
         checkbox.stateChanged.connect(lambda state, key=task.get('local_id'): self._selection_changed(key, state))
