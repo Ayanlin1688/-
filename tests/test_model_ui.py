@@ -75,7 +75,7 @@ class ModelUiTests(unittest.TestCase):
                 self.assertEqual(card.resolution.count(), 0)
             finally:
                 window.close()
-                wait_until(lambda: not window._background_busy())
+                wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
                 window.deleteLater()
 
     def test_local_sync_refreshes_catalog_and_persists_no_runtime_config(self):
@@ -124,7 +124,7 @@ class ModelUiTests(unittest.TestCase):
             self.assertFalse(self.config.config['prompt_detection']['enabled'])
         finally:
             window.close()
-            wait_until(lambda: not window._background_busy())
+            wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
             window.deleteLater()
 
     def test_late_response_from_old_credentials_never_overwrites_cache(self):
@@ -181,7 +181,7 @@ class ModelUiTests(unittest.TestCase):
                 self.assertIn('新渠道说明', combo.toolTip())
             finally:
                 window.close()
-                wait_until(lambda: not window._background_busy())
+                wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
                 window.deleteLater()
 
     def test_catalog_refresh_during_batch_is_applied_after_completion(self):
@@ -224,7 +224,7 @@ class ModelUiTests(unittest.TestCase):
             finally:
                 workspace.task_manager.cancel_all()
                 window.close()
-                wait_until(lambda: not window._background_busy())
+                wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
                 window.deleteLater()
 
     def test_scanned_model_labels_context_override_and_dialog_reset(self):
@@ -271,5 +271,5 @@ class ModelUiTests(unittest.TestCase):
             menu.deleteLater()
         finally:
             window.close()
-            wait_until(lambda: not window._background_busy())
+            wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
             window.deleteLater()

@@ -3,6 +3,7 @@
 import copy
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 import threading
 import time
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -20,6 +21,9 @@ from core.api_client import ApiClient
 from core.http_client import Cancelled
 from core.submission_ledger import SubmissionLedger, account_scope, is_orphan_uncertain, ledger_path
 from ..components.submission_dialog import SubmissionRecoveryDialog, SubmissionRecoveryBatchDialog
+from ..components.history_dialog import PermanentDeleteDialog
+from ..history_cleanup import (DELETABLE_STATUSES, cleanup_local_cache, output_file,
+                               recycle_file, remove_empty_product_folders)
 from core.video_downloader import VideoDownloader, build_filename
 from core.licensing import gate_block
 from core.i18n import tr
@@ -84,6 +88,8 @@ class WorkspacePage(QWidget):
         self._history_cache = list(config_manager.history_records())
         self._history_pending = []
         self._history_write_busy = False
+        self._history_maintenance_busy = False
+        self._metrics_refresh_pending = False
         from core.run_log import RunLog
         self.run_log = RunLog(Path(self.config_manager.path).parent / 'logs')
         self._watch_timer = QTimer(self)
@@ -261,6 +267,9 @@ class WorkspacePage(QWidget):
         pass
 
     def open_controls(self):
+        if self._history_maintenance_busy:
+            InfoBar.info(tr('正在清理历史或缓存'), tr('请等待清理或删除确认完成后再查看详情'), parent=self, duration=3500)
+            return
         if self._active_recovery_dialog is not None and self._active_recovery_dialog.isVisible():
             InfoBar.info(tr('待确认弹窗正在处理'), tr('请先完成或关闭当前待确认弹窗'), parent=self, duration=3500)
             return
@@ -271,6 +280,9 @@ class WorkspacePage(QWidget):
 
     def _prepare_match_dialog(self, prompt_path=None):
         """Close the non-modal details window before opening match details."""
+        if self._history_maintenance_busy:
+            InfoBar.info(tr('正在清理历史或缓存'), tr('清理完成后可查看匹配详情'), parent=self, duration=3500)
+            return False
         if self._active_recovery_dialog is not None and self._active_recovery_dialog.isVisible():
             InfoBar.info(tr('待确认弹窗正在处理'), tr('请先完成或关闭当前待确认弹窗'), parent=self, duration=3500)
             return False
@@ -348,10 +360,10 @@ class WorkspacePage(QWidget):
             tr('请先暂停并结束当前队列或下载') if self.task_manager.is_running or self._redownloading else
             tr('逐条处理所有提交待确认记录'))
 
-    def _pending_records(self):
+    def _pending_records(self, sources=None):
         records = []
         seen = set()
-        for source in list(self.task_manager.tasks) + list(self._history_cache):
+        for source in sources if sources is not None else list(self.task_manager.tasks) + list(self._history_cache):
             record = source.get('duplicate_record') or source
             if (source.get('status') != 'submission_unknown' and
                     record.get('status') != 'submission_unknown' and
@@ -362,23 +374,24 @@ class WorkspacePage(QWidget):
             if key in seen:
                 continue
             seen.add(key)
-            records.append(record)
+            records.append(dict(record, status='submission_unknown'))
         return records
 
     def _update_recovery_bar(self, tasks=None):
-        records = self._pending_records() if tasks is None else self._pending_records()
+        records = self._pending_records()
         self._pending_recovery_records = records
         visible = bool(records) and not self.closing.is_set()
         self.recovery_bar.setVisible(visible)
         self.recovery_label.setText(
             tr('有 {count} 条提交待确认，队列已阻止重复创建，请逐条核对后继续。').format(count=len(records)))
-        self.recovery_button.setEnabled(visible and not self.task_manager.is_running and not self._redownloading)
+        self.recovery_button.setEnabled(visible and not self.task_manager.is_running and not self._redownloading and
+                                        not self._history_maintenance_busy and self._active_recovery_dialog is None)
         self.recovery_button.setToolTip(
             tr('请先暂停并结束当前队列或下载') if visible and not self.recovery_button.isEnabled()
             else tr('逐条处理所有提交待确认记录'))
 
     def _open_pending_recovery(self):
-        self.resolve_submissions(self._pending_records())
+        self.resolve_submissions(None)
 
     def choose_directory(self, key):
         if self.task_manager.is_running or self._interactive_scan_busy or self._redownloading:
@@ -478,7 +491,10 @@ class WorkspacePage(QWidget):
         self._tasks_updated(self.queue_panel._tasks)
 
     def refresh_metrics(self):
-        if self.closing.is_set() or self._metrics_busy:
+        if self.closing.is_set():
+            return
+        if self._metrics_busy:
+            self._metrics_refresh_pending = True
             return
         self._metrics_busy = True
         paths = dict(self.config_manager.config['paths'])
@@ -491,9 +507,15 @@ class WorkspacePage(QWidget):
                 self.directory_bar.refresh(paths, self.queue_panel._tasks, metrics)
             elif not self.closing.is_set():
                 QTimer.singleShot(0, self.refresh_metrics)
+            if self._metrics_refresh_pending and not self.closing.is_set():
+                self._metrics_refresh_pending = False
+                QTimer.singleShot(0, self.refresh_metrics)
         def failed(message):
             self._metrics_busy = False
             self.append_log('目录统计暂不可用：' + message, 'warning')
+            if self._metrics_refresh_pending and not self.closing.is_set():
+                self._metrics_refresh_pending = False
+                QTimer.singleShot(0, self.refresh_metrics)
         self.jobs.start(lambda: directory_metrics(paths), done, failed)
 
     def _update_summary(self):
@@ -638,6 +660,9 @@ class WorkspacePage(QWidget):
             self.task_manager.worker.debug_mode = bool(enabled)
 
     def scan_sources(self):
+        if self._history_maintenance_busy:
+            InfoBar.info(tr('正在清理历史或缓存'), tr('清理完成后可重新匹配'), parent=self, duration=4000)
+            return
         if self._interactive_scan_busy:
             if self._watch_pending_scan:
                 self.append_log('无人值守监听：已有匹配扫描进行中，本次扫描将在下一轮监听重试', 'info')
@@ -752,6 +777,9 @@ class WorkspacePage(QWidget):
         return selected[0]
 
     def start_generation(self, interactive=False):
+        if self._history_maintenance_busy:
+            InfoBar.info(tr('正在清理历史或缓存'), tr('清理完成后可开始生成'), parent=self, duration=4000)
+            return
         if self.closing.is_set() or self._redownloading or self.task_manager.is_running:
             if interactive:
                 InfoBar.info(tr('当前无法开始生成'), tr('请先结束当前队列或下载，再开始新的生成任务'), parent=self, duration=4000)
@@ -874,7 +902,7 @@ class WorkspacePage(QWidget):
             self._started_at = time.monotonic()
         elif not running and self._started_at is not None:
             self._elapsed = time.monotonic()-self._started_at; self._started_at = None
-        busy = running or self._redownloading or self._interactive_scan_busy
+        busy = running or self._redownloading or self._interactive_scan_busy or self._history_maintenance_busy
         self.queue_panel.set_busy(busy)
         for card in self.summary.cards[:3]:
             card.choose_button.setEnabled(not busy)
@@ -1010,7 +1038,7 @@ class WorkspacePage(QWidget):
         return history
 
     def _drain_history_writes(self):
-        if self._history_write_busy or not self._history_pending:
+        if self._history_write_busy or self._history_maintenance_busy or not self._history_pending:
             return
         batch = self._history_pending
         self._history_pending = []
@@ -1047,6 +1075,232 @@ class WorkspacePage(QWidget):
         self.refresh_metrics()
         if record['status'] == 'completed' and self.config_manager.config['task_strategy']['open_folder_after_download'] and not self.closing.is_set():
             open_local(record['result_path'], self.append_log, folder=True)
+
+    def _set_history_maintenance_busy(self, busy):
+        self._history_maintenance_busy = bool(busy)
+        history_page = getattr(self.window(), 'history_page', None)
+        if history_page is not None:
+            history_page.set_maintenance_busy(busy)
+        self._running_changed(self.task_manager.is_running)
+        self._update_recovery_bar()
+
+    def _maintenance_allowed(self):
+        if (self.closing.is_set() or self.task_manager.is_running or self._redownloading or
+                self._interactive_scan_busy or self._history_maintenance_busy or
+                self._active_recovery_dialog is not None or self._recovery_open_pending):
+            InfoBar.info(tr('当前无法清理'), tr('请先结束当前队列、扫描、下载或核对，再清理历史与缓存'),
+                         parent=self, duration=5000)
+            return False
+        return True
+
+    def _run_history_maintenance(self, operation, done):
+        self._set_history_maintenance_busy(True)
+
+        def start():
+            if self.closing.is_set():
+                self._set_history_maintenance_busy(False)
+                return
+            batch = self._history_pending
+            self._history_pending = []
+            persisted = []
+
+            def work():
+                store = self.config_manager.history_store()
+                if batch:
+                    store.upsert_many(batch)
+                persisted.append(True)
+                return operation(store)
+
+            def finish(result):
+                try:
+                    if not self.closing.is_set():
+                        done(result)
+                finally:
+                    self._set_history_maintenance_busy(False)
+                    self._drain_history_writes()
+
+            def failed(message):
+                try:
+                    if not persisted:
+                        self._history_pending[0:0] = batch
+                    if not self.closing.is_set():
+                        self.append_log(tr('历史/缓存清理未完成：') + message, 'error')
+                        InfoBar.error(tr('清理未完成'), message, parent=self, duration=6500)
+                finally:
+                    self._set_history_maintenance_busy(False)
+                    self._drain_history_writes()
+
+            try:
+                self.history_jobs.start(work, finish, failed)
+            except Exception as error:
+                failed(str(error))
+
+        if self.history_jobs.busy:
+            def when_idle():
+                self.history_jobs.idle.disconnect(when_idle)
+                start()
+            self.history_jobs.idle.connect(when_idle)
+        else:
+            start()
+
+    def delete_history_records(self, records, delete_files):
+        if not self._maintenance_allowed():
+            return
+        selected = {record.get('local_id'): copy.deepcopy(record) for record in records or [] if record.get('local_id')}
+        if not selected:
+            InfoBar.info(tr('未选择记录'), tr('请选择具有本地记录编号的历史记录'), parent=self, duration=4000)
+            return
+        live = {task.get('local_id'): task for task in self.task_manager.tasks}
+        for key, record in selected.items():
+            current = live.get(key, record)
+            if record.get('status') not in DELETABLE_STATUSES or current.get('status') not in DELETABLE_STATUSES:
+                InfoBar.warning(tr('不能删除运行态记录'), tr('请先结束/暂停并结束队列，运行或排队中的记录不会删除'),
+                                parent=self, duration=5500)
+                return
+        config = runtime_config(self.config_manager)
+        output_root = config['paths'].get('output')
+
+        def remove(store, requested, permanent=False):
+            saved = {record['local_id']: record for record in store.records()}
+            removed = []
+            deferred = []
+            errors = []
+            messages = []
+            freed = 0
+            ledger = None
+            for key, original in requested.items():
+                if self.closing.is_set():
+                    break
+                record = saved.get(key, original)
+                try:
+                    if record.get('status') not in DELETABLE_STATUSES:
+                        raise ValueError(tr('记录仍在运行或排队，未删除'))
+                    path = output_file(record, output_root) if delete_files else None
+                    if path is not None and any(other.get('local_id') not in requested and
+                                               other.get('result_path') and
+                                               Path(other['result_path']).resolve() == path.resolve()
+                                               for other in saved.values()):
+                        raise ValueError(tr('输出文件还被未选择的历史记录引用，未删除'))
+                    if record.get('status') == 'submission_unknown':
+                        ledger = ledger or SubmissionLedger(ledger_path(config))
+                        record = self._discard_submission(ledger, account_scope(config), record)
+                        store.upsert(record)
+                        messages.append(tr('删除待确认记录前已作废：') + str(key))
+                    if path is not None and path.is_file():
+                        size = path.stat().st_size
+                        if permanent:
+                            path.unlink()
+                        else:
+                            try:
+                                recycle_file(path)
+                            except OSError as error:
+                                if path.exists():
+                                    deferred.append(record)
+                                    messages.append(tr('回收站不可用，文件未永久删除：') + str(error))
+                                    continue
+                        freed += size
+                        remove_empty_product_folders(path, output_root)
+                    removed.append(key)
+                except Exception as error:
+                    errors.append(f'{key}：{error}')
+            count = store.delete_many(removed)
+            history = []
+            for record in store.records():
+                updated = dict(record)
+                if delete_files and updated.get('result_path'):
+                    try:
+                        updated['size_bytes'] = Path(updated['result_path']).stat().st_size
+                    except OSError:
+                        updated['size_bytes'] = 0
+                history.append(updated)
+            return dict(count=count, ids=removed, freed_bytes=freed, deferred=deferred, errors=errors,
+                        messages=messages, history=history)
+
+        def done(result):
+            self._refresh_after_cleanup(result['history'], result['ids'])
+            for message in result['messages']:
+                self.append_log(message, 'info')
+            for message in result['errors']:
+                self.append_log(tr('未删除：') + message, 'warning')
+            message = tr('已删除 {count} 条历史，移除输出文件 {size:.2f} MB').format(
+                count=result['count'], size=result['freed_bytes'] / 1048576)
+            if delete_files:
+                message += tr('（回收站文件仍占用磁盘，清空回收站后释放）')
+            self.append_log(message, 'info')
+            InfoBar.info(tr('历史清理完成'), message, parent=self, duration=6500)
+            if result['errors']:
+                InfoBar.warning(tr('部分记录未删除'), '\n'.join(result['errors'][:5]), parent=self, duration=8000)
+            if result['deferred']:
+                dialog = PermanentDeleteDialog(len(result['deferred']), self.window())
+                try:
+                    accepted = dialog.exec()
+                finally:
+                    safe_delete_dialog(dialog)
+                if accepted and not self.closing.is_set():
+                    retry = {record['local_id']: record for record in result['deferred']}
+                    QTimer.singleShot(0, lambda: self._run_history_maintenance(
+                        lambda store: remove(store, retry, True), done))
+
+        self._run_history_maintenance(lambda store: remove(store, selected), done)
+
+    def _refresh_after_cleanup(self, history, removed_ids=()):
+        removed = set(removed_ids)
+        current_id = (self.task_manager.tasks[self.task_manager.current_index].get('local_id')
+                      if 0 <= self.task_manager.current_index < len(self.task_manager.tasks) else None)
+        saved = {record.get('local_id'): record for record in history}
+        self.task_manager.tasks = [copy.deepcopy(saved.get(task.get('local_id'), task))
+                                   for task in self.task_manager.tasks if task.get('local_id') not in removed]
+        self.task_manager.current_index = next((index for index, task in enumerate(self.task_manager.tasks)
+                                                if task.get('local_id') == current_id),
+                                               0 if self.task_manager.tasks else -1)
+        self._publish_history(history)
+        self._tasks_updated(self.task_manager.tasks)
+        if self.task_manager.tasks:
+            index = self.task_manager.current_index
+            self._current_changed(index, self.task_manager.tasks[index])
+        else:
+            self.current_task.task_info = {}
+            self.current_task.resolve_button.hide()
+            self.task_monitor.show_idle()
+        self._update_recovery_bar()
+        self.refresh_metrics()
+
+    def clean_cache_now(self):
+        if not self._maintenance_allowed():
+            return
+        paths = dict(self.config_manager.config['paths'])
+
+        def clean(store):
+            messages = []
+            report = cleanup_local_cache(paths, lambda text, level='info': messages.append((text, level)))
+            report.update(history=store.records(), messages=messages)
+            return report
+
+        def done(report):
+            self._refresh_after_cleanup(report['history'])
+            for text, level in report['messages']:
+                self.append_log(text, level)
+            message = tr('已清理 {count} 个过期缓存文件，释放 {size:.2f} MB').format(
+                count=report['removed'], size=report['freed_bytes'] / 1048576)
+            self.append_log(message, 'info')
+            InfoBar.success(tr('缓存清理完成'), message, parent=self, duration=6000)
+
+        self._run_history_maintenance(clean, done)
+
+    def _log_orphan_pending(self, records, config):
+        path = ledger_path(config)
+        scope = account_scope(config)
+
+        def inspect():
+            ledger = SimpleNamespace(path=path)
+            return [str(record.get('local_id') or record.get('prompt_path') or tr('无编号记录'))
+                    for record in records if is_orphan_uncertain(record, ledger, scope)]
+
+        def done(orphan_ids):
+            if orphan_ids and not self.closing.is_set():
+                self.append_log(tr('孤儿待确认记录可在核对结果中勾选确认并作废：') + '、'.join(orphan_ids), 'warning')
+
+        self.jobs.start(inspect, done, lambda message: self.append_log(tr('待确认账本检查失败：') + message, 'warning'))
 
     def _finished(self, success, failed):
         skipped = sum(t['status'] == 'skipped' for t in self.task_manager.tasks)
@@ -1142,7 +1396,7 @@ class WorkspacePage(QWidget):
         self.jobs.start(task, done, lambda message: self.append_log('磁盘清理自检未完成：' + message, 'warning'))
 
     def resolve_submission(self, record):
-        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set() or self._history_maintenance_busy:
             self.append_log('请先暂停并结束当前队列，再处理待确认提交', 'warning')
             InfoBar.warning(tr('暂不能处理待确认提交'),
                             tr('请先暂停并结束当前队列，再处理待确认提交'),
@@ -1232,32 +1486,22 @@ class WorkspacePage(QWidget):
                 self._current_changed(index, result)
         self._tasks_updated(self.task_manager.tasks)
 
-    def resolve_submissions(self, records):
+    def resolve_submissions(self, records=None):
         """Resolve multiple unknown submissions without ever performing implicit POSTs."""
-        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set() or self._history_maintenance_busy:
             InfoBar.warning(tr('暂不能处理待确认提交'), tr('请先暂停并结束当前队列，再处理待确认提交'), parent=self, duration=6500)
             return
-        pending = []
-        seen = set()
-        for source in records or []:
-            record = source.get('duplicate_record') or source
-            if (source.get('status') != 'submission_unknown' and
-                    record.get('status') != 'submission_unknown' and
-                    source.get('ledger_state') not in {'unknown', 'submitting', 'reserved'} and
-                    record.get('ledger_state') not in {'unknown', 'submitting', 'reserved'}):
-                continue
-            key = record.get('ledger_id') or record.get('local_id') or record.get('prompt_path')
-            if key in seen:
-                continue
-            seen.add(key)
-            pending.append(record)
+        pending = self._pending_records(records)
         if not pending:
             InfoBar.info(tr('没有待确认提交'), tr('当前没有需要核对的提交记录'), parent=self, duration=4000)
             return
         if not self._prepare_recovery_dialog(
-                lambda pending=copy.deepcopy(records or []): self.resolve_submissions(pending)):
+                lambda requested=copy.deepcopy(records): self.resolve_submissions(requested)):
             return
+        self._update_recovery_bar()
+        pending = self._pending_records(records)
         config = runtime_config(self.config_manager)
+        self._log_orphan_pending(pending, config)
         dialog = SubmissionRecoveryBatchDialog(pending, self.window())
         self._recovery_open_pending = False
         self._active_recovery_dialog = dialog
@@ -1338,7 +1582,7 @@ class WorkspacePage(QWidget):
             InfoBar.warning('未继续当前任务', str(error), parent=self, duration=6000)
 
     def regenerate(self, record):
-        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set() or self._history_maintenance_busy:
             InfoBar.info(tr('当前无法重新生成'), tr('请先暂停并结束当前队列或下载'), parent=self, duration=4000)
             return
         original = record.get('duplicate_record') or record
@@ -1377,7 +1621,7 @@ class WorkspacePage(QWidget):
             InfoBar.warning('未开始重新生成', str(error), parent=self, duration=6000)
 
     def redownload(self, record, _on_complete=None):
-        if self.task_manager.is_running or self._redownloading or self.closing.is_set():
+        if self.task_manager.is_running or self._redownloading or self.closing.is_set() or self._history_maintenance_busy:
             self.append_log('请等待当前队列或下载结束后再重新下载', 'warning')
             InfoBar.info(tr('当前无法重新下载'), tr('请等待当前队列或下载结束后再重新下载'), parent=self, duration=4500)
             return

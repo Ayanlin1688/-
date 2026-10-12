@@ -838,7 +838,7 @@ class RecoveryCoordinateTests(unittest.TestCase):
             timer.deleteLater()
         self.window.switchTo(self.window.history_page)
         QTest.qWait(40)
-        row = self.window.history_page.table.cellWidget(0, 8)
+        row = self.window.history_page.table.cellWidget(0, 9)
         buttons = [button for button in row.findChildren(QAbstractButton)
                    if button.toolTip() == '处理待确认提交']
         self.assertEqual(len(buttons), 1)

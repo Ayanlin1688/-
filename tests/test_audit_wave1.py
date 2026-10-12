@@ -121,6 +121,7 @@ class HistoryPageDisplayLimitTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_only_latest_hundred_rendered_and_short_circuit(self):
+        from PyQt5.QtCore import QEvent
         from core.config_manager import ConfigManager
         from ui.pages.history_page import HistoryPage, HISTORY_DISPLAY_LIMIT
         with tempfile.TemporaryDirectory() as temp:
@@ -130,12 +131,17 @@ class HistoryPageDisplayLimitTests(unittest.TestCase):
             records = [{'local_id': f'id{i}', 'status': 'completed', 'prompt_name': f'p{i}',
                         'created_at': '2026-09-22T10:00:00', 'finished_at': '2026-09-22T10:01:00',
                         'size_bytes': 1024} for i in range(150)]
-            page.update_history(records)
-            self.assertEqual(page.table.rowCount(), HISTORY_DISPLAY_LIMIT)
-            self.assertEqual(len(page.records), HISTORY_DISPLAY_LIMIT)
-            first_item = page.table.item(0, 1)
-            page.update_history(list(records))
-            self.assertIs(page.table.item(0, 1), first_item)
+            try:
+                page.update_history(records)
+                self.assertEqual(page.table.rowCount(), HISTORY_DISPLAY_LIMIT)
+                self.assertEqual(len(page.records), HISTORY_DISPLAY_LIMIT)
+                first_item = page.table.item(0, 2)
+                page.update_history(list(records))
+                self.assertIs(page.table.item(0, 2), first_item)
+            finally:
+                page.close()
+                page.deleteLater()
+                self.app.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 if __name__ == '__main__':

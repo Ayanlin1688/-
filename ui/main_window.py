@@ -892,6 +892,8 @@ class MainWindow(FluentWindow):
         self.history_page.batch_resolve_requested.connect(self.workspace_page.resolve_submissions)
         self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
         self.history_page.create_requested.connect(lambda: self.switchTo(self.workspace_page))
+        self.history_page.delete_requested.connect(self.workspace_page.delete_history_records)
+        self.history_page.clean_cache_requested.connect(self.workspace_page.clean_cache_now)
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
             self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
@@ -980,6 +982,7 @@ class MainWindow(FluentWindow):
     def _background_busy(self):
         return (self.workspace_page.task_manager.is_running or self.workspace_page.jobs.busy
                 or self.workspace_page.history_jobs.busy or self.workspace_page.log_drawer.jobs.busy
+                or self.history_page.jobs.busy
                 or bool(self.workspace_page._history_pending)
                 or self.settings_page.jobs.busy or self.model_catalog.jobs.busy)
 
@@ -1011,6 +1014,7 @@ class MainWindow(FluentWindow):
             return
         self._close_child_dialogs()
         self.schedule_timer.stop()
+        self.history_page.jobs.request_stop()
         self.settings_page.stop_timers()
         self.model_catalog.shutdown()
         if self._background_busy():
@@ -1036,6 +1040,7 @@ class MainWindow(FluentWindow):
             self.workspace_page.append_log('后台任务超过安全退出时限，强制退出应用', 'error')
             self.workspace_page.task_manager.force_stop()
             for jobs in (self.workspace_page.jobs, self.workspace_page.history_jobs,
+                         self.history_page.jobs,
                          self.workspace_page.log_drawer.jobs, self.settings_page.jobs,
                          self.model_catalog.jobs):
                 jobs.force_stop()

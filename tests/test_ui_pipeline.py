@@ -48,7 +48,7 @@ class PipelineUiTests(unittest.TestCase):
             wait_until(lambda: not workspace.history_jobs.busy and not workspace._history_pending,
                        timeout=10000)
             self.assertEqual(window.history_page.table.rowCount(), 1)
-            status_cell = window.history_page.table.cellWidget(0, 4)
+            status_cell = window.history_page.table.cellWidget(0, 5)
             status_tag = status_cell.findChild(QLabel) if status_cell is not None else None
             self.assertIsNotNone(status_tag, '状态列应渲染为胶囊标签')
             self.assertEqual(status_tag.text(), '已完成')
@@ -60,7 +60,9 @@ class PipelineUiTests(unittest.TestCase):
                 window.history_page.table.setCurrentCell(0, 0)
                 window.history_page.open_button.click()
                 opened.assert_called_once_with(str(target.parent))
-            window.close(); window.deleteLater(); QTest.qWait(40)
+            window.close()
+            wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
+            window.deleteLater(); QTest.qWait(40)
             reopened = MainWindow(ConfigManager(root / 'config.json'), network_time=False); reopened.show()
             wait_until(lambda: not reopened.workspace_page.jobs.busy, timeout=30000)
             self.assertEqual(reopened.history_page.table.rowCount(), 1)
@@ -79,6 +81,7 @@ class PipelineUiTests(unittest.TestCase):
             wait_until(lambda: reopened.workspace_page.task_manager.tasks and reopened.workspace_page.task_manager.tasks[0]['status'] == 'processing', timeout=30000)
             reopened.close()
             self.assertTrue(reopened._closing)
-            wait_until(lambda: not reopened.workspace_page.task_manager.is_running and not reopened.isVisible())
+            wait_until(lambda: not reopened._background_busy() and not reopened._close_timer.isActive()
+                       and not reopened.isVisible())
             self.assertEqual(reopened.config_manager.history_records()[-1]['status'], 'cancelled')
             reopened.deleteLater(); QTest.qWait(40)
