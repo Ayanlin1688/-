@@ -27,7 +27,8 @@ from .theme import style_controls, style_page, apply_palette
 from .materials import ACCENT, paint_background
 from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
-from .scaling import screen_factors
+from .scaling import screen_factors, apply_interface_scale
+from .tokens import px
 
 
 class MainWindow(FluentWindow):
@@ -212,6 +213,22 @@ class MainWindow(FluentWindow):
         except Exception:
             pass
         self._apply_blur_setting(config)
+        self._apply_interface_scale()
+
+    def _apply_interface_scale(self):
+        if getattr(self, '_closing', False):
+            return
+        app = QApplication.instance()
+        screen = self._dpi_screen or app.primaryScreen()
+        factors = apply_interface_scale(app, screen, self.config_manager.config.get('appearance', {}).get('ui_scale', 'auto'))
+        self._interface_factors = factors
+        self.settings_page.update_interface_scale_status(factors)
+        from . import tokens as design
+        panel = self.navigationInterface.panel
+        panel.setExpandWidth(design.NAV_EXPAND_WIDTH)
+        self._sync_nav_pane(panel.isCollapsed())
+        self._frame_margin = None
+        self._sync_window_frame()
 
     def _apply_nav_style(self):
         """导航栏底色跟随当前主题。"""
@@ -439,12 +456,12 @@ class MainWindow(FluentWindow):
         for item, inner, original in getattr(self, '_nav_rail_items', []):
             try:
                 if collapsed:
-                    item.setMinimumSize(0, 44); item.setMaximumSize(56, 44)
-                    inner.setMinimumSize(0, 44); inner.setMaximumSize(56, 44)
+                    item.setMinimumSize(0, px(44)); item.setMaximumSize(px(56), px(44))
+                    inner.setMinimumSize(0, px(44)); inner.setMaximumSize(px(56), px(44))
                     inner._margins = lambda original=original: self._rail_margins(original())
                 else:
-                    item.setMinimumSize(0, 44); item.setMaximumSize(16777215, 44)
-                    inner.setMinimumSize(0, 44); inner.setMaximumSize(16777215, 44)
+                    item.setMinimumSize(0, px(44)); item.setMaximumSize(16777215, px(44))
+                    inner.setMinimumSize(0, px(44)); inner.setMaximumSize(16777215, px(44))
                     inner._margins = original
                 inner.updateGeometry()
             except Exception:
@@ -486,17 +503,17 @@ class MainWindow(FluentWindow):
                 painter.setPen(Qt.NoPen)
                 from .materials import ink
                 painter.setBrush(ink(12))
-                painter.drawRoundedRect(QRectF(inner.rect()), 8, 8)
+                painter.drawRoundedRect(QRectF(inner.rect()), px(8), px(8))
                 painter.end()
             original(event)
             if inner.isSelected:
                 painter = QPainter(inner)
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(Qt.NoPen)
-                bar_y = (inner.height() - 16) / 2
+                bar_y = (inner.height() - px(16)) / 2
                 from . import materials
                 painter.setBrush(QColor(materials.palette()['accent']))
-                painter.drawRoundedRect(QRectF(8, bar_y, 3, 16), 1.5, 1.5)
+                painter.drawRoundedRect(QRectF(px(8), bar_y, px(3), px(16)), px(1.5), px(1.5))
                 painter.end()
 
         inner.paintEvent = paint
@@ -575,7 +592,7 @@ class MainWindow(FluentWindow):
     @staticmethod
     def _rail_margins(margins: QMargins) -> QMargins:
         # Centre the compact icon inside the 56px rail button.
-        return QMargins(margins.left() + 8, margins.top(), margins.right(), margins.bottom())
+        return QMargins(margins.left() + px(8), margins.top(), margins.right(), margins.bottom())
 
     def _apply_windows_material(self) -> str:
         """系统 Acrylic/Mica 与自绘圆角相互冲突，统一由自绘材质接管。"""
@@ -589,7 +606,7 @@ class MainWindow(FluentWindow):
             return 0
         if state & Qt.WindowMaximized:
             return 0
-        return self._window_margin
+        return px(self._window_margin)
 
     def _native_window_is_maximized(self) -> bool:
         if sys.platform != 'win32':
@@ -688,12 +705,14 @@ class MainWindow(FluentWindow):
             if screen is not None:
                 screen.logicalDotsPerInchChanged.connect(self._on_screen_dpi_changed)
         self._log_screen_factors('screen-changed')
+        self._apply_interface_scale()
 
     def _on_screen_dpi_changed(self, _dpi):
         self._log_screen_factors('logical-dpi-changed')
+        self._apply_interface_scale()
 
     def _log_screen_factors(self, reason):
-        """Stage one only observes screen changes; no application scale is applied."""
+        """Record logical screen metrics independently of the extra interface scale."""
         if self._dpi_screen is None or getattr(self, '_closing', False):
             return
         factors = screen_factors(self._dpi_screen)
@@ -921,7 +940,7 @@ class MainWindow(FluentWindow):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         margin = self._window_margins_px()
-        radius = self._window_radius if margin else 0
+        radius = px(self._window_radius) if margin else 0
         rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)

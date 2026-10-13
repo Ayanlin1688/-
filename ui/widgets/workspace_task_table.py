@@ -12,6 +12,7 @@ from core.task_state import submission_images
 from .task_queue_panel import TaskQueuePanel
 from .workspace_surface import WorkspaceCard, BreathingDot, ReferenceStrip, label, style_button, BLUE, GREEN, RED, YELLOW, MUTED
 from ..motion import Shimmer
+from ..tokens import px
 
 # ---------------------------------------------------------------------------
 # 单一列宽来源：表头与数据行共用同一组列定义与同一套解析结果，
@@ -37,11 +38,12 @@ CELL_SPACING = 16
 
 def resolve_widths(total_width):
     """在给定内容宽度下解析各列宽度（权重分配 + 上限 + 余量均摊 + 不足时收缩）。"""
-    count = len(COLUMN_SPEC)
-    available = max(0, int(total_width) - CELL_SPACING * (count - 1))
-    widths = [spec[1] for spec in COLUMN_SPEC]
-    flex = [(i, spec) for i, spec in enumerate(COLUMN_SPEC) if spec[3] > 0]
-    fixed = sum(spec[1] for spec in COLUMN_SPEC if spec[3] == 0)
+    specs = [(key, px(minimum), px(maximum), weight, align) for key, minimum, maximum, weight, align in COLUMN_SPEC]
+    count = len(specs)
+    available = max(0, int(total_width) - px(CELL_SPACING) * (count - 1))
+    widths = [spec[1] for spec in specs]
+    flex = [(index, spec) for index, spec in enumerate(specs) if spec[3] > 0]
+    fixed = sum(spec[1] for spec in specs if spec[3] == 0)
     extra = available - fixed - sum(spec[1] for _, spec in flex)
     if extra > 0 and flex:
         weight_sum = sum(spec[3] for _, spec in flex)
@@ -58,14 +60,14 @@ def resolve_widths(total_width):
         deficit = -extra
         weight_sum = sum(spec[3] for _, spec in flex)
         for index, spec in flex:
-            floor = min(spec[1], 56)
+            floor = min(spec[1], px(56))
             widths[index] = max(floor, int(spec[1] - deficit * spec[3] / weight_sum))
         leftover = available - fixed - sum(widths[index] for index, _ in flex)
         if leftover < 0:
             for index, spec in sorted(flex, key=lambda pair: widths[pair[0]], reverse=True):
                 if leftover >= 0:
                     break
-                floor = min(spec[1], 56)
+                floor = min(spec[1], px(56))
                 take = min(max(0, widths[index] - floor), -leftover)
                 if take:
                     widths[index] -= take
@@ -361,11 +363,11 @@ class WorkspaceTaskTable(TaskQueuePanel):
             if self.rows:
                 host = self.rows[0].host
                 origin = host.mapTo(self.surface, host.rect().topLeft()).x()
-                return origin, max(0, host.width() - 32)
+                return origin, max(0, host.width() - px(32))
             if self.list.count():
                 rect = self.list.visualItemRect(self.list.item(0))
                 origin = self.list.viewport().mapTo(self.surface, rect.topLeft()).x()
-                return origin, max(0, rect.width() - 32)
+                return origin, max(0, rect.width() - px(32))
         except (RuntimeError, AttributeError):
             pass
         try:
@@ -373,8 +375,14 @@ class WorkspaceTaskTable(TaskQueuePanel):
         except Exception:
             viewport = 0
         if viewport <= 0:
-            viewport = max(0, self.surface.width() - 32)
-        return self._viewport_left_inset(), max(0, viewport - 32)
+            viewport = max(0, self.surface.width() - px(32))
+        return self._viewport_left_inset(), max(0, viewport - px(32))
+
+    def refresh_interface_scale(self):
+        for item in self._task_items.values():
+            item.setSizeHint(QSize(0, px(56)))
+        self._layout_signature = None
+        self._apply_column_widths()
 
     def _apply_column_widths(self):
         """表头与所有数据行使用同一解析结果，保证逐像素对齐。"""
@@ -387,7 +395,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self._layout_signature = signature
         try:
             host = self._header_host
-            left = max(0, origin + 16 - host.x())
+            left = max(0, origin + px(16) - host.x())
             right = max(0, host.width() - left - content)
             self._header_grid.setContentsMargins(left, 0, right, 0)
         except Exception:
@@ -440,7 +448,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
                 pass
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
-            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,56)); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
+            it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,px(56))); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
         self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); self._update_product_summary(self._tasks); self._filter(self.filter_box.currentText()); self._apply_column_widths()
 
     def _update_product_summary(self, tasks):

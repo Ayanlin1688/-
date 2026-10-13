@@ -8,6 +8,7 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap, QLinearGradient
 from PyQt5.QtWidgets import QGraphicsEffect
 
 from .palettes import THEMES, resolve as resolve_theme
+from .tokens import RADIUS, px
 
 ACCENT = '#5B8DEF'
 BRAND_START = '#5B8DEF'
@@ -235,7 +236,8 @@ def frost_texture():
 def paint_surface(widget, painter, elevated=False, hover=0):
     painter.setRenderHint(QPainter.Antialiasing)
     rect = QRectF(widget.rect()).adjusted(1, 1, -1, -1)
-    path = QPainterPath(); path.addRoundedRect(rect, 12, 12)
+    radius = RADIUS['container']
+    path = QPainterPath(); path.addRoundedRect(rect, radius, radius)
     painter.save(); painter.setClipPath(path)
     painter.fillPath(path, surface_fill(hover))
     if not LIGHT_MODE:
@@ -243,24 +245,24 @@ def paint_surface(widget, painter, elevated=False, hover=0):
     if elevated:
         # Qt QSS has no inset box-shadow. Paint a soft 20px inset explicitly.
         _ar = THEME['accent_rgb']
-        for inset in range(20, 0, -1):
-            alpha = round(26 * math.exp(-inset/5))
+        for inset in range(px(20), 0, -1):
+            alpha = round(26 * math.exp(-inset/max(1, px(5))))
             color = (QColor(*THEME['ink'], round(alpha * 1.4)) if LIGHT_MODE
                      else QColor(_ar[0], _ar[1], _ar[2], alpha))
             painter.setPen(QPen(color, 1))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 12, 12)
+            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), radius, radius)
     painter.restore()
     painter.setBrush(Qt.NoBrush)
     painter.setPen(QPen(surface_border(hover, elevated), 1))
-    painter.drawRoundedRect(rect, 12, 12)
+    painter.drawRoundedRect(rect, radius, radius)
     # A fine upper highlight gives the translucent surface a lit edge.
     highlight = QLinearGradient(rect.topLeft(), rect.topRight())
     highlight.setColorAt(0, QColor(255, 255, 255, 0))
     highlight.setColorAt(.45, QColor(255, 255, 255, THEME['highlight']))
     highlight.setColorAt(1, QColor(255, 255, 255, 0))
     painter.setPen(QPen(highlight, 1))
-    painter.drawLine(QPointF(14, 1), QPointF(widget.width()-14, 1))
+    painter.drawLine(QPointF(px(14), 1), QPointF(widget.width()-px(14), 1))
 
 
 @lru_cache(maxsize=24)
@@ -286,15 +288,17 @@ def shadow_tile(hover=False, primary=False, accent=(91, 141, 239)):
 
 
 def draw_shadow(painter, rect, hover=0, primary=False):
-    target = rect.adjusted(-24, -24, 24, 24)
+    extent = px(24)
+    radius = RADIUS['container']
+    target = rect.adjusted(-extent, -extent, extent, extent)
     # Translucent cards cannot hide the opaque centre of a shadow as an opaque
     # surface would. Cut out the whole rounded surface, not the nine-slice
     # centre alone, or the remaining 12px strips appear as a hard inner frame.
     outside = QPainterPath(); outside.addRect(target)
-    surface = QPainterPath(); surface.addRoundedRect(rect.adjusted(1, 1, -1, -1), 12, 12)
+    surface = QPainterPath(); surface.addRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
     painter.save(); painter.setClipPath(outside.subtracted(surface))
-    xs = [target.left(), rect.left()+12, rect.right()-12, target.right()]
-    ys = [target.top(), rect.top()+12, rect.bottom()-12, target.bottom()]
+    xs = [target.left(), rect.left()+radius, rect.right()-radius, target.right()]
+    ys = [target.top(), rect.top()+radius, rect.bottom()-radius, target.bottom()]
     source = [0, 36, 60, 96]
     for active, opacity in ((False, 1-hover), (True, hover)):
         if opacity <= 0:
@@ -319,7 +323,7 @@ class SurfaceShadow(QGraphicsEffect):
         self.primary = primary
 
     def boundingRectFor(self, rect):
-        return rect.adjusted(-16, -14, 16, 20)
+        return rect.adjusted(-px(16), -px(14), px(16), px(20))
 
     def draw(self, painter):
         pixmap, offset = self.sourcePixmap(Qt.LogicalCoordinates, QGraphicsEffect.NoPad)

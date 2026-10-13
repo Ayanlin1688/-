@@ -945,6 +945,25 @@ class SettingsPage(QWidget):
         theme_values, theme_texts = combo_choices()
         self.theme = self._combo(group, "主题", ("appearance", "theme"), theme_values, theme_texts)
         self.theme.setToolTip("9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效")
+        from ..scaling import SCALE_CHOICES
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        self.ui_scale = ComboBox()
+        for value, text in zip(SCALE_CHOICES, (tr('自动'), '100%', '110%', '125%', '130%', '140%', '150%', '160%')):
+            self.ui_scale.addItem(text, userData=value)
+        saved = str(self.config_manager.config.get('appearance', {}).get('ui_scale', 'auto'))
+        self.ui_scale.setCurrentIndex(SCALE_CHOICES.index(saved) if saved in SCALE_CHOICES else 0)
+        self.ui_scale.setMinimumWidth(140)
+        self.ui_scale.setToolTip(tr('仅调整额外界面倍率，不重复叠加系统DPI；字体与主布局立即生效'))
+        self.ui_scale_status = CaptionLabel(tr('正在读取显示器比例...'))
+        self.ui_scale_status.setWordWrap(True)
+        row.addWidget(self.ui_scale)
+        row.addWidget(self.ui_scale_status, 1)
+        self.ui_scale_card = CustomSettingCard(tr('界面缩放'), host)
+        group.addSettingCard(self.ui_scale_card)
+        self.ui_scale.currentIndexChanged.connect(self._ui_scale_changed)
         self.blur = self._switch(group, "高斯模糊玻璃", ("appearance", "blur"), FIF.CLOUD)
         self.blur.setToolTip("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）")
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
@@ -954,6 +973,20 @@ class SettingsPage(QWidget):
         self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
         self.language.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
         self.reduce_motion.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
+
+    def _ui_scale_changed(self, index):
+        if index < 0:
+            return
+        saved = self.config_manager.update(('appearance', 'ui_scale'), self.ui_scale.itemData(index))
+        self.appearance_changed.emit()
+        if not saved:
+            from qfluentwidgets import InfoBar
+            InfoBar.error(tr('界面缩放保存失败'), tr('本次已生效；请检查配置目录写入权限后重新选择'), parent=self)
+
+    def update_interface_scale_status(self, factors):
+        self.ui_scale_status.setText(
+            tr('当前总比例 {total:.0%}（系统DPI {dpi:.0%} × 界面 {z:.0%}）').format(**factors))
+        self.ui_scale_status.setToolTip(tr('总比例包含系统DPI；字体与主布局立即生效'))
 
     def _build_license_section(self):
         """账号与许可：状态徽标 + 详情 + 试用进度（到期进度条式视觉）。"""

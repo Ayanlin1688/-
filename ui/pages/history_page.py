@@ -9,6 +9,7 @@ from ..file_actions import open_local
 from ..history_cleanup import DELETABLE_STATUSES, output_summary
 from ..components.history_dialog import DeleteHistoryDialog
 from ..components.studio_dialog import is_dialog_alive, safe_delete_dialog
+from ..tokens import interface_scale
 
 HISTORY_DISPLAY_LIMIT = 100  # 历史页只渲染最近 N 条（页脚文案同步承诺）
 
@@ -68,11 +69,14 @@ class SelectionHeader(QHeaderView):
         self.checkBox.setVisible(visible)
         if not visible:
             return
-        width = min(self._checkbox_size.width(), self.sectionSize(0))
-        height = min(self._checkbox_size.height(), self.viewport().height())
+        width = min(round(self._checkbox_size.width() * interface_scale()), self.sectionSize(0))
+        height = min(round(self._checkbox_size.height() * interface_scale()), self.viewport().height())
         self.checkBox.setFixedSize(width, height)
         self.checkBox.move(self.sectionViewportPosition(0) + (self.sectionSize(0) - width) // 2,
                            (self.viewport().height() - height) // 2)
+
+    def refresh_interface_scale(self):
+        self._position()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

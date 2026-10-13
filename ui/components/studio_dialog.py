@@ -14,6 +14,7 @@ from qfluentwidgets import (
     CaptionLabel, FluentIcon as FIF, StrongBodyLabel, TransparentToolButton,
 )
 from core.i18n import tr
+from ..tokens import px
 
 WINDOW_RADIUS = 12
 WINDOW_MARGIN = 8
@@ -125,9 +126,10 @@ class StudioDialogBase:
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(WINDOW_MARGIN, WINDOW_MARGIN, -WINDOW_MARGIN, -WINDOW_MARGIN)
+        margin, radius = px(WINDOW_MARGIN), px(WINDOW_RADIUS)
+        rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
         path = QPainterPath()
-        path.addRoundedRect(rect, WINDOW_RADIUS, WINDOW_RADIUS)
+        path.addRoundedRect(rect, radius, radius)
         painter.setClipPath(path)
         from ..materials import frame_line_color, palette
         th = palette()
@@ -143,7 +145,7 @@ class StudioDialogBase:
         painter.setClipping(False)
         painter.setPen(frame_line_color())
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), WINDOW_RADIUS, WINDOW_RADIUS)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 def make_studio_dialog_class():

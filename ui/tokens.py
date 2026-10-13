@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import re
+
 # 间距体系（8pt 制：4 / 8 / 12 / 16 / 24）
 SPACE = {
     'xs': 4,    # 元素内微距
@@ -47,3 +49,31 @@ MOTION = {
 # 导航两态宽度
 NAV_COLLAPSED_WIDTH = 64
 NAV_EXPAND_WIDTH = 240
+
+_BASE_METRICS = {name: dict(values) for name, values in (
+    ('SPACE', SPACE), ('RADIUS', RADIUS), ('FONT', FONT), ('ICON', ICON),
+)}
+_SCALE = 1.0
+
+
+def interface_scale():
+    return _SCALE
+
+
+def px(value):
+    return round(value * _SCALE)
+
+
+def set_interface_scale(scale):
+    global _SCALE, NAV_COLLAPSED_WIDTH, NAV_EXPAND_WIDTH
+    _SCALE = max(1.0, min(2.0, float(scale)))
+    for name, values in _BASE_METRICS.items():
+        globals()[name].update({key: px(value) for key, value in values.items()})
+    NAV_COLLAPSED_WIDTH = px(64)
+    NAV_EXPAND_WIDTH = px(240)
+
+
+def scale_stylesheet(source, scale=None):
+    factor = _SCALE if scale is None else scale
+    return re.sub(r'(-?\d+(?:\.\d+)?)px\b',
+                  lambda match: f'{float(match.group(1)) * factor:g}px', source)

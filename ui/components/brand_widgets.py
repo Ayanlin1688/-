@@ -2,12 +2,14 @@
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient
 from qfluentwidgets import NavigationWidget
+from ..tokens import px
 
 
 def logo_pixmap(size=64):
     """品牌磁贴的静态渲染（蓝紫渐变 + 白色 Y 字标）：
     用于应用图标 / 启动画面 / 关于页；与 BrandLogo 的在线绘制保持同一视觉。"""
-    pixmap = QPixmap(size, size)
+    pixmap = QPixmap(size * 4, size * 4)
+    pixmap.setDevicePixelRatio(4)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
@@ -39,7 +41,7 @@ class _RailWidget(NavigationWidget):
         self.setCursor(Qt.PointingHandCursor)
 
     def setCompacted(self, isCompacted: bool):
-        self.setFixedSize(*self._rail_size)
+        self.setFixedSize(*[px(value) for value in self._rail_size])
 
 
 class BrandLogo(_RailWidget):
@@ -58,15 +60,15 @@ class BrandLogo(_RailWidget):
         self._apply_size()
 
     def _apply_size(self):
-        self.setFixedSize(224 if self._expanded else 64, 68)
+        self.setFixedSize(px(224 if self._expanded else 64), px(68))
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        size = 34.0
+        size = px(34)
         # 磁贴锚定在组件顶部，与标题栏文字垂直居中对齐。
-        left = 15.0
-        rect = QRectF(left, 1.0, size, size)
+        left = px(15)
+        rect = QRectF(left, px(1), size, size)
         center = rect.center()
         from ..materials import palette
         th = palette()
@@ -81,26 +83,26 @@ class BrandLogo(_RailWidget):
         gradient.setColorAt(0, QColor(th['accent']))
         gradient.setColorAt(1, QColor(th['accent2']))
         painter.setBrush(gradient)
-        painter.drawRoundedRect(rect, 10, 10)
+        painter.drawRoundedRect(rect, px(10), px(10))
         painter.setPen(QColor('#FFFFFF'))
-        font = self.font(); font.setPixelSize(17); font.setBold(True)
+        font = self.font(); font.setPixelSize(px(17)); font.setBold(True)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignCenter, 'Y')
-        if self._expanded and self.width() > 140:
+        if self._expanded and self.width() > px(140):
             from core.version import APP_NAME, APP_NAME_CN
             from ..materials import map_text_color
-            text_left = left + size + 10
-            text_width = max(20.0, self.width() - text_left - 10)
+            text_left = left + size + px(10)
+            text_width = max(px(20), self.width() - text_left - px(10))
             title_color = map_text_color('#f5f5f5')
             painter.setPen(title_color if isinstance(title_color, QColor) else QColor(str(title_color)))
-            font = self.font(); font.setPixelSize(15); font.setBold(True)
+            font = self.font(); font.setPixelSize(px(15)); font.setBold(True)
             painter.setFont(font)
-            painter.drawText(QRectF(text_left, 6, text_width, 22), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME_CN)
+            painter.drawText(QRectF(text_left, px(6), text_width, px(22)), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME_CN)
             sub_color = map_text_color('#9AA6B8')
             painter.setPen(sub_color if isinstance(sub_color, QColor) else QColor(str(sub_color)))
-            font = self.font(); font.setPixelSize(10); font.setBold(False)
+            font = self.font(); font.setPixelSize(px(10)); font.setBold(False)
             painter.setFont(font)
-            painter.drawText(QRectF(text_left, 28, text_width, 16), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME)
+            painter.drawText(QRectF(text_left, px(28), text_width, px(16)), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME)
 
 
 class UserAvatar(_RailWidget):
@@ -112,7 +114,7 @@ class UserAvatar(_RailWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        size = 30.0
+        size = px(30)
         rect = QRectF((self.width()-size)/2, (self.height()-size)/2, size, size)
         from ..materials import palette
         th = palette()
@@ -127,6 +129,6 @@ class UserAvatar(_RailWidget):
         painter.setBrush(gradient)
         painter.drawEllipse(rect)
         painter.setPen(QColor('#FFFFFF') if not th['light'] else QColor(a1[0], a1[1], a1[2]).darker(180))
-        font = self.font(); font.setPixelSize(13); font.setBold(True)
+        font = self.font(); font.setPixelSize(px(13)); font.setBold(True)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignCenter, 'Y')

@@ -242,4 +242,11 @@ EN = {
     'GitHub同步失败': 'GitHub sync failed',
     'GitHub同步成功': 'GitHub sync succeeded',
     '已同步到GitHub，最新commit: {commit}': 'Synced to GitHub, latest commit: {commit}',
+    '界面缩放': 'Interface scale',
+    '正在读取显示器比例...': 'Reading display scale...',
+    '仅调整额外界面倍率，不重复叠加系统DPI；字体与主布局立即生效': 'Adjusts extra interface zoom without applying system DPI twice; fonts and the main layout update immediately',
+    '界面缩放保存失败': 'Could not save interface scale',
+    '本次已生效；请检查配置目录写入权限后重新选择': 'Applied for this session; check configuration folder permissions and select it again',
+    '当前总比例 {total:.0%}（系统DPI {dpi:.0%} × 界面 {z:.0%}）': 'Total scale {total:.0%} (system DPI {dpi:.0%} × interface {z:.0%})',
+    '总比例包含系统DPI；字体与主布局立即生效': 'Total scale includes system DPI; fonts and the main layout update immediately',
 }

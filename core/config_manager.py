@@ -68,7 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "poll_interval": 5,
     },
-    "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False},
+    "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False, "ui_scale": "auto"},
     "diagnostics": {"debug_mode": False},
     "updates": {"manifest_url": "", "check_on_start": True},
     "sync": {"repo_root": ""},

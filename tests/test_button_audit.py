@@ -258,11 +258,12 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertIsInstance(badge, QLabel)
         self.assertIsNotNone(badge.pixmap())
         self.assertFalse(badge.pixmap().isNull())
-        self.assertEqual(badge.pixmap().width(), 56)
+        self.assertEqual(badge.pixmap().width() / badge.pixmap().devicePixelRatioF(), 56)
         self.window.titleBar.minBtn.click()
         self.assertTrue(self.window.isMinimized())
         self.window.showNormal()
         self.window.titleBar.closeBtn.click()
+        wait_until(lambda: not self.window.isVisible())
         self.assertFalse(self.window.isVisible())
 
 

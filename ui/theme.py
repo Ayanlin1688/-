@@ -18,7 +18,7 @@ from . import materials
 from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
 from core.i18n import tr
-from .tokens import MOTION
+from .tokens import MOTION, RADIUS
 
 # 状态标签颜色豁免表：这些文案保留语义色，不参与 Caption 次级灰化（按当前语言匹配）。
 _STATUS_TEXTS = {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}
@@ -243,7 +243,7 @@ class SettingSurface:
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(_Qt.NoPen)
                 painter.setBrush(QColor(255, 255, 255, 96))
-                painter.drawRoundedRect(_QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 12, 12)
+                painter.drawRoundedRect(_QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), RADIUS['container'], RADIUS['container'])
         except Exception:
             pass
 
