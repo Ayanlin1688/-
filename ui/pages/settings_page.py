@@ -1,7 +1,7 @@
 """Fluent setting cards backed by the application's JSON config."""
 
 from PyQt5.QtCore import Qt, QPoint, QSize, pyqtSignal, QTime, QSignalBlocker, QTimer
-from PyQt5.QtWidgets import QHBoxLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
+from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
@@ -15,7 +15,7 @@ from core.background import BackgroundJobs
 from core.api_client import ApiClient
 from core.image_uploader import ImageUploader
 from core.model_parameters import MODELS
-from core.repository_sync import RepositorySync, GITHUB_REPOSITORY, repository_secrets
+from core.repository_sync import RepositorySync, repository_secrets, default_repository_root, validate_repository_root
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
 from core.i18n import tr
@@ -24,6 +24,7 @@ from ..components.model_selector import ModelComboBox, catalog_snapshot, usable
 from datetime import datetime
 import copy
 import math
+import sys
 import time
 
 
@@ -49,6 +50,28 @@ class CustomSettingCard(SettingSurface, SettingCard):
         self.hBoxLayout.addWidget(control, 1, Qt.AlignVCenter)
         self.hBoxLayout.addSpacing(20)
         self.setMinimumHeight(64)
+
+
+class RepositorySyncSettingCard(SettingSurface, SettingCard):
+    def __init__(self, controls):
+        super().__init__(FIF.SYNC, 'GitHub 私人仓库同步')
+        self.controls = controls
+        self.vBoxLayout.addWidget(controls)
+        self.vBoxLayout.setContentsMargins(0, 12, 20, 12)
+        for index in range(self.hBoxLayout.count()):
+            if self.hBoxLayout.itemAt(index).spacerItem() is not None:
+                self.hBoxLayout.setStretch(index, 0)
+        self.hBoxLayout.setStretchFactor(self.vBoxLayout, 1)
+        self.fit_content()
+
+    def fit_content(self):
+        self.controls.setMinimumHeight(max(0, self.controls.heightForWidth(self.controls.width())))
+        self.hBoxLayout.invalidate()
+        self.setFixedHeight(max(160, self.hBoxLayout.totalHeightForWidth(self.width())))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self.fit_content)
 
 
 class SettingsPage(QWidget):
@@ -1070,31 +1093,135 @@ class SettingsPage(QWidget):
     def _build_sync(self):
         group = self._group('GitHub代码同步')
         self.sync_group = group
+        self._repository_busy = False
+        controls = QWidget()
+        layout = QVBoxLayout(controls)
+        layout.setContentsMargins(0, 12, 0, 12)
+        path_row = QHBoxLayout()
+        self.repo_root_edit = LineEdit()
+        self.repo_root_edit.setReadOnly(True)
+        self.repo_root_edit.setPlaceholderText('请先选择本地项目Git根目录')
+        self.repo_root_edit.setText(self._sync_repo_root())
+        self.repo_root_edit.setToolTip('本地项目Git根目录；只同步main到项目授权origin')
+        self.repo_select_button = PushButton('选择项目文件夹')
+        self.repo_select_button.setToolTip('选择Git根目录，随后自动校验分支和origin；不会修改远端')
+        self.repo_select_button.clicked.connect(self.select_repository_root)
+        path_row.addWidget(self.repo_root_edit, 1)
+        path_row.addWidget(self.repo_select_button)
+        layout.addLayout(path_row)
+        self.repo_status_label = CaptionLabel()
+        self.repo_status_label.setTextFormat(Qt.PlainText)
+        self.repo_status_label.setWordWrap(True)
+        layout.addWidget(self.repo_status_label)
         self.sync_button = PushButton(FIF.SYNC, tr('同步到GitHub'))
         self.sync_button.setToolTip(tr('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传'))
         self.sync_button.clicked.connect(self.sync_github)
-        group.addSettingCard(CustomSettingCard('GitHub 私人仓库同步', self.sync_button, FIF.SYNC))
+        layout.addWidget(self.sync_button, 0, Qt.AlignRight)
+        self.repo_sync_card = RepositorySyncSettingCard(controls)
+        group.addSettingCard(self.repo_sync_card)
+        self._repository_status(
+            '目录尚未校验；选择文件夹后或同步前自动校验main分支与origin。'
+            if self._sync_repo_root() else '请先在设置→GitHub同步选择本地项目Git根目录')
+
+    def _sync_repo_root(self):
+        configured = self.config_manager.config.get('sync', {}).get('repo_root', '').strip()
+        if configured:
+            return configured
+        return '' if getattr(sys, 'frozen', False) else str(default_repository_root())
+
+    def _repository_status(self, text, valid=None):
+        self.repo_status_label.setText(text)
+        color = '#67c23a' if valid else '#f56c6c' if valid is False else '#909399'
+        self.repo_status_label.setTextColor(color, color)
+        self.repo_sync_card.fit_content()
+
+    def _show_repository_validation(self, report):
+        text = ('目录已就绪：' + report['root'] + ' · main · origin 已匹配'
+                if report['valid'] else '\n'.join(report['errors']))
+        self._repository_status(text, report['valid'])
+
+    def _repository_busy_state(self, busy, message=''):
+        self._repository_busy = busy
+        self.sync_button.setEnabled(not busy)
+        self.repo_select_button.setEnabled(not busy)
+        self.sync_button.setText(message if busy else tr('同步到GitHub'))
+        self.sync_button.setToolTip(
+            '正在校验目录或同步，完成后恢复' if busy else
+            tr('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传'))
+        self.repo_select_button.setToolTip(
+            '正在校验目录或同步，完成后可重新选择' if busy else
+            '选择Git根目录，随后自动校验分支和origin；不会修改远端')
+
+    def select_repository_root(self):
+        from qfluentwidgets import InfoBar
+        if self._repository_busy:
+            InfoBar.warning('GitHub同步', '正在校验目录或同步，请等待完成再操作', parent=self)
+            return
+        self._repository_busy_state(True, '正在选择目录...')
+        try:
+            selected = QFileDialog.getExistingDirectory(self, '选择本地项目Git根目录', self._sync_repo_root())
+        finally:
+            self._repository_busy_state(False)
+        if selected:
+            saved = self.config_manager.update(('sync', 'repo_root'), selected)
+            self.repo_root_edit.setText(selected)
+            if not saved:
+                InfoBar.error('项目目录保存失败', '本次可校验所选目录，但配置未能保存；请检查配置目录写入权限后重新选择',
+                              parent=self, duration=7000)
+            self._start_repository_job(sync=False)
+
     def sync_github(self):
-        self.sync_button.setEnabled(False)
-        self.sync_button.setText(tr('正在同步...'))
-        self.sync_button.setToolTip(tr('正在同步到GitHub，完成后恢复'))
+        self._start_repository_job(sync=True)
+
+    def _start_repository_job(self, *, sync):
+        from qfluentwidgets import InfoBar
+        if self._repository_busy:
+            InfoBar.warning('GitHub同步', '正在校验目录或同步，请等待完成再操作', parent=self)
+            return
+        root = self._sync_repo_root()
+        if not root:
+            message = '请先在设置→GitHub同步选择本地项目Git根目录'
+            self._repository_status(message, False)
+            InfoBar.warning('GitHub同步', message, parent=self, duration=7000)
+            return
+        self._repository_busy_state(True, tr('正在同步...') if sync else '正在校验目录...')
+        self._repository_status('正在后台校验项目Git根目录、main分支与origin...')
         config = copy.deepcopy(self.config_manager.config)
         def work():
             secrets = repository_secrets(config)
-            return RepositorySync(secrets=secrets, log=self.jobs.log_message.emit).sync()
-        def reset():
-            self.sync_button.setEnabled(True); self.sync_button.setText(tr('同步到GitHub'))
-            self.sync_button.setToolTip(tr('提交已修改的代码并推送main；配置、密钥、视频及日志不会上传'))
-        def done(result):
-            reset()
-            from qfluentwidgets import InfoBar
-            InfoBar.success('GitHub同步成功', '已同步到GitHub，最新commit: ' + result['commit'][:12], parent=self, duration=5000)
+            report = validate_repository_root(root, secrets=secrets)
+            outcome = dict(validation=report)
+            if sync and report['valid']:
+                try:
+                    outcome['result'] = RepositorySync(
+                        root=report['root'], secrets=secrets, log=self.jobs.log_message.emit).sync()
+                except Exception as error:
+                    outcome['error'] = str(error)
+            return outcome
         def failed(message):
-            reset()
-            self.log_callback(message, 'error')
-            from qfluentwidgets import InfoBar
-            InfoBar.error('GitHub同步失败', message, parent=self, duration=7000)
-        self.jobs.start(work, done, failed)
+            try:
+                self.log_callback(message, 'error')
+                InfoBar.error('GitHub同步失败', message, parent=self, duration=7000)
+            finally:
+                self._repository_busy_state(False)
+        def done(outcome):
+            try:
+                report = outcome['validation']
+                self._show_repository_validation(report)
+                if not report['valid']:
+                    if sync:
+                        failed('\n'.join(report['errors']))
+                elif 'error' in outcome:
+                    failed(outcome['error'])
+                elif 'result' in outcome:
+                    InfoBar.success('GitHub同步成功', '已同步到GitHub，最新commit: ' + outcome['result']['commit'],
+                                    parent=self, duration=5000)
+            finally:
+                self._repository_busy_state(False)
+        try:
+            self.jobs.start(work, done, failed)
+        except Exception as error:
+            failed(str(error))
 
     def _add_model_row(self, name, enabled, status, persist=True):
         row = make_card()

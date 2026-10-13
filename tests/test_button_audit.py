@@ -142,12 +142,21 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertIn('MiniMax-H3', self.window.model_catalog.snapshot())
 
     def test_git_sync_button_calls_guarded_workflow_without_running_git(self):
-        with patch('core.repository_sync.RepositorySync.sync', return_value={'commit': 'fixture-commit'}) as sync:
+        root = str(Path(__file__).resolve().parent.parent)
+        with patch('ui.pages.settings_page.validate_repository_root',
+                   return_value=dict(root=root, valid=True, errors=[])) as validate, \
+                patch('ui.pages.settings_page.RepositorySync') as service:
+            service.return_value.sync.return_value = {'commit': 'fixture-commit'}
             self.settings.sync_button.click()
             wait_until(lambda: not self.settings.jobs.busy)
-            sync.assert_called_once()
+            validate.assert_called_once()
+            service.return_value.sync.assert_called_once()
+            self.assertEqual(service.call_args.kwargs['root'], root)
         self.assertTrue(self.settings.sync_button.isEnabled())
         self.assertEqual(self.settings.sync_button.text(), '同步到GitHub')
+        self.assertTrue(self.settings.repo_root_edit.isReadOnly())
+        self.assertTrue(self.settings.repo_select_button.isEnabled())
+        self.assertIn('目录已就绪', self.settings.repo_status_label.text())
 
     def test_license_button_opens_dialog_and_cancel_preserves_configuration(self):
         before = dict(self.config.config['license'])

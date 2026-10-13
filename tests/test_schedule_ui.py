@@ -85,11 +85,14 @@ class ScheduleUiTests(TestCase):
 
     def test_sync_button_dispatches_background_work_and_recovers_on_failure(self):
         settings = self.window.settings_page
-        with patch('ui.pages.settings_page.RepositorySync') as service:
+        with patch('ui.pages.settings_page.validate_repository_root',
+                   return_value=dict(root=str(Path(__file__).resolve().parent.parent), valid=True, errors=[])), \
+                patch('ui.pages.settings_page.RepositorySync') as service:
             service.return_value.sync.side_effect = RuntimeError('test-only network unavailable')
             settings.sync_button.click()
             self.assertFalse(settings.sync_button.isEnabled())
             wait_until(lambda: not settings.jobs.busy)
             service.return_value.sync.assert_called_once()
         self.assertTrue(settings.sync_button.isEnabled())
+        self.assertTrue(settings.repo_select_button.isEnabled())
         self.assertIn('test-only network unavailable', self.window.workspace_page.log_drawer.browser.toPlainText())

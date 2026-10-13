@@ -16,6 +16,44 @@ class GitSyncError(RuntimeError):
     pass
 
 
+def default_repository_root():
+    return Path(__file__).resolve().parent.parent
+
+
+def validate_repository_root(root, secrets=()):
+    """Inspect a selected working tree without staging, committing or pushing."""
+    report = dict(root=str(root or ''), valid=False, errors=[])
+    if not root:
+        report['errors'].append('目录：请先选择本地项目Git根目录')
+        return report
+    try:
+        selected = Path(root).resolve()
+        report['root'] = str(selected)
+        service = RepositorySync(root=selected, secrets=secrets)
+        toplevel = Path(service._git(['rev-parse', '--show-toplevel'], timeout=10)).resolve()
+    except (GitSyncError, OSError, ValueError) as error:
+        report['errors'].append('目录：不是可用的Git工作区，请选择项目Git根目录；' + str(error))
+        return report
+    if toplevel != selected:
+        report['errors'].append('目录：所选目录不是项目Git根目录，请选择 ' + str(toplevel))
+    try:
+        if service._git(['branch', '--show-current'], timeout=10) != 'main':
+            report['errors'].append('分支：请先切换到main分支再同步')
+    except GitSyncError:
+        report['errors'].append('分支：无法读取当前分支，请确认处于main分支')
+    try:
+        origins = service._git(['remote', 'get-url', '--all', 'origin'], timeout=10).splitlines()
+        push_origins = service._git(['remote', 'get-url', '--push', '--all', 'origin'], timeout=10).splitlines()
+        expected = [GITHUB_REPOSITORY.rstrip('/')]
+        if ([url.rstrip('/') for url in origins] != expected or
+                [url.rstrip('/') for url in push_origins] != expected):
+            report['errors'].append('origin：与项目授权仓库不一致（包括推送地址），拒绝同步，不会推送；只允许 ' + GITHUB_REPOSITORY)
+    except GitSyncError:
+        report['errors'].append('origin：无法读取授权仓库地址，拒绝同步，不会推送；只允许 ' + GITHUB_REPOSITORY)
+    report['valid'] = not report['errors']
+    return report
+
+
 def repository_secrets(config):
     """Protect credentials for both the selected provider and saved stations."""
     sections = [config.get('api')]
@@ -38,7 +76,7 @@ class RepositorySync:
 
     def __init__(self, root=None, secrets=(), log=None, expected_origin=GITHUB_REPOSITORY,
                  retry_delay=2):
-        self.root = Path(root or Path(__file__).resolve().parent.parent).resolve()
+        self.root = Path(root or default_repository_root()).resolve()
         self.secrets = tuple(secret for secret in secrets if secret)
         self.log = log or (lambda *_: None)
         self.expected_origin = expected_origin
