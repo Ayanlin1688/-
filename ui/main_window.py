@@ -8,7 +8,7 @@ import threading
 import time
 
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
-from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent
+from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -30,6 +30,7 @@ from .model_catalog_controller import ModelCatalogController
 from .scaling import screen_factors, apply_interface_scale
 from .tokens import px
 from .responsive import CoalescedCall
+from .window_resize import resize_hit_test
 
 
 class MainWindow(FluentWindow):
@@ -633,12 +634,47 @@ class MainWindow(FluentWindow):
             return
         try:
             import ctypes
+            import win32con
+            import win32gui
 
             hwnd = int(self.winId())
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            if getattr(self, '_isResizeEnabled', True) and not style & win32con.WS_THICKFRAME:
+                win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, style | win32con.WS_THICKFRAME)
             flags = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020
             ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
         except Exception:
             pass
+
+    def _resize_hit_test(self, point, size=None):
+        if (getattr(self, '_closing', False) or not getattr(self, '_isResizeEnabled', True)
+                or self.windowState() & (Qt.WindowMaximized | Qt.WindowFullScreen | Qt.WindowMinimized)):
+            return 0
+        return resize_hit_test(point, self.size() if size is None else size)
+
+    def nativeEvent(self, event_type, message):
+        if sys.platform == 'win32':
+            from ctypes import c_short
+            from ctypes.wintypes import MSG
+            import win32con
+            import win32gui
+
+            native_message = MSG.from_address(int(message))
+            if native_message.hWnd and native_message.message == win32con.WM_NCHITTEST:
+                screen_point = (
+                    c_short(native_message.lParam & 0xffff).value,
+                    c_short((native_message.lParam >> 16) & 0xffff).value,
+                )
+                client_point = win32gui.ScreenToClient(native_message.hWnd, screen_point)
+                client_rect = win32gui.GetClientRect(native_message.hWnd)
+                ratio = self.devicePixelRatioF()
+                point = QPointF(client_point[0] / ratio, client_point[1] / ratio)
+                size = QSizeF((client_rect[2] - client_rect[0]) / ratio,
+                             (client_rect[3] - client_rect[1]) / ratio)
+                hit = self._resize_hit_test(point, size)
+                if hit:
+                    return True, hit
+        return super().nativeEvent(event_type, message)
 
     def _sync_window_state_controls(self) -> None:
         try:
@@ -968,6 +1004,8 @@ class MainWindow(FluentWindow):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         margin = self._window_margins_px()
+        if margin:
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
         radius = px(self._window_radius) if margin else 0
         rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
         path = QPainterPath()
