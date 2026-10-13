@@ -29,6 +29,7 @@ from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
 from .scaling import screen_factors, apply_interface_scale
 from .tokens import px
+from .responsive import CoalescedCall
 
 
 class MainWindow(FluentWindow):
@@ -59,7 +60,7 @@ class MainWindow(FluentWindow):
             auto_sync=network_time if model_sync is None else model_sync)
         self.setWindowTitle("Yanlin Smart-Creation Matrix")
         self.resize(1400, 900)
-        self.setMinimumSize(1100, 750)
+        self.setMinimumSize(960, 600)
         self._setup_pages()
         self.stackedWidget.setAnimationEnabled(False)
         self.page_transition = PageTransition(self.stackedWidget)
@@ -79,6 +80,7 @@ class MainWindow(FluentWindow):
         if getattr(self.config_manager, 'load_error', ''):
             self.workspace_page.append_log(self.config_manager.load_error, 'warning')
         self._closing = False
+        self._responsive_resize = CoalescedCall(self, self._apply_responsive_window, 40)
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(100)
         self._close_timer.timeout.connect(self._finish_close)
@@ -189,6 +191,11 @@ class MainWindow(FluentWindow):
         self._retranslate_chrome()
         from .motion import set_reduced_motion
         set_reduced_motion(bool(config.get('reduce_motion', False)))
+        from .tokens import MOTION
+        from PyQt5.QtCore import QEasingCurve
+        animation = self.navigationInterface.panel.expandAni
+        animation.setDuration(0 if config.get('reduce_motion', False) else MOTION['base'])
+        animation.setEasingCurve(QEasingCurve.OutCubic)
         try:
             from . import materials
             from .palettes import resolve
@@ -229,6 +236,9 @@ class MainWindow(FluentWindow):
         self._sync_nav_pane(panel.isCollapsed())
         self._frame_margin = None
         self._sync_window_frame()
+        responsive = getattr(self, '_responsive_resize', None)
+        if responsive is not None:
+            responsive.schedule()
 
     def _apply_nav_style(self):
         """导航栏底色跟随当前主题。"""
@@ -641,7 +651,7 @@ class MainWindow(FluentWindow):
         except Exception:
             pass
 
-    def _sync_window_frame(self) -> None:
+    def _sync_window_frame(self, native=True) -> None:
         """把标题栏与内容同步到圆角内缩区，并在最大化时放大到整屏。"""
         margin = self._window_margins_px()
         if self._frame_margin != margin:
@@ -656,12 +666,30 @@ class MainWindow(FluentWindow):
                 self.titleBar.setGeometry(*geometry)
         except Exception:
             pass
-        self._refresh_native_window_frame()
+        if native:
+            self._refresh_native_window_frame()
         self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._sync_window_frame()
+        self._sync_window_frame(native=False)
+        responsive = getattr(self, '_responsive_resize', None)
+        if responsive is not None:
+            responsive.schedule()
+
+    def _apply_responsive_window(self):
+        """Keep the full navigation reachable without stealing narrow content width."""
+        if getattr(self, '_closing', False):
+            return
+        try:
+            narrow = self.width() < px(1160)
+            panel = self.navigationInterface.panel
+            if narrow and not panel.isCollapsed():
+                panel.collapse()
+                QTimer.singleShot(320, self._settle_nav_pane)
+            self._sync_window_frame()
+        except (AttributeError, RuntimeError):
+            pass
 
     def showEvent(self, event):
         super().showEvent(event)

@@ -1,6 +1,8 @@
 """Persisted task records and manual download recovery in a Fluent table."""
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel, QStyle, QStyleOptionButton, QStyleOptionViewItem
+from ..responsive import CoalescedCall, WrapLayout, scrollable_body
+from ..tokens import px
 from qfluentwidgets import CheckBox, ComboBox, InfoBar, PushButton, TableWidget, TableItemDelegate, TitleLabel, CaptionLabel, TransparentToolButton, IconWidget, StrongBodyLabel, setCustomStyleSheet, FluentIcon as FIF
 from core.background import BackgroundJobs
 from core.task_manager import STATUS_TEXT
@@ -106,8 +108,11 @@ class HistoryPage(QWidget):
         self._selected_ids = set()
         self._all_records = []
         self.jobs = BackgroundJobs(self)
-        root = QVBoxLayout(self); root.setContentsMargins(26, 16, 26, 20); root.setSpacing(16)
-        header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel(tr('任务历史'))); title_box.addWidget(CaptionLabel(tr('查看生成记录 · 重新下载会沿用 task_id，不重复提交')))
+        root = scrollable_body(self); root.setContentsMargins(26, 16, 26, 20); root.setSpacing(16)
+        header = WrapLayout(); title_box = QVBoxLayout(); title_box.addWidget(TitleLabel(tr('任务历史')))
+        caption = CaptionLabel(tr('查看生成记录 · 重新下载会沿用 task_id，不重复提交'))
+        caption.setWordWrap(True)
+        title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
         self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
@@ -117,7 +122,7 @@ class HistoryPage(QWidget):
         self.batch_resolve_button.clicked.connect(self._request_batch_resolve)
         header.addWidget(self.batch_resolve_button)
         header.addWidget(self.open_button); root.addLayout(header)
-        actions = QHBoxLayout()
+        actions = WrapLayout()
         self.delete_button = PushButton(FIF.DELETE, tr('批量删除（0）'))
         self.delete_button.clicked.connect(self._request_delete)
         self.clean_cache_button = PushButton(FIF.SYNC, tr('清理缓存'))
@@ -148,19 +153,48 @@ class HistoryPage(QWidget):
                 header_item.setTextAlignment(Qt.AlignCenter)
         self.table.setBorderVisible(True); self.table.setBorderRadius(8); self.table.setEditTriggers(self.table.NoEditTriggers)
         self.table.setWordWrap(False)  # 单行显示：长内容截断而不折行（行高恒定 54）
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setDefaultSectionSize(54)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setMinimumSectionSize(44)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.verticalHeader().setDefaultSectionSize(54)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 92)
+        self._selection_scale = interface_scale()
+        self.table.setColumnWidth(0, px(92))
+        self.table.setMinimumHeight(240)
+        self._column_relayout = CoalescedCall(self, self._fit_columns)
         root.addWidget(self.table, 1)
         self.empty_view = self._build_empty_view()
         root.addWidget(self.empty_view, 1)
-        self.footer = QWidget(); footer_row = QHBoxLayout(self.footer); footer_row.setContentsMargins(2, 0, 2, 0)
+        self.footer = QWidget(); footer_row = WrapLayout(self.footer); footer_row.setContentsMargins(2, 0, 2, 0)
         self.footer_left = CaptionLabel(''); footer_row.addWidget(self.footer_left); footer_row.addStretch(1)
         from core.version import APP_VERSION
         self.footer_right = CaptionLabel(tr('显示最近 100 条') + f' · v{APP_VERSION}'); footer_row.addWidget(self.footer_right)
         root.addWidget(self.footer)
         self.filter_box.currentTextChanged.connect(self._filter)
         self.update_history(config_manager.history_records())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_column_relayout'):
+            self._column_relayout.schedule()
+
+    def refresh_interface_scale(self):
+        scale = interface_scale()
+        if self._selection_scale != scale:
+            self._selection_scale = scale
+            self.table.setColumnWidth(0, px(92))
+        self._column_relayout.schedule()
+
+    def _fit_columns(self):
+        widths = [px(value) for value in (92, 72, 120, 180, 120, 110, 166, 166, 100, 160)]
+        widths[0] = self.table.columnWidth(0)
+        extra = max(0, self.table.viewport().width() - sum(widths))
+        widths[3] += extra // 2
+        widths[2] += extra - extra // 2
+        for index, width in enumerate(widths):
+            if self.table.columnWidth(index) != width:
+                self.table.setColumnWidth(index, width)
 
     def _build_empty_view(self):
         """空态三件套：图标 + 说明 + 主操作（去工作台创建任务）。"""
@@ -176,6 +210,7 @@ class HistoryPage(QWidget):
         title.setAlignment(Qt.AlignCenter)
         column.addWidget(title)
         hint = CaptionLabel(tr('完成的任务会显示在这里，可先到工作台开始创作'))
+        hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignCenter)
         column.addWidget(hint)
         self.empty_action = PushButton(FIF.ADD, tr('去工作台创建任务'))

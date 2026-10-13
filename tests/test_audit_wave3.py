@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from core.single_instance import SingleInstance
 
 
 class LegacyKeyGatingTests(unittest.TestCase):
@@ -48,7 +49,6 @@ class SingleInstanceTests(unittest.TestCase):
 
     def test_second_instance_detected_and_activation_requested(self):
         from PyQt5.QtTest import QTest
-        from core.single_instance import SingleInstance
         key = f'YanlinMatrix-test-{os.getpid()}'
         first = SingleInstance(key)
         second = SingleInstance(key)
@@ -66,7 +66,6 @@ class SingleInstanceTests(unittest.TestCase):
             first.close()
 
     def test_different_keys_can_coexist(self):
-        from core.single_instance import SingleInstance
         first = SingleInstance(f'YanlinMatrix-testA-{os.getpid()}')
         second = SingleInstance(f'YanlinMatrix-testB-{os.getpid()}')
         try:
@@ -77,7 +76,6 @@ class SingleInstanceTests(unittest.TestCase):
             second.close()
 
     def test_key_for_stable_and_distinct(self):
-        from core.single_instance import SingleInstance
         key_a = SingleInstance.key_for('C:/data/a')
         key_a_again = SingleInstance.key_for('C:/data/a')
         key_b = SingleInstance.key_for('C:/data/b')

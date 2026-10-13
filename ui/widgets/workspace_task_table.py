@@ -2,7 +2,7 @@
 from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF, QSize, QPoint, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QListWidgetItem, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QListWidgetItem, QSizePolicy, QScrollArea
 from qfluentwidgets import (ListWidget, ComboBox, ProgressBar, PushButton, PrimaryPushButton, TransparentToolButton, RoundMenu, Action, IconWidget, FluentIcon as FIF, InfoBar)
 from qfluentwidgets.common.config import isDarkTheme
 from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
@@ -13,6 +13,7 @@ from .task_queue_panel import TaskQueuePanel
 from .workspace_surface import WorkspaceCard, BreathingDot, ReferenceStrip, label, style_button, BLUE, GREEN, RED, YELLOW, MUTED
 from ..motion import Shimmer
 from ..tokens import px
+from ..responsive import CoalescedCall, WrapLayout
 
 # ---------------------------------------------------------------------------
 # 单一列宽来源：表头与数据行共用同一组列定义与同一套解析结果，
@@ -275,7 +276,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
     def __init__(self,defaults,parent=None):
         QWidget.__init__(self,parent); self.defaults=defaults; self._tasks=[]; self.rows=[]; self._catalog={}; self._default_model=''; self.models_editable=True; self.busy=False; self._task_items={}; self._collapsed=set(); self._widths=[]; self._layout_signature=None
         root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0); self.surface=WorkspaceCard(); lay=QVBoxLayout(self.surface); lay.setContentsMargins(1,1,1,1); lay.setSpacing(0)
-        tools=QHBoxLayout(); tools.setContentsMargins(16,10,16,10); tools.setSpacing(8)
+        tools=WrapLayout(spacing=8); tools.setContentsMargins(16,10,16,10)
         tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
         self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('下载中'),tr('重试中'),tr('等待冷却'),tr('已暂停'),tr('已完成'),tr('失败'),tr('重复'),tr('提交待确认'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
         # 低频与破坏性操作收进「更多操作」菜单，头部只留高频入口（筛选 + 匹配详情）。
@@ -284,8 +285,9 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self.match_button=style_button(PushButton(FIF.SEARCH,tr('匹配详情'))); self.match_button.setFixedHeight(32); tools.addWidget(self.match_button, 0, Qt.AlignVCenter)
         self.cancel_button=style_button(PushButton(tr('取消全部'))); self.cancel_button.setFixedHeight(32)
         self.more_button=style_button(PushButton(FIF.DOWN,tr('更多操作'))); self.more_button.setFixedHeight(32); self.more_button.clicked.connect(self._open_more_menu); tools.addWidget(self.more_button, 0, Qt.AlignVCenter)
-        lay.addLayout(tools)
+        root.addLayout(tools)
         self._header_host=QWidget(); self._header_host.setFixedHeight(34); self._header_grid=QGridLayout(self._header_host); self._header_grid.setContentsMargins(16,0,16,0); self._header_grid.setHorizontalSpacing(CELL_SPACING)
+        self._header_grid.setProperty('studioManagedMargins', True)
         self._apply_header_mode_style()
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_header_mode_style)
@@ -312,7 +314,14 @@ class WorkspaceTaskTable(TaskQueuePanel):
             self.list.viewport().installEventFilter(self)
         except Exception:
             pass
-        lay.addWidget(self.list,1); root.addWidget(self.surface,1)
+        lay.addWidget(self.list,1)
+        self.table_scroll = QScrollArea()
+        self.table_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.table_scroll.setWidgetResizable(True)
+        self.table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table_scroll.setWidget(self.surface)
+        root.addWidget(self.table_scroll,1)
         # 空状态：卡片内居中引导（图标 + 主文案 + 提示 + 选择目录按钮）。
         self.empty_panel=QWidget(); ep=QVBoxLayout(self.empty_panel); ep.setContentsMargins(24,14,24,50); ep.setSpacing(10); ep.setAlignment(Qt.AlignCenter)
         icon_row=QHBoxLayout(); icon_row.addStretch(1)
@@ -324,7 +333,9 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self.empty_button=style_button(PrimaryPushButton(FIF.FOLDER,tr('选择目录')), primary=True); self.empty_button.setFixedHeight(32); self.empty_button.clicked.connect(lambda *_: self.select_prompts_requested.emit()); button_row.addWidget(self.empty_button)
         button_row.addStretch(1); ep.addLayout(button_row)
         self.empty_panel.setVisible(False)
-        lay.addWidget(self.empty_panel,1)
+        self.empty_hint.setWordWrap(True)
+        root.addWidget(self.empty_panel,1)
+        self._resize_relayout = CoalescedCall(self, self._apply_column_widths)
         self._apply_column_widths()
 
     def _apply_header_mode_style(self):
@@ -339,13 +350,14 @@ class WorkspaceTaskTable(TaskQueuePanel):
 
     # ------------------------------------------------------------------
     def eventFilter(self, obj, event):
-        if obj is self.list.viewport() and event.type() == event.Resize:
-            self._apply_column_widths()
+        if obj is self.list.viewport() and event.type() == event.Resize and hasattr(self, '_resize_relayout'):
+            self._resize_relayout.schedule()
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_column_widths()
+        if hasattr(self, '_resize_relayout'):
+            self._resize_relayout.schedule()
 
     def _viewport_left_inset(self):
         try:
@@ -387,6 +399,10 @@ class WorkspaceTaskTable(TaskQueuePanel):
     def _apply_column_widths(self):
         """表头与所有数据行使用同一解析结果，保证逐像素对齐。"""
         origin, content = self._row_geometry()
+        minimum_content = sum(px(spec[1]) for spec in COLUMN_SPEC) + px(CELL_SPACING) * (len(COLUMN_SPEC) - 1)
+        gutter = max(px(32), self.surface.width() - content)
+        self.surface.setMinimumWidth(minimum_content + gutter)
+        content = max(minimum_content, content)
         widths = resolve_widths(content)
         signature = (origin, content)
         if signature == self._layout_signature and widths == self._widths:
@@ -434,6 +450,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
                     item.setToolTip((task.get('prompt_name') or '') + '\n' + task.get('error', ''))
             self.count_label.setText(f'{len(incoming)} {tr("个任务")}')
             self.list.setVisible(bool(incoming))
+            self.table_scroll.setVisible(bool(incoming))
             self.empty_panel.setVisible(not incoming)
             self._update_product_summary(incoming)
             if status_changed:
@@ -449,7 +466,7 @@ class WorkspaceTaskTable(TaskQueuePanel):
         self._tasks=incoming; self.list.clear(); self.rows=[]; self._task_items={}
         for i,t in enumerate(self._tasks):
             it=QListWidgetItem(self.list); it.setData(Qt.UserRole+1,i); it.setData(Qt.UserRole, tr(STATUS_TEXT.get(t.get('status','waiting'), t.get('status','waiting')))); row=ExpandedTaskRow(i,t,self.defaults); row.action_requested.connect(self.action_requested); row.reorder_requested.connect(self.reorder_requested); row.preview_requested.connect(self.preview_requested); it.setSizeHint(QSize(0,px(56))); self.list.setItemWidget(it,row); self.rows.append(row); self._task_items[i]=it
-        self.list.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); self._update_product_summary(self._tasks); self._filter(self.filter_box.currentText()); self._apply_column_widths()
+        self.list.setVisible(bool(tasks)); self.table_scroll.setVisible(bool(tasks)); self.empty_panel.setVisible(not tasks); self.count_label.setText(f'{len(tasks)} {tr("个任务")}'); self._update_product_summary(self._tasks); self._filter(self.filter_box.currentText()); self._apply_column_widths()
 
     def _update_product_summary(self, tasks):
         products = {task.get('product') or '未分组' for task in tasks}

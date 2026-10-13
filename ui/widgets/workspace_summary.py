@@ -6,6 +6,7 @@ from PyQt5.QtGui import QColor, QPainter
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QFrame, QLabel, QSizePolicy
 from core.i18n import tr
 from .workspace_surface import WorkspaceCard, label, MUTED, BLUE, GREEN, RED, YELLOW
+from ..responsive import WrapLayout
 
 
 def directory_metrics(paths):
@@ -85,7 +86,7 @@ class CompoundStat(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        root = QVBoxLayout(self); root.setContentsMargins(15, 8, 15, 8); root.setSpacing(2)
+        root = WrapLayout(self, spacing=16); root.setContentsMargins(15, 8, 15, 8)
         self.rows = {}
         for key, title in (('product', tr('产品进度')), ('failed', tr('失败')), ('active', tr('并发'))):
             row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
@@ -109,25 +110,26 @@ class WorkspaceSummary(QWidget):
     _TINTS = {0: (74, 141, 255), 1: (52, 199, 89), 2: (255, 184, 77), 3: (139, 92, 246)}
     def __init__(self, parent=None):
         super().__init__(parent)
-        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        self.metrics_row = QHBoxLayout(); self.metrics_row.setContentsMargins(0, 0, 0, 0); self.metrics_row.setSpacing(12)
+        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(8)
+        self.metrics_row = WrapLayout(spacing=12, card_width=220)
         specs = [(tr('任务进度'), '0/0'), (tr('成功率'), '—'), (tr('今日完成'), '0'), (tr('待处理'), '0')]
         self.blocks = []
         self.stat_cards = []
         for index, (title, value) in enumerate(specs):
-            card = WorkspaceCard(); card.setFixedHeight(84)
+            card = WorkspaceCard(); card.setMinimumHeight(84)
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             lay = QVBoxLayout(card); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
             block = StatBlock(title, value)
             lay.addWidget(block)
             self.metrics_row.addWidget(card, 4)
             self.blocks.append(block); self.stat_cards.append(card)
-        compound_card = WorkspaceCard(); compound_card.setFixedHeight(84)
+        compound_card = WorkspaceCard()
         compound_layout = QVBoxLayout(compound_card); compound_layout.setContentsMargins(0, 0, 0, 0); compound_layout.setSpacing(0)
         self.compound = CompoundStat()
         compound_layout.addWidget(self.compound)
-        self.metrics_row.addWidget(compound_card, 5)
         self.compound_card = compound_card
         root.addLayout(self.metrics_row)
+        root.addWidget(compound_card)
         self.cards = [_CompatCard(self) for _ in range(4)]
         self.blocks[0].bar.setVisible(True)
         self.blocks[1].bar.setVisible(True)

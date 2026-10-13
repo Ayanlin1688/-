@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSplitter, QVBoxLayout, QWidget, QScrollArea, QLayout, QSizePolicy, QFrame
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, PushButton, TitleLabel, ScrollArea, InfoBar, ProgressBar, SwitchButton, IconWidget
 from ..components.studio_dialog import StudioDialog, is_dialog_alive, safe_delete_dialog
+from ..responsive import WrapLayout, scrollable_body
 from core.task_manager import TaskManager, TERMINAL, ACTIVE, stamp
 from core.matcher import StoryboardMatcher
 from core.background import BackgroundJobs
@@ -142,9 +143,9 @@ class WorkspacePage(QWidget):
         QTimer.singleShot(2500, self._arm_watch)
 
     def _build_ui(self):
-        root = QVBoxLayout(self); root.setContentsMargins(26, 12, 26, 20); root.setSpacing(18)
-        self.toolbar = QWidget(); self.toolbar.setFixedHeight(56)
-        header = QHBoxLayout(self.toolbar); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(12)
+        root = scrollable_body(self); root.setContentsMargins(26, 12, 26, 20); root.setSpacing(18)
+        self.toolbar = QWidget(); self.toolbar.setMinimumHeight(56)
+        header = WrapLayout(self.toolbar, spacing=12)
         header.addWidget(label(tr('工作台'), 22, '#F4F5F7', True))
         self.navigation_tabs = {}
         for key, text in [('workspace', tr('工作台')), ('history', tr('任务历史')), ('settings', tr('设置'))]:
@@ -196,7 +197,7 @@ class WorkspacePage(QWidget):
         self.recovery_bar.setStyleSheet(
             '#submissionRecoveryBar{background:rgba(240,169,59,.14);'
             'border:1px solid rgba(240,169,59,.42);border-radius:8px;}')
-        recovery_layout = QHBoxLayout(self.recovery_bar)
+        recovery_layout = WrapLayout(self.recovery_bar)
         recovery_layout.setContentsMargins(14, 7, 14, 7)
         recovery_layout.setSpacing(10)
         self.recovery_label = CaptionLabel()
@@ -214,9 +215,11 @@ class WorkspacePage(QWidget):
         self.product_progress.hide()
         self.product_progress.setRange(0, 1)
         self.product_progress.setValue(0)
-        self.status_row = QHBoxLayout(); self.status_row.addWidget(self.product_progress_label); self.status_row.addStretch(1)
+        self.product_progress_label.setWordWrap(True)
+        self.status_row = WrapLayout(); self.status_row.addWidget(self.product_progress_label); self.status_row.addStretch(1)
         self.splitter = QSplitter(Qt.Vertical); self.splitter.setHandleWidth(8); self.splitter.setChildrenCollapsible(False)
         self.queue_panel = WorkspaceTaskTable(self.config_manager.config['workspace'])
+        self.queue_panel.setMinimumHeight(240)
         self.cancel_button = self.queue_panel.cancel_button
         self.splitter.addWidget(self.queue_panel)
         self.log_drawer = WorkspaceLog(); self.log_drawer.setMinimumHeight(44)

@@ -9,6 +9,7 @@ from core.i18n import tr
 from qfluentwidgets import FluentIcon as FIF
 from ..components.match_dialog import MatchDialog
 from ..components.studio_dialog import safe_delete_dialog
+from ..responsive import WrapLayout
 
 
 class DataSourceCard(QWidget):
@@ -34,9 +35,9 @@ class DataSourceCard(QWidget):
         layout.addWidget(StrongBodyLabel(tr('数据源')))
         labels = [("prompts", tr('分镜提示词目录')), ("images", tr('参考图片目录')), ("output", tr('视频保存目录'))]
         for key, text in labels:
-            row = QHBoxLayout(); row.setSpacing(10)
+            row = WrapLayout(spacing=10)
             caption_widget = CaptionLabel(text)
-            caption_widget.setFixedWidth(104)
+            caption_widget.setMinimumWidth(104)
             row.addWidget(caption_widget, 0, Qt.AlignVCenter)
             field = LineEdit()
             field.setReadOnly(True)

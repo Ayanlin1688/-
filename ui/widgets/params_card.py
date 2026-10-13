@@ -1,7 +1,7 @@
 """Generation parameter card with collapsible advanced section."""
 
 from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve, QSignalBlocker, QTimer, QAbstractAnimation
-from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
+from PyQt5.QtWidgets import QVBoxLayout, QWidget, QSizePolicy
 from qfluentwidgets import FluentIcon as FIF, PushButton
 
 from ..components.custom_widgets import CaptionLabel, ComboBox, LineEdit, SpinBox, StrongBodyLabel, SwitchButton, make_card
@@ -10,6 +10,8 @@ from ..components.model_selector import ModelComboBox, catalog_snapshot
 from core.model_parameters import MODELS, H3, h3_size, model_options
 from core.i18n import tr
 from ..tokens import MOTION
+from ..motion import reduced_motion
+from ..responsive import WrapLayout
 
 
 class ParamsCard(QWidget):
@@ -27,7 +29,7 @@ class ParamsCard(QWidget):
         root = QVBoxLayout(card)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(8)
-        title_row = QHBoxLayout()
+        title_row = WrapLayout()
         title_row.addWidget(StrongBodyLabel(tr("生成参数")))
         title_row.addStretch(1)
         self.expand_button = PushButton(FIF.UP, tr("高级参数"))
@@ -36,20 +38,21 @@ class ParamsCard(QWidget):
         root.addLayout(title_row)
 
         workspace = config_manager.config["workspace"]
-        grid = QGridLayout(); grid.setContentsMargins(0, 6, 0, 0); grid.setHorizontalSpacing(16); grid.setVerticalSpacing(6)
+        grid = WrapLayout(spacing=16); grid.setContentsMargins(0, 6, 0, 0)
         self.model = ModelComboBox(); self.model.set_models(catalog_snapshot(config_manager), workspace['model'])
         self.ratio = ComboBox(); self.ratio.addItems(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"]); self.ratio.setCurrentText(workspace["aspect_ratio"])
         self.resolution = ComboBox(); self.resolution.addItems(["480p", "720p", "768p", "1080p", "2K", "4K"]); self.resolution.setCurrentText(workspace["resolution"])
         self.duration = SpinBox(); self.duration.setRange(1, 30); self.duration.setValue(workspace["duration"])
         fields = [(tr("模型"), self.model), (tr("比例"), self.ratio), (tr("分辨率"), self.resolution), (tr("时长（秒）"), self.duration)]
-        for index, (text, control) in enumerate(fields):
+        for text, control in fields:
             control.setMinimumWidth(150)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             if not isinstance(control, SwitchButton):
                 control.setFixedHeight(32)
-            grid.addWidget(CaptionLabel(text), (index // 2) * 2, index % 2)
-            grid.addWidget(control, (index // 2) * 2 + 1, index % 2)
-        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
+            field = QWidget(); field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            field_layout = QVBoxLayout(field); field_layout.setContentsMargins(0, 0, 0, 0); field_layout.setSpacing(6)
+            field_layout.addWidget(CaptionLabel(text)); field_layout.addWidget(control)
+            grid.addWidget(field)
         root.addLayout(grid)
         self.size_hint = CaptionLabel('')
         self.size_hint.setWordWrap(True)
@@ -60,32 +63,30 @@ class ParamsCard(QWidget):
         self.refresh_pool_hint()
 
         self.advanced = QWidget()
-        advanced_form = QGridLayout(self.advanced)
-        advanced_form.setContentsMargins(0, 10, 0, 0)
-        advanced_form.setHorizontalSpacing(16)
-        advanced_form.setVerticalSpacing(6)
+        advanced_root = QVBoxLayout(self.advanced); advanced_root.setContentsMargins(0, 10, 0, 0)
+        advanced_form = WrapLayout(spacing=16); advanced_root.addLayout(advanced_form)
         self.audio = SwitchButton(); self.audio.setChecked(workspace["generate_audio"])
         self.poll = SpinBox(); self.poll.setRange(3, 60); self.poll.setValue(workspace["poll_interval"])
         self.retries = SpinBox(); self.retries.setRange(0, 20); self.retries.setValue(workspace["max_retries"])
         self.threshold = SpinBox(); self.threshold.setRange(1, 100); self.threshold.setValue(workspace["skip_threshold"])
         self.seed = LineEdit(); self.seed.setText(workspace["seed"]); self.seed.setPlaceholderText(tr("留空则随机"))
         advanced_fields = [(tr("生成音频"), self.audio), (tr("轮询间隔（秒）"), self.poll), (tr("最大重试次数"), self.retries), (tr("模型连续失败阈值"), self.threshold)]
-        for index, (text, control) in enumerate(advanced_fields):
-            row, pair = divmod(index, 2)
+        for text, control in advanced_fields:
             control.setMinimumWidth(150)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             if not isinstance(control, SwitchButton):
                 control.setFixedHeight(32)
-            advanced_form.addWidget(CaptionLabel(text), row * 2, pair)
-            advanced_form.addWidget(control, row * 2 + 1, pair)
-        advanced_form.setColumnStretch(0, 1); advanced_form.setColumnStretch(1, 1)
-        advanced_form.addWidget(CaptionLabel(tr("随机种子")), 4, 0)
-        advanced_form.addWidget(self.seed, 5, 0, 1, 2)
+            field = QWidget(); field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            field_layout = QVBoxLayout(field); field_layout.setContentsMargins(0, 0, 0, 0); field_layout.setSpacing(6)
+            field_layout.addWidget(CaptionLabel(text)); field_layout.addWidget(control)
+            advanced_form.addWidget(field)
+        advanced_root.addWidget(CaptionLabel(tr("随机种子")))
+        advanced_root.addWidget(self.seed)
         root.addWidget(self.advanced)
         self._advanced_height = max(1, self.advanced.sizeHint().height())
         self._advanced_animation = QPropertyAnimation(self.advanced, b"maximumHeight", self)
         self._advanced_animation.setDuration(MOTION['base'])
-        self._advanced_animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self._advanced_animation.setEasingCurve(QEasingCurve.OutCubic)
         self._advanced_animation.finished.connect(self._finish_toggle)
         controls = {"model": self.model, "aspect_ratio": self.ratio, "resolution": self.resolution, "duration": self.duration, "generate_audio": self.audio, "poll_interval": self.poll, "max_retries": self.retries, "skip_threshold": self.threshold, "seed": self.seed}
         self._interactive_controls = [self.expand_button, *controls.values()]
@@ -206,13 +207,14 @@ class ParamsCard(QWidget):
         if self.advanced_expanded:
             self.advanced.setVisible(True)
             self.advanced.setMaximumHeight(0)
-            target = self._advanced_height
+            target = max(self._advanced_height, self.advanced.layout().totalHeightForWidth(self.advanced.width()))
             start = 0
         else:
             start = self.advanced.height()
             target = 0
         self._advanced_animation.setStartValue(start)
         self._advanced_animation.setEndValue(target)
+        self._advanced_animation.setDuration(0 if reduced_motion() else MOTION['base'])
         self._advanced_animation.start()
         # 事件循环繁忙时动画可能无法在预期时间内收尾；到点强制落定状态，
         # 保证折叠/展开的最终可见性始终确定（正常运行路径不受影响）。

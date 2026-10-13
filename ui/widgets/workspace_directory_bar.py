@@ -1,10 +1,11 @@
 """Compact workspace directory strip; the detailed cards remain in the tool dialog."""
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
 from qfluentwidgets import IconWidget, PushButton, FluentIcon as FIF
 from core.i18n import tr
 from .workspace_surface import ElidedLabel, WorkspaceCard, label
 from .status_dot import Dot
+from ..responsive import WrapLayout
 
 
 class DirectoryCard(WorkspaceCard):
@@ -14,7 +15,9 @@ class DirectoryCard(WorkspaceCard):
 
     def __init__(self, title, icon=FIF.FOLDER, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(56)
+        self.setMinimumHeight(56)
+        self.setMinimumWidth(190)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setCursor(Qt.PointingHandCursor)
         row = QHBoxLayout(self); row.setContentsMargins(10, 8, 10, 8); row.setSpacing(10)
         self.glyph_host = QWidget(); self.glyph_host.setFixedSize(30, 30)
@@ -47,7 +50,7 @@ class WorkspaceDirectoryBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(10)
+        row = WrapLayout(self, spacing=10)
         self._tints = {'prompts': '74,141,255', 'images': '139,92,246', 'output': '52,199,89'}
         self.fields = {}
         for key, title, icon in [('prompts', tr('提示词'), FIF.DOCUMENT),
@@ -57,16 +60,19 @@ class WorkspaceDirectoryBar(QWidget):
             field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k))
             self.fields[key] = field
             row.addWidget(field, 1)
-        row.addSpacing(4)
+        match_host = QWidget()
+        match_row = QHBoxLayout(match_host)
+        match_row.setContentsMargins(0, 0, 0, 0)
         self.match_dot = Dot(8, '#22C55E')
-        row.addWidget(self.match_dot)
+        match_row.addWidget(self.match_dot)
         self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True)
-        row.addWidget(self.match_status)
+        match_row.addWidget(self.match_status)
         self.match_button = PushButton(FIF.SEARCH, tr('匹配详情'))
         self.match_button.setMinimumSize(118, 32)
         self.match_button.setToolTip(tr('查看每个提示词绑定的参考图'))
         self.match_button.clicked.connect(self.match_requested)
-        row.addWidget(self.match_button)
+        match_row.addWidget(self.match_button)
+        row.addWidget(match_host)
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_mode_style)
         self._apply_mode_style()

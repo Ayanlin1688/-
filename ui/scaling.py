@@ -186,7 +186,7 @@ class InterfaceScaler(QObject):
                 state['spacers'].append((spacer, size, policy.horizontalPolicy(), policy.verticalPolicy()))
         scaled_margins = tuple(round(value * self.scale) for value in state['margins'])
         margins = layout.contentsMargins()
-        if scaled_margins != (margins.left(), margins.top(), margins.right(), margins.bottom()):
+        if not layout.property('studioManagedMargins') and scaled_margins != (margins.left(), margins.top(), margins.right(), margins.bottom()):
             layout.setContentsMargins(*scaled_margins)
         if state['spacing'] >= 0 and layout.spacing() != round(state['spacing'] * self.scale):
             layout.setSpacing(round(state['spacing'] * self.scale))

@@ -2,11 +2,12 @@
 from core.task_manager import STATUS_TEXT
 from core.i18n import tr
 
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QVBoxLayout, QWidget
 
 from qfluentwidgets import FluentIcon as FIF
 from ..components.custom_widgets import CaptionLabel, ProgressBar, PushButton, StrongBodyLabel, make_card
 from ..materials import ERROR
+from ..responsive import WrapLayout
 
 
 class CurrentTaskCard(QWidget):
@@ -18,14 +19,14 @@ class CurrentTaskCard(QWidget):
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.addWidget(card)
         root = QVBoxLayout(card); root.setContentsMargins(20, 20, 20, 20); root.setSpacing(8)
         root.addWidget(StrongBodyLabel(tr("当前任务")))
-        self.concurrency_label = CaptionLabel('正在生成0个，排队0个'); root.addWidget(self.concurrency_label)
-        self.title = StrongBodyLabel(tr('尚未开始任务')); root.addWidget(self.title)
+        self.concurrency_label = CaptionLabel('正在生成0个，排队0个'); self.concurrency_label.setWordWrap(True); root.addWidget(self.concurrency_label)
+        self.title = StrongBodyLabel(tr('尚未开始任务')); self.title.setWordWrap(True); root.addWidget(self.title)
         self.details = CaptionLabel(tr('请选择目录并开始生成')); self.details.setWordWrap(True); root.addWidget(self.details)
         self.debug_mode = False
-        self.debug_summary = CaptionLabel(''); self.debug_summary.setVisible(False); root.addWidget(self.debug_summary)
+        self.debug_summary = CaptionLabel(''); self.debug_summary.setWordWrap(True); self.debug_summary.setVisible(False); root.addWidget(self.debug_summary)
         self.progress = ProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0); root.addWidget(self.progress)
-        self.timing = CaptionLabel(f"0%    {tr('已用')} 0 {tr('秒')}    {tr('预计剩余')} —"); root.addWidget(self.timing)
-        buttons = QHBoxLayout(); buttons.addStretch(1)
+        self.timing = CaptionLabel(f"0%    {tr('已用')} 0 {tr('秒')}    {tr('预计剩余')} —"); self.timing.setWordWrap(True); root.addWidget(self.timing)
+        buttons = WrapLayout(); buttons.addStretch(1)
         self.skip_button = PushButton(FIF.SKIP_FORWARD, tr('跳过当前'))
         self.cancel_button = PushButton(FIF.SYNC, tr('重新下载'))
         self.resolve_button = PushButton(FIF.INFO, tr('处理待确认'))

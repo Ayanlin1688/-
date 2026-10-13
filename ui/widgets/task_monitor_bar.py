@@ -6,7 +6,7 @@ update_counts；空闲态用 show_idle()。完整详情仍在「生成参数与�
 """
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QFrame, QHBoxLayout
+from PyQt5.QtWidgets import QFrame, QHBoxLayout, QSizePolicy
 
 from qfluentwidgets import FluentIcon as FIF
 
@@ -15,6 +15,7 @@ from core.task_manager import STATUS_TEXT, ACTIVE
 from ..components.custom_widgets import ProgressBar, PushButton
 from ..materials import MONITOR, register_theme_callback, is_light
 from .workspace_surface import BreathingDot, label, style_button, BLUE
+from ..responsive import WrapLayout
 
 
 def _dual(key):
@@ -41,12 +42,12 @@ class TaskMonitorBar(QFrame):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName('taskMonitorBar')
-        self.setFixedHeight(62)
+        self.setMinimumHeight(62)
         self._apply_surface_style()
         self.task_info = {}
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(18, 0, 14, 0)
+        root = WrapLayout(self)
+        root.setContentsMargins(18, 10, 14, 10)
         root.setSpacing(14)
 
         self.dot = BreathingDot(BLUE, active=False)
@@ -59,6 +60,8 @@ class TaskMonitorBar(QFrame):
         self.title = label(tr('尚未开始任务'), 13, MONITOR['title'][1], True)
         self.title.setTextColor(*_dual('title'))
         self.title.setMinimumWidth(170)
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.title.setToolTip(tr('当前任务名称'))
         root.addWidget(self.title)
 
         self.state_label = label('', 11, MONITOR['dim'][1])
@@ -78,6 +81,7 @@ class TaskMonitorBar(QFrame):
         self.progress = ProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setMinimumWidth(120)
         root.addWidget(self.progress, 1)
 
         self.percent = label('0%', 13, MONITOR['title'][1], True, mono=True)
@@ -140,6 +144,7 @@ class TaskMonitorBar(QFrame):
             return
         failed = status == 'failed'
         self.title.setText(f"{index + 1:02d} · {task.get('prompt_name') or task.get('prompt_path') or ''}")
+        self.title.setToolTip(self.title.text())
         self.title.setTextColor(*_dual('title_error' if failed else 'title'))
         self.state_label.setText(tr(STATUS_TEXT.get(status, status)))
         self.state_label.setTextColor(*_dual(self._STATE_KEYS.get(status, 'state_idle')))

@@ -1,7 +1,9 @@
 """Fluent setting cards backed by the application's JSON config."""
 
 from PyQt5.QtCore import Qt, QPoint, QSize, pyqtSignal, QTime, QSignalBlocker, QTimer
-from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
+from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QBoxLayout, QLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
+from ..responsive import CoalescedCall, ContentHeight, WrapLayout
+from ..tokens import px
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
@@ -28,7 +30,60 @@ import sys
 import time
 
 
-class JsonComboBoxSettingCard(SettingSurface, ComboBoxSettingCard):
+class ResponsiveSettingCard:
+    def _prepare_responsive_card(self):
+        heading = QWidget(self)
+        heading_layout = QHBoxLayout(heading)
+        heading_layout.setContentsMargins(0, 0, 0, 0)
+        for _index in range(3):
+            item = self.hBoxLayout.takeAt(0)
+            if item.widget() is not None:
+                heading_layout.addWidget(item.widget(), 0, item.alignment())
+            elif item.layout() is not None:
+                heading_layout.addLayout(item.layout())
+            else:
+                heading_layout.addItem(item)
+        self._heading = heading
+        self.titleLabel.setWordWrap(True)
+        self.contentLabel.setWordWrap(True)
+        heading.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        controls = QWidget(self)
+        controls_layout = WrapLayout(controls)
+        while self.hBoxLayout.count():
+            item = self.hBoxLayout.takeAt(0)
+            if item.widget() is not None:
+                controls_layout.addWidget(item.widget(), alignment=item.alignment())
+            elif item.layout() is not None:
+                controls_layout.addLayout(item.layout())
+        self._responsive_controls = controls
+        self.hBoxLayout.addWidget(heading, 1)
+        self.hBoxLayout.addWidget(controls, 1)
+        self._card_relayout = CoalescedCall(self, self._fit_responsive_card, 0)
+        self._fit_responsive_card()
+
+    def _fit_responsive_card(self):
+        compact = self.width() < px(680)
+        self.hBoxLayout.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+        self.hBoxLayout.setContentsMargins(px(16), px(12), px(16), px(12))
+        self.hBoxLayout.setSpacing(px(10))
+        width = max(1, self.width() - px(32))
+        if compact:
+            height = (self._heading.layout().totalHeightForWidth(width)
+                      + self._responsive_controls.layout().heightForWidth(width) + px(34))
+        else:
+            height = self.hBoxLayout.totalHeightForWidth(self.width())
+        self.setFixedHeight(max(px(64), height))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_card_relayout') and event.size().width() != event.oldSize().width():
+            self._card_relayout.schedule()
+
+    def refresh_interface_scale(self):
+        self._fit_responsive_card()
+
+
+class JsonComboBoxSettingCard(ResponsiveSettingCard, SettingSurface, ComboBoxSettingCard):
     """Use Fluent's combo card without its unrelated config/config.json writes."""
     def _onCurrentIndexChanged(self, index):
         self.configItem.value = self.comboBox.itemData(index)
@@ -38,24 +93,33 @@ class JsonComboBoxSettingCard(SettingSurface, ComboBoxSettingCard):
             self.comboBox.setCurrentText(self.optionToText[value])
 
 
-class StudioSwitchSettingCard(SettingSurface, SwitchSettingCard):
-    pass
+class StudioSwitchSettingCard(ResponsiveSettingCard, SettingSurface, SwitchSettingCard):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._prepare_responsive_card()
 
 
-class CustomSettingCard(SettingSurface, SettingCard):
+class CustomSettingCard(ResponsiveSettingCard, SettingSurface, SettingCard):
     # 1.11.3 has no LineEditSettingCard or SpinBoxSettingCard: compose its
     # SettingCard with its LineEdit/SpinBox to retain the Fluent design.
     def __init__(self, title, control, icon=FIF.SETTING, parent=None):
         super().__init__(icon, title, parent=parent)
+        control.setMinimumWidth(0)
+        control.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.hBoxLayout.addWidget(control, 1, Qt.AlignVCenter)
         self.hBoxLayout.addSpacing(20)
         self.setMinimumHeight(64)
+        self._prepare_responsive_card()
 
 
 class RepositorySyncSettingCard(SettingSurface, SettingCard):
     def __init__(self, controls):
         super().__init__(FIF.SYNC, tr('GitHub 私人仓库同步'))
         self.controls = controls
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(0)
+        self._fit_timer.timeout.connect(self.fit_content)
         self.vBoxLayout.addWidget(controls)
         self.vBoxLayout.setContentsMargins(0, 12, 20, 12)
         for index in range(self.hBoxLayout.count()):
@@ -71,7 +135,8 @@ class RepositorySyncSettingCard(SettingSurface, SettingCard):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        QTimer.singleShot(0, self.fit_content)
+        if event.size().width() != event.oldSize().width() and not self._fit_timer.isActive():
+            self._fit_timer.start()
 
 
 class SettingsPage(QWidget):
@@ -173,7 +238,13 @@ class SettingsPage(QWidget):
         shell = QHBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        shell.addWidget(self.rail)
+        self.rail_scroll = ScrollArea()
+        self.rail_scroll.setWidgetResizable(True)
+        self.rail_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.rail_scroll.setFixedWidth(196)
+        self.rail_scroll.setWidget(self.rail)
+        shell.addWidget(self.rail_scroll)
         shell.addWidget(self.page_stack, 1)
         self._switch_page('stations', highlight=True)
         self.pool_timer = QTimer(self)
@@ -254,7 +325,7 @@ class SettingsPage(QWidget):
     # 左侧分类导航（滚动锚点）
     # ------------------------------------------------------------------
     def _build_rail(self):
-        rail = QWidget(); rail.setObjectName('settingsRail'); rail.setFixedWidth(196)
+        rail = QWidget(); rail.setObjectName('settingsRail')
         rail.setStyleSheet(
             '#settingsRail {background:transparent; border-right:1px solid rgba(255,255,255,0.07);}'
             '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; padding:10px 14px;'
@@ -436,20 +507,22 @@ class SettingsPage(QWidget):
         upload_key = LineEdit(); upload_key.setText(station.get('upload_api_key', '')); upload_key.setEchoMode(LineEdit.Password); upload_key.setPlaceholderText('上传 Token（可留空）')
         for caption_text, field in (('名称', name), ('API Base URL', base), ('API Key', key_edit),
                                     ('上传接口 URL', upload), ('上传 Token', upload_key)):
-            row = QHBoxLayout(); row.setSpacing(10)
-            lbl = CaptionLabel(caption_text); lbl.setFixedWidth(110)
+            row = WrapLayout(spacing=10)
+            lbl = CaptionLabel(caption_text); lbl.setMinimumWidth(110)
+            field.setMinimumWidth(180)
+            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             field.setFixedHeight(32)
             row.addWidget(lbl, 0, Qt.AlignVCenter); row.addWidget(field, 1)
             layout.addLayout(row)
-        caps = QHBoxLayout(); caps.setSpacing(14)
-        caps_label = CaptionLabel('能力标签'); caps_label.setFixedWidth(110)
+        caps = WrapLayout(spacing=14)
+        caps_label = CaptionLabel('能力标签'); caps_label.setMinimumWidth(110)
         caps.addWidget(caps_label, 0, Qt.AlignVCenter)
         boxes = {}
         for key2, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
             box = CheckBox(text); box.setChecked(key2 in (station.get('capabilities') or []))
             boxes[key2] = box; caps.addWidget(box)
         caps.addStretch(1); layout.addLayout(caps)
-        buttons = QHBoxLayout(); buttons.setSpacing(8)
+        buttons = WrapLayout(spacing=8)
         save = PushButton('保存修改'); use = PushButton('设为当前'); remove = PushButton('删除该中转站')
         save.setFixedHeight(32); use.setFixedHeight(32); remove.setFixedHeight(32)
         # 破坏性操作按危险语义标色（当前设置中仅此一处破坏性操作）。
@@ -501,7 +574,7 @@ class SettingsPage(QWidget):
         hint.setWordWrap(True); layout.addWidget(hint)
         self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
         holder = QWidget(); holder.setLayout(self.station_list); layout.addWidget(holder)
-        buttons = QHBoxLayout(); buttons.setSpacing(8)
+        buttons = WrapLayout(spacing=8)
         self.add_station_button = PushButton(FIF.ADD, '新增中转站')
         self.add_station_button.clicked.connect(lambda: self._open_station_editor(None))
         self.capture_station_button = PushButton(FIF.SAVE, '把当前 API 配置保存为中转站')
@@ -509,6 +582,7 @@ class SettingsPage(QWidget):
         buttons.addWidget(self.add_station_button); buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
         layout.addLayout(buttons)
         group.addSettingCard(card)
+        card._content_height = ContentHeight(card)
         self.station_rows = []
         self._editing_station_id = ''
         self._render_stations()
@@ -527,12 +601,12 @@ class SettingsPage(QWidget):
         self.station_upload = LineEdit(); self.station_upload.setPlaceholderText('上传接口 URL（可留空沿用默认）'); editor.addWidget(self.station_upload)
         self.station_upload_key = LineEdit(); self.station_upload_key.setPlaceholderText('上传 Token（可留空）')
         self.station_upload_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_upload_key)
-        caps = QHBoxLayout(); caps.setSpacing(14)
+        caps = WrapLayout(spacing=14)
         self.station_caps = {}
         for key, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
             box = CheckBox(text); self.station_caps[key] = box; caps.addWidget(box)
         caps.addStretch(1); editor.addLayout(caps)
-        editor_buttons = QHBoxLayout(); editor_buttons.setSpacing(8)
+        editor_buttons = WrapLayout(spacing=8)
         save = PushButton('保存'); save.clicked.connect(self._save_station_editor)
         cancel = PushButton('取消'); cancel.clicked.connect(self._close_station_editor)
         editor_buttons.addWidget(save); editor_buttons.addWidget(cancel); editor_buttons.addStretch(1)
@@ -572,7 +646,7 @@ class SettingsPage(QWidget):
             row = make_card()
             row_layout = QVBoxLayout(row); row_layout.setContentsMargins(14, 10, 14, 10); row_layout.setSpacing(6)
             is_active = station.get('id') == active and bool(active)
-            line1 = QHBoxLayout(); line1.setSpacing(8)
+            line1 = WrapLayout(spacing=8)
             dot = Dot(8, '#5B8DEF' if is_active else '#454B5A', filled=is_active)
             line1.addWidget(dot)
             name = label(station.get('name') or '未命名中转站', 13, '#F4F5F7', True)
@@ -594,7 +668,7 @@ class SettingsPage(QWidget):
             remove = TransparentToolButton(FIF.DELETE); remove.setToolTip('删除该中转站')
             remove.clicked.connect(lambda checked=False, sid=station.get('id'): self._delete_station(sid))
             line1.addWidget(remove)
-            line2 = QHBoxLayout(); line2.setSpacing(10)
+            line2 = WrapLayout(spacing=10)
             host = label(self._station_host_text(station), 11, '#6B7280', mono=True)
             host.setToolTip(station.get('base_url', ''))
             host.setMinimumWidth(0)
@@ -736,7 +810,7 @@ class SettingsPage(QWidget):
         edit.setMinimumWidth(240)
         edit.textChanged.connect(lambda v: self.config_manager.update(path, v))
         host = QWidget()
-        row = QHBoxLayout(host)
+        row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(edit, 1)
         if secret:
@@ -757,6 +831,7 @@ class SettingsPage(QWidget):
         item = OptionsConfigItem(path[0], path[1], self._value(path), OptionsValidator(choices))
         card = JsonComboBoxSettingCard(item, FIF.SETTING, title, texts=texts or choices)
         card.comboBox.setMinimumWidth(200)
+        card._prepare_responsive_card()
         # Model-dependent choices are rebuilt without signals. Persist the actual
         # selected item even when the setting card's cached ConfigItem is unchanged.
         card.comboBox.currentIndexChanged.connect(
@@ -768,15 +843,16 @@ class SettingsPage(QWidget):
         control = SpinBox()
         control.setRange(low, high)
         control.setValue(self._value(path))
-        control.setFixedWidth(200)
+        control.setMinimumWidth(120)
+        control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         control.valueChanged.connect(lambda v: self.config_manager.update(path, v))
         group.addSettingCard(CustomSettingCard(title, control))
         return control
 
     def _model_combo(self, group, title, path, automatic=False):
         combo = ModelComboBox()
-        combo.setMinimumWidth(240)
-        combo.setMaximumWidth(560)
+        combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         combo.set_models(catalog_snapshot(self.config_manager), self._value(path), automatic=automatic)
         combo.currentTextChanged.connect(lambda model: self.config_manager.update(path, model))
         group.addSettingCard(CustomSettingCard(title, combo))
@@ -806,7 +882,7 @@ class SettingsPage(QWidget):
         self.debug_mode.setToolTip('记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式')
         self.debug_mode.checkedChanged.connect(self.debug_mode_changed)
         host = QWidget()
-        row = QHBoxLayout(host)
+        row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
         self.last_model_sync = CaptionLabel('尚未同步')
         self.sync_models_button = PushButton(FIF.SYNC, '同步上游模型')
@@ -814,7 +890,7 @@ class SettingsPage(QWidget):
         row.addWidget(self.sync_models_button)
         group.addSettingCard(CustomSettingCard('上游模型目录', host, FIF.SYNC))
         diag_host = QWidget()
-        diag_row = QHBoxLayout(diag_host)
+        diag_row = WrapLayout(diag_host)
         diag_row.setContentsMargins(0, 0, 0, 0)
         self.diagnostics_hint = CaptionLabel(tr('将日志、脱敏配置与环境信息打包为 zip，便于排查问题'))
         self.diagnostics_hint.setWordWrap(True)
@@ -850,6 +926,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self.add_model, 0, Qt.AlignLeft)
         card.setFixedHeight(layout.sizeHint().height())
         group.addSettingCard(card)
+        card._content_height = ContentHeight(card)
 
     def _build_task(self):
         group = self._group("任务策略")
@@ -947,7 +1024,7 @@ class SettingsPage(QWidget):
         self.theme.setToolTip("9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效")
         from ..scaling import SCALE_CHOICES
         host = QWidget()
-        row = QHBoxLayout(host)
+        row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
         self.ui_scale = ComboBox()
@@ -992,7 +1069,7 @@ class SettingsPage(QWidget):
         """账号与许可：状态徽标 + 详情 + 试用进度（到期进度条式视觉）。"""
         card = make_card()
         layout = QVBoxLayout(card); layout.setContentsMargins(20, 16, 20, 16); layout.setSpacing(10)
-        top = QHBoxLayout(); top.setSpacing(8)
+        top = WrapLayout(spacing=8)
         self.license_dot = Dot(8, '#8B93A3')
         top.addWidget(self.license_dot, 0, Qt.AlignVCenter)
         self.license_badge = label('未激活', 12, '#8B93A3', True)
@@ -1099,6 +1176,11 @@ class SettingsPage(QWidget):
         self.schedule_group = group
         self.schedule_enabled = self._switch(group, '启用定时执行', ('schedule', 'enabled'), FIF.PLAY)
         self.schedule_time = TimePicker(showSeconds=False)
+        self.schedule_time.hBoxLayout.setSizeConstraint(QLayout.SetMinimumSize)
+        for column in self.schedule_time.columns:
+            column.setMinimumWidth(72)
+            column.setMaximumWidth(16777215)
+            column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.schedule_time.setTime(QTime.fromString(self._value(('schedule', 'time')), 'HH:mm'))
         group.addSettingCard(CustomSettingCard('定时开始时间', self.schedule_time, FIF.HISTORY))
         self.schedule_mode = self._combo(group, '执行模式', ('schedule', 'mode'), ['once', 'daily'], ['仅一次', '每天重复'])
@@ -1130,8 +1212,11 @@ class SettingsPage(QWidget):
         controls = QWidget()
         layout = QVBoxLayout(controls)
         layout.setContentsMargins(0, 12, 0, 12)
-        path_row = QHBoxLayout()
+        path_row = WrapLayout()
+        self.repo_path_layout = path_row
         self.repo_root_edit = LineEdit()
+        self.repo_root_edit.setMinimumWidth(140)
+        self.repo_root_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.repo_root_edit.setReadOnly(True)
         self.repo_root_edit.setPlaceholderText(tr('请先选择本地项目Git根目录'))
         self.repo_root_edit.setText(self._sync_repo_root())
@@ -1260,11 +1345,13 @@ class SettingsPage(QWidget):
 
     def _add_model_row(self, name, enabled, status, persist=True):
         row = make_card()
-        layout = QHBoxLayout(row)
+        layout = WrapLayout(row)
         layout.setContentsMargins(20, 10, 20, 10)
         check = CheckBox("启用")
         check.setChecked(enabled)
         combo = ModelComboBox()
+        combo.setMinimumWidth(160)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
         state = CaptionLabel(status)
         state.setProperty('statusTone', True)

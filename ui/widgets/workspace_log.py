@@ -1,6 +1,6 @@
 """Resizable persistent log with a lightweight new-entry highlight."""
 from html import escape
-from PyQt5.QtCore import Qt, QPropertyAnimation, pyqtProperty, pyqtSignal
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QTextCursor
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from qfluentwidgets import ComboBox, PushButton, TransparentToolButton, TextBrowser, FluentIcon as FIF
@@ -8,6 +8,9 @@ from core.i18n import tr
 from ..tokens import MOTION
 from .log_drawer import LogDrawer
 from .workspace_surface import label, style_button
+from ..responsive import WrapLayout
+from ..tokens import px
+from ..motion import reduced_motion
 
 
 class LogHighlight(QWidget):
@@ -42,7 +45,7 @@ class FilterTabs(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(6)
+        row = WrapLayout(self, spacing=6)
         self._buttons = {}
         for name in self.LEVELS:
             chip = PushButton(tr(name))
@@ -104,7 +107,7 @@ class WorkspaceLog(LogDrawer):
         self.setAttribute(Qt.WA_StyledBackground)
         self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
         root = QVBoxLayout(self); root.setContentsMargins(18, 10, 18, 10); root.setSpacing(8)
-        header = QHBoxLayout(); self.header = header
+        header = WrapLayout(spacing=8); self.header = header
         header.addWidget(label(tr('执行日志'), 13, '#F4F5F7', True))
         self.count_label = label(f'{tr("本次运行")} 0 {tr("条")}', 11, '#7A8294', mono=True)
         header.addWidget(self.count_label)
@@ -131,6 +134,7 @@ class WorkspaceLog(LogDrawer):
         root.addWidget(self.browser, 1)
         self.highlight = LogHighlight(self.browser.viewport())
         self._animation = QPropertyAnimation(self, b'maximumHeight', self); self._animation.setDuration(MOTION['base'])
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.finished.connect(self._toggle_finished)
         self._saved_height = 158
         from ..materials import register_theme_callback
@@ -217,11 +221,26 @@ class WorkspaceLog(LogDrawer):
         if not self._expanded:
             self._saved_height = max(120, self.height())
         self.browser.show()
-        self.setMinimumHeight(44)
-        self._animation.setStartValue(self.height()); self._animation.setEndValue(self._saved_height if self._expanded else 44)
+        header_height = self._header_height()
+        self.setMinimumHeight(header_height)
+        self._animation.setDuration(0 if reduced_motion() else MOTION['base'])
+        self._animation.setStartValue(self.height()); self._animation.setEndValue(max(header_height, self._saved_height) if self._expanded else header_height)
         self._animation.start(); self.toggle_button.setIcon(FIF.UP if self._expanded else FIF.DOWN)
 
     def _toggle_finished(self):
         self.browser.setVisible(self._expanded)
-        self.setMaximumHeight(16777215 if self._expanded else 44)
+        self.setMaximumHeight(16777215 if self._expanded else self._header_height())
         self.view_changed.emit()
+
+    def _header_height(self):
+        margins = self.layout().contentsMargins()
+        return max(px(44), self.header.heightForWidth(max(1, self.width() - margins.left() - margins.right()))
+                   + margins.top() + margins.bottom())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'header'):
+            height = self._header_height()
+            self.setMinimumHeight(height)
+            if not self._expanded and self._animation.state() != self._animation.Running:
+                self.setMaximumHeight(height)
