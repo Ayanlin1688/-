@@ -27,6 +27,7 @@ from .theme import style_controls, style_page, apply_palette
 from .materials import ACCENT, paint_background
 from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
+from .scaling import screen_factors
 
 
 class MainWindow(FluentWindow):
@@ -36,6 +37,8 @@ class MainWindow(FluentWindow):
         setTheme(Theme.DARK, save=False)
         setThemeColor(QColor(ACCENT), save=False)
         super().__init__()
+        self._dpi_window_handle = None
+        self._dpi_screen = None
         # 自绘圆角窗口：无边框 + 透明外圈，在 Win10 上也能获得一致的 12px 圆角与高光描边。
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._window_margin = 8
@@ -643,6 +646,62 @@ class MainWindow(FluentWindow):
         super().resizeEvent(event)
         self._sync_window_frame()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._connect_screen_signals()
+
+    def _connect_screen_signals(self):
+        if getattr(self, '_closing', False):
+            return
+        handle = self.windowHandle()
+        if handle is None or handle is self._dpi_window_handle:
+            return
+        self._disconnect_screen_signals()
+        self._dpi_window_handle = handle
+        handle.screenChanged.connect(self._on_screen_changed)
+        self._on_screen_changed(handle.screen())
+
+    def _disconnect_screen_signals(self):
+        if self._dpi_screen is not None:
+            try:
+                self._dpi_screen.logicalDotsPerInchChanged.disconnect(self._on_screen_dpi_changed)
+            except (TypeError, RuntimeError):
+                pass
+        if self._dpi_window_handle is not None:
+            try:
+                self._dpi_window_handle.screenChanged.disconnect(self._on_screen_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._dpi_screen = None
+        self._dpi_window_handle = None
+
+    def _on_screen_changed(self, screen):
+        if getattr(self, '_closing', False):
+            return
+        if screen is not self._dpi_screen:
+            if self._dpi_screen is not None:
+                try:
+                    self._dpi_screen.logicalDotsPerInchChanged.disconnect(self._on_screen_dpi_changed)
+                except (TypeError, RuntimeError):
+                    pass
+            self._dpi_screen = screen
+            if screen is not None:
+                screen.logicalDotsPerInchChanged.connect(self._on_screen_dpi_changed)
+        self._log_screen_factors('screen-changed')
+
+    def _on_screen_dpi_changed(self, _dpi):
+        self._log_screen_factors('logical-dpi-changed')
+
+    def _log_screen_factors(self, reason):
+        """Stage one only observes screen changes; no application scale is applied."""
+        if self._dpi_screen is None or getattr(self, '_closing', False):
+            return
+        factors = screen_factors(self._dpi_screen)
+        self.workspace_page.append_log(
+            f"Screen metrics ({reason}): {self._dpi_screen.name()} · dpi={factors['dpi']:.3f} · "
+            f"logical={factors['logical_width']}x{factors['logical_height']} · "
+            f"available={factors['available_width']}x{factors['available_height']}", 'info')
+
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
@@ -1005,6 +1064,7 @@ class MainWindow(FluentWindow):
             pass
 
     def closeEvent(self, event):
+        self._disconnect_screen_signals()
         if self._closing:
             self._close_child_dialogs()
             # 接受第二次关闭事件即可让主窗口正常退出。这里不能提前调用

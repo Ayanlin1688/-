@@ -61,6 +61,9 @@ def main() -> int:
         raise
     # 无人值守兜底：任何未捕获异常先落盘留痕，不让进程静默退出。
     install_default(logs_dir)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName('YanlinMatrix')
     icon_path = _asset_path('app.ico')

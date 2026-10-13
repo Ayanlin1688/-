@@ -60,6 +60,7 @@ def build_bundle() -> Path:
         '--specpath', str(BUILD),
         '--collect-all', 'qfluentwidgets',
         '--version-file', str(version_file),
+        '--manifest', str(ROOT / 'packaging' / 'app.manifest'),
     ]
     if icon.is_file():
         args += ['--icon', str(icon)]
