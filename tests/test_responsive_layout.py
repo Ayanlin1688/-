@@ -21,6 +21,7 @@ from ui.scaling import apply_interface_scale
 from ui.tokens import px
 from tests.test_interface_scaling import FakeScreen
 from tests.test_task_manager import wait_until
+from tests.qt_scale_support import flush_layout, reset_interface_scaling
 
 
 class ResponsiveLayoutTests(unittest.TestCase):
@@ -29,6 +30,8 @@ class ResponsiveLayoutTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
         apply_interface_scale(self.app, FakeScreen(), '1.0')
         self.temporary = tempfile.TemporaryDirectory()
         self.config = ConfigManager(Path(self.temporary.name) / 'config.json')
@@ -55,7 +58,7 @@ class ResponsiveLayoutTests(unittest.TestCase):
 
     def resize(self, width, height=600):
         self.window.resize(width, height)
-        QTest.qWait(120)
+        flush_layout(self.app, self.window)
 
     def assert_layout_inside(self, layout):
         bounds = layout.geometry()

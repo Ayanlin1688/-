@@ -78,32 +78,46 @@ class InterfaceScaler(QObject):
         self.layouts = weakref.WeakKeyDictionary()
         self.pending = weakref.WeakSet()
         self.applying = False
+        self.disposed = False
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._refresh_pending)
         app.installEventFilter(self)
 
     def eventFilter(self, watched, event):
-        if self.applying or not isinstance(watched, QWidget) or not _scalable(watched):
+        if (self.disposed or self.applying
+                or event.type() not in (QEvent.Polish, QEvent.Show, QEvent.StyleChange, QEvent.FontChange)
+                or not isinstance(watched, QWidget) or not _scalable(watched)):
             return False
-        if event.type() in (QEvent.Polish, QEvent.Show, QEvent.StyleChange, QEvent.FontChange):
-            state = self.widgets.get(watched)
-            if state is not None and event.type() == QEvent.FontChange:
-                state['font_dirty'] = watched.font() != state.get('last_font')
-            self.pending.add(watched)
-            if not self.timer.isActive():
-                self.timer.start(0)
+        state = self.widgets.get(watched)
+        if (state is not None and state['applied_scale'] == self.scale
+                and watched.styleSheet() == state['last_style']
+                and not self._font_size_changed(watched, state)):
+            return False
+        self.pending.add(watched)
+        if not self.timer.isActive():
+            self.timer.start(0)
         return False
 
     def _font_baseline(self, widget):
         if not widget.testAttribute(Qt.WA_SetFont):
             return None
-        return QFont(widget.font())
+        font = QFont(widget.font())
+        if (font.pixelSize() <= 0 and self.scale != 1.0
+                and font.pointSizeF() == self.app.font().pointSizeF()):
+            font.setPointSizeF(self.base_font.pointSizeF())
+        return font
+
+    def _font_size_changed(self, widget, state):
+        if state['font'] is None:
+            return False
+        font = widget.font()
+        return (font.pixelSize(), font.pointSizeF()) != state['last_font_size']
 
     def _capture(self, widget):
         minimum, maximum = widget.minimumSize(), widget.maximumSize()
-        state = dict(font=self._font_baseline(widget), font_dirty=False, applied_scale=None,
-                     style=widget.styleSheet(), last_style=None,
+        state = dict(font=self._font_baseline(widget), applied_scale=None,
+                     style=widget.styleSheet(), last_style=None, style_sources={}, last_font_size=None,
                      minimum=minimum, maximum=maximum)
         if isinstance(widget, QAbstractButton):
             state['icon'] = widget.iconSize()
@@ -122,21 +136,19 @@ class InterfaceScaler(QObject):
         if state is None:
             state = self._capture(widget)
         style = widget.styleSheet()
-        if (state['applied_scale'] == self.scale and not state['font_dirty']
-                and style == state['last_style']):
+        scale_changed = state['applied_scale'] != self.scale
+        if not scale_changed and style == state['last_style'] and not self._font_size_changed(widget, state):
             return
-        if state['font_dirty']:
-            state['font'] = self._font_baseline(widget)
-            state['font_dirty'] = False
         if state['last_style'] is not None and style != state['last_style']:
-            state['style'] = style
+            state['style'] = state['style_sources'].get(style, style)
         scaled_style = tokens.scale_stylesheet(state['style'], self.scale)
+        state['style_sources'][scaled_style] = state['style']
+        state['last_style'] = scaled_style
         if style != scaled_style:
             widget.setStyleSheet(scaled_style)
-        state['last_style'] = scaled_style
         if state['font'] is not None:
-            scaled_font = QFont(state['font'])
-            if scaled_font.pixelSize() > 0:
+            scaled_font = QFont(widget.font())
+            if state['font'].pixelSize() > 0:
                 scaled_font.setPixelSize(max(1, round(state['font'].pixelSize() * self.scale)))
             else:
                 scaled_font.setPointSizeF(state['font'].pointSizeF() * self.scale)
@@ -163,7 +175,8 @@ class InterfaceScaler(QObject):
         if effect is not None and state['applied_scale'] != self.scale:
             effect.updateBoundingRect()
         state['applied_scale'] = self.scale
-        state['last_font'] = QFont(widget.font())
+        font = widget.font()
+        state['last_font_size'] = (font.pixelSize(), font.pointSizeF())
         widget.updateGeometry()
         widget.update()
 
@@ -204,6 +217,9 @@ class InterfaceScaler(QObject):
                     layout.invalidate()
 
     def _refresh_pending(self):
+        self.timer.stop()
+        if self.disposed or self.applying:
+            return
         pending = list(self.pending)
         self.pending.clear()
         self.applying = True
@@ -220,6 +236,10 @@ class InterfaceScaler(QObject):
             self.applying = False
 
     def apply(self, scale):
+        if self.disposed:
+            return
+        self.timer.stop()
+        self.pending.clear()
         self.applying = True
         try:
             widgets = [widget for widget in self.app.allWidgets() if _scalable(widget)]
@@ -247,12 +267,26 @@ class InterfaceScaler(QObject):
         finally:
             self.applying = False
 
+    def dispose(self):
+        if self.disposed:
+            return
+        self.app.removeEventFilter(self)
+        self.apply(1.0)
+        self.disposed = True
+        self.timer.stop()
+        self.pending.clear()
+        self.widgets.clear()
+        self.layouts.clear()
+        if getattr(self.app, '_interface_scaler', None) is self:
+            del self.app._interface_scaler
+        self.deleteLater()
+
 
 def apply_interface_scale(app, screen, ui_scale='auto'):
     screen = screen or app.primaryScreen()
     factors = interface_factors(screen, ui_scale)
     scaler = getattr(app, '_interface_scaler', None)
-    if scaler is None:
+    if not _alive(scaler) or scaler.disposed:
         scaler = InterfaceScaler(app)
         app._interface_scaler = scaler
     scaler.apply(factors['z'])

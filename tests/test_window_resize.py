@@ -18,6 +18,7 @@ from tests.test_interface_scaling import FakeScreen
 from tests.test_task_manager import wait_until
 from ui.main_window import MainWindow
 from ui.scaling import apply_interface_scale
+from tests.qt_scale_support import flush_layout, reset_interface_scaling
 from ui.window_resize import resize_edges, resize_hit_test
 
 
@@ -80,6 +81,8 @@ class WindowResizeTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
         apply_interface_scale(self.app, FakeScreen(), '1.0')
         self.temporary = tempfile.TemporaryDirectory()
         self.config = ConfigManager(Path(self.temporary.name) / 'config.json')
@@ -128,7 +131,7 @@ class WindowResizeTests(unittest.TestCase):
         self.config.config['appearance']['ui_scale'] = '1.6'
         self.window.apply_appearance()
         self.window.resize(800, 400)
-        QTest.qWait(80)
+        flush_layout(self.app, self.window)
         self.assertEqual(self.window.minimumSize(), QSize(960, 600))
         self.assertEqual(self.window.size(), QSize(960, 600))
         self.assertEqual(self.window._resize_hit_test(QPoint(945, 585)), 17)

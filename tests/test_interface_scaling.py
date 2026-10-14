@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PyQt5.QtCore import QObject, QRect, QSize, pyqtSignal
+from PyQt5 import sip
+from PyQt5.QtCore import QCoreApplication, QEvent, QObject, QRect, QSize, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -15,6 +16,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWid
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
 from ui import tokens
 from ui.scaling import SCALE_CHOICES, apply_interface_scale, interface_factors
+from tests.qt_scale_support import flush_layout, reset_interface_scaling
 
 
 class FakeScreen(QObject):
@@ -94,6 +96,8 @@ class InterfaceApplicationTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
         apply_interface_scale(self.app, FakeScreen(), '1.0')
         QTest.qWait(10)
         self.base_font = QFont(self.app.font())
@@ -229,6 +233,108 @@ class InterfaceApplicationTests(unittest.TestCase):
         self.assertEqual(self.layout.itemAt(0).sizeHint().height(), 8)
         del old
 
+    def test_font_format_change_never_rebases_an_already_scaled_size(self):
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        scaler = self.app._interface_scaler
+        font = self.caption.font()
+        font.setBold(True)
+        self.caption.setFont(font)
+        QTest.qWait(30)
+        self.assertEqual(scaler.widgets[self.caption]['font'].pixelSize(), 12)
+        self.assertEqual(self.caption.font().pixelSize(), 19)
+        font = self.caption.font()
+        font.setPixelSize(12)
+        self.caption.setFont(font)
+        scaler._refresh_pending()
+        self.assertEqual(self.caption.font().pixelSize(), 19)
+        self.assertEqual(scaler.widgets[self.caption]['font'].pixelSize(), 12)
+        font = self.caption.font()
+        font.setPixelSize(12)
+        self.caption.setFont(font)
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        self.assertEqual(self.caption.font().pixelSize(), 19)
+        self.assertFalse(scaler.pending)
+        self.assertFalse(scaler.timer.isActive())
+        for choice in ('1.25', '1.6', '1.0'):
+            apply_interface_scale(self.app, FakeScreen(), choice)
+        self.assertEqual(self.caption.font().pixelSize(), 12)
+        self.assertTrue(self.caption.font().bold())
+
+    def test_deferred_own_style_and_font_events_do_not_restart_refresh(self):
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        scaler = self.app._interface_scaler
+        scaler._refresh_pending()
+        for kind in (QEvent.StyleChange, QEvent.FontChange, QEvent.Polish, QEvent.Show):
+            QCoreApplication.postEvent(self.button, QEvent(kind))
+        QCoreApplication.sendPostedEvents(self.button)
+        self.assertNotIn(self.button, scaler.pending)
+        self.assertFalse(scaler.timer.isActive())
+
+    def test_unrelated_events_do_not_traverse_native_widget_ownership(self):
+        scaler = self.app._interface_scaler
+        with patch.object(self.button, 'window', side_effect=AssertionError('unrelated event')):
+            self.assertFalse(scaler.eventFilter(self.button, QEvent(QEvent.MouseMove)))
+
+    def test_replayed_scaled_stylesheet_uses_its_original_source(self):
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        old_style = self.button.styleSheet()
+        apply_interface_scale(self.app, FakeScreen(), '1.25')
+        self.button.setStyleSheet(old_style)
+        self.app._interface_scaler._refresh_pending()
+        self.assertIn('border-radius:10px', self.button.styleSheet())
+        apply_interface_scale(self.app, FakeScreen(), '1.0')
+        self.assertIn('border-radius:8px', self.button.styleSheet())
+
+    def test_late_control_derived_from_app_font_keeps_original_point_size(self):
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        child = QLabel('late inherited font', self.root)
+        font = child.font()
+        font.setBold(True)
+        child.setFont(font)
+        self.layout.addWidget(child)
+        child.show()
+        self.app._interface_scaler._refresh_pending()
+        self.assertAlmostEqual(child.font().pointSizeF(), self.base_font.pointSizeF() * 1.6)
+        apply_interface_scale(self.app, FakeScreen(), '1.0')
+        self.assertAlmostEqual(child.font().pointSizeF(), self.base_font.pointSizeF())
+        self.assertTrue(child.font().bold())
+
+    def test_explicit_flush_stops_timer_and_visits_each_widget_at_most_once(self):
+        scaler = self.app._interface_scaler
+        for _iteration in range(100):
+            scaler.pending.add(self.button)
+        scaler.timer.start(0)
+        with patch.object(scaler, '_refresh_widget', wraps=scaler._refresh_widget) as refresh:
+            scaler._refresh_pending()
+        self.assertEqual([call.args[0] for call in refresh.call_args_list], [self.button])
+        self.assertFalse(scaler.pending)
+        self.assertFalse(scaler.timer.isActive())
+
+    def test_dispose_removes_filter_pending_timer_and_global_scale(self):
+        apply_interface_scale(self.app, FakeScreen(), '1.6')
+        scaler = self.app._interface_scaler
+        scaler.pending.add(self.button)
+        scaler.timer.start(0)
+        scaler.dispose()
+        scaler.dispose()
+        self.assertFalse(scaler.timer.isActive())
+        self.assertFalse(scaler.pending)
+        self.assertFalse(hasattr(self.app, '_interface_scaler'))
+        self.assertEqual(tokens.interface_scale(), 1.0)
+        self.assertEqual(self.app.font(), self.base_font)
+        QCoreApplication.sendEvent(self.button, QEvent(QEvent.FontChange))
+        self.assertFalse(scaler.pending)
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertTrue(sip.isdeleted(scaler))
+
+    def test_recreated_scaler_does_not_capture_a_scaled_application_font(self):
+        for choice in ('1.6', '1.25', '1.6'):
+            apply_interface_scale(self.app, FakeScreen(), choice)
+            self.assertAlmostEqual(self.app.font().pointSizeF(), self.base_font.pointSizeF() * float(choice))
+            reset_interface_scaling(self.app)
+            self.assertEqual(self.app.font(), self.base_font)
+            self.assertEqual(self.caption.font().pixelSize(), 12)
+
 
 class InterfaceWindowTests(unittest.TestCase):
     @classmethod
@@ -236,6 +342,8 @@ class InterfaceWindowTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
         from ui.main_window import MainWindow
         apply_interface_scale(self.app, FakeScreen(), '1.0')
         if sys.platform == 'win32':
@@ -322,6 +430,21 @@ class InterfaceWindowTests(unittest.TestCase):
         self.assertGreater(header.checkBox.width(), header._checkbox_size.width())
         self.assertGreaterEqual(header.checkBox.x(), header.sectionViewportPosition(0))
         self.assertLessEqual(header.checkBox.geometry().right(), header.sectionViewportPosition(0) + header.sectionSize(0) - 1)
+
+    def test_page_switch_after_fractional_scaling_reaches_an_idle_fixed_point(self):
+        scaler = self.app._interface_scaler
+        for choice in ('1.6', '1.25', '1.0'):
+            self.manager.config['appearance']['ui_scale'] = choice
+            self.window.apply_appearance()
+            for page in (self.window.history_page, self.window.settings_page, self.window.workspace_page):
+                self.window.switchTo(page)
+                flush_layout(self.app, self.window)
+                self.assertFalse(scaler.pending)
+                self.assertFalse(scaler.timer.isActive())
+                with patch.object(scaler, '_refresh_pending', wraps=scaler._refresh_pending) as refresh:
+                    QCoreApplication.sendPostedEvents()
+                    self.app.processEvents()
+                    refresh.assert_not_called()
 
 
 if __name__ == '__main__':

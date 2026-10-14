@@ -14,6 +14,7 @@ from core.config_manager import ConfigManager
 from core.matcher import StoryboardMatcher
 from ui.main_window import MainWindow
 from test_task_manager import wait_until
+from tests.qt_scale_support import reset_interface_scaling
 
 
 class WorkspaceDashboardTests(unittest.TestCase):
@@ -22,6 +23,8 @@ class WorkspaceDashboardTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name).resolve()
         self.config = ConfigManager(root / 'config.json')
