@@ -134,6 +134,14 @@ class HighDpiStartupTests(unittest.TestCase):
             settings.find('{http://schemas.microsoft.com/SMI/2005/WindowsSettings}dpiAware').text,
             'True/PM')
 
+    def test_custom_manifest_preserves_windows_version_detection_for_backdrop_selection(self):
+        import xml.etree.ElementTree as ET
+        manifest = ET.parse(ROOT / 'packaging' / 'app.manifest')
+        namespaces = {'compat': 'urn:schemas-microsoft-com:compatibility.v1'}
+        supported = manifest.findall('compat:compatibility/compat:application/compat:supportedOS', namespaces)
+        self.assertIn('{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}',
+                      {entry.get('Id') for entry in supported})
+
     def test_pyinstaller_receives_custom_manifest_without_running_build(self):
         specification = importlib.util.spec_from_file_location('dpi_build_fixture', ROOT / 'packaging' / 'build_release.py')
         build = importlib.util.module_from_spec(specification)
