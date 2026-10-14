@@ -1,9 +1,9 @@
-"""Cached Fluent material painting. No live desktop capture or per-frame blur."""
+"""Cached Fluent materials with one in-memory glass transition per native drag."""
 from functools import lru_cache
 import math
 import weakref
 
-from PyQt5.QtCore import Qt, QRectF, QPointF
+from PyQt5.QtCore import Qt, QRectF, QPointF, QPoint, QSize
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap, QLinearGradient, QRadialGradient, QPen
 from PyQt5.QtWidgets import QGraphicsEffect
 
@@ -214,6 +214,48 @@ def paint_background(painter, rect, opaque=True):
         radial.setColorAt(0, QColor(glow[0], glow[1], glow[2], glow[3]))
         radial.setColorAt(1, QColor(glow[0], glow[1], glow[2], 0))
         painter.fillRect(rect, radial)
+
+
+def paint_window_tint(painter, rect):
+    """Constant-cost glass fallback during native interactive move/resize."""
+    tint = acrylic_tint()
+    color = QColor(*[int(tint[index:index + 2], 16) for index in (0, 2, 4, 6)])
+    painter.save()
+    painter.setCompositionMode(QPainter.CompositionMode_Source)
+    painter.fillRect(rect, color)
+    painter.restore()
+
+
+def legacy_background_snapshot(window):
+    """Keep a coarse, unreadable color field of the composited glass only in RAM."""
+    screen = window.screen()
+    if screen is None or not window.isVisible():
+        return None
+    margin = window._window_margins_px()
+    size = window.size() - QSize(margin * 2, margin * 2)
+    origin = window.mapToGlobal(QPoint(margin, margin)) - screen.geometry().topLeft()
+    try:
+        captured = screen.grabWindow(0, origin.x(), origin.y(), size.width(), size.height())
+        if captured.isNull():
+            return None
+        coarse = captured.toImage().scaled(16, 10, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        captured = QPixmap.fromImage(coarse)
+        return captured
+    except (RuntimeError, OSError):
+        return None
+
+
+def window_background_snapshot(size, ratio):
+    """Freeze only the decorative background, never text or interactive controls."""
+    pixmap = QPixmap(max(1, math.ceil(size.width() * ratio)), max(1, math.ceil(size.height() * ratio)))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    try:
+        paint_background(painter, QRectF(0, 0, size.width(), size.height()), opaque=True)
+    finally:
+        painter.end()
+    return pixmap
 
 
 @lru_cache(maxsize=1)

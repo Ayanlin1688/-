@@ -8,7 +8,7 @@ import threading
 import time
 
 from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
-from PyQt5.QtCore import QMargins, Qt, QTimer, QRectF, QEvent, QPointF, QSizeF
+from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -24,13 +24,14 @@ from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
-from .materials import ACCENT, paint_background
+from .materials import ACCENT, paint_background, paint_window_tint, window_background_snapshot, legacy_background_snapshot
 from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
 from .scaling import screen_factors, apply_interface_scale
 from .tokens import px
 from .responsive import CoalescedCall
 from .window_resize import resize_hit_test
+from .window_backdrop import WindowsBackdropApi, WindowBackdrop, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE
 
 
 class MainWindow(FluentWindow):
@@ -50,8 +51,11 @@ class MainWindow(FluentWindow):
         self._fullscreen_restore_geometry = None
         self._fullscreen_restore_maximized = False
         self._glass_material = 'gradient'
+        self._drag_background = None
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
+        self._backdrop = WindowBackdrop(int(self.winId()), WindowsBackdropApi(
+            available=QApplication.platformName() == 'windows'))
         self.config_manager = config_manager or ConfigManager(migrate=True)
         self.config_manager.load_config()
         # 语言须在界面构建前生效：否则构建期 tr() 拿不到配置语言（重启后英文也显示中文）。
@@ -82,6 +86,10 @@ class MainWindow(FluentWindow):
             self.workspace_page.append_log(self.config_manager.load_error, 'warning')
         self._closing = False
         self._responsive_resize = CoalescedCall(self, self._apply_responsive_window, 40)
+        self._material_repaint = CoalescedCall(self, self._repaint_material, 32)
+        self._move_resize_dispatcher = QAbstractEventDispatcher.instance(self.thread())
+        if self._move_resize_dispatcher is not None:
+            self._move_resize_dispatcher.aboutToBlock.connect(self._recover_drag_on_idle)
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(100)
         self._close_timer.timeout.connect(self._finish_close)
@@ -220,8 +228,8 @@ class MainWindow(FluentWindow):
                     pass
         except Exception:
             pass
-        self._apply_blur_setting(config)
         self._apply_interface_scale()
+        self._apply_blur_setting(config)
 
     def _apply_interface_scale(self):
         if getattr(self, '_closing', False):
@@ -249,18 +257,57 @@ class MainWindow(FluentWindow):
         setCustomStyleSheet(self.navigationInterface.panel, style, style)
 
     def _apply_blur_setting(self, config=None):
+        if getattr(self, '_closing', False):
+            return
         config = config if config is not None else self.settings_page.config_manager.config.get('appearance', {})
         enabled = bool(config.get('blur', False))
-        try:
-            hwnd = int(self.winId())
-            if enabled:
-                from . import materials
-                self.windowEffect.setAcrylicEffect(hwnd, materials.acrylic_tint(), True)
-            else:
-                self.windowEffect.removeBackgroundEffect(hwnd)
-        except Exception:
-            pass
-        self.update()
+        from . import materials
+        self._backdrop.bind(int(self.winId()))
+        previous = self._backdrop.backend
+        if self._backdrop.configure(enabled, materials.acrylic_tint(), not materials.is_light()):
+            self._glass_material = self._backdrop.backend
+            if not self._backdrop.dragging:
+                self._present_backdrop()
+            if previous != self._backdrop.backend:
+                self.workspace_page.append_log(f'窗口玻璃后端：{self._backdrop.backend}（Windows build {self._backdrop.api.build}）', 'info')
+
+    def _interactive_move_resize(self, entering):
+        backdrop = getattr(self, '_backdrop', None)
+        if backdrop is None or getattr(self, '_closing', False):
+            return
+        previous = backdrop._applied
+        changed = backdrop.begin_drag(self._prepare_drag_background) if entering else backdrop.end_drag()
+        if changed:
+            self._glass_material = backdrop.backend
+            if not entering:
+                self._drag_background = None
+                if backdrop.backend == 'dwm' and backdrop.paint_mode == 'clear' and previous == backdrop._applied:
+                    self._material_repaint.schedule()
+                else:
+                    self._present_backdrop()
+
+    def _present_backdrop(self):
+        self._material_repaint.timer.stop()
+        if self.isVisible():
+            self.repaint()
+            self._backdrop.api.redraw(self._backdrop.hwnd)
+        else:
+            self.update()
+
+    def _prepare_drag_background(self):
+        self._material_repaint.timer.stop()
+        if self._backdrop.backend == 'legacy':
+            self._drag_background = legacy_background_snapshot(self)
+        self.repaint()
+
+    def _recover_drag_on_idle(self):
+        if not self._closing and self._backdrop.dragging:
+            if self._backdrop.api.is_move_resize_active(self._backdrop.hwnd) is False:
+                self._interactive_move_resize(False)
+
+    def _repaint_material(self):
+        if not self._closing:
+            self.update()
 
     def _setup_navigation_chrome(self) -> None:
         """两态导航：折叠为 64px 图标栏（品牌徽标居顶、用户头像贴底），展开为 240px 文字导航。"""
@@ -606,9 +653,8 @@ class MainWindow(FluentWindow):
         return QMargins(margins.left() + px(8), margins.top(), margins.right(), margins.bottom())
 
     def _apply_windows_material(self) -> str:
-        """系统 Acrylic/Mica 与自绘圆角相互冲突，统一由自绘材质接管。"""
-        self._glass_material = 'gradient'
-        self.update()
+        """Apply the configured native backdrop without opaque material overdraw."""
+        self._apply_blur_setting()
         return self._glass_material
 
     def _window_margins_px(self):
@@ -660,6 +706,8 @@ class MainWindow(FluentWindow):
             import win32gui
 
             native_message = MSG.from_address(int(message))
+            if native_message.hWnd and native_message.message in (WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE):
+                self._interactive_move_resize(native_message.message == WM_ENTERSIZEMOVE)
             if native_message.hWnd and native_message.message == win32con.WM_NCHITTEST:
                 screen_point = (
                     c_short(native_message.lParam & 0xffff).value,
@@ -674,7 +722,11 @@ class MainWindow(FluentWindow):
                 hit = self._resize_hit_test(point, size)
                 if hit:
                     return True, hit
-        return super().nativeEvent(event_type, message)
+        result = super().nativeEvent(event_type, message)
+        if (sys.platform == 'win32' and native_message.message == win32con.WM_NCCALCSIZE
+                and result == (True, win32con.WVR_REDRAW)):
+            return True, 0
+        return result
 
     def _sync_window_state_controls(self) -> None:
         try:
@@ -702,9 +754,13 @@ class MainWindow(FluentWindow):
                 self.titleBar.setGeometry(*geometry)
         except Exception:
             pass
-        if native:
+        backdrop = getattr(self, '_backdrop', None)
+        if native and not (backdrop is not None and backdrop.dragging):
             self._refresh_native_window_frame()
-        self.update()
+        if backdrop is not None and backdrop.enabled and backdrop.dragging:
+            self._material_repaint.schedule()
+        else:
+            self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -723,13 +779,20 @@ class MainWindow(FluentWindow):
             if narrow and not panel.isCollapsed():
                 panel.collapse()
                 QTimer.singleShot(320, self._settle_nav_pane)
-            self._sync_window_frame()
+            self._sync_window_frame(native=False)
         except (AttributeError, RuntimeError):
             pass
 
     def showEvent(self, event):
         super().showEvent(event)
         self._connect_screen_signals()
+        if hasattr(self, '_material_repaint'):
+            self._apply_blur_setting()
+
+    def event(self, event):
+        if event.type() == QEvent.WinIdChange and hasattr(self, '_material_repaint'):
+            QTimer.singleShot(0, self._apply_blur_setting)
+        return super().event(event)
 
     def _connect_screen_signals(self):
         if getattr(self, '_closing', False):
@@ -1004,14 +1067,35 @@ class MainWindow(FluentWindow):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         margin = self._window_margins_px()
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
         if margin:
             painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         radius = px(self._window_radius) if margin else 0
         rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
         painter.setClipPath(path)
-        paint_background(painter, rect, opaque=True)
+        backdrop = getattr(self, '_backdrop', None)
+        mode = backdrop.paint_mode if backdrop is not None else 'gradient'
+        if mode == 'clear':
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
+            painter.fillRect(rect, QColor(0, 0, 0, 1))
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        elif mode == 'tint':
+            if self._drag_background is not None:
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.setCompositionMode(QPainter.CompositionMode_Source)
+                painter.drawPixmap(rect, self._drag_background, QRectF(self._drag_background.rect()))
+                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            else:
+                paint_window_tint(painter, rect)
+        elif backdrop is not None and backdrop.dragging:
+            if self._drag_background is None:
+                self._drag_background = window_background_snapshot(rect.size(), self.devicePixelRatioF())
+            painter.drawPixmap(rect, self._drag_background, QRectF(self._drag_background.rect()))
+        else:
+            paint_background(painter, rect, opaque=True)
         painter.setClipping(False)
         if margin:
             # 1px 高光描边，让圆角边缘在深色桌面上有物理厚度感。
@@ -1150,6 +1234,14 @@ class MainWindow(FluentWindow):
 
     def closeEvent(self, event):
         self._disconnect_screen_signals()
+        if self._move_resize_dispatcher is not None:
+            try:
+                self._move_resize_dispatcher.aboutToBlock.disconnect(self._recover_drag_on_idle)
+            except (TypeError, RuntimeError):
+                pass
+            self._move_resize_dispatcher = None
+        self._material_repaint.timer.stop()
+        self._backdrop.close()
         if self._closing:
             self._close_child_dialogs()
             # 接受第二次关闭事件即可让主窗口正常退出。这里不能提前调用

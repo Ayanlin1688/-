@@ -163,13 +163,14 @@ class ResponsiveLayoutTests(unittest.TestCase):
             scan.assert_not_called()
         self.assertIs(panel.rows[0], row)
 
-    def test_main_native_frame_refresh_is_coalesced(self):
+    def test_main_resize_does_not_recalculate_native_frame(self):
         QTest.qWait(100)
         with patch.object(self.window, '_refresh_native_window_frame') as native:
             for width in (1300, 1400, 1500, 1600, 1700):
                 self.window.resize(width, 800)
             QTest.qWait(100)
-            native.assert_called_once()
+            self.window._responsive_resize.flush()
+            native.assert_not_called()
 
     def test_history_actions_and_selection_remain_reachable_at_large_zoom(self):
         history = self.window.history_page
