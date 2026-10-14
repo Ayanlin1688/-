@@ -362,6 +362,10 @@ class CoalescedLayoutTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
+
     def test_coalesced_callback_runs_once_per_burst_and_can_run_again(self):
         parent = QWidget()
         callback = Mock()
@@ -405,7 +409,8 @@ class CoalescedLayoutTests(unittest.TestCase):
         call.schedule()
         del receiver
         self.assertIsNone(reference())
-        QTest.qWait(50)
+        call.flush()
+        self.app.processEvents()
         self.assertFalse(call.timer.isActive())
         parent.deleteLater()
         QTest.qWait(10)
