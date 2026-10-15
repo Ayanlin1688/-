@@ -7,7 +7,7 @@ from core.config_manager import ConfigManager
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtWidgets import QListWidget
+from PyQt5.QtWidgets import QLabel, QListWidget
 from PyQt5.QtCore import QCoreApplication
 from PyQt5.QtTest import QTest
 
@@ -33,6 +33,8 @@ class UiSmokeTests(unittest.TestCase):
     def test_window_contains_navigation_pages_and_workspace_controls(self):
         window = self.window
         self.assertEqual(window.windowTitle(), "Yanlin Smart-Creation Matrix")
+        self.assertEqual(window.brand_logo.title_text, window.windowTitle())
+        self.assertFalse(window.windowIcon().isNull())
         self.assertTrue(hasattr(window, "workspace_page"))
         self.assertTrue(hasattr(window, "history_page"))
         self.assertTrue(hasattr(window, "settings_page"))
@@ -53,6 +55,22 @@ class UiSmokeTests(unittest.TestCase):
         self.assertIsNotNone(recent.itemWidget(recent.item(0)))
         self.assertNotIn("✅", queue.item(0).text())
         window.close()
+
+    def test_navigation_brand_and_titlebar_show_english_title_only_once(self):
+        self.window.show()
+        QTest.qWait(100)
+        labels = [label for label in self.window.titleBar.findChildren(QLabel)
+                  if label.text() == self.window.windowTitle()]
+        self.assertTrue(labels)
+        from ui.tokens import px
+        for label in labels:
+            self.assertEqual(label.font().pixelSize(), px(14))
+            self.assertFalse(label.font().bold())
+        for collapsed in (False, True, False):
+            self.window._sync_nav_pane(collapsed)
+            self.assertEqual(self.window.brand_logo._expanded, not collapsed)
+            self.assertEqual(sum(label.isVisible() for label in labels), int(collapsed))
+            self.assertEqual(self.window.brand_logo.title_text, 'Yanlin Smart-Creation Matrix')
 
     def test_advanced_parameters_toggle_with_collapsible_state(self):
         window = self.window

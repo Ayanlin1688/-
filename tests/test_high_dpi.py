@@ -160,6 +160,8 @@ class HighDpiStartupTests(unittest.TestCase):
                 self.assertEqual(build.build_bundle(), bundle)
                 args = run.call_args.args[0]
                 self.assertEqual(args[args.index('--manifest') + 1], str(ROOT / 'packaging' / 'app.manifest'))
+                self.assertEqual(args[args.index('--icon') + 1], str(ROOT / 'assets' / 'app.ico'))
+                self.assertEqual(args[args.index('--add-data') + 1], f'{ROOT / "assets"}{os.pathsep}assets')
 
 
 class ScreenSignalTests(unittest.TestCase):

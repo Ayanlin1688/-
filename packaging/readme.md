@@ -39,4 +39,6 @@ D:\fxaitool\conda\app\python.exe -X utf8 packaging\build_release.py --installer 
 
 ## 图标
 
-`packaging\app.ico` 放置产品图标后，PyInstaller 与安装器会自动使用（当前未提供,欢迎后续补充品牌图标）。
+品牌源图保存在 `assets/source/icon-lin.png`。运行 `python scripts/generate_brand_icons.py`
+可用 Pillow 重新生成透明圆角的 `assets/app.png`、512px 大图、精简小标和多尺寸 `assets/app.ico`。
+PyInstaller、窗口图标和安装器统一使用该 ICO，用户可见品牌名保持 `Yanlin Smart-Creation Matrix`。

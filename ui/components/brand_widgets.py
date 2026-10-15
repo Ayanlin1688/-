@@ -1,33 +1,18 @@
-"""Brand chrome for the 64px navigation rail (deep-space liquid glass)."""
+"""Raster LIN brand chrome and the navigation rail's user avatar."""
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient
+from PyQt5.QtGui import QColor, QFontMetrics, QLinearGradient, QPainter, QPen, QPixmap
 from qfluentwidgets import NavigationWidget
+from core.version import APP_NAME
+from ..assets import asset_path
 from ..tokens import px
 
 
-def logo_pixmap(size=64):
-    """品牌磁贴的静态渲染（蓝紫渐变 + 白色 Y 字标）：
-    用于应用图标 / 启动画面 / 关于页；与 BrandLogo 的在线绘制保持同一视觉。"""
-    pixmap = QPixmap(size * 4, size * 4)
+def logo_pixmap(size=64, compact=False):
+    """Load the transparent LIN tile at four device pixels per logical pixel."""
+    name = 'app-small.png' if compact else ('app.png' if size <= 64 else 'app-512.png')
+    pixmap = QPixmap(str(asset_path(name)))
+    pixmap = pixmap.scaled(size * 4, size * 4, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     pixmap.setDevicePixelRatio(4)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    rect = QRectF(0, 0, size, size)
-    gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-    gradient.setColorAt(0, QColor('#5B8DEF'))
-    gradient.setColorAt(1, QColor('#7C6CF0'))
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(gradient)
-    radius = max(3.0, size * 0.28)
-    painter.drawRoundedRect(rect, radius, radius)
-    painter.setPen(QColor('#FFFFFF'))
-    font = painter.font()
-    font.setPixelSize(max(8, round(size * 0.5)))
-    font.setBold(True)
-    painter.setFont(font)
-    painter.drawText(rect, Qt.AlignCenter, 'Y')
-    painter.end()
     return pixmap
 
 
@@ -45,64 +30,53 @@ class _RailWidget(NavigationWidget):
 
 
 class BrandLogo(_RailWidget):
-    """Rounded-10px blue/purple gradient tile with a white Y monogram."""
+    """Green LIN tile with the full single-line English title when expanded."""
 
     def __init__(self, parent=None):
         super().__init__(64, 68, parent)
         self._expanded = False
+        self.title_text = APP_NAME
+        self.setAccessibleName(APP_NAME)
+        self.setToolTip(APP_NAME)
 
     def set_expanded(self, expanded):
-        """展开态：加宽为品牌区块（磁贴 + 中文名 + 英文小字）。"""
+        """Show the single English brand title beside the tile."""
         self._expanded = bool(expanded)
         self._apply_size()
+        self.update()
 
     def setCompacted(self, isCompacted: bool):
         self._apply_size()
 
+    def _title_font(self):
+        font = self.font()
+        font.setPixelSize(px(14))
+        font.setBold(False)
+        return font
+
+    def expanded_width(self):
+        text_width = QFontMetrics(self._title_font()).horizontalAdvance(self.title_text)
+        return max(px(224), px(15) + px(34) + px(10) + text_width + px(10))
+
     def _apply_size(self):
-        self.setFixedSize(px(224 if self._expanded else 64), px(68))
+        self.setFixedSize(self.expanded_width() if self._expanded else px(64), px(68))
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         size = px(34)
-        # 磁贴锚定在组件顶部，与标题栏文字垂直居中对齐。
         left = px(15)
         rect = QRectF(left, px(1), size, size)
-        center = rect.center()
-        from ..materials import palette
-        th = palette()
-        a2 = th['accent2_rgb']
-        halo = QRadialGradient(center, size*0.95)
-        halo.setColorAt(0, QColor(a2[0], a2[1], a2[2], 66))
-        halo.setColorAt(1, QColor(a2[0], a2[1], a2[2], 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(halo)
-        painter.drawEllipse(QRectF(center.x()-size*0.95, center.y()-size*0.95, size*1.9, size*1.9))
-        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0, QColor(th['accent']))
-        gradient.setColorAt(1, QColor(th['accent2']))
-        painter.setBrush(gradient)
-        painter.drawRoundedRect(rect, px(10), px(10))
-        painter.setPen(QColor('#FFFFFF'))
-        font = self.font(); font.setPixelSize(px(17)); font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(rect, Qt.AlignCenter, 'Y')
+        painter.drawPixmap(rect.toRect(), logo_pixmap(size, compact=not self._expanded))
         if self._expanded and self.width() > px(140):
-            from core.version import APP_NAME, APP_NAME_CN
             from ..materials import map_text_color
             text_left = left + size + px(10)
             text_width = max(px(20), self.width() - text_left - px(10))
             title_color = map_text_color('#f5f5f5')
             painter.setPen(title_color if isinstance(title_color, QColor) else QColor(str(title_color)))
-            font = self.font(); font.setPixelSize(px(15)); font.setBold(True)
+            font = self._title_font()
             painter.setFont(font)
-            painter.drawText(QRectF(text_left, px(6), text_width, px(22)), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME_CN)
-            sub_color = map_text_color('#9AA6B8')
-            painter.setPen(sub_color if isinstance(sub_color, QColor) else QColor(str(sub_color)))
-            font = self.font(); font.setPixelSize(px(10)); font.setBold(False)
-            painter.setFont(font)
-            painter.drawText(QRectF(text_left, px(28), text_width, px(16)), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME)
+            painter.drawText(QRectF(text_left, rect.top(), text_width, size), Qt.AlignLeft | Qt.AlignVCenter, self.title_text)
 
 
 class UserAvatar(_RailWidget):

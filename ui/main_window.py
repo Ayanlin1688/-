@@ -7,7 +7,7 @@ import os
 import threading
 import time
 
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
+from PyQt5.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
@@ -19,6 +19,7 @@ from core.version import APP_NAME, APP_VERSION
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
 from .components.custom_widgets import ensure_ui_font
+from .assets import asset_path
 from .components.studio_dialog import safe_delete_dialog
 from .pages.history_page import HistoryPage
 from .pages.settings_page import SettingsPage
@@ -63,7 +64,8 @@ class MainWindow(FluentWindow):
         self.model_catalog = ModelCatalogController(
             self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
             auto_sync=network_time if model_sync is None else model_sync)
-        self.setWindowTitle("Yanlin Smart-Creation Matrix")
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(str(asset_path('app.ico'))))
         self.resize(1400, 900)
         self.setMinimumSize(960, 600)
         self._setup_pages()
@@ -239,9 +241,7 @@ class MainWindow(FluentWindow):
         factors = apply_interface_scale(app, screen, self.config_manager.config.get('appearance', {}).get('ui_scale', 'auto'))
         self._interface_factors = factors
         self.settings_page.update_interface_scale_status(factors)
-        from . import tokens as design
         panel = self.navigationInterface.panel
-        panel.setExpandWidth(design.NAV_EXPAND_WIDTH)
         self._sync_nav_pane(panel.isCollapsed())
         self._frame_margin = None
         self._sync_window_frame()
@@ -528,11 +528,16 @@ class MainWindow(FluentWindow):
             panel.menuButton.setToolTip(tr('展开 / 收起导航'))
         except Exception:
             pass
-        # 展开态：品牌区块加宽显示「中文名 + 英文名」，并隐藏标题栏上的重复英文标题。
         try:
             brand = getattr(self, 'brand_logo', None)
             if brand is not None and hasattr(brand, 'set_expanded'):
                 brand.set_expanded(not collapsed)
+                expanded_width = max(design.NAV_EXPAND_WIDTH, brand.expanded_width() + px(16))
+                if panel.expandWidth != expanded_width:
+                    panel.setExpandWidth(expanded_width)
+                    if not collapsed and not panel.isCollapsed():
+                        panel.expandAni.stop()
+                        panel.expand(useAni=False)
         except Exception:
             pass
         try:
@@ -858,7 +863,7 @@ class MainWindow(FluentWindow):
             QTimer.singleShot(120, self._integrity_repaint)
 
     def _apply_titlebar_tweak(self):
-        """标题从导航徽标右侧开始（目标绝对 x=88），空白图标隐藏，标题 13px/600。"""
+        """Keep the title at its usual position with the brand's regular 14px font."""
         try:
             title_bar = self.titleBar
             if getattr(title_bar, '_studio_gap', False):
@@ -902,7 +907,7 @@ class MainWindow(FluentWindow):
                 if extra <= 0:
                     break
                 layout.insertSpacing(layout.indexOf(title_widget), extra)
-            title_widget.setStyleSheet('font-size:13px; font-weight:600; background:transparent;')
+            title_widget.setStyleSheet('font-size:14px; font-weight:400; background:transparent;')
             title_bar._studio_gap = True
         except Exception:
             pass
@@ -1142,6 +1147,7 @@ class MainWindow(FluentWindow):
         from PyQt5.QtWidgets import QLabel
         from .components.brand_widgets import logo_pixmap
         dialog = Dialog(tr('关于') + ' ' + APP_NAME, f'版本 v{APP_VERSION}\n' + tr('产品批处理 · 定时执行 · GitHub同步') + '\n' + tr('多模型调度 · 自动重试 · 并发生成 · 自动下载'), self)
+        dialog.setWindowIcon(self.windowIcon())
         badge = QLabel()
         badge.setPixmap(logo_pixmap(56))
         badge.setFixedSize(56, 56)

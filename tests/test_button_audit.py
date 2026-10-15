@@ -249,6 +249,9 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertIs(self.window.stackedWidget.currentWidget(), self.window.workspace_page)
         about_badges = []
         def inspect_about(dialog):
+            self.assertIn('Yanlin Smart-Creation Matrix', dialog.titleLabel.text())
+            self.assertNotIn('言林智创矩阵', dialog.titleLabel.text())
+            self.assertFalse(dialog.windowIcon().isNull())
             about_badges.append(dialog.textLayout.itemAt(0).widget())
             return 0
         with patch('qfluentwidgets.Dialog.exec_', new=inspect_about):
@@ -259,6 +262,8 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertIsNotNone(badge.pixmap())
         self.assertFalse(badge.pixmap().isNull())
         self.assertEqual(badge.pixmap().width() / badge.pixmap().devicePixelRatioF(), 56)
+        from ui.components.brand_widgets import logo_pixmap
+        self.assertEqual(badge.pixmap().toImage(), logo_pixmap(56).toImage())
         self.window.titleBar.minBtn.click()
         self.assertTrue(self.window.isMinimized())
         self.window.showNormal()

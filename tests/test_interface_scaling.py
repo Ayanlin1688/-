@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5 import sip
-from PyQt5.QtCore import QCoreApplication, QEvent, QObject, QRect, QSize, pyqtSignal
+from PyQt5.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRect, QSize, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -398,12 +398,40 @@ class InterfaceWindowTests(unittest.TestCase):
         for collapsed in (False, True, False, True):
             self.window._sync_nav_pane(collapsed)
             self.assertEqual(self.window.brand_logo.height(), round(68 * 1.6))
-            self.assertEqual(self.window.brand_logo.width(), round((64 if collapsed else 224) * 1.6))
+            expected_width = round(64 * 1.6) if collapsed else self.window.brand_logo.expanded_width()
+            self.assertEqual(self.window.brand_logo.width(), expected_width)
+            self.assertGreaterEqual(self.window.navigationInterface.panel.expandWidth,
+                                    self.window.brand_logo.expanded_width() + round(16 * 1.6))
         self.manager.config['appearance']['theme'] = 'light'
         self.window.apply_appearance()
         QTest.qWait(30)
         self.assertEqual(self.window._interface_factors['z'], 1.6)
         self.assertIn('font-size:28.8px', self.window.settings_page.appearance_group.titleLabel.styleSheet())
+
+    def test_expanded_navigation_fits_full_brand_across_pages_and_live_zoom(self):
+        self.window.resize(2200, 1000)
+        panel = self.window.navigationInterface.panel
+        panel.expandAni.stop()
+        panel.expandAni.setDuration(0)
+        labels = [label for label in self.window.titleBar.findChildren(QLabel)
+                  if label.text() == self.window.windowTitle()]
+        self.assertTrue(labels)
+        for choice in ('1.0', '1.5', '1.6', '1.0'):
+            with self.subTest(scale=choice):
+                self.manager.config['appearance']['ui_scale'] = choice
+                self.window._apply_interface_scale()
+                self.window._sync_nav_pane(False)
+                panel.expand(useAni=False)
+                for page in (self.window.workspace_page, self.window.history_page, self.window.settings_page):
+                    self.window.switchTo(page)
+                    flush_layout(self.app, self.window)
+                    brand = self.window.brand_logo
+                    bounds = QRect(brand.mapTo(panel, QPoint()), brand.size())
+                    self.assertTrue(brand._expanded)
+                    self.assertEqual(brand.width(), brand.expanded_width())
+                    self.assertTrue(panel.rect().contains(bounds), (bounds, panel.rect()))
+                    self.assertEqual(panel.width(), panel.expandWidth)
+                    self.assertFalse(any(label.isVisible() for label in labels))
 
     def test_task_rows_and_headers_share_scaled_metrics(self):
         panel = self.window.workspace_page.queue_panel

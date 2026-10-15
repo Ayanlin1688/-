@@ -1,11 +1,12 @@
-"""启动画面：品牌磁贴 + 产品名 + 版本；纯绘制，无外部资源依赖。"""
+"""Startup screen using the shared LIN raster icon and English product name."""
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPixmap, QRadialGradient
+from PyQt5.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PyQt5.QtWidgets import QSplashScreen
 
 from core.i18n import tr
 from core.version import APP_NAME, APP_VERSION
 from .components.brand_widgets import logo_pixmap
+from .assets import asset_path
 
 WIDTH, HEIGHT = 420, 236
 
@@ -49,6 +50,8 @@ def show_splash():
     """显示启动画面；任何异常都静默降级，绝不阻塞启动。"""
     try:
         splash = QSplashScreen(_background())
+        splash.setWindowTitle(APP_NAME)
+        splash.setWindowIcon(QIcon(str(asset_path('app.ico'))))
         splash.show()
         return splash
     except Exception:

@@ -23,7 +23,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile=..\assets\app.ico
-UninstallDisplayIcon={app}\{#ExeName}
+UninstallDisplayIcon={app}\_internal\assets\app.ico
 ; 安装前请求关闭正在运行的程序，避免文件被占用导致升级失败。
 CloseApplications=yes
 RestartApplications=no

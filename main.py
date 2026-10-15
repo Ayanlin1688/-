@@ -23,12 +23,12 @@ from PyQt5.QtWidgets import QApplication
 
 from core.config_manager import ConfigManager
 from ui.components.custom_widgets import ensure_ui_font
+from ui.assets import asset_path
 
 
 def _asset_path(name: str) -> Path:
     """兼容开发态与 PyInstaller 冻结态的资源定位。"""
-    base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
-    return base / 'assets' / name
+    return asset_path(name)
 
 
 def _bring_window_to_front(window) -> None:
@@ -66,6 +66,8 @@ def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName('YanlinMatrix')
+    from core.version import APP_NAME
+    app.setApplicationDisplayName(APP_NAME)
     icon_path = _asset_path('app.ico')
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
