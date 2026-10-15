@@ -64,9 +64,9 @@ def build_bundle() -> Path:
     ]
     if icon.is_file():
         args += ['--icon', str(icon)]
-    assets = ROOT / 'assets'
-    if assets.is_dir():
-        args += ['--add-data', f'{assets}{os.pathsep}assets']
+    for filename in ('app.ico', 'app.png', 'app-small.png', 'app-512.png'):
+        asset = ROOT / 'assets' / filename
+        args += ['--add-data', f'{asset}{os.pathsep}assets']
     print('[build] PyInstaller 打包中（首次约 1–3 分钟）…')
     pyi.run(args)
     bundle = DIST / EXE_NAME

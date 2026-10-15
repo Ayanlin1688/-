@@ -3,6 +3,7 @@ import copy
 import hashlib
 import io
 import importlib.util
+import os
 import tempfile
 import unittest
 import zipfile
@@ -155,6 +156,28 @@ class ReleaseCleanTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 build_release.main()
             manifest.assert_not_called()
+
+    def test_build_includes_only_runtime_icons_and_excludes_design_sources(self):
+        module_path = Path(__file__).resolve().parent.parent / 'packaging' / 'build_release.py'
+        spec = importlib.util.spec_from_file_location('yanlin_build_assets_test', module_path)
+        build_release = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_release)
+        assets = self.root / 'assets'
+        source = assets / 'source' / 'icon-lin.png'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'design source fixture')
+        filenames = ('app.ico', 'app.png', 'app-small.png', 'app-512.png')
+        for filename in filenames:
+            (assets / filename).write_bytes(b'runtime icon fixture')
+        with patch.object(build_release, 'ROOT', self.root), \
+                patch.object(build_release, 'BUILD', self.root / 'build'), \
+                patch.object(build_release, 'DIST', self.root), \
+                patch('PyInstaller.__main__.run') as run:
+            self.assertEqual(build_release.build_bundle(), self.bundle)
+        args = run.call_args.args[0]
+        data = [args[index + 1] for index, value in enumerate(args) if value == '--add-data']
+        self.assertCountEqual(data, [f'{assets / filename}{os.pathsep}assets' for filename in filenames])
+        self.assertTrue(source.is_file())
 
 
 if __name__ == '__main__':
