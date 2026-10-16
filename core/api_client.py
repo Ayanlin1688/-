@@ -236,7 +236,8 @@ class ApiClient(HttpClient):
 
     def query_task(self, task_id, model, catalog=None):
         endpoint = '/video/generations/' if family_for(model, catalog) == 'video-v1' else '/videos/'
-        with self.request('GET', self.base_url + endpoint + quote(str(task_id), safe='')) as response:
+        with self.request('GET', self.base_url + endpoint + quote(str(task_id), safe=''),
+                          headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}) as response:
             raw = self.json(response)
         status = str(extract(raw, ('status', 'state')) or 'queued').lower()
         status = {'success': 'completed', 'succeeded': 'completed', 'done': 'completed',

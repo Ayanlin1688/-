@@ -11,6 +11,7 @@ from core.config_manager import DEFAULT_CONFIG
 from core.task_manager import TaskWorker
 from core.submission_safety import SubmissionGate
 from core.task_state import TaskControl
+from core.video_downloader import VideoDownloader
 from test_http_clients import LocalServer
 
 
@@ -28,6 +29,46 @@ class ExecutionClosureTests(unittest.TestCase):
 
     def test_default_poll_timeout_is_two_hours(self):
         self.assertEqual(DEFAULT_CONFIG['workspace'].get('poll_timeout'), 7200)
+
+    def test_slow_download_does_not_queue_another_completed_task(self):
+        with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
+            root = Path(directory)
+            config = self.config(root, server)
+            (root / 'prompts' / '02.txt').write_text('Another local fixture', encoding='utf-8')
+            config['task_strategy']['max_concurrency'] = 2
+            config['workspace']['poll_timeout'] = 10
+            entered = threading.Event()
+            concurrent_download = threading.Event()
+            lock = threading.Lock()
+            original = VideoDownloader.download_video
+
+            def download(downloader, *args, **kwargs):
+                with lock:
+                    first = not entered.is_set()
+                    entered.set()
+                if first:
+                    if not concurrent_download.wait(5):
+                        raise AssertionError('A slow download blocked the other completed task')
+                else:
+                    concurrent_download.set()
+                return original(downloader, *args, **kwargs)
+
+            worker = TaskWorker(config, [])
+            with patch.object(VideoDownloader, 'download_video', download):
+                worker.run()
+            self.assertTrue(concurrent_download.is_set())
+            self.assertEqual([task['status'] for task in worker.tasks], ['completed', 'completed'])
+
+    def test_download_acceleration_setting_reaches_the_task_downloader(self):
+        with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
+            config = self.config(Path(directory), server)
+            config['workspace']['poll_timeout'] = 5
+            config['download_settings']['parallel_download'] = False
+            worker = TaskWorker(config, [])
+            with patch('core.task_execution.VideoDownloader', wraps=VideoDownloader) as downloader:
+                worker.run()
+            self.assertFalse(downloader.call_args.kwargs['acceleration'])
+            self.assertEqual(worker.tasks[0]['status'], 'completed')
 
     def test_scan_reports_cap_before_submission_and_retains_bindings(self):
         with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
@@ -99,8 +140,8 @@ class ExecutionClosureTests(unittest.TestCase):
             with patch('core.task_execution.time.monotonic', side_effect=lambda: clock[0]):
                 worker.run()
             self.assertTrue(any('上游进度未更新' in message for message in logs), logs)
-            self.assertTrue(any('已轮询1分1秒' in message for message in logs), logs)
-            self.assertGreaterEqual(worker.tasks[0]['poll_elapsed_seconds'], 61)
+            self.assertTrue(any('已轮询1分' in message for message in logs), logs)
+            self.assertGreaterEqual(worker.tasks[0]['poll_elapsed_seconds'], 60)
             self.assertTrue(worker.tasks[0]['task_id'])
 
     def test_conversion_error_stops_failover_and_posts_nothing(self):

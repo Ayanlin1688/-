@@ -16,6 +16,7 @@ from .prompt_processor import process_prompt, reference_warnings
 from .prompt_converter import convert_for_model, model_format
 from .reference_diagnostics import ReferenceDiagnostics, describe_image
 from .task_state import stamp, parameters_for_model, task_signature, resolve_output_directory, submission_images
+from .task_polling import PollSchedule, RESULT_URL_WAIT
 from .video_downloader import VideoDownloader, build_filename
 
 
@@ -106,7 +107,8 @@ class TaskExecution:
         client = ApiClient(api['base_url'], api['api_key'], debug_mode=lambda: self.owner.debug_mode,
                            log_secrets=(api.get('upload_api_key'),), log=self.log)
         uploader = ImageUploader.from_config(self.config, log=self.log, check_cancel=self.control.check)
-        downloader = VideoDownloader(self.config['download_settings']['overwrite_existing'], self.control.check, log=self.log)
+        downloader = VideoDownloader(self.config['download_settings']['overwrite_existing'], self.control.check,
+                                     acceleration=self.config['download_settings'].get('parallel_download', True), log=self.log)
         diagnostics = ReferenceDiagnostics(self.log, self.control.check)
         try:
             self.progress(0, 0, -1)
@@ -489,16 +491,18 @@ class TaskExecution:
                 self.log(f"任务创建成功，task_id={task['task_id']}，状态=queued", 'success')
         else:
             self.log(f"沿用已有task_id={task['task_id']}继续轮询，不重复创建")
+        first_completed = None
         if not task.get('result_url'):
             self.phase = 'poll'
             poll_started = time.monotonic()
             previous_elapsed = float(task.get('poll_elapsed_seconds') or 0)
             deadline = poll_started + float(self.config['workspace'].get('poll_timeout', 7200))
-            poll_interval = max(.05, float(self.config['workspace']['poll_interval']))
+            schedule = PollSchedule(self.config['workspace']['poll_interval'])
             last_progress = None
             unchanged_since = poll_started
             last_stall_notice = poll_started
             missing_url_since = None
+            last_poll_finished = None
             while True:
                 self.control.check()
                 if time.monotonic() >= deadline:
@@ -506,6 +510,7 @@ class TaskExecution:
                 frozen = task.get('submission_model')
                 catalog = {self.model: frozen} if isinstance(frozen, dict) else self.config.get('_model_catalog')
                 try:
+                    query_started = time.monotonic()
                     result = client.query_task(task['task_id'], self.model, catalog)
                 except Exception as error:
                     seconds = self.owner.submission_error(getattr(error, 'status_code', None))
@@ -515,14 +520,27 @@ class TaskExecution:
                 self.control.check()
                 self.progress(result['progress'])
                 now = time.monotonic()
+                poll_interval = schedule.observe(result['status'], result['progress'], now)
                 poll_elapsed = previous_elapsed + max(0, now - poll_started)
                 if result['progress'] != last_progress:
                     last_progress = result['progress']
                     unchanged_since = last_stall_notice = now
-                    poll_interval = max(.05, float(self.config['workspace']['poll_interval']))
                 elif now - unchanged_since >= 60 and now - last_stall_notice >= 60:
                     self.log(f'{prefix}：上游进度未更新，任务仍在处理中，请耐心等待', 'warning')
                     last_stall_notice = now
+                if result['status'] == 'processing':
+                    task['last_processing_at'] = stamp()
+                elif result['status'] == 'completed' and first_completed is None:
+                    first_completed = now
+                    task['first_completed_at'] = stamp()
+                    gap = max(0, now - last_poll_finished) if last_poll_finished is not None else None
+                    task['completion_detection_gap_seconds'] = gap
+                    comparison = f'检测到完成相对上次轮询耗时约{gap:.2f}秒' if gap is not None else '首次查询即检测到完成'
+                    self.log(f'{prefix}：{comparison}；本次查询耗时{now - query_started:.2f}秒；'
+                             f'最近 processing={task.get("last_processing_at") or "无"}；'
+                             f'首次 completed={task["first_completed_at"]}；'
+                             '距网页完成约几秒：待提供网页完成时刻后计算')
+                last_poll_finished = now
                 self.publish(poll_elapsed_seconds=poll_elapsed,
                              status='downloading' if result['status'] == 'completed' else ('processing' if result['status'] == 'failed' else result['status']))
                 minutes, seconds = divmod(int(poll_elapsed), 60)
@@ -535,9 +553,10 @@ class TaskExecution:
                             raise VideoUnavailable('完成响应没有视频下载地址')
                         if missing_url_since is None:
                             missing_url_since = now
-                        if now - missing_url_since <= 45:
+                        remaining = RESULT_URL_WAIT - (now - missing_url_since)
+                        if remaining > 0:
                             self.log(f'{prefix}：任务已完成，下载地址尚未返回，继续查询', 'warning')
-                            self.control.delay(poll_interval)
+                            self.control.delay(min(poll_interval, remaining, max(0, deadline - time.monotonic())))
                             continue
                         if self._can_replace_exhausted(RuntimeError('完成响应没有视频下载地址')):
                             raise VideoUnavailable('完成响应没有视频下载地址')
@@ -545,17 +564,25 @@ class TaskExecution:
                     self.publish(record=True, status='downloading', result_url=result['result_url'])
                     break
                 missing_url_since = None
-                self.control.delay(poll_interval)
-                poll_interval = min(30.0, poll_interval * 1.5)
+                self.control.delay(min(poll_interval, max(0, deadline - time.monotonic())))
         self.phase = 'download'
         self.control.check()
-        self.log(f'{prefix}：生成完成，开始下载...', 'success')
         task['filename'] = build_filename(self.config['download_settings']['naming_rule'], task, task.get('product_task_index', self.index+1))
         task['output_dir'] = resolve_output_directory(self.config['paths']['output'], task.get('output_subdir', ''))
-        self.publish(record=True, status='downloading')
+        download_started = time.monotonic()
+        if first_completed is not None:
+            task['completed_to_download_seconds'] = max(0, download_started - first_completed)
+        self.publish(record=True, status='downloading', download_started_at=stamp())
+        self.log(f'{prefix}：生成完成，开始下载...', 'success')
+        self.log(f'{prefix}：开始下载时间={task["download_started_at"]}；'
+                 f'首次 completed={task.get("first_completed_at") or "沿用已知下载地址"}')
         task['result_path'] = downloader.download_video(task['result_url'], task['output_dir'], task['filename'],
                                                        generation_key=(self.owner.scope, task['task_id']))
+        task.update(download_finished_at=stamp(), download_elapsed_seconds=max(0, time.monotonic() - download_started))
         task['size_bytes'] = Path(task['result_path']).stat().st_size
+        self.log(f'{prefix}：下载完成时间={task["download_finished_at"]}；'
+                 f'开始下载={task["download_started_at"]}；耗时{task["download_elapsed_seconds"]:.2f}秒；'
+                 f'大小{task["size_bytes"]}字节')
         if self.config.get('download_settings', {}).get('aigc_metadata', True):
             try:
                 write_aigc_metadata(task['result_path'], model=self.model, task_id=task.get('task_id', ''))

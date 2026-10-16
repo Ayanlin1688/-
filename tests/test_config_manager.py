@@ -43,6 +43,14 @@ class ConfigManagerTests(unittest.TestCase):
 
         self.assertEqual(config["api"]["base_url"], DEFAULT_CONFIG["api"]["base_url"])
 
+    def test_parallel_download_defaults_on_and_can_be_persistently_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'config.json'
+            manager = ConfigManager(path)
+            self.assertTrue(manager.load_config()['download_settings']['parallel_download'])
+            manager.update(('download_settings', 'parallel_download'), False)
+            self.assertFalse(ConfigManager(path).load_config()['download_settings']['parallel_download'])
+
     def test_atomic_failure_keeps_previous_file_and_reports_ui_error(self):
         with tempfile.TemporaryDirectory() as temp:
             manager = ConfigManager(Path(temp) / 'config.json')
