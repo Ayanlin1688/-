@@ -5,6 +5,7 @@ MAX_INTERVAL = 15.0
 NEAR_COMPLETION_INTERVAL = 3.0
 FINAL_INTERVAL = 2.0
 PROCESSING_FAST_AFTER = 60.0
+PROCESSING_FINAL_AFTER = 90.0
 RESULT_URL_WAIT = 45.0
 
 
@@ -26,7 +27,7 @@ class PollSchedule:
         else:
             self.processing_since = None
         processing_seconds = 0 if self.processing_since is None else now - self.processing_since
-        if status == 'completed' or self.peak_progress >= 95:
+        if status == 'completed' or self.peak_progress >= 95 or processing_seconds >= PROCESSING_FINAL_AFTER:
             self.interval = min(self.initial_interval, FINAL_INTERVAL)
         elif self.peak_progress >= 70 or processing_seconds >= PROCESSING_FAST_AFTER:
             self.interval = min(self.initial_interval, NEAR_COMPLETION_INTERVAL)

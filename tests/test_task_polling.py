@@ -29,9 +29,10 @@ class PollScheduleTests(unittest.TestCase):
         self.assertEqual(schedule.observe('processing', 70, 22), 3)
         self.assertEqual(schedule.observe('processing', 95, 23), 2)
 
-    def test_high_progress_stall_stays_at_three_seconds(self):
+    def test_high_progress_stall_becomes_faster_after_ninety_seconds(self):
         schedule = PollSchedule()
-        self.assertTrue(all(schedule.observe('processing', 80, moment) == 3 for moment in range(300)))
+        self.assertTrue(all(schedule.observe('processing', 80, moment) == (3 if moment < 90 else 2)
+                            for moment in range(300)))
 
     def test_ninety_five_and_one_hundred_processing_stay_at_two_seconds(self):
         for progress in (95, 99, 100):
@@ -50,7 +51,31 @@ class PollScheduleTests(unittest.TestCase):
         schedule = PollSchedule()
         self.assertEqual(schedule.observe('processing', 0, 0), 5)
         self.assertEqual(schedule.observe('processing', 0, 60), 3)
-        self.assertEqual(schedule.observe('processing', 0, 600), 3)
+        self.assertEqual(schedule.observe('processing', 0, 600), 2)
+
+    def test_low_progress_uses_final_interval_after_ninety_seconds(self):
+        schedule = PollSchedule()
+        self.assertEqual(schedule.observe('processing', 45, 10), 5)
+        self.assertEqual(schedule.observe('processing', 45, 69.999), 6)
+        self.assertEqual(schedule.observe('processing', 45, 70), 3)
+        self.assertEqual(schedule.observe('processing', 45, 99.999), 3)
+        self.assertTrue(all(schedule.observe('processing', 45, moment) == 2 for moment in range(100, 300)))
+
+    def test_progress_change_preserves_elapsed_processing_final_stage(self):
+        schedule = PollSchedule()
+        schedule.observe('processing', 45, 0)
+        self.assertEqual(schedule.observe('processing', 45, 90), 2)
+        self.assertEqual(schedule.observe('processing', 46, 91), 2)
+        self.assertEqual(schedule.observe('processing', 20, 92), 2)
+
+    def test_interrupted_processing_restarts_final_stage_timer(self):
+        schedule = PollSchedule()
+        schedule.observe('processing', 45, 0)
+        self.assertEqual(schedule.observe('processing', 45, 90), 2)
+        schedule.observe('queued', 45, 100)
+        self.assertGreater(schedule.observe('processing', 45, 101), 2)
+        self.assertEqual(schedule.observe('processing', 45, 161), 3)
+        self.assertEqual(schedule.observe('processing', 45, 191), 2)
 
     def test_only_continuous_processing_uses_the_processing_timer(self):
         schedule = PollSchedule()
@@ -151,11 +176,24 @@ class ExecutionPollingTests(unittest.TestCase):
         self.client.create_task.assert_not_called()
 
     def test_long_low_progress_processing_uses_fast_polling_without_a_busy_loop(self):
-        self.run_responses([self.response(progress=30)] * 40 +
+        self.run_responses([self.response(progress=45)] * 40 +
                            [self.response('completed', 100, 'https://fixture.invalid/video')])
         self.assertLessEqual(max(self.clock.delays), 15)
-        self.assertEqual(self.clock.delays[-10:], [3] * 10)
+        self.assertEqual(self.clock.delays[-10:], [2] * 10)
         self.assertTrue(any('上游进度未更新' in text for text in self.logs))
+
+    def test_slow_queries_add_network_time_without_increasing_final_wait(self):
+        def query(*args):
+            self.clock.now += 4.11
+            completed = self.clock.now >= 120
+            self.events.append(('completed' if completed else 'processing', self.clock.now))
+            return self.response('completed', 100, 'https://fixture.invalid/video') if completed else self.response(progress=45)
+        self.client.query_task.side_effect = query
+        self.execution._attempt('fixture', self.client, Mock(), self.downloader, Mock())
+        self.assertEqual(self.clock.delays[-2:], [2, 2])
+        self.assertAlmostEqual(self.execution.task['completion_detection_gap_seconds'], 6.11)
+        self.assertEqual(self.events[-1], ('download', self.events[-2][1]))
+        self.client.create_task.assert_not_called()
 
     def test_poll_timeout_bounds_wait_and_preserves_task_id(self):
         self.execution.config['workspace']['poll_timeout'] = 7

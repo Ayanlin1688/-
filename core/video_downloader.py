@@ -39,7 +39,8 @@ def build_filename(rule, task, sequence):
 DOWNLOAD_TIMEOUT = (10, 120)
 DOWNLOAD_ATTEMPTS = 4
 DOWNLOAD_CHUNK_SIZE = 512 * 1024
-PARALLEL_MIN_BYTES = 8 * 1024 * 1024
+PARALLEL_MIN_BYTES = 4 * 1024 * 1024
+PARALLEL_MIN_SEGMENT_BYTES = 1024 * 1024
 
 
 class IncompleteDownload(IOError):
@@ -354,7 +355,7 @@ class VideoDownloader(HttpClient):
         elif not supports_range:
             reason = '服务端未声明字节范围支持'
         elif state['length'] < PARALLEL_MIN_BYTES:
-            reason = '文件小于 8 MiB'
+            reason = '文件小于 4 MiB'
         elif state['encoded']:
             reason = '服务端返回压缩内容'
         elif not state['etag']:
@@ -364,10 +365,16 @@ class VideoDownloader(HttpClient):
               or any(type(adapter) is not requests.adapters.HTTPAdapter for adapter in self.session.adapters.values())):
             reason = '自定义会话行为无法安全复制'
         if not state['range_logged']:
-            self.log(f'Range 探测：HTTP {response.status_code}，声明字节范围支持={supports_range}，长度={state["length"]} 字节', 'info')
-            self.log(f'分段下载未启用：{reason}' if reason else f'启用分段下载：{self.parallel_workers} 段，独立会话', 'info')
+            encoding = response.headers.get('Content-Encoding', '').strip() or 'identity'
+            self.log(f'Range 探测：HTTP {response.status_code}，声明字节范围支持={supports_range}，'
+                     f'强ETag存在={bool(state["etag"])}，长度={state["length"]} 字节，'
+                     f'Content-Encoding={encoding}，加速开关={self.acceleration}', 'info')
+            self.log(f'分段下载未启用：{reason}' if reason else f'启用分段下载：{self._segment_count(state["length"])} 段，独立会话', 'info')
             state['range_logged'] = True
         return not reason
+
+    def _segment_count(self, total):
+        return min(self.parallel_workers, max(2, total // PARALLEL_MIN_SEGMENT_BYTES))
 
     def _segment_client(self):
         session = requests.Session()
@@ -428,18 +435,19 @@ class VideoDownloader(HttpClient):
     def _parallel_transfer(self, url, partial, state):
         total = state['length']
         etag = state['etag']
+        workers = self._segment_count(total)
         stop = threading.Event()
         lock = threading.Lock()
-        counts = [0] * self.parallel_workers
+        counts = [0] * workers
         with tempfile.TemporaryDirectory(prefix='.storyboard-ranges-', dir=Path(partial).parent) as directory:
-            paths = [Path(directory) / f'{index}.part' for index in range(self.parallel_workers)]
-            executor = ThreadPoolExecutor(max_workers=self.parallel_workers, thread_name_prefix='video-range')
+            paths = [Path(directory) / f'{index}.part' for index in range(workers)]
+            executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='video-range')
             futures = []
             error = None
             try:
                 for index, path in enumerate(paths):
-                    start = total * index // self.parallel_workers
-                    end = total * (index + 1) // self.parallel_workers - 1
+                    start = total * index // workers
+                    end = total * (index + 1) // workers - 1
                     futures.append(executor.submit(self._download_segment, url, path, start, end, state, stop, counts, index, lock))
                 pending = set(futures)
                 while pending:

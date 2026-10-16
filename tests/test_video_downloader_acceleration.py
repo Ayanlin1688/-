@@ -16,7 +16,7 @@ from core.http_client import Cancelled
 from core.video_downloader import DOWNLOAD_ATTEMPTS, DOWNLOAD_CHUNK_SIZE, PARALLEL_MIN_BYTES, VideoDownloader
 
 
-VIDEO = (bytes(range(251)) * (PARALLEL_MIN_BYTES // 251 + 1))[:PARALLEL_MIN_BYTES] + b'last uneven segment'
+VIDEO = (bytes(range(251)) * (8 * 1024 * 1024 // 251 + 1))[:8 * 1024 * 1024] + b'last uneven segment'
 CHANGED_VIDEO = VIDEO.translate(bytes((value + 73) % 256 for value in range(256)))
 
 
@@ -272,6 +272,63 @@ class DownloadAccelerationTests(unittest.TestCase):
             self.assert_complete(self.download(server), VIDEO)
             self.assertEqual(len(server.calls), 1)
             self.assertEqual(server.heads, [])
+        self.assertTrue(any('加速开关=False' in message for message in self.logs))
+
+    def test_four_to_eight_mib_files_enable_parallel_ranges(self):
+        self.assertEqual(PARALLEL_MIN_BYTES, 4 * 1024 * 1024)
+        for size in (4 * 1024 * 1024, int(6.6 * 1024 * 1024), 8 * 1024 * 1024 - 1):
+            with self.subTest(size=size), LocalRangeServer(data=VIDEO[:size]) as server:
+                self.assert_complete(self.download(server), server.data)
+                ranges = [call for call in server.calls if call['range']]
+                self.assertEqual(len(ranges), 4)
+                for call in ranges:
+                    start, end = map(int, call['range'][6:].split('-'))
+                    self.assertGreaterEqual(end - start + 1, 1024 * 1024)
+
+    def test_below_four_mib_keeps_single_stream_with_range_and_strong_etag(self):
+        with LocalRangeServer(data=VIDEO[:4 * 1024 * 1024 - 1]) as server:
+            self.assert_complete(self.download(server), server.data)
+            self.assertEqual([call['range'] for call in server.calls], [''])
+            self.assertEqual(server.heads, [])
+        self.assertTrue(any('文件小于 4 MiB' in message for message in self.logs))
+
+    def test_worker_limit_keeps_segments_at_least_one_mib(self):
+        self.client.parallel_workers = 8
+        for size, workers in ((4 * 1024 * 1024, 4), (6 * 1024 * 1024, 6), (8 * 1024 * 1024, 8)):
+            with self.subTest(size=size), LocalRangeServer(data=VIDEO[:size]) as server:
+                self.logs.clear()
+                self.assert_complete(self.download(server), server.data)
+                ranges = [call for call in server.calls if call['range']]
+                self.assertEqual(len(ranges), workers)
+                for call in ranges:
+                    start, end = map(int, call['range'][6:].split('-'))
+                    self.assertGreaterEqual(end - start + 1, 1024 * 1024)
+                self.assertTrue(any(f'启用分段下载：{workers} 段' in message for message in self.logs))
+
+    def test_small_file_probe_logs_all_capabilities_even_without_acceleration(self):
+        for mode, strong_etag, supports_range, encoding in (
+                ('range', True, True, 'identity'), ('no-etag', False, True, 'identity'),
+                ('weak-etag', False, True, 'identity'), ('no-range', True, False, 'identity'),
+                ('gzip', True, True, 'gzip')):
+            with self.subTest(mode=mode), LocalRangeServer(mode, VIDEO[:300000]) as server:
+                self.logs.clear()
+                self.assert_complete(self.download(server), server.data)
+                self.assertEqual([call['range'] for call in server.calls], [''])
+                probes = [message for message in self.logs if 'Range 探测' in message]
+                self.assertEqual(len(probes), 1)
+                self.assertIn(f'声明字节范围支持={supports_range}', probes[0])
+                self.assertIn(f'强ETag存在={strong_etag}', probes[0])
+                self.assertIn('长度=', probes[0])
+                self.assertIn(f'Content-Encoding={encoding}', probes[0])
+                self.assertIn('加速开关=True', probes[0])
+
+    def test_four_mib_without_safe_range_falls_back_with_integrity(self):
+        for mode in ('no-range', 'no-etag', 'weak-etag', 'ignore-range'):
+            with self.subTest(mode=mode), LocalRangeServer(mode, VIDEO[:4 * 1024 * 1024]) as server:
+                self.assert_complete(self.download(server), server.data)
+                self.assertEqual(server.full_gets, 2 if mode == 'ignore-range' else 1)
+                if mode != 'ignore-range':
+                    self.assertEqual([call['range'] for call in server.calls], [''])
 
     def test_small_file_uses_one_get_without_head(self):
         data = VIDEO[:300000]
