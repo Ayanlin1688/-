@@ -23,6 +23,20 @@ class SubmissionUncertain(RequestError):
     pass
 
 
+def _reference_fetch_failure(payload):
+    for obj in objects(payload):
+        error = obj.get('error')
+        details = (error, obj) if isinstance(error, dict) else (obj,)
+        for detail in details:
+            code = detail.get('code')
+            message = detail.get('message')
+            if code == 'video_generation_failed' and isinstance(message, str) and '远程图片下载' in message:
+                return dict(category='upstream_reference_fetch_failed', code=code, message=message,
+                            guidance='上游/中转站参考图拉取或校验失败（服务商侧）。可直接重试；若反复失败，'
+                                     '请改用标准 JPEG/PNG，并联系中转站确认其图床对模型侧可达。')
+    return None
+
+
 _PRECREATION_STATUS_CODES = {401, 402, 403}
 _QUOTA_MARKERS = (
     'insufficient_user_quota', 'insufficient_quota', 'quota', 'balance', 'arrears',
@@ -254,7 +268,12 @@ class ApiClient(HttpClient):
         if not url:
             url = next((obj['metadata']['url'] for obj in objects(raw)
                         if isinstance(obj.get('metadata'), dict) and obj['metadata'].get('url')), None)
-        return dict(status=status, progress=progress, result_url=url, raw=raw)
+        result = dict(status=status, progress=progress, result_url=url, raw=raw)
+        if status == 'failed':
+            failure = _reference_fetch_failure(raw)
+            if failure:
+                result['failure'] = failure
+        return result
 
     def test_connection(self, uploader=None):
         """With an uploader, report both independent probes; legacy callers get a bool."""

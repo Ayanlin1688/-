@@ -3,7 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -104,6 +104,55 @@ class LocalServer:
 
 
 class HttpTests(unittest.TestCase):
+    def test_query_classifies_remote_reference_failure_without_changing_status_or_raw(self):
+        error = dict(code='video_generation_failed', message='远程图片下载后校验失败')
+        for raw in (dict(status='failed', error=error), dict(status='failed', **error),
+                    dict(data=dict(status='error', error=error)), dict(task=dict(status='failed', error=error))):
+            with self.subTest(raw=raw):
+                session = MagicMock()
+                response = session.request.return_value.__enter__.return_value
+                response.json.return_value = raw
+                session.request.return_value.status_code = 200
+                client = ApiClient('http://localhost', 'fixture', session=session)
+                self.addCleanup(client.close)
+                result = client.query_task('paid-reference', 'MiniMax-H3')
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['raw'], raw)
+                self.assertEqual(result['failure']['category'], 'upstream_reference_fetch_failed')
+                self.assertEqual(result['failure']['code'], error['code'])
+                self.assertEqual(result['failure']['message'], error['message'])
+                for text in ('服务商侧', '可直接重试', 'JPEG/PNG', '图床对模型侧可达'):
+                    self.assertIn(text, result['failure']['guidance'])
+                self.assertEqual(session.request.call_count, 1)
+
+    def test_reference_classification_requires_failed_status_matching_code_and_message(self):
+        for status, code, message in (
+                ('processing', 'video_generation_failed', '远程图片下载后校验失败'),
+                ('failed', 'invalid_image', '远程图片下载后校验失败'),
+                ('failed', 'video_generation_failed', '本地图片损坏'),
+                ('failed', 'video_generation_failed', None)):
+            with self.subTest(status=status, code=code, message=message):
+                session = MagicMock()
+                session.request.return_value.status_code = 200
+                response = session.request.return_value.__enter__.return_value
+                response.json.return_value = dict(status=status, error=dict(code=code, message=message))
+                client = ApiClient('http://localhost', 'fixture', session=session)
+                self.addCleanup(client.close)
+                result = client.query_task('paid-reference', 'video-v2')
+                self.assertEqual(result['status'], status)
+                self.assertNotIn('failure', result)
+
+    def test_remote_reference_download_message_is_classified_without_validation_suffix(self):
+        session = MagicMock()
+        session.request.return_value.status_code = 200
+        response = session.request.return_value.__enter__.return_value
+        response.json.return_value = dict(status='failed', error=dict(
+            code='video_generation_failed', message='远程图片下载超时'))
+        client = ApiClient('http://localhost', 'fixture', session=session)
+        self.addCleanup(client.close)
+        result = client.query_task('paid-reference', 'video-v2')
+        self.assertEqual(result['failure']['category'], 'upstream_reference_fetch_failed')
+
     def test_custom_image_host_does_not_receive_provider_key(self):
         self.assertEqual(upload_credentials(dict(api_key='provider-key')), (DEFAULT_UPLOAD_URL, 'provider-key'))
         self.assertEqual(upload_credentials(dict(api_key='provider-key', upload_url='https://custom.invalid/upload')),

@@ -21,7 +21,9 @@ from .video_downloader import VideoDownloader, build_filename
 
 
 class RemoteGenerationFailed(RuntimeError):
-    pass
+    def __init__(self, message, *, failure=None):
+        super().__init__(message)
+        self.failure = failure or {}
 
 
 class DuplicateSubmission(RuntimeError):
@@ -221,6 +223,10 @@ class TaskExecution:
                     remote_failed = isinstance(error, RemoteGenerationFailed)
                     if remote_failed:
                         self.task['remote_failed'] = True
+                        if error.failure:
+                            entry.update(failure_category=error.failure['category'],
+                                         upstream_error=redact_structure(
+                                             {key: error.failure[key] for key in ('code', 'message')}, self.owner.redact))
                     if self.phase == 'submit' and self.intent_sent:
                         status = getattr(error, 'status_code', None)
                         if not self._mark_precreation_rejected(error):
@@ -546,6 +552,11 @@ class TaskExecution:
                 minutes, seconds = divmod(int(poll_elapsed), 60)
                 self.log(f"{prefix}：轮询中... 状态={result['status']}，进度={result['progress']:g}%，已轮询{minutes}分{seconds}秒")
                 if result['status'] == 'failed':
+                    failure = result.get('failure')
+                    if failure:
+                        message = (f'{failure["guidance"]} task_id={task["task_id"]}；'
+                                   f'code={failure["code"]}；message={failure["message"]}')
+                        raise RemoteGenerationFailed(message, failure=failure)
                     raise RemoteGenerationFailed('远端生成失败：' + str(extract(result['raw'], ('error', 'message')) or result['raw']))
                 if result['status'] == 'completed':
                     if not result['result_url']:

@@ -7,10 +7,10 @@ import unittest
 from PyQt5.QtWidgets import QApplication
 from core.config_manager import DEFAULT_CONFIG
 from core.task_manager import TaskManager
-from core.submission_ledger import SubmissionLedger
+from core.submission_ledger import SubmissionLedger, account_scope
 from test_task_manager import wait_until
 from test_pool_execution import PoolServer
-from test_prompt_converter import H3_PROMPT, V2_TAIL
+from test_prompt_converter import H3_PROMPT, UGC_PROMPT, V2_TAIL
 
 
 class Stage5ExecutionTests(unittest.TestCase):
@@ -58,6 +58,79 @@ class Stage5ExecutionTests(unittest.TestCase):
             self.assertEqual(task['original_prompt'], H3_PROMPT)
             self.assertIn('@图10', task['converted_prompt'])
             self.assertNotEqual(task['attempts'][0]['task_id'], task['task_id'])
+
+    def test_handwritten_ugc_remote_reference_failure_can_fail_over_to_v2(self):
+        self.path.write_text(UGC_PROMPT, encoding='utf-8')
+        self.config['task_strategy'].update(auto_retry=True, max_retries=1)
+        self.config['model_pool'].update(enabled=True, auto_failover=True, cooldown=.01,
+                                         models=[dict(name='video-v2', enabled=True)])
+        with PoolServer() as server:
+            server.remote_fail_models = {'MiniMax-H3'}
+            server.remote_failure = dict(code='video_generation_failed', message='远程图片下载后校验失败')
+            bodies = self.start(server)
+            self.assertEqual([body['model'] for body in bodies], ['MiniMax-H3', 'video-v2'])
+            self.assertEqual([body['prompt'] for body in bodies], [UGC_PROMPT.strip()] * 2)
+            task = self.manager.tasks[0]
+            self.assertEqual(task['status'], 'completed')
+            self.assertEqual(task['original_prompt'], UGC_PROMPT)
+            self.assertEqual(task['converted_prompt'], UGC_PROMPT)
+            self.assertEqual(task['source_format'], 'text')
+            self.assertFalse(task['prompt_converted'])
+            first, second = task['attempts']
+            self.assertEqual((first['status'], second['status']), ('failed', 'completed'))
+            self.assertEqual(first['failure_category'], 'upstream_reference_fetch_failed')
+            self.assertEqual(first['upstream_error'], server.remote_failure)
+            self.assertNotEqual(first['task_id'], second['task_id'])
+            saved = SubmissionLedger(self.config['_submission_ledger_path']).records(account_scope(self.config))
+            self.assertTrue(any(record.get('task_id') == first['task_id'] and record['ledger_state'] == 'failed'
+                                for record in saved))
+
+    def test_remote_reference_failure_without_auto_retry_preserves_id_and_never_recreates(self):
+        self.path.write_text(UGC_PROMPT, encoding='utf-8')
+        self.config['task_strategy']['auto_retry'] = False
+        self.config['model_pool'].update(enabled=True, auto_failover=True, cooldown=.01,
+                                         models=[dict(name='video-v2', enabled=True)])
+        logs = []
+        self.manager.log_message.connect(lambda message, level: logs.append(message))
+        with PoolServer() as server:
+            server.remote_fail_models = {'MiniMax-H3'}
+            server.remote_failure = dict(code='video_generation_failed', message='远程图片下载后校验失败')
+            bodies = self.start(server)
+            self.assertEqual(len(bodies), 1)
+            task = self.manager.tasks[0]
+            self.assertEqual(task['status'], 'failed')
+            self.assertTrue(task['remote_failed'])
+            self.assertTrue(task['task_id'])
+            self.assertEqual(len(task['attempts']), 1)
+            self.assertEqual(task['attempts'][0]['task_id'], task['task_id'])
+            self.assertEqual(task['attempts'][0]['upstream_error'], server.remote_failure)
+            for text in ('服务商侧', '可直接重试', 'JPEG/PNG', '图床对模型侧可达',
+                         'video_generation_failed', '远程图片下载后校验失败', task['task_id']):
+                self.assertIn(text, task['error'])
+                self.assertTrue(any(text in message for message in logs))
+            self.assertNotIn('无法确认', task['error'])
+            saved = SubmissionLedger(self.config['_submission_ledger_path']).records(account_scope(self.config))
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]['ledger_state'], 'failed')
+            self.assertEqual(saved[0]['attempts'][0]['upstream_error'], server.remote_failure)
+
+    def test_repeated_remote_reference_failure_stops_at_explicit_retry_limit(self):
+        self.path.write_text(UGC_PROMPT, encoding='utf-8')
+        self.config['task_strategy'].update(auto_retry=True, max_retries=1)
+        self.config['model_pool'].update(enabled=True, auto_failover=True, cooldown=.01,
+                                         models=[dict(name='video-v2', enabled=True)])
+        with PoolServer() as server:
+            server.remote_fail_models = {'MiniMax-H3', 'video-v2'}
+            server.remote_failure = dict(code='video_generation_failed', message='远程图片下载后校验失败')
+            bodies = self.start(server)
+            self.assertEqual([body['model'] for body in bodies], ['MiniMax-H3', 'video-v2'])
+            task = self.manager.tasks[0]
+            self.assertEqual(task['status'], 'failed')
+            self.assertEqual(len(task['attempts']), 2)
+            self.assertEqual(task['task_id'], task['attempts'][-1]['task_id'])
+            self.assertEqual(len({entry['task_id'] for entry in task['attempts']}), 2)
+            self.assertTrue(all(entry['failure_category'] == 'upstream_reference_fetch_failed'
+                                for entry in task['attempts']))
 
     def test_preserve_original_off_never_writes_snapshot_to_history_or_ledger(self):
         self.config['prompt_conversion']['preserve_original'] = False

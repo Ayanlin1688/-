@@ -17,14 +17,7 @@ _H3_FIELDS = (
     'overall_soundscape',
     'non_diegetic_music',
 )
-_H3_SIGNATURES = (
-    r'(?im)^\s*subject_definitions\s*:',
-    r'(?im)^\s*retention_analysis\s*:',
-    r'(?im)^\s*detailed_description\s*:',
-    r'(?i)\[\s*Shot\s+1\s*\]',
-    r'(?i)\(S1\)\s+says\b',
-    r'(?im)^\s*overall_soundscape\s*:',
-)
+_H3_SIGNATURES = tuple(rf'(?im)^\s*{field}\s*:' for field in _H3_FIELDS)
 _V2_SIGNATURES = (
     r'【分镜】',
     r'(?m)^\s*人物站位\s*：',
@@ -94,7 +87,7 @@ def _parse_h3(prompt_text: str) -> dict[str, str]:
     matches = list(_SECTION_RE.finditer(text))
     names = [match.group(1).lower() for match in matches]
     if names != list(_H3_FIELDS):
-        raise ValueError('H3 结构无效：必须按顺序且各一次包含六个标准字段')
+        raise ValueError('H3 结构无效：必须按顺序且各一次包含六个标准字段：' + ', '.join(_H3_FIELDS))
     if text[:matches[0].start()].strip():
         raise ValueError('H3 结构无效：subject_definitions 前存在无法保留的内容')
 
@@ -356,6 +349,12 @@ def convert_for_model(
     text = strip_v2_declaration(prompt_text)
     source = detect_format(text)
     target = model_format(model, catalog)
+    if target == 'V2':
+        has_h3_fields = bool(_SECTION_RE.search(text))
+        if source == 'H3' and not has_h3_fields:
+            source = 'text'
+        elif source == 'text' and has_h3_fields:
+            source = 'H3'
     if not enabled or source == 'text' or target == 'text' or source == target:
         return ConversionResult(text, source, target, False, ())
     if source == 'H3' and target == 'V2':

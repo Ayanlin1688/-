@@ -58,7 +58,7 @@ class PoolHandler(FixtureHandler):
                 return self.respond({'error': 'temporary poll outage'}, 503)
             if task['model'] in self.server.remote_fail_models:
                 self.server.active.discard(task_id)
-                return self.respond({'status': 'failed', 'error': 'generation failed'})
+                return self.respond({'status': 'failed', 'error': getattr(self.server, 'remote_failure', 'generation failed')})
             if time.monotonic() - task['started'] < self.server.processing_seconds:
                 return self.respond({'status': 'processing', 'progress': 40})
             self.server.active.discard(task_id)

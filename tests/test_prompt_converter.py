@@ -1,5 +1,6 @@
 import re
 import unittest
+from unittest.mock import patch
 
 from core.prompt_converter import (
     convert_for_model,
@@ -42,13 +43,43 @@ V2_TAIL = """【禁止项】
 无背景音乐,仅保留环境音与人声和音效;画面禁字幕/文字/水印/Logo;禁止可读文字(指画面字幕文字,不含人声台词)"""
 
 
+UGC_PROMPT = """脚本 1：Local UGC fixture
+PRODUCT
+A plain fabric product, shown without changing its geometry.
+
+SCRIPT & SYNCED VOICEOVER
+Shot 1 [00:00 - 00:03]: Show the product.
+
+DETAILED MASTER PROMPT (FOR MINIMAX H3)
+A handheld product video. [Shot 1] Show the fabric.
+(S1) says in an off-screen voiceover: <d>[English] "Look at this texture."</d>
+[Shot 2] At 00:03.000, unfold the fabric.
+(S1) says in an off-screen voiceover: <d>[English] "It opens right up."</d>
+
+NEGATIVE PROMPT
+No subtitles, watermarks, or distorted hands.
+
+PLATFORM CAPTION & TAGS
+A simple product demonstration.
+"""
+
+
 class PromptFormatDetectionTests(unittest.TestCase):
-    def test_h3_requires_two_signatures_and_takes_precedence(self):
+    def test_h3_requires_two_field_headers_and_takes_precedence(self):
         self.assertEqual(detect_format('subject_definitions:\nonly one marker'), 'text')
         self.assertEqual(
-            detect_format('subject_definitions:\n人物站位：左侧\n[Shot 1] action'),
+            detect_format('subject_definitions:\n人物站位：左侧\ndetailed_description:\n[Shot 1] action'),
             'H3',
         )
+
+    def test_shot_and_voiceover_markers_cannot_establish_h3_format(self):
+        for prompt in (UGC_PROMPT, '[Shot 1] Action. (S1) says "Hello".',
+                       'subject_definitions:\n[Shot 1] Action. (S1) says "Hello".'):
+            with self.subTest(prompt=prompt[:40]):
+                self.assertEqual(detect_format(prompt), 'text')
+
+    def test_duplicate_field_header_cannot_satisfy_detection_threshold(self):
+        self.assertEqual(detect_format('detailed_description:\nAction\ndetailed_description:\nMore action'), 'text')
 
     def test_v2_needs_one_exact_structural_marker(self):
         self.assertEqual(detect_format('开场\n镜头1：人物抬头'), 'V2')
@@ -246,6 +277,47 @@ N/A"""
 
 
 class ModelConversionTests(unittest.TestCase):
+    def test_handwritten_ugc_is_unchanged_for_h3_and_v2(self):
+        with patch('core.prompt_converter._parse_h3', side_effect=AssertionError('Text must not be parsed as H3')):
+            for model in ('MiniMax-H3', 'video-v2'):
+                with self.subTest(model=model):
+                    result = convert_for_model(UGC_PROMPT, model, duration=10)
+                    self.assertEqual(result.text, UGC_PROMPT)
+                    self.assertEqual(result.source_format, 'text')
+                    self.assertFalse(result.converted)
+
+    def test_h3_to_v2_defensively_passes_text_without_field_headers(self):
+        with patch('core.prompt_converter.detect_format', return_value='H3'), \
+                patch('core.prompt_converter._parse_h3', side_effect=AssertionError('No H3 fields')):
+            result = convert_for_model(UGC_PROMPT, 'video-v2')
+        self.assertEqual(result.text, UGC_PROMPT)
+        self.assertEqual(result.source_format, 'text')
+        self.assertFalse(result.converted)
+
+    def test_partial_h3_fields_still_require_complete_ordered_structure(self):
+        for prompt in ('subject_definitions:\nA product', 'detailed_description:\n[Shot 1] A product',
+                       H3_PROMPT.replace('overall_soundscape:', 'missing_soundscape:')):
+            with self.subTest(prompt=prompt[:40]):
+                with self.assertRaisesRegex(ValueError, 'H3 结构无效.*六个标准字段.*overall_soundscape'):
+                    convert_for_model(prompt, 'video-v2')
+                self.assertEqual(convert_for_model(prompt, 'video-v2', enabled=False).text, prompt)
+
+    def test_real_structured_prompts_round_trip_with_fields_shots_and_references(self):
+        v2 = convert_for_model(H3_PROMPT, 'video-v2', duration=10)
+        h3 = convert_for_model(v2.text, 'MiniMax-H3', duration=10)
+        self.assertTrue(v2.converted)
+        self.assertTrue(h3.converted)
+        self.assertEqual((v2.shot_count, h3.shot_count), (2, 2))
+        self.assertIn('@图1', v2.text)
+        self.assertIn('@图10', v2.text)
+        self.assertEqual(re.findall(r'(?m)^(\w+):$', h3.text), [
+            'subject_definitions', 'summary', 'retention_analysis', 'detailed_description',
+            'overall_soundscape', 'non_diegetic_music'])
+        self.assertIn('<Picture 1>', h3.text)
+        self.assertIn('<Picture 10>', h3.text)
+        self.assertIn('[Shot 1]', h3.text)
+        self.assertIn('[Shot 2] At 00:05.000,', h3.text)
+
     def test_model_format_uses_catalog_family_before_model_name(self):
         catalog = {
             'custom-h3': {'family': 'MiniMax-H3'},
