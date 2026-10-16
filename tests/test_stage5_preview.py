@@ -102,7 +102,8 @@ class Stage5PreviewTests(unittest.TestCase):
 
     def test_conversion_error_is_visible_and_does_not_escape_model_slot(self):
         prompt_path = self.root / 'broken.txt'
-        broken = 'subject_definitions:\n<Subject 1> is Maya.\n[Shot 1] action'
+        broken = ('subject_definitions:\n<Subject 1> is Maya.\n'
+                  'summary:\nA short demo.\n[Shot 1] action')
         prompt_path.write_text(broken, encoding='utf-8')
         dialog = self._dialog(prompt_path)
         try:
@@ -115,6 +116,7 @@ class Stage5PreviewTests(unittest.TestCase):
             self.assertIn('H3', preview)
             self.assertNotEqual(preview, broken)
             self.assertIn('转换失败', dialog.preview_status.text())
+            self.assertEqual(dialog.model_combo.currentText(), 'video-v2')
         finally:
             dialog.close()
             dialog.deleteLater()

@@ -286,18 +286,28 @@ class ModelConversionTests(unittest.TestCase):
                     self.assertEqual(result.source_format, 'text')
                     self.assertFalse(result.converted)
 
-    def test_h3_to_v2_defensively_passes_text_without_field_headers(self):
-        with patch('core.prompt_converter.detect_format', return_value='H3'), \
-                patch('core.prompt_converter._parse_h3', side_effect=AssertionError('No H3 fields')):
-            result = convert_for_model(UGC_PROMPT, 'video-v2')
-        self.assertEqual(result.text, UGC_PROMPT)
-        self.assertEqual(result.source_format, 'text')
-        self.assertFalse(result.converted)
+    def test_zero_or_one_h3_field_passes_through_to_v2_without_parsing(self):
+        fields = ('subject_definitions', 'summary', 'retention_analysis', 'detailed_description',
+                  'overall_soundscape', 'non_diegetic_music')
+        prompts = [UGC_PROMPT, 'subject_definitions: one marker']
+        prompts.extend(f'{field}:\n[Shot 1] Action. (S1) says "Hello".' for field in fields)
+        prompts.append('detailed_description:\nAction\ndetailed_description:\nMore action')
+        with patch('core.prompt_converter._parse_h3', side_effect=AssertionError('Text must not be parsed as H3')):
+            for prompt in prompts:
+                with self.subTest(prompt=prompt[:40]):
+                    self.assertEqual(detect_format(prompt), 'text')
+                    result = convert_for_model(prompt, 'video-v2')
+                    self.assertEqual(result.text, prompt)
+                    self.assertEqual(result.source_format, 'text')
+                    self.assertFalse(result.converted)
 
     def test_partial_h3_fields_still_require_complete_ordered_structure(self):
-        for prompt in ('subject_definitions:\nA product', 'detailed_description:\n[Shot 1] A product',
-                       H3_PROMPT.replace('overall_soundscape:', 'missing_soundscape:')):
+        sections = re.split(r'(?m)(?=^\w+:$)', H3_PROMPT)[1:]
+        prompts = [''.join(sections[:count]) for count in range(2, 6)]
+        prompts.append(H3_PROMPT.replace('overall_soundscape:', 'missing_soundscape:'))
+        for prompt in prompts:
             with self.subTest(prompt=prompt[:40]):
+                self.assertEqual(detect_format(prompt), 'H3')
                 with self.assertRaisesRegex(ValueError, 'H3 结构无效.*六个标准字段.*overall_soundscape'):
                     convert_for_model(prompt, 'video-v2')
                 self.assertEqual(convert_for_model(prompt, 'video-v2', enabled=False).text, prompt)

@@ -349,12 +349,6 @@ def convert_for_model(
     text = strip_v2_declaration(prompt_text)
     source = detect_format(text)
     target = model_format(model, catalog)
-    if target == 'V2':
-        has_h3_fields = bool(_SECTION_RE.search(text))
-        if source == 'H3' and not has_h3_fields:
-            source = 'text'
-        elif source == 'text' and has_h3_fields:
-            source = 'H3'
     if not enabled or source == 'text' or target == 'text' or source == target:
         return ConversionResult(text, source, target, False, ())
     if source == 'H3' and target == 'V2':

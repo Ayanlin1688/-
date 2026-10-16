@@ -220,12 +220,20 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual([body['model'] for body in bodies], ['video-v2'])
 
     def test_fallback_model_adapts_parameters_with_pool_disabled(self):
-        (self.prompts/'1.txt').write_text('subject_definitions: one marker', encoding='utf-8')
+        prompt = 'subject_definitions: one marker'
+        (self.prompts/'1.txt').write_text(prompt, encoding='utf-8')
         self.config['prompt_detection']['fallback_model'] = 'video-v2'
         with PoolServer() as server:
-            body = self.start(server)[0]
+            bodies = self.start(server)
+            self.assertEqual(len(bodies), 1)
+            body = bodies[0]
             self.assertEqual(body['model'], 'video-v2')
+            self.assertEqual(body['prompt'], prompt)
             self.assertEqual((body['duration'], body['resolution']), (10, '720p'))
+            task = self.manager.tasks[0]
+            self.assertEqual(task['status'], 'completed')
+            self.assertEqual(task['source_format'], 'text')
+            self.assertFalse(task['prompt_converted'])
 
     def test_unknown_protocol_override_fails_before_upload(self):
         path = self.prompts/'1.txt'; path.write_text('product prompt', encoding='utf-8')
