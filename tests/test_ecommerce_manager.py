@@ -127,6 +127,14 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(self.store.list_groups(), [])
         self.assertFalse((self.root / 'output').exists())
 
+    def test_invalid_detail_ratio_has_no_side_effects(self):
+        with self.assertRaises(ValueError):
+            self.start(detail_ratio='8:7')
+        self.analysis.assert_not_called()
+        self.image.assert_not_called()
+        self.assertEqual(self.store.list_groups(), [])
+        self.assertFalse((self.root / 'output').exists())
+
     def test_ratio_conflicts_warn_but_use_explicit_ratios(self):
         first = get_platform('douyin')
         second = deepcopy(first)

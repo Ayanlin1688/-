@@ -22,6 +22,7 @@ from .components.custom_widgets import ensure_ui_font
 from .assets import asset_path
 from .components.studio_dialog import safe_delete_dialog
 from .pages.history_page import HistoryPage
+from .pages.ecommerce_page import EcommercePage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
@@ -96,7 +97,7 @@ class MainWindow(FluentWindow):
         self._close_timer.setInterval(100)
         self._close_timer.timeout.connect(self._finish_close)
         self._setup_schedule(network_time)
-        for page in (self.workspace_page, self.history_page, self.settings_page):
+        for page in (self.workspace_page, self.ecommerce_page, self.history_page, self.settings_page):
             style_page(page)
         self._updateStackedBackground()
         style_controls(self)
@@ -155,7 +156,7 @@ class MainWindow(FluentWindow):
 
     def _retranslate_chrome(self):
         """语言切换即时生效范围：导航 / 关于入口 / 关于对话框（其余界面重启后完整生效）。"""
-        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('任务历史'), tr('设置')]):
+        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('电商图'), tr('任务历史'), tr('设置')]):
             try:
                 item.setText(text)
             except Exception:
@@ -338,7 +339,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.addWidget('userAvatar', self.user_avatar, onClick=self.show_about,
                                            position=NavigationItemPosition.BOTTOM,
                                            tooltip='当前用户 · 版本信息')
-        routes = [self.workspace_page.objectName(), self.history_page.objectName(),
+        routes = [self.workspace_page.objectName(), self.ecommerce_page.objectName(), self.history_page.objectName(),
                   self.settings_page.objectName(), 'about']
         self._nav_rail_items = []
         for route in routes:
@@ -1111,6 +1112,7 @@ class MainWindow(FluentWindow):
 
     def _setup_pages(self) -> None:
         self.workspace_page = WorkspacePage(self.config_manager)
+        self.ecommerce_page = EcommercePage(self.config_manager)
         self.history_page = HistoryPage(self.workspace_page.append_log, self.config_manager)
         self.settings_page = SettingsPage(self.config_manager, self.workspace_page.append_log)
         self.settings_page.debug_mode_changed.connect(self.workspace_page.set_debug_mode)
@@ -1129,6 +1131,7 @@ class MainWindow(FluentWindow):
         self.history_page.clean_cache_requested.connect(self.workspace_page.clean_cache_now)
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
+            self.addSubInterface(self.ecommerce_page, FIF.PHOTO, tr('电商图')),
             self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
             self.addSubInterface(self.settings_page, FIF.SETTING, tr('设置')),
         ]
@@ -1239,6 +1242,15 @@ class MainWindow(FluentWindow):
             pass
 
     def closeEvent(self, event):
+        # Images already submitted may be billable: wait for their result/timeout.
+        # Keep this guard separate from the existing workspace shutdown sequence.
+        if self.ecommerce_page.busy:
+            event.ignore()
+            self.ecommerce_page.cancel_generation()
+            if not getattr(self, '_ecommerce_close_pending', False):
+                self._ecommerce_close_pending = True
+                self.ecommerce_page.idle.connect(self.close)
+            return
         self._disconnect_screen_signals()
         if self._move_resize_dispatcher is not None:
             try:

@@ -163,6 +163,7 @@ class EcommerceImageManager:
         user = build_user(product_name, product_info, [p['name'] for p in selected],
                           carousel_count, detail_count, carousel_ratio, detail_ratio)
         image_dimensions(carousel_ratio, tier)
+        image_dimensions(detail_ratio, tier)
         if isinstance(product_image_paths, (str, bytes, os.PathLike)):
             raise ValueError('产品图必须以有序路径列表提供')
         products = list(product_image_paths or [])

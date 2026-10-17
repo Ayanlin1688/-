@@ -178,7 +178,7 @@ class StartupLanguageTests(unittest.TestCase):
             window = MainWindow(manager, network_time=False)
             try:
                 # 不进入事件循环：构造期 tr() 就必须解析为配置语言。
-                self.assertEqual([item.text() for item in window._nav_items], ['Workspace', 'History', 'Settings'])
+                self.assertEqual([item.text() for item in window._nav_items], ['Workspace', 'Ecommerce Images', 'History', 'Settings'])
                 self.assertTrue(window.settings_page.license_status_label.text().startswith('License status'))
             finally:
                 window.close()
