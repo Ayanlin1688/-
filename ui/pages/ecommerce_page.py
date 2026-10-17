@@ -19,6 +19,7 @@ from core.ecommerce.manager import EcommerceImageManager
 from core.i18n import tr
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
+from ..components.ecommerce_result_panel import EcommerceResultPanel
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
 from ..theme import style_controls, style_page
@@ -52,12 +53,13 @@ class EcommerceWorker(QThread):
     log_message = pyqtSignal(str, str)
     finished = pyqtSignal(str, str)
 
-    def __init__(self, manager_factory, arguments, cancel_event, secrets=()):
+    def __init__(self, manager_factory, arguments, cancel_event, secrets=(), *, operation='start'):
         super().__init__()
         self.manager_factory = manager_factory
         self.arguments = arguments
         self.cancel_event = cancel_event
         self.secrets = tuple(secrets)
+        self.operation = operation
 
     def _clean(self, value):
         return redact_text(value, self.secrets)
@@ -69,7 +71,12 @@ class EcommerceWorker(QThread):
             manager.on_group = lambda rec: self.group_changed.emit(redact_structure(rec, self._clean))
             manager.on_item = lambda rec: self.item_changed.emit(redact_structure(rec, self._clean))
             manager.on_log = lambda msg, level: self.log_message.emit(self._clean(msg), level)
-            group_id = manager.start_group(**self.arguments, cancel_event=self.cancel_event)
+            runners = {
+                'start': manager.start_group,
+                'regenerate': manager.regenerate_items,
+                'resume': manager.resume_group,
+            }
+            group_id = runners[self.operation](**self.arguments, cancel_event=self.cancel_event)
             self.finished.emit(group_id, '')
         except Exception as error:
             self.finished.emit('', self._clean(error))
@@ -219,6 +226,12 @@ class EcommercePage(QWidget):
         self.log_box.setMinimumHeight(px(160))
         self.log_box.document().setMaximumBlockCount(1000)
         progress.addWidget(self.log_box)
+        self.result_panel = EcommerceResultPanel(self)
+        self.result_panel.regenerate_requested.connect(lambda key: self._run_regenerate([key]))
+        self.result_panel.regenerate_failed_requested.connect(self._run_regenerate)
+        self.result_panel.log_message.connect(self._append_log)
+        self.regenerate_failed_button = self.result_panel.regenerate_failed_button
+        root.addWidget(self.result_panel)
         root.addStretch(1)
         style_controls(self)
         style_page(self)
@@ -292,6 +305,7 @@ class EcommercePage(QWidget):
         self.ratio_conflict.setStyleSheet('color: %s;' % colors['warning'])
         for label in (self.stage_label, self.summary_label, self.style_label, *self.item_labels.values()):
             label.setStyleSheet('color: %s;' % colors['text1'])
+        self.result_panel.refresh_colors()
         self.log_box.clear()
         for message, level in self._logs:
             self._insert_log(message, level)
@@ -381,13 +395,54 @@ class EcommercePage(QWidget):
             self.items_layout.removeWidget(label)
             label.deleteLater()
         self.item_labels.clear()
+        self.result_panel.clear()
         self._logs.clear()
         self.log_box.clear()
         self.summary_label.clear()
         self.open_output_button.setEnabled(False)
         self.stage_label.setText(tr('AI分析中'))
         self._append_log(tr('AI 分析需要含文本模型权限的密钥；图片按所选配置生成。'), 'info')
-        worker = EcommerceWorker(self._make_manager, arguments, self.cancel_event, self._secrets)
+        self._launch_worker(arguments)
+
+    def _run_regenerate(self, item_keys=None):
+        if self.busy:
+            return
+        try:
+            store = self.config_manager.ecommerce_store()
+            group = store.get_group(self._group['group_id']) if self._group else None
+            if not group:
+                raise ValueError(tr('当前生成组不存在'))
+            items = store.list_items(group['group_id'])
+            by_id = {item['item_id']: item for item in items}
+            if item_keys is None:
+                keys = [item['item_id'] for item in items if item['status'] == 'failed']
+                if not keys:
+                    raise ValueError(tr('没有需要重生成的失败项'))
+            else:
+                keys = []
+                for key in item_keys:
+                    if isinstance(key, tuple) and len(key) == 2:
+                        kind, seq = key
+                        if kind not in ('carousel', 'detail') or type(seq) is not int:
+                            raise ValueError(tr('请选择当前组中的图片'))
+                        key = f'{group["group_id"]}:{kind}:{seq}'
+                    if not isinstance(key, str) or key not in by_id:
+                        raise ValueError(tr('请选择当前组中的图片'))
+                    if key not in keys:
+                        keys.append(key)
+                if not keys:
+                    raise ValueError(tr('请选择当前组中的图片'))
+        except (ValueError, TypeError) as error:
+            self._notice(str(error))
+            return
+        self._secrets = (self.config_manager.config.get('api', {}).get('api_key', ''),)
+        self.summary_label.clear()
+        self.stage_label.setText(tr('图片生成中'))
+        self._launch_worker(dict(group_id=group['group_id'], item_keys=keys), operation='regenerate')
+
+    def _launch_worker(self, arguments, *, operation='start'):
+        worker = EcommerceWorker(self._make_manager, arguments, self.cancel_event, self._secrets,
+                                 operation=operation)
         self._worker = worker
         _LIVE_WORKERS.add(worker)
         worker.group_changed.connect(self._on_group, Qt.QueuedConnection)
@@ -401,6 +456,7 @@ class EcommercePage(QWidget):
         for card in self._form_cards:
             card.setEnabled(False)
         self.start_button.setEnabled(False)
+        self.result_panel.set_busy(True)
         self.cancel_button.setEnabled(True)
         worker.start()
 
@@ -420,12 +476,15 @@ class EcommercePage(QWidget):
             self.summary_label.setText(tr('成功 {success} / 失败 {failed} / 跳过 {skipped}').format(
                 success=totals.get('succeeded', 0), failed=totals.get('failed', 0), skipped=totals.get('skipped', 0)))
             self.open_output_button.setEnabled(bool(self._group.get('output_dir')))
+            for item in self.config_manager.ecommerce_store().list_items(self._group['group_id']):
+                self._on_item(item)
         if self._group.get('error'):
             self._append_log(self._group['error'], 'error')
 
     @pyqtSlot(object)
     def _on_item(self, record):
         record = redact_structure(record, self._clean)
+        record['output_dir'] = (self._group or {}).get('output_dir', '')
         key = (record['kind'], record['seq'])
         self._items[key] = record
         if key not in self.item_labels:
@@ -441,6 +500,18 @@ class EcommercePage(QWidget):
         if record.get('error'):
             parts.append(record['error'])
         self.item_labels[key].setText(' · '.join(parts))
+        self.result_panel.update_item(record)
+
+    def _refresh_results(self, group_id=None):
+        group_id = group_id or (self._group or {}).get('group_id')
+        if group_id:
+            store = self.config_manager.ecommerce_store()
+            group = store.get_group(group_id)
+            if group:
+                self._on_group(group)
+                if group['status'] in ('analyzing', 'generating'):
+                    for item in store.list_items(group_id):
+                        self._on_item(item)
 
     @pyqtSlot(str, str)
     def _append_log(self, message, level='info'):
@@ -461,6 +532,7 @@ class EcommercePage(QWidget):
 
     @pyqtSlot(str, str)
     def _on_result(self, group_id, error):
+        self._refresh_results(group_id)
         if error:
             self.stage_label.setText(tr('失败'))
             self._append_log(error, 'error')
@@ -475,6 +547,7 @@ class EcommercePage(QWidget):
         for card in self._form_cards:
             card.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.result_panel.set_busy(False)
         self._refresh_conflicts()
         self.idle.emit()
         if self._close_when_idle:

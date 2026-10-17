@@ -1,4 +1,5 @@
 """Offline Qt integration tests: real orchestration/files, injected model clients."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,8 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import QThread
+from PyQt5.QtCore import Qt, QThread
+from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QApplication, QLabel
 
@@ -19,9 +21,20 @@ from core.ecommerce.manager import EcommerceImageManager
 from core.ecommerce.platforms import domestic, overseas, LANGUAGE_TEXT, RATIOS, MAX_PLATFORMS
 from core.ecommerce.image_client import TIER_SHORT_EDGE
 from core.i18n import set_language
-from tests.test_ecommerce_manager import PNG, TEST_KEY, fake_analysis, fake_image
+from tests.test_ecommerce_manager import TEST_KEY, fake_analysis, fake_image as manager_fake_image
 from ui import materials
-from ui.pages.ecommerce_page import EcommercePage, _LIVE_WORKERS
+from ui.tokens import px
+from ui.pages.ecommerce_page import EcommercePage, EcommerceWorker, _LIVE_WORKERS
+
+
+# The networking fixture only checks PNG magic; Qt thumbnails need valid CRCs.
+PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==')
+
+
+def fake_image(*args, **kwargs):
+    result = manager_fake_image(*args, **kwargs)
+    result.png_bytes = PNG
+    return result
 
 
 class EcommercePageTests(unittest.TestCase):
@@ -100,6 +113,13 @@ class EcommercePageTests(unittest.TestCase):
     def ui_text(self):
         return '\n'.join([self.page.log_box.toPlainText()] +
                          [label.text() for label in self.page.findChildren(QLabel)])
+
+    def run_regenerate_to_idle(self, action):
+        idle = QSignalSpy(self.page.idle)
+        action()
+        self.assertIsNotNone(self.page._worker)
+        self.last_worker = self.page._worker
+        self.wait_until(lambda: len(idle) == 1)
 
     def test_form_uses_all_platforms_and_catalog_options_and_config_defaults(self):
         page = self.page
@@ -368,6 +388,232 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(len(self.page.item_labels), 3)
         self.assertEqual(self.page.stage_label.text(), '已完成')
         self.assertTrue((Path(first_output) / 'manifest.json').is_file())
+
+    def test_result_cards_show_ordered_thumbnails_sizes_and_open_actions(self):
+        self.fill_valid()
+        self.run_to_idle()
+        panel = self.page.result_panel
+        self.assertEqual(len(panel.cards), 3)
+        cards = panel.ordered_cards()
+        self.assertEqual([card.badge_label.text() for card in cards], ['轮1', '轮2', '详1'])
+        for card in cards:
+            self.assertEqual(card.record['status'], 'succeeded')
+            self.assertFalse(card.thumbnail.pixmap().isNull())
+            self.assertIn('1024x1024', card.size_label.text())
+            self.assertEqual(card.status_label.text(), '成功')
+            self.assertTrue(card.regenerate_button.isEnabled())
+            self.assertTrue(card.folder_button.isEnabled())
+        self.assertFalse(self.page.regenerate_failed_button.isEnabled())
+        first = cards[0]
+        with patch('ui.components.ecommerce_result_panel.open_local') as opener:
+            QTest.mouseClick(first.thumbnail, Qt.LeftButton)
+            self.assertEqual(opener.call_args.args[0], first.record['file_path'])
+            self.assertFalse(opener.call_args.kwargs['folder'])
+            first.folder_button.click()
+            self.assertEqual(opener.call_args.args[0], str(Path(first.record['file_path']).parent))
+            self.assertTrue(opener.call_args.kwargs['folder'])
+        self.page._refresh_results()
+        self.assertEqual(panel.ordered_cards(), cards, '刷新结果应就地更新已有卡片')
+        self.page.show()
+        for width, multiple in ((480, False), (1200, True)):
+            self.page.resize(width, 800)
+            QTest.qWait(30)
+            self.assertEqual(panel.grid.columns > 1, multiple)
+            self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_thumbnail_refresh_reads_replaced_file_without_using_old_pixmap_cache(self):
+        self.fill_valid()
+        self.run_to_idle()
+        card = self.page.result_panel.ordered_cards()[0]
+        path = Path(card.record['file_path'])
+        previous = card.thumbnail.pixmap().toImage().pixelColor(px(110), px(90))
+        image = QImage(1, 1, QImage.Format_ARGB32)
+        color = QColor('#12ab56')
+        self.assertNotEqual(previous, color)
+        image.fill(color)
+        self.assertTrue(image.save(str(path), 'PNG'))
+        self.page._refresh_results()
+        self.assertIs(self.page.result_panel.ordered_cards()[0], card)
+        self.assertEqual(card.thumbnail.pixmap().toImage().pixelColor(px(110), px(90)), color)
+
+    def test_failed_cards_redact_errors_and_retry_only_failed_items(self):
+        self.fill_valid()
+
+        def sometimes_fails(*args, **kwargs):
+            if args[3].endswith('carousel 1'):
+                raise RuntimeError('出图失败 ' + TEST_KEY)
+            return fake_image(*args, **kwargs)
+
+        self.image.side_effect = sometimes_fails
+        self.run_to_idle()
+        cards = self.page.result_panel.ordered_cards()
+        failed = cards[0]
+        self.assertEqual(failed.record['status'], 'failed')
+        self.assertEqual(failed.status_label.text(), '失败')
+        self.assertIn('[REDACTED]', failed.error_label.text())
+        self.assertNotIn(TEST_KEY, failed.error_label.text())
+        self.assertTrue(failed.regenerate_button.isEnabled())
+        self.assertTrue(failed.folder_button.isEnabled())
+        with patch('ui.components.ecommerce_result_panel.open_local') as opener:
+            failed.folder_button.click()
+        self.assertEqual(opener.call_args.args[0], self.page._group['output_dir'])
+        self.assertTrue(opener.call_args.kwargs['folder'])
+        self.assertTrue(self.page.regenerate_failed_button.isEnabled())
+        old_calls = self.image.call_count
+        self.image.side_effect = fake_image
+        self.run_regenerate_to_idle(self.page.regenerate_failed_button.click)
+        self.assertEqual(self.image.call_count - old_calls, 1)
+        self.assertEqual(self.image.call_args.args[3], failed.record['prompt'])
+        self.assertEqual(self.analysis.call_count, 1, '重生成不得再次分析产品')
+        self.assertEqual(self.page.result_panel.ordered_cards(), cards)
+        self.assertTrue(all(card.record['status'] == 'succeeded' for card in cards))
+        self.assertEqual(self.page.stage_label.text(), '已完成')
+        self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 跳过 0')
+        self.assertFalse(self.page.regenerate_failed_button.isEnabled())
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_successful_card_can_explicitly_regenerate_its_own_prompt(self):
+        self.fill_valid()
+        self.run_to_idle()
+        cards = self.page.result_panel.ordered_cards()
+        selected = cards[1]
+        prompt = selected.record['prompt']
+        old_calls = self.image.call_count
+        self.run_regenerate_to_idle(selected.regenerate_button.click)
+        self.assertEqual(self.image.call_count - old_calls, 1)
+        self.assertEqual(self.image.call_args.args[3], prompt)
+        self.assertEqual(self.analysis.call_count, 1)
+        self.assertEqual(self.page.result_panel.ordered_cards(), cards)
+        self.assertEqual(selected.record['status'], 'succeeded')
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_regeneration_locks_all_actions_supports_cancel_and_queues_ui_callbacks(self):
+        self.fill_valid()
+        self.config.config['ecommerce']['max_concurrency'] = 1
+        self.run_to_idle()
+        cards = self.page.result_panel.ordered_cards()
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        callback_threads = []
+        original = self.page._on_item
+
+        def observe(record):
+            callback_threads.append(QThread.currentThread())
+            original(record)
+
+        def blocking_image(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('测试未释放重生成任务')
+            return fake_image(*args, **kwargs)
+
+        self.page._on_item = observe
+        self.image.side_effect = blocking_image
+        old_calls = self.image.call_count
+        self.page._run_regenerate([(card.record['kind'], card.record['seq']) for card in cards])
+        self.wait_until(entered.is_set)
+        self.assertTrue(self.page.busy)
+        self.assertFalse(self.page.start_button.isEnabled())
+        self.assertTrue(all(not form.isEnabled() for form in self.page._form_cards))
+        self.assertTrue(all(not card.regenerate_button.isEnabled() for card in cards))
+        self.assertFalse(self.page.regenerate_failed_button.isEnabled())
+        self.assertTrue(self.page.cancel_button.isEnabled())
+        self.assertNotEqual(self.factory_threads[-1], self.app.thread())
+        self.page.cancel_button.click()
+        self.assertTrue(self.page.cancel_event.is_set())
+        release.set()
+        self.wait_until(lambda: not self.page.busy)
+        self.assertEqual(self.image.call_count - old_calls, 1)
+        self.assertTrue(callback_threads)
+        self.assertTrue(all(thread == self.app.thread() for thread in callback_threads))
+        self.assertTrue(all(form.isEnabled() for form in self.page._form_cards))
+        self.assertFalse(self.page.cancel_button.isEnabled())
+        self.assertTrue(all(card.regenerate_button.isEnabled() for card in cards))
+        self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 跳过 2')
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_result_warnings_zero_image_tokens_and_missing_file_placeholder(self):
+        self.fill_valid()
+
+        def warned_image(*args, **kwargs):
+            result = fake_image(*args, **kwargs)
+            if args[3].endswith('carousel 1'):
+                result.image_tokens = 0
+                result.warnings = []
+            else:
+                result.warnings = ['尺寸已降档 4K → 1K ' + TEST_KEY]
+            return result
+
+        self.image.side_effect = warned_image
+        self.run_to_idle()
+        cards = self.page.result_panel.ordered_cards()
+        self.assertIn('参考图可能未被模型采用，请核对', cards[0].warning_label.text())
+        self.assertIn('尺寸已降档', cards[1].warning_label.text())
+        self.assertIn('[REDACTED]', cards[1].warning_label.text())
+        self.assertIn(materials.palette()['warning'], cards[0].warning_label.styleSheet())
+        Path(cards[0].record['file_path']).unlink()
+        self.page._refresh_results()
+        self.assertIs(self.page.result_panel.ordered_cards()[0], cards[0])
+        placeholder = '\n'.join(label.text() for label in cards[0].findChildren(QLabel))
+        self.assertIn('文件缺失', placeholder)
+        pixmap = cards[0].thumbnail.pixmap()
+        self.assertTrue(pixmap is None or pixmap.isNull())
+        # The same warning can be persisted even when usage details are absent.
+        store = self.config.ecommerce_store()
+        store.upsert_item(dict(cards[1].record, image_tokens=None,
+                               warnings=['参考图可能未被模型采用（image_tokens=0）']))
+        self.page._refresh_results()
+        self.assertIn('参考图可能未被模型采用，请核对', cards[1].warning_label.text())
+        Path(cards[0].record['file_path']).write_bytes(b'invalid-image')
+        self.page._refresh_results()
+        self.assertEqual(cards[0].thumbnail.text(), '文件缺失')
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_regeneration_rejects_missing_group_or_foreign_item_before_worker(self):
+        self.page._run_regenerate()
+        self.assertIsNone(self.page._worker)
+        self.factory.assert_not_called()
+        self.assertTrue(self.notices.called)
+        self.fill_valid()
+        self.run_to_idle()
+        group = self.page._group.copy()
+        old_factory_calls = self.factory.call_count
+        old_image_calls = self.image.call_count
+        for key in [('carousel', 99), 'foreign-group:carousel:1']:
+            with self.subTest(key=key):
+                self.notices.reset_mock()
+                self.page._run_regenerate([key])
+                self.assertIsNone(self.page._worker)
+                self.notices.assert_called()
+        self.page._group = dict(group, group_id='missing-group')
+        self.page._run_regenerate([('carousel', 1)])
+        self.assertIsNone(self.page._worker)
+        self.page._group = group
+        self.assertEqual(self.factory.call_count, old_factory_calls)
+        self.assertEqual(self.image.call_count, old_image_calls)
+
+    def test_worker_resume_operation_uses_cancel_event_in_background(self):
+        manager = Mock(api_key=TEST_KEY)
+        manager.resume_group.return_value = 'resume-fixture-group'
+        token = threading.Event()
+        factory_threads = []
+
+        def factory():
+            factory_threads.append(QThread.currentThread())
+            return manager
+
+        worker = EcommerceWorker(factory, {'group_id': 'resume-fixture-group'}, token,
+                                 (TEST_KEY,), operation='resume')
+        finished = QSignalSpy(worker.finished)
+        worker.start()
+        self.wait_until(lambda: len(finished) == 1 and not worker.isRunning())
+        self.assertEqual(list(finished[0]), ['resume-fixture-group', ''])
+        manager.resume_group.assert_called_once_with(group_id='resume-fixture-group', cancel_event=token)
+        manager.start_group.assert_not_called()
+        manager.regenerate_items.assert_not_called()
+        self.assertNotEqual(factory_threads[0], self.app.thread())
+        worker.deleteLater()
 
     def test_responsive_form_fits_narrow_and_wide_viewports(self):
         self.page.show()
