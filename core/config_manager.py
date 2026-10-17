@@ -13,10 +13,22 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .history_store import HistoryStore
+from .ecommerce.persistence import EcommerceImageStore
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "paths": {"prompts": "", "images": "", "output": ""},
+    "ecommerce": {
+        "analysis_model": "gemini-3.8-flash",
+        "image_model": "gpt-image-2.5-sunburst",
+        "default_tier": "1K",
+        "default_carousel_ratio": "1:1",
+        "default_detail_ratio": "3:4",
+        "default_carousel_count": 3,
+        "default_detail_count": 4,
+        "language": "zh",
+        "max_concurrency": 5,
+    },
     "workspace": {
         "model": "video-v3",
         "aspect_ratio": "16:9",
@@ -196,6 +208,7 @@ class ConfigManager:
         self.error_callback = None
         self.load_error = ''  # 最近一次加载失败原因（供界面提示；每次加载先清空）
         self._history_store: HistoryStore | None = None
+        self._ecommerce_store: EcommerceImageStore | None = None
 
     def load_config(self) -> dict[str, Any]:
         self.load_error = ''
@@ -345,3 +358,9 @@ class ConfigManager:
 
     def history_upsert(self, record):
         return self.history_store().upsert(record)
+
+    def ecommerce_store(self) -> EcommerceImageStore:
+        """电商图独立表与历史表共用 config.json 旁的数据库。"""
+        if self._ecommerce_store is None:
+            self._ecommerce_store = EcommerceImageStore(self.path.with_name('history.sqlite3'))
+        return self._ecommerce_store
