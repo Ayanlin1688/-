@@ -1,0 +1,356 @@
+"""Chat SSE and JSON contracts, using loopback fixtures only."""
+from copy import deepcopy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+from pathlib import Path
+import re
+import threading
+import unittest
+
+from core.ecommerce import analysis
+from core.ecommerce.analysis import (
+    DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse,
+    analyze_stream, parse_prompt_items,
+)
+
+
+FIXTURE_KEY = 'fixture-analysis-key'
+
+
+def prompt_items():
+    return [
+        dict(type='carousel', index=1, prompt='A studio photograph of a bottle.', desc='主图展示商品'),
+        dict(type='carousel', index=2, prompt='A bottle in a natural scene.', desc='展示生活场景'),
+        dict(type='detail', index=1, prompt='A close-up of the bottle lid.', desc='展示瓶盖细节'),
+        dict(type='detail', index=2, prompt='An infographic with bottle dimensions.', desc='展示尺寸规格'),
+    ]
+
+
+def sse_frame(payload):
+    return 'data: ' + json.dumps(payload, ensure_ascii=False) + '\r\n\r\n'
+
+
+def replay_sse(text):
+    # Deliberately split JSON words and Chinese descriptions across content frames.
+    cuts = [0, 5, 37, 91, len(text)]
+    pieces = [text[start:end] for start, end in zip(cuts, cuts[1:]) if start < len(text)]
+    return (
+        ': keep-alive\r\nevent: message\r\n\r\ndata:   \r\n\r\n'
+        + sse_frame({'choices': [{'delta': {'role': 'assistant', 'content': None}}]})
+        + sse_frame({'choices': [{'delta': {'reasoning_content': '先检查产品。'}}]})
+        + ''.join(sse_frame({'choices': [{'delta': {'content': piece}}]}) for piece in pieces)
+        + sse_frame({'choices': [{'delta': {'reasoning_content': '再规划图片。', 'content': ''}}]})
+        + sse_frame({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})
+        + sse_frame({'choices': [], 'usage': {'total_tokens': 100}})
+        + 'data: [DONE]\r\n\r\n'
+        + 'data: this must never be parsed after DONE\r\n\r\n'
+    ).encode('utf-8')
+
+
+class AnalysisFixtureHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self.server.calls.append((self.command, self.path, dict(self.headers), json.loads(body)))
+        self.send_response(self.server.status)
+        self.send_header('Content-Type', 'text/event-stream' if self.server.status == 200 else 'text/plain; charset=utf-8')
+        self.send_header('Connection', 'close')
+        self.close_connection = True
+        data = self.server.response_body
+        if self.server.mode in ('truncated', 'timeout'):
+            self.send_header('Content-Length', str(len(data) + 100))
+            self.end_headers()
+            if self.server.mode == 'timeout':
+                self.wfile.flush()
+                self.server.release.wait(timeout=2)
+                return
+            self.wfile.write(data)
+            self.wfile.flush()
+            return
+        # HTTP chunks split SSE lines and UTF-8 bytes independently of frames.
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
+        try:
+            for position in range(0, len(data), 7):
+                chunk = data[position:position + 7]
+                self.wfile.write(f'{len(chunk):x}\r\n'.encode('ascii') + chunk + b'\r\n')
+                self.wfile.flush()
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # A DONE event or rejected frame lets the client close early.
+            pass
+
+
+class LocalAnalysisServer:
+    def __init__(self, response_body, *, status=200, mode='normal'):
+        self.response_body = response_body
+        self.status = status
+        self.mode = mode
+
+    def __enter__(self):
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), AnalysisFixtureHandler)
+        self.server.calls = []
+        self.server.status = self.status
+        self.server.mode = self.mode
+        self.server.response_body = self.response_body
+        self.server.release = threading.Event()
+        self.server.base_url = f'http://127.0.0.1:{self.server.server_port}/v1'
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
+        self.thread.start()
+        return self.server
+
+    def __exit__(self, *args):
+        self.server.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+class PromptItemsParsingTests(unittest.TestCase):
+    def assert_invalid(self, items, *fragments, d=2, g=2):
+        with self.assertRaises(EcommerceAnalysisError) as caught:
+            parse_prompt_items(json.dumps(items, ensure_ascii=False), d, g)
+        message = caught.exception.message
+        self.assertEqual(str(caught.exception), message)
+        for fragment in ('期望', '实际', *fragments):
+            self.assertIn(fragment, message)
+
+    def test_valid_fenced_json_with_surrounding_text(self):
+        items = prompt_items()
+        raw = '下面是规划：\n```json\n' + json.dumps(items, ensure_ascii=False) + '\n```\n以上是全部。'
+        self.assertEqual(parse_prompt_items(raw, 2, 2), items)
+
+    def test_normalizes_fields_and_whitespace_without_changing_order(self):
+        items = prompt_items()
+        items[0].update(prompt='  Product 林牌, on a table. \n', desc='  展示商品  ', extra='discard')
+        original = deepcopy(items)
+        normalized = parse_prompt_items(json.dumps(items, ensure_ascii=False), 2, 2)
+        self.assertEqual(normalized[0], dict(type='carousel', index=1,
+                                            prompt='Product 林牌, on a table.', desc='展示商品'))
+        self.assertEqual(items, original)
+        shuffled = [items[2], items[0], items[3], items[1]]
+        self.assertEqual([item['type'] for item in
+                          parse_prompt_items(json.dumps(shuffled), 2, 2)],
+                         ['detail', 'carousel', 'detail', 'carousel'])
+
+    def test_length_mismatch_reports_expected_and_actual(self):
+        self.assert_invalid(prompt_items()[:3], '期望 4', '实际 3', '总数')
+
+    def test_type_count_mismatch_reports_the_specific_type(self):
+        items = prompt_items()
+        items[1].update(type='detail', index=3)
+        self.assert_invalid(items, 'carousel', '期望 2', '实际 1')
+        self.assert_invalid(prompt_items(), 'carousel', '期望 1', '实际 2', d=1, g=3)
+
+    def test_missing_duplicate_and_non_independent_indexes(self):
+        for kind, positions, values in (
+            ('carousel', (0, 1), (1, 3)),
+            ('carousel', (0, 1), (1, 1)),
+            ('detail', (2, 3), (1, 3)),
+            ('detail', (2, 3), (1, 1)),
+            ('carousel', (0, 1), (2, 3)),
+            ('detail', (2, 3), (3, 4)),
+        ):
+            with self.subTest(kind=kind, values=values):
+                items = prompt_items()
+                for position, value in zip(positions, values):
+                    items[position]['index'] = value
+                self.assert_invalid(items, kind, '序号', '期望 [1, 2]')
+
+    def test_index_must_be_a_positive_integer_and_never_bool(self):
+        for value in (0, -1, True, 1.0, '1', None):
+            with self.subTest(value=value):
+                items = prompt_items()
+                items[0]['index'] = value
+                self.assert_invalid(items, 'carousel', '序号', '正整数')
+
+    def test_missing_fields_invalid_items_and_invalid_types(self):
+        for field in ('type', 'index', 'prompt', 'desc'):
+            with self.subTest(field=field):
+                items = prompt_items()
+                del items[0][field]
+                self.assert_invalid(items, '第 1 项', '缺少', field)
+        for value in (None, [], 'not an object'):
+            with self.subTest(value=value):
+                items = prompt_items()
+                items[0] = value
+                self.assert_invalid(items, '第 1 项', 'JSON 对象')
+        for value in ('image', None, [], {}):
+            with self.subTest(kind=value):
+                items = prompt_items()
+                items[0]['type'] = value
+                self.assert_invalid(items, '第 1 项', 'type')
+
+    def test_prompt_and_desc_must_have_nonempty_correct_language_text(self):
+        for field in ('prompt', 'desc'):
+            for value in ('', '  \n', None, 123, [], {}):
+                with self.subTest(field=field, value=value):
+                    items = prompt_items()
+                    items[0][field] = value
+                    self.assert_invalid(items, '第 1 项', field, '非空')
+        for field, value in (('prompt', '纯中文提示词'), ('desc', 'English only'), ('prompt', '123')):
+            with self.subTest(field=field, value=value):
+                items = prompt_items()
+                items[0][field] = value
+                self.assert_invalid(items, field, '语言错误')
+
+    def test_non_json_and_non_array_are_rejected(self):
+        for text in ('not JSON', '```json\n[broken]\n```', '[{"type":', ''):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(EcommerceAnalysisError, 'AI 返回不是合法 JSON'):
+                    parse_prompt_items(text, 2, 2)
+        for text in ('{}', 'null', '"text"', '123'):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(EcommerceAnalysisError, '期望 JSON 数组、实际'):
+                    parse_prompt_items(text, 2, 2)
+
+    def test_zero_counts_allow_empty_type_numbering(self):
+        items = prompt_items()
+        self.assertEqual(parse_prompt_items(json.dumps(items[:2]), 2, 0), items[:2])
+        self.assertEqual(parse_prompt_items(json.dumps(items[2:]), 0, 2), items[2:])
+        self.assertEqual(parse_prompt_items('[]', 0, 0), [])
+
+    def test_invalid_count_arguments_and_non_string_response(self):
+        for d, g in ((-1, 2), (True, 2), (1.5, 2), (2, None)):
+            with self.subTest(d=d, g=g):
+                with self.assertRaisesRegex(EcommerceAnalysisError, '数量配置错误.*期望.*实际'):
+                    parse_prompt_items('[]', d, g)
+        with self.assertRaisesRegex(EcommerceAnalysisError, 'AI 返回不是合法 JSON'):
+            parse_prompt_items(None, 2, 2)
+
+
+class AnalysisStreamTests(unittest.TestCase):
+    def test_sse_joins_frame_fragments_reasoning_and_skips_usage(self):
+        text = json.dumps(prompt_items(), ensure_ascii=False)
+        content, reasoning = [], []
+        with LocalAnalysisServer(replay_sse(text)) as server:
+            full, thoughts = analyze_stream(
+                server.base_url + '/', FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, 'system', 'user',
+                on_content=content.append, on_reasoning=reasoning.append)
+            self.assertEqual(len(server.calls), 1)
+        self.assertEqual(full, text)
+        self.assertEqual(thoughts, '先检查产品。再规划图片。')
+        self.assertEqual(''.join(content), text)
+        self.assertGreater(len(content), 1)
+        self.assertEqual(reasoning, ['先检查产品。', '再规划图片。'])
+
+    def test_http_post_contract_and_analyze_and_parse(self):
+        text = json.dumps(prompt_items(), ensure_ascii=False)
+        content, reasoning = [], []
+        with LocalAnalysisServer(replay_sse(text)) as server:
+            items, thoughts = analyze_and_parse(
+                server.base_url, FIXTURE_KEY, 'gemini-3.1-pro-preview', '系统提示', '用户提示', 2, 2,
+                on_content=content.append, on_reasoning=reasoning.append)
+            self.assertEqual(len(server.calls), 1)
+            method, path, headers, body = server.calls[0]
+        self.assertEqual(method, 'POST')
+        self.assertEqual(path, '/v1/chat/completions')
+        self.assertEqual(headers['Authorization'], 'Bearer ' + FIXTURE_KEY)
+        self.assertEqual(headers['Content-Type'], 'application/json')
+        self.assertEqual(headers['Accept'], 'text/event-stream')
+        self.assertEqual(body, {
+            'model': 'gemini-3.1-pro-preview',
+            'messages': [{'role': 'system', 'content': '系统提示'},
+                         {'role': 'user', 'content': '用户提示'}],
+            'stream': True, 'temperature': 0.7,
+        })
+        self.assertEqual(items, prompt_items())
+        self.assertEqual(thoughts, ''.join(reasoning))
+        self.assertEqual(''.join(content), text)
+        self.assertEqual(DEFAULT_ANALYSIS_MODEL, 'gemini-3.8-flash')
+
+    def test_no_reasoning_and_no_callbacks_are_valid(self):
+        body = (sse_frame({'choices': [{'delta': {'content': '正文'}}]})
+                + 'data: [DONE]\n\n').encode('utf-8')
+        with LocalAnalysisServer(body) as server:
+            self.assertEqual(analyze_stream(server.base_url, FIXTURE_KEY,
+                                            DEFAULT_ANALYSIS_MODEL, 'system', 'user'), ('正文', ''))
+
+    def test_all_choice_deltas_are_read_and_data_space_is_optional(self):
+        body = ('data:' + json.dumps({'choices': [
+            {'delta': {'content': 'A', 'reasoning_content': '一'}},
+            {'delta': {'content': 'B', 'reasoning_content': '二'}},
+        ]}, ensure_ascii=False) + '\n\ndata:[DONE]\n\n').encode('utf-8')
+        with LocalAnalysisServer(body) as server:
+            self.assertEqual(analyze_stream(server.base_url, FIXTURE_KEY,
+                                            DEFAULT_ANALYSIS_MODEL, '', ''), ('AB', '一二'))
+
+    def test_http_503_has_status_redacted_bounded_body_and_no_retry(self):
+        body = ('No available channel for model; ' + FIXTURE_KEY + ' 渠道不可用 ' + 'x' * 600).encode('utf-8')
+        with LocalAnalysisServer(body, status=503) as server:
+            with self.assertRaises(EcommerceAnalysisError) as caught:
+                analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
+            self.assertEqual(len(server.calls), 1)
+        error = caught.exception
+        self.assertEqual(error.status_code, 503)
+        self.assertIn('No available channel', error.body_excerpt)
+        self.assertIn('渠道不可用', error.body_excerpt)
+        self.assertEqual(len(error.body_excerpt), 500)
+        self.assertNotIn(FIXTURE_KEY, error.body_excerpt)
+        self.assertNotIn(FIXTURE_KEY, str(error))
+        self.assertIn('[REDACTED]', error.body_excerpt)
+
+    def test_malformed_frames_and_stream_error_are_domain_errors(self):
+        payloads = (
+            b'data: not JSON\n\n',
+            sse_frame([]).encode('utf-8'),
+            sse_frame({'choices': 'bad'}).encode('utf-8'),
+            sse_frame({'choices': [None]}).encode('utf-8'),
+            sse_frame({'choices': [{'delta': {'content': []}}]}).encode('utf-8'),
+            sse_frame({'error': {'message': 'channel failed ' + FIXTURE_KEY}}).encode('utf-8'),
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                with LocalAnalysisServer(payload) as server:
+                    with self.assertRaises(EcommerceAnalysisError) as caught:
+                        analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
+                    self.assertEqual(len(server.calls), 1)
+                self.assertNotIn(FIXTURE_KEY, str(caught.exception))
+                self.assertNotIn(FIXTURE_KEY, caught.exception.body_excerpt)
+
+    def test_truncated_http_body_is_wrapped_without_replay(self):
+        with LocalAnalysisServer(b'data: ', mode='truncated') as server:
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败'):
+                analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
+            self.assertEqual(len(server.calls), 1)
+
+    def test_read_timeout_is_wrapped(self):
+        with LocalAnalysisServer(b'', mode='timeout') as server:
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败'):
+                analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 0.05))
+            self.assertEqual(len(server.calls), 1)
+
+    def test_connection_error_is_wrapped(self):
+        # Reserve a loopback port and close it, producing a local connection refusal.
+        with LocalAnalysisServer(b'') as server:
+            base_url = server.base_url
+        with self.assertLogs('storyboard', level='ERROR'):
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败') as caught:
+                analyze_stream(base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 1))
+        self.assertIsNone(caught.exception.status_code)
+        self.assertNotIn(FIXTURE_KEY, str(caught.exception))
+
+    def test_wrapper_propagates_parser_errors(self):
+        with LocalAnalysisServer(replay_sse('[]')) as server:
+            with self.assertRaisesRegex(EcommerceAnalysisError, '期望 4、实际 0'):
+                analyze_and_parse(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', 2, 2)
+
+    def test_error_fields_and_module_contains_no_embedded_credentials_or_urls(self):
+        error = EcommerceAnalysisError('失败', body_excerpt='文' * 600)
+        self.assertEqual(error.message, '失败')
+        self.assertEqual(str(error), '失败')
+        self.assertIsNone(error.status_code)
+        self.assertEqual(error.body_excerpt, '文' * 500)
+        source = Path(analysis.__file__).read_text(encoding='utf-8')
+        self.assertNotIn('sk' + '-', source)
+        self.assertIsNone(re.search(r'https?://', source))
+
+
+if __name__ == '__main__':
+    unittest.main()
