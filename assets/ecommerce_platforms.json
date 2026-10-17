@@ -1,0 +1,452 @@
+[
+  {
+    "id": "taobao",
+    "name": "某宝",
+    "group": "domestic",
+    "bgRule": "white",
+    "toneDesc": "淘宝平台，消费者多样，注重视觉冲击力和价格感知，需要清晰展示产品细节和使用场景",
+    "rules": {
+      "carousel": "第1张主图必须纯白底(#FFFFFF)，产品居中，无任何文字/水印/边框；第2-3张可用场景图或渐变浅色背景",
+      "detail": "详情图可自由发挥场景，需包含产品细节特写、尺寸规格说明角度，文字信息丰富"
+    },
+    "primaryColor": "#FF4400",
+    "accentColor": "#FF6600",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "taobao"
+  },
+  {
+    "id": "jd",
+    "name": "某东",
+    "group": "domestic",
+    "bgRule": "white",
+    "toneDesc": "京东平台，强调正品保障和科技感，风格简洁专业，适合3C、家电、百货等品类",
+    "rules": {
+      "carousel": "全部轮播图要求纯白底(#FFFFFF)或浅灰背景，产品居中，禁止文字/水印；多角度展示产品",
+      "detail": "详情图侧重参数规格对比、功能说明、包装清单展示，信息密度高，蓝白配色风格"
+    },
+    "primaryColor": "#CC0000",
+    "accentColor": "#E31337",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 10,
+    "previewComponent": "jd"
+  },
+  {
+    "id": "douyin",
+    "name": "抖店",
+    "group": "domestic",
+    "bgRule": "free",
+    "toneDesc": "抖音短视频电商，年轻化风格，强调视觉冲击力和种草氛围，画面活泼有创意",
+    "rules": {
+      "carousel": "竖版构图(3:4)，允许丰富背景色、渐变、场景；可加大字slogan但不遮挡产品主体；高饱和撞色视觉冲击",
+      "detail": "竖版长图(9:16)，沉浸式场景，强调使用效果和生活方式，类短视频封面风格"
+    },
+    "primaryColor": "#010101",
+    "accentColor": "#FE2C55",
+    "defaultCarouselRatio": "3:4",
+    "defaultDetailRatio": "9:16",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 6,
+    "previewComponent": "douyin"
+  },
+  {
+    "id": "wechat",
+    "name": "绿信小店",
+    "group": "domestic",
+    "bgRule": "free",
+    "toneDesc": "微信生态内容电商，注重社交传播和信任感，风格温和亲切",
+    "rules": {
+      "carousel": "第1张建议白底或浅色干净背景；整体风格温和，适合朋友圈分享，避免过于商业化的促销元素",
+      "detail": "生活场景为主，强调产品融入日常生活的自然感，图文并茂，亲切可信"
+    },
+    "primaryColor": "#07C160",
+    "accentColor": "#1AAD19",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 4,
+    "defaultDetailCount": 6,
+    "previewComponent": "wechat"
+  },
+  {
+    "id": "pdd",
+    "name": "拼夕夕",
+    "group": "domestic",
+    "bgRule": "free",
+    "toneDesc": "拼多多平台，注重性价比和实用性，视觉直接突出产品和优惠信息",
+    "rules": {
+      "carousel": "第1张建议白底展示产品；允许在图片上叠加促销标签、价格感知元素；高饱和红橙色系，大促氛围强烈",
+      "detail": "详情图侧重实用性展示，价格对比、规格参数、用户人群场景，信息密度高"
+    },
+    "primaryColor": "#E02E24",
+    "accentColor": "#FF4444",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "pdd"
+  },
+  {
+    "id": "xiaohongshu",
+    "name": "小某书",
+    "group": "domestic",
+    "bgRule": "no-white",
+    "toneDesc": "小红书种草社区，风格清新唯美，强调生活方式和情感共鸣，类似杂志质感",
+    "rules": {
+      "carousel": "竖版(3:4)，禁止纯白底，需要有氛围感的场景或道具搭配；莫兰迪暖色调清新自然风；允许小字体文案点缀",
+      "detail": "同为竖版，强调生活方式场景，产品融入使用场景中，文艺感强，可加手写风格文字"
+    },
+    "primaryColor": "#FF2442",
+    "accentColor": "#FF4466",
+    "defaultCarouselRatio": "3:4",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "xiaohongshu"
+  },
+  {
+    "id": "1688",
+    "name": "某里巴巴",
+    "group": "domestic",
+    "bgRule": "white",
+    "toneDesc": "1688 B2B 平台，面向批发采购商，风格专业务实",
+    "rules": {
+      "carousel": "全部主图要求纯白底或浅灰背景，产品居中，多角度展示；禁止场景装饰，突出产品本身",
+      "detail": "详情图需包含详细规格参数、材质说明、包装规格、MOQ（最小起订量）等B2B采购关注信息"
+    },
+    "primaryColor": "#FF6A00",
+    "accentColor": "#FF8800",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "1688"
+  },
+  {
+    "id": "dewu",
+    "name": "得不到潮品",
+    "group": "domestic",
+    "bgRule": "free",
+    "toneDesc": "得物潮品平台，黑金高端调性，强调官方鉴定和潮流稀缺感",
+    "rules": {
+      "carousel": "黑色或深色极简背景，产品居中突出，禁止杂乱元素；高端摄影棚质感，可有细微金色/银色光效",
+      "detail": "细节特写为主，鉴别要点展示，品牌logo/标签/序列号清晰可见，黑金风格统一"
+    },
+    "primaryColor": "#1A1A1A",
+    "accentColor": "#C8A96E",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 6,
+    "previewComponent": "dewu"
+  },
+  {
+    "id": "vip",
+    "name": "唯某会",
+    "group": "domestic",
+    "bgRule": "free",
+    "toneDesc": "唯品会品牌特卖平台，强调品牌折扣和限时感，女性时尚品类为主",
+    "rules": {
+      "carousel": "第1张建议白底或浅色背景展示产品；整体风格偏女性时尚，可加品牌感场景；紫粉色调优先",
+      "detail": "时尚生活方式场景，强调品牌档次和折扣价值感，模特场景搭配展示"
+    },
+    "primaryColor": "#C0006B",
+    "accentColor": "#E0007A",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "vip"
+  },
+  {
+    "id": "suning",
+    "name": "苏某易购",
+    "group": "domestic",
+    "bgRule": "white",
+    "toneDesc": "苏宁易购零售平台，家电3C品类为主，强调服务保障和专业性",
+    "rules": {
+      "carousel": "全部主图要求白底或浅灰背景，蓝色调配色，产品居中多角度展示，禁止文字覆盖产品",
+      "detail": "技术参数对比表、功能图解、使用场景，蓝白专业风格，强调售后服务保障图标"
+    },
+    "primaryColor": "#005BAC",
+    "accentColor": "#FF6600",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "suning"
+  },
+  {
+    "id": "tiktok",
+    "name": "国际抖店",
+    "group": "overseas",
+    "bgRule": "free",
+    "toneDesc": "TikTok电商，面向全球年轻用户，风格活泼有趣，强调潮流感和视频化展示",
+    "rules": {
+      "carousel": "竖版(3:4)，允许丰富背景和场景；视觉冲击力强，类短视频封面风格",
+      "detail": "竖版长图(9:16)，沉浸式使用场景，突出产品效果和生活方式"
+    },
+    "primaryColor": "#010101",
+    "accentColor": "#FE2C55",
+    "defaultCarouselRatio": "3:4",
+    "defaultDetailRatio": "9:16",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 6,
+    "previewComponent": "tiktok"
+  },
+  {
+    "id": "amazon",
+    "name": "亚马逊",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Amazon 全球电商平台，风格简洁专业，重点展示产品功能和规格参数",
+    "rules": {
+      "carousel": "【严格规定】第1张主图必须纯白底(#FFFFFF)，产品占图片85%以上，绝对禁止任何文字/水印/装饰/道具；第2-7张可用信息图、场景图、细节图",
+      "detail": "信息图（infographic）风格，白/浅灰背景，专业简洁"
+    },
+    "primaryColor": "#FF9900",
+    "accentColor": "#146EB4",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 7,
+    "defaultDetailCount": 5,
+    "previewComponent": "amazon"
+  },
+  {
+    "id": "ebay",
+    "name": "易贝",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "eBay 全球买卖平台，风格直接实用，重点展示产品状态和细节",
+    "rules": {
+      "carousel": "第1张主图要求纯白底或极浅灰背景，产品居中清晰展示；其余图可加细节特写和功能说明",
+      "detail": "多角度细节特写，展示产品状态和附件清单，实用直接风格"
+    },
+    "primaryColor": "#E53238",
+    "accentColor": "#0064D2",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 8,
+    "defaultDetailCount": 4,
+    "previewComponent": "ebay"
+  },
+  {
+    "id": "shopee",
+    "name": "虾皮",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Shopee 东南亚电商，风格活泼亮丽，橙色调性，适合年轻消费群体，注重促销氛围",
+    "rules": {
+      "carousel": "第1张建议白底展示产品；其余图可加橙色调促销氛围、使用场景；允许促销角标和价格感知元素",
+      "detail": "场景化展示，东南亚生活方式，产品使用效果，可加当地文化元素"
+    },
+    "primaryColor": "#EE4D2D",
+    "accentColor": "#FF6633",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "shopee"
+  },
+  {
+    "id": "lazada",
+    "name": "来赞达",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Lazada 东南亚电商，多品类平台，蓝紫色系，注重本地化展示，LazMall 旗舰品质感",
+    "rules": {
+      "carousel": "第1张要求白底或浅色背景，产品清晰居中；其余图可加场景和促销氛围，蓝紫色调",
+      "detail": "产品功能说明、规格参数，适当加入东南亚本地生活场景，蓝紫品牌色调"
+    },
+    "primaryColor": "#0F146D",
+    "accentColor": "#F57224",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "lazada"
+  },
+  {
+    "id": "etsy",
+    "name": "手工集市",
+    "group": "overseas",
+    "bgRule": "no-white",
+    "toneDesc": "Etsy 手工艺品平台，风格独特文艺，强调手工质感和故事性，自然光实拍感",
+    "rules": {
+      "carousel": "【禁止白底】必须有自然光/木质桌面/布料等道具背景，营造手工艺氛围；温暖橙色调，实拍质感",
+      "detail": "展示制作工艺细节、材质纹理、包装礼盒；横版(4:3)，温暖文艺风格，强调独特性和手作感"
+    },
+    "primaryColor": "#F1641E",
+    "accentColor": "#EB6D2F",
+    "defaultCarouselRatio": "4:3",
+    "defaultDetailRatio": "4:3",
+    "defaultCarouselCount": 8,
+    "defaultDetailCount": 4,
+    "previewComponent": "etsy"
+  },
+  {
+    "id": "walmart",
+    "name": "沃尔玛",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Walmart 美国零售巨头，蓝色调性，强调实惠价格和快速配送",
+    "rules": {
+      "carousel": "第1张要求纯白底，产品居中，无文字；其余图可加蓝色调信息图和家庭生活场景",
+      "detail": "信息图风格，家庭/日常使用场景，蓝白配色，强调性价比和实用价值"
+    },
+    "primaryColor": "#0071CE",
+    "accentColor": "#FFC220",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 5,
+    "previewComponent": "walmart"
+  },
+  {
+    "id": "shein",
+    "name": "希音",
+    "group": "overseas",
+    "bgRule": "no-white",
+    "toneDesc": "SHEIN 快时尚出海平台，全黑暗色界面，时尚感强，多角度展示穿搭效果",
+    "rules": {
+      "carousel": "竖版(3:4)，【禁止白底】，黑色或深色时尚背景；模特穿搭展示或产品平铺(flatlay)风格，时尚感强",
+      "detail": "多角度穿搭/使用展示，细节特写，尺码对比，黑色调时尚风格"
+    },
+    "primaryColor": "#000000",
+    "accentColor": "#E53935",
+    "defaultCarouselRatio": "3:4",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "shein"
+  },
+  {
+    "id": "rakuten",
+    "name": "乐天市场",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Rakuten 日本电商，红色调性，强调积分返现，品类丰富",
+    "rules": {
+      "carousel": "第1张建议白底或浅色背景；整体偏日系简洁风，可加红色调设计元素，禁止过于杂乱",
+      "detail": "日式详情图风格，信息量大，规格参数表、使用说明、赠品展示"
+    },
+    "primaryColor": "#BF0000",
+    "accentColor": "#FF0000",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "rakuten"
+  },
+  {
+    "id": "coupang",
+    "name": "酷澎",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Coupang 韩国最大电商，蓝白配色，当日达是核心卖点，强调极速物流和正品保障",
+    "rules": {
+      "carousel": "第1张要求白底，蓝白干净风格；可加速递感设计元素，整体简洁专业",
+      "detail": "产品功能说明、规格参数，蓝白配色，配送速度和正品保障信息图"
+    },
+    "primaryColor": "#1A94F3",
+    "accentColor": "#FF6B00",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 8,
+    "previewComponent": "coupang"
+  },
+  {
+    "id": "wildberries",
+    "name": "瓦某莓",
+    "group": "overseas",
+    "bgRule": "free",
+    "toneDesc": "Wildberries 俄罗斯最大综合电商（市占第一），紫色调性，品类全（服饰/百货/3C），俄语为主，注重价格折扣和卢布感知",
+    "rules": {
+      "carousel": "第1张建议白底或浅色背景突出产品；其余图可用紫色调促销氛围、模特展示或场景图；允许俄文文案叠加（如 Скидка/Акция/Хит），紫粉色系",
+      "detail": "俄语为主信息图，规格参数、尺码对照、卢布(₽)价格对比、紫色品牌色调；适配本地物流自提点(ПВЗ)展示元素"
+    },
+    "primaryColor": "#481173",
+    "accentColor": "#CB11AB",
+    "defaultCarouselRatio": "3:4",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "wildberries"
+  },
+  {
+    "id": "ozon",
+    "name": "奥某宗",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Ozon 俄罗斯第二大综合电商（俄罗斯亚马逊），蓝色调性，3C/家电/百货为主，专业简洁，强调极速达和正品保障",
+    "rules": {
+      "carousel": "第1张要求纯白底(#FFFFFF)，产品居中，禁止文字水印；其余图可加蓝色调信息图、规格说明、家庭使用场景",
+      "detail": "蓝白专业风格，参数对比表、功能图解、卢布(₽)价格、Ozon Premium 标签和极速达元素，俄语为主"
+    },
+    "primaryColor": "#005BFF",
+    "accentColor": "#F1117E",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "ozon"
+  },
+  {
+    "id": "yandex",
+    "name": "央某市场",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "Yandex Market 俄罗斯本地搜索电商（央德克斯旗下），黄黑标志色，搜索导购+自营电商，重视价格对比和本地化俄语",
+    "rules": {
+      "carousel": "第1张要求白底，产品清晰居中；其余图可加黄黑色调信息图、价格对比、Plus 会员标签；干净科技感",
+      "detail": "黄黑配色信息图，规格参数、价格历史对比、卢布(₽)感知、用户评分点亮、本地物流时效；俄语为主"
+    },
+    "primaryColor": "#FFCC00",
+    "accentColor": "#000000",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 5,
+    "defaultDetailCount": 5,
+    "previewComponent": "yandex"
+  },
+  {
+    "id": "temu",
+    "name": "特某",
+    "group": "overseas",
+    "bgRule": "free",
+    "toneDesc": "Temu 拼多多海外版（出海四小龙之一），橙色大促风，主打超低价和爆款氛围，密集卖点叠加价格感知，适合北美/欧洲市场",
+    "rules": {
+      "carousel": "第1张建议白底或浅色干净背景突出产品；其余图允许橙色促销标签、大字 SALE/-90% 角标、场景图；高饱和橙色系大促氛围",
+      "detail": "密集卖点信息图，多图对比、价格爆破感、限时倒计时、用户晒图风格；橙色大字促销，英语为主"
+    },
+    "primaryColor": "#FB7701",
+    "accentColor": "#F23F3F",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "3:4",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "temu"
+  },
+  {
+    "id": "aliexpress",
+    "name": "速卖某通",
+    "group": "overseas",
+    "bgRule": "white",
+    "toneDesc": "AliExpress 阿里全球速卖通（出海四小龙之一），红橙调性，跨境综合电商，覆盖俄罗斯/巴西/欧洲多国，强调全球折扣和包邮直邮",
+    "rules": {
+      "carousel": "第1张建议白底展示产品；其余图可加红橙色促销氛围、Choice/百亿补贴标签、多角度产品展示；适当加入多语言徽章",
+      "detail": "红橙促销风格，规格参数、尺码对比、跨境物流时效、官方包邮标签；可适配俄/英/西多语，强调价格优势"
+    },
+    "primaryColor": "#E62E04",
+    "accentColor": "#FF4747",
+    "defaultCarouselRatio": "1:1",
+    "defaultDetailRatio": "1:1",
+    "defaultCarouselCount": 6,
+    "defaultDetailCount": 6,
+    "previewComponent": "aliexpress"
+  }
+]

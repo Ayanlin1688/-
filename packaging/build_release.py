@@ -64,7 +64,8 @@ def build_bundle() -> Path:
     ]
     if icon.is_file():
         args += ['--icon', str(icon)]
-    for filename in ('app.ico', 'app.png', 'app-small.png', 'app-512.png'):
+    for filename in ('app.ico', 'app.png', 'app-small.png', 'app-512.png',
+                     'ecommerce_platforms.json'):
         asset = ROOT / 'assets' / filename
         args += ['--add-data', f'{asset}{os.pathsep}assets']
     print('[build] PyInstaller 打包中（首次约 1–3 分钟）…')

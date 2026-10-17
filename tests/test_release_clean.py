@@ -157,7 +157,7 @@ class ReleaseCleanTests(unittest.TestCase):
                 build_release.main()
             manifest.assert_not_called()
 
-    def test_build_includes_only_runtime_icons_and_excludes_design_sources(self):
+    def test_build_includes_runtime_icons_and_platform_rules_but_excludes_design_sources(self):
         module_path = Path(__file__).resolve().parent.parent / 'packaging' / 'build_release.py'
         spec = importlib.util.spec_from_file_location('yanlin_build_assets_test', module_path)
         build_release = importlib.util.module_from_spec(spec)
@@ -166,9 +166,10 @@ class ReleaseCleanTests(unittest.TestCase):
         source = assets / 'source' / 'icon-lin.png'
         source.parent.mkdir(parents=True)
         source.write_bytes(b'design source fixture')
-        filenames = ('app.ico', 'app.png', 'app-small.png', 'app-512.png')
+        filenames = ('app.ico', 'app.png', 'app-small.png', 'app-512.png',
+                     'ecommerce_platforms.json')
         for filename in filenames:
-            (assets / filename).write_bytes(b'runtime icon fixture')
+            (assets / filename).write_bytes(b'runtime asset fixture')
         with patch.object(build_release, 'ROOT', self.root), \
                 patch.object(build_release, 'BUILD', self.root / 'build'), \
                 patch.object(build_release, 'DIST', self.root), \
