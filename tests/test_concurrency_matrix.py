@@ -57,7 +57,7 @@ class MatrixHandler(BaseHTTPRequestHandler):
                         url = f'{server.base}/images/{token}.png'
                         server.uploads.append(token)
                         result, status = {'data': {'files': [{'url': url}]}}, 200
-                elif self.path == '/videos':
+                elif self.path in ('/videos', '/v1/videos'):
                     payload = json.loads(body)
                     task_id = f'matrix-{len(server.jobs) + 1}'
                     server.jobs[task_id] = {'payload': payload, 'polls': 0}
@@ -80,7 +80,7 @@ class MatrixHandler(BaseHTTPRequestHandler):
         server = self.server
         with server.lock:
             server.gets.append(self.path)
-            if self.path.startswith('/videos/'):
+            if self.path.startswith(('/videos/', '/v1/videos/')):
                 task_id = self.path.rsplit('/', 1)[1]
                 job = server.jobs[task_id]
                 job['polls'] += 1

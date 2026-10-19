@@ -29,7 +29,7 @@ class PipelineUiTests(unittest.TestCase):
             image = root / '测试分镜.png'; image.write_bytes(b'fixture-image')
             manager = ConfigManager(root / 'config.json'); manager.load_config()
             manager.config['paths'] = dict(prompts=str(root), images=str(root), output=str(root / '视频输出'))
-            manager.config['api'].update(base_url=server.base, api_key='test-only', upload_url=server.base + '/upload')
+            manager.config['api'].update(base_url=server.base + '/v1', api_key='test-only', upload_url=server.base + '/upload')
             manager.config['workspace']['poll_interval'] = 3
             manager.save_config()
             window = MainWindow(manager, network_time=False); window.show()
@@ -48,7 +48,7 @@ class PipelineUiTests(unittest.TestCase):
             wait_until(lambda: not workspace.history_jobs.busy and not workspace._history_pending,
                        timeout=10000)
             self.assertEqual(window.history_page.table.rowCount(), 1)
-            status_cell = window.history_page.table.cellWidget(0, 5)
+            status_cell = window.history_page.table.cellWidget(0, 6)
             status_tag = status_cell.findChild(QLabel) if status_cell is not None else None
             self.assertIsNotNone(status_tag, '状态列应渲染为胶囊标签')
             self.assertEqual(status_tag.text(), '已完成')

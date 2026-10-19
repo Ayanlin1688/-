@@ -888,7 +888,8 @@ class SettingsPage(QWidget):
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
         self.upload_key.setPlaceholderText('服务商签发的素材上传 Token')
         self.upload_key.setToolTip('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限')
-        for field in (self.base_url, self.api_key, self.upload_url, self.upload_key):
+        self.base_url.textChanged.connect(self._persist_base_url_input)
+        for field in (self.api_key, self.upload_url, self.upload_key):
             field.textChanged.connect(self._mirror_api_to_station)
         self._refresh_api_group_title()
         self.auto_upload = self._switch(group, "自动上传缺失图片", ("api", "auto_upload_missing"), FIF.CLOUD)
@@ -971,6 +972,10 @@ class SettingsPage(QWidget):
         self._mirror_api_to_station()
         self.api_credentials_changed.emit()
 
+    def _persist_base_url_input(self, value):
+        self.config_manager.update(('api', 'base_url'), normalize_base_url(value))
+        self._mirror_api_to_station()
+
     def _build_pool(self):
         self.pool_group = self._group('模型池')
         host = QWidget()
@@ -1002,6 +1007,8 @@ class SettingsPage(QWidget):
                                    (config_key, 'enabled'), FIF.SYNC)
             strategy = self._combo(section, '调用策略' if kind == 'video' else tr('调用策略'),
                                    (config_key, 'strategy'), ['轮询', '随机', '优先级'])
+            strategy.setMinimumWidth(0)
+            strategy.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             failover = self._switch(section, '自动故障转移' if kind == 'video' else tr('自动故障转移'),
                                     (config_key, 'auto_failover'), FIF.SYNC)
             cooldown = self._spin(section, '冷却时间（秒）' if kind == 'video' else tr('冷却时间（秒）'),

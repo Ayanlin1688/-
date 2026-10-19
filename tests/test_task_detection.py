@@ -27,6 +27,10 @@ non_diegetic_music:
 N/A'''
 
 
+def is_video_submit_path(path):
+    return str(path).rstrip('/').endswith('/videos')
+
+
 def catalog_fixture():
     records = {}
     for model, resolutions, audio, seed, duration, images in (
@@ -70,7 +74,7 @@ class DetectedTaskTests(unittest.TestCase):
         self.config['api'].update(base_url=server.base, api_key='local-fixture-only', upload_url=server.base+'/upload')
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running, timeout=15000)
-        return [json.loads(body) for path, _, body in server.calls if path == '/videos']
+        return [json.loads(body) for path, _, body in server.calls if is_video_submit_path(path)]
 
     def test_three_prompt_formats_submit_different_models_and_fields(self):
         # 本用例按扫描顺序逐个校验三种格式的提交字段（串行语义）；全队列并发由专项测试覆盖。
@@ -214,9 +218,9 @@ class DetectedTaskTests(unittest.TestCase):
             self.config['api'].update(base_url=server.base, api_key='local-fixture-only', upload_url=server.base+'/upload')
             self.manager.start_tasks(self.config)
             wait_until(lambda: self.manager.tasks and self.manager.tasks[0]['status'] == 'cooling')
-            self.assertFalse(any(path == '/videos' for path, _, _ in server.calls))
+            self.assertFalse(any(is_video_submit_path(path) for path, _, _ in server.calls))
             wait_until(lambda: not self.manager.is_running)
-            bodies = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            bodies = [json.loads(body) for path, _, body in server.calls if is_video_submit_path(path)]
             self.assertEqual([body['model'] for body in bodies], ['video-v2'])
 
     def test_fallback_model_adapts_parameters_with_pool_disabled(self):
@@ -260,7 +264,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.config['_model_catalog'] = {}
             self.config['model_overrides'] = {}
             wait_until(lambda: not self.manager.is_running)
-            bodies = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            bodies = [json.loads(body) for path, _, body in server.calls if is_video_submit_path(path)]
             self.assertEqual([body['model'] for body in bodies], ['video-v3-480p']*2)
             self.assertEqual([body['resolution'] for body in bodies], ['480p']*2)
             self.assertEqual([task['status'] for task in self.manager.tasks], ['completed']*2)

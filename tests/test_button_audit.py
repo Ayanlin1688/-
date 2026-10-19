@@ -198,7 +198,7 @@ class ButtonAuditTests(unittest.TestCase):
                     task_id='remote-one', result_path=str(Path(self.temp.name) / 'one.mp4'),
                     output_dir=self.temp.name)
         history.update_history([task])
-        row = history.table.cellWidget(0, 9)
+        row = history.table.cellWidget(0, 10)
         with patch('ui.pages.history_page.open_local') as open_local:
             self.button(row, tooltip='打开文件').click()
             open_local.assert_called_once_with(task['result_path'], history.log_callback)
@@ -212,7 +212,7 @@ class ButtonAuditTests(unittest.TestCase):
         self.history_handlers['regenerate'].assert_called_once_with(self.window.workspace_page, task)
         unknown = dict(task, status='submission_unknown', task_id='', result_path='')
         history.update_history([unknown])
-        row = history.table.cellWidget(0, 9)
+        row = history.table.cellWidget(0, 10)
         self.assertFalse(self.button(row, tooltip='打开文件（暂无本地文件，任务完成下载后可打开）').isEnabled())
         self.assertFalse(self.button(row, tooltip='当前没有可查询的远端 task_id').isEnabled())
         self.button(row, tooltip='处理待确认提交').click()

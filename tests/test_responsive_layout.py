@@ -174,8 +174,8 @@ class ResponsiveLayoutTests(unittest.TestCase):
 
     def test_history_actions_and_selection_remain_reachable_at_large_zoom(self):
         history = self.window.history_page
-        history.update_history([self.task('failed')])
         self.window.switchTo(history)
+        history.update_history([self.task('failed')])
         self.config.config['appearance']['ui_scale'] = '1.6'
         self.window.apply_appearance()
         self.resize(960)
@@ -204,8 +204,8 @@ class ResponsiveLayoutTests(unittest.TestCase):
 
     def test_history_resize_preserves_selection_width_and_alignment(self):
         history = self.window.history_page
-        history.update_history([self.task('failed')])
         self.window.switchTo(history)
+        history.update_history([self.task('failed')])
         self.resize(1400, 800)
         header_checkbox = history.selection_header.checkBox
         row_checkbox = history.table.cellWidget(0, 0).findChild(type(header_checkbox))

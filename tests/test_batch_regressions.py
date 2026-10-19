@@ -74,7 +74,7 @@ class BatchRegressionTests(unittest.TestCase):
             self.run_batch(server)
             self.assertEqual([t['status'] for t in self.manager.tasks], ['completed'] * 6)
             self.assertEqual([e[0] for e in server.events], ['submit', 'done'] * 6)
-            payloads = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            payloads = [json.loads(body) for path, _, body in server.calls if path.rstrip('/').endswith('/videos')]
             self.assertEqual(len(payloads), 6)
             self.assertEqual([len(p['images']) for p in payloads], [3] * 6)
             for index, task in enumerate(self.manager.tasks, 1):
@@ -95,7 +95,7 @@ class BatchRegressionTests(unittest.TestCase):
         with PoolServer() as server:
             self.run_batch(server)
             self.assertEqual([t['status'] for t in self.manager.tasks], ['completed'] * 4)
-            payloads = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            payloads = [json.loads(body) for path, _, body in server.calls if path.rstrip('/').endswith('/videos')]
             self.assertEqual([p['workflow_id'] for p in payloads], ['text-to-video'] * 4)
             self.assertTrue(all(Path(t['result_path']).parent.name == '玫瑰毯子' for t in self.manager.tasks))
 

@@ -41,4 +41,4 @@ class PermitRetryTests(unittest.TestCase):
             finally:
                 watchdog.cancel()
             self.assertEqual([t['status'] for t in worker.tasks], ['completed', 'completed'])
-            self.assertEqual(sum(path == '/videos' for path, *_ in server.calls), 2)
+            self.assertEqual(sum(path.rstrip('/').endswith('/videos') for path, *_ in server.calls), 2)

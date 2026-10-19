@@ -81,7 +81,7 @@ class BatchExecutionTests(unittest.TestCase):
                 wait_until(lambda: not manager.is_running)
                 self.assertEqual([t['status'] for t in manager.tasks], ['completed'] * 5,
                                  msg=[(t.get('status'), t.get('error'), len(t.get('attempts', []))) for t in manager.tasks])
-                self.assertEqual(len([p for p, _, _ in server.calls if p == '/videos']), 5)
+                self.assertEqual(len([p for p, _, _ in server.calls if p.rstrip('/').endswith('/videos')]), 5)
                 summary = [m for m, _ in logs if '共5个提示词，5个已匹配，0个未匹配' in m]
                 self.assertTrue(summary)
                 binding = [m for m, _ in logs if '：绑定参考图' in m and '张：' in m]
@@ -113,7 +113,7 @@ class BatchExecutionTests(unittest.TestCase):
                 self.assertEqual(manager.tasks[0]['status'], 'completed')
                 self.assertTrue(any('已自动截取前9张' in m for m, _ in logs))
                 self.assertTrue(any(m.startswith('任务1/1：绑定参考图9张') for m, _ in logs))
-                body = [c for c in server.calls if c[0] == '/videos'][-1][2]
+                body = [c for c in server.calls if c[0].rstrip('/').endswith('/videos')][-1][2]
                 payload = json.loads(body)
                 self.assertEqual(len(payload['images']), 9)
                 self.assertEqual(payload['workflow_id'], 'multi-reference')

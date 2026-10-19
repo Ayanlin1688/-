@@ -117,7 +117,7 @@ class ReferenceDebugTests(unittest.TestCase):
         self.assertEqual(self.server.uploads, [Path(path).read_bytes() for path in self.paths])
         self.assertEqual([p for p in self.server.gets if p.startswith('/reference/')], ['/reference/1', '/reference/2', '/reference/3'])
         self.assertTrue(all('Authorization' not in headers and 'X-Upload-Token' not in headers for headers in self.server.reference_headers))
-        payload = json.loads(next(body for path, _, body in self.server.calls if path == '/videos'))
+        payload = json.loads(next(body for path, _, body in self.server.calls if path.rstrip('/').endswith('/videos')))
         self.assertEqual(payload['images'], [self.server.base + f'/reference/{i}' for i in (1, 2, 3)])
         logged = json.loads(next(message.split(': ', 1)[1] for message, level in logs if level == 'debug' and message.startswith('请求体: ')))
         self.assertEqual(logged, payload)
@@ -143,7 +143,7 @@ class ReferenceDebugTests(unittest.TestCase):
         self.assertEqual([Path(p).name for p in worker.tasks[0]['images']], ['1 (1).png', '1 (2).png', '1 (3).png'])
         self.assertTrue(any('上传图片3张' in message for message, _ in logs))
         self.assertEqual(self.server.uploads, [(self.root / f'1 ({i}).png').read_bytes() for i in (1, 2, 3)])
-        wire = json.loads(next(body for path, _, body in self.server.calls if path == '/videos'))
+        wire = json.loads(next(body for path, _, body in self.server.calls if path.rstrip('/').endswith('/videos')))
         self.assertEqual(wire['images'], [self.server.base + '/reference/1', self.server.base + '/reference/2', self.server.base + '/reference/3'])
         debug_images = json.loads(next(message.split(': ', 1)[1] for message, level in logs
                                       if level == 'debug' and message.startswith('实际提交images: ')))
@@ -194,7 +194,7 @@ class ReferenceDebugTests(unittest.TestCase):
                 patch.object(ReferenceDiagnostics, 'verify_uploaded', return_value=None):
             worker, logs = self.run_worker()
         self.assertEqual(worker.tasks[0]['status'], 'completed')
-        wire = json.loads(next(body for path, _, body in self.server.calls if path == '/videos'))
+        wire = json.loads(next(body for path, _, body in self.server.calls if path.rstrip('/').endswith('/videos')))
         self.assertEqual(wire['images'], urls)
         self.assertEqual(wire['prompt'], ' '.join(secrets))
         for prefix in ('请求体: ', '实际提交images: '):

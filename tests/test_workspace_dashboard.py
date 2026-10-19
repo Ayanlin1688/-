@@ -185,7 +185,7 @@ class WorkspaceDashboardTests(unittest.TestCase):
     def test_row_retry_uses_ledger_and_redownload_never_creates_another_video(self):
         from test_http_clients import LocalServer
         with LocalServer() as server:
-            self.config.config['api'].update(base_url=server.base, api_key='test-only', upload_url=server.base + '/upload')
+            self.config.config['api'].update(base_url=server.base + '/v1', api_key='test-only', upload_url=server.base + '/upload')
             self.config.config['paths'].update(prompts=str(self.prompt.parent), images=str(self.prompt.parent), output=str(self.prompt.parent / 'output'))
             self.config.config['prompt_detection']['enabled'] = False
             self.config.config['workspace'].update(model='video-v3', poll_interval=.01)
@@ -203,4 +203,4 @@ class WorkspaceDashboardTests(unittest.TestCase):
             self.page.task_action(0, 'retry')
             wait_until(lambda: not self.page.task_manager.is_running)
             self.assertEqual(self.page.task_manager.tasks[0]['status'], 'duplicate')
-            self.assertEqual(sum(path == '/videos' for path, _, _ in server.calls), 1)
+            self.assertEqual(sum(path.rstrip('/').endswith('/videos') for path, _, _ in server.calls), 1)

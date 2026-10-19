@@ -196,7 +196,7 @@ class OperationsReviewTests(unittest.TestCase):
                  '--config', str(manager.path), '--submit'], cwd=ROOT,
                 capture_output=True, text=True, encoding='utf-8', timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(sum(path == '/videos' for path, _, _ in server.calls), 1)
+            self.assertEqual(sum(path.rstrip('/').endswith('/videos') for path, _, _ in server.calls), 1)
             report = json.loads((root / 'live-smoke-result.json').read_text(encoding='utf-8'))
             records = ConfigManager(manager.path).history_records()
             self.assertEqual(len(records), 1)

@@ -56,7 +56,7 @@ class IdempotencyKeyTests(unittest.TestCase):
             deadline = time.monotonic() + 15
             while manager.is_running and time.monotonic() < deadline:
                 QTest.qWait(20)
-            posts = [call for call in server.calls if call[0] == '/videos']
+            posts = [call for call in server.calls if call[0].rstrip('/').endswith('/videos')]
             self.assertEqual(len(posts), 1)
             key = header_value(posts[0][1], 'Idempotency-Key') or ''
             self.assertTrue(key.startswith('yl-'), key)

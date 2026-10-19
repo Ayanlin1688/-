@@ -71,7 +71,7 @@ class SiblingAbandonTests(unittest.TestCase):
                     wait_until(lambda: manager.tasks[waiter].get('status') == 'processing', 20000)
                 except AssertionError:
                     self.fail(f'等待者未能接管提交：{[t.get("status") for t in manager.tasks]}')
-                posts = [c for c in server.calls if c[0] == '/videos']
+                posts = [c for c in server.calls if c[0].rstrip('/').endswith('/videos')]
                 self.assertEqual(len(posts), 2, '两个任务都应提交：先提交者 + 接管者')
                 self.assertIsNone(manager.tasks[waiter].get('duplicate_of'))
             finally:
@@ -89,7 +89,7 @@ class SiblingAbandonTests(unittest.TestCase):
                 # 提交者不受影响,且没有发生第二次提交。
                 QTest.qWait(600)
                 self.assertEqual(manager.tasks[submitter].get('status'), 'processing')
-                posts = [c for c in server.calls if c[0] == '/videos']
+                posts = [c for c in server.calls if c[0].rstrip('/').endswith('/videos')]
                 self.assertEqual(len(posts), 1)
             finally:
                 manager.cancel_all()

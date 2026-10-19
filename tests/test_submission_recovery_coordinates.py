@@ -837,10 +837,11 @@ class RecoveryCoordinateTests(unittest.TestCase):
             timer.stop()
             timer.deleteLater()
         self.window.switchTo(self.window.history_page)
+        self.window.history_page.update_history(self.records[:3])
         table = self.window.history_page.table
-        table.scrollTo(table.model().index(0, 9), table.PositionAtCenter)
+        table.scrollTo(table.model().index(0, 10), table.PositionAtCenter)
         QTest.qWait(40)
-        row = table.cellWidget(0, 9)
+        row = table.cellWidget(0, 10)
         buttons = [button for button in row.findChildren(QAbstractButton)
                    if button.toolTip() == '处理待确认提交']
         self.assertEqual(len(buttons), 1)
