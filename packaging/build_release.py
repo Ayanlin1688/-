@@ -59,6 +59,11 @@ def build_bundle() -> Path:
         '--distpath', str(DIST), '--workpath', str(BUILD / 'work'),
         '--specpath', str(BUILD),
         '--collect-all', 'qfluentwidgets',
+        '--collect-submodules', 'core.ecommerce',
+        '--hidden-import', 'assets',
+        '--hidden-import', 'ui.pages.ecommerce_page',
+        '--hidden-import', 'ui.components.ecommerce_result_panel',
+        '--hidden-import', 'ui.components.ecommerce_history_panel',
         '--version-file', str(version_file),
         '--manifest', str(ROOT / 'packaging' / 'app.manifest'),
     ]

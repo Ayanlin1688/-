@@ -20,6 +20,8 @@ from core.i18n import tr
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultPanel
+from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
+from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
 from ..theme import style_controls, style_page
@@ -232,12 +234,20 @@ class EcommercePage(QWidget):
         self.result_panel.log_message.connect(self._append_log)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
         root.addWidget(self.result_panel)
+        self.history_panel = EcommerceHistoryPanel(_stage_text, self)
+        self.history_panel.refresh_requested.connect(self._refresh_history)
+        self.history_panel.view_requested.connect(self._view_history_group)
+        self.history_panel.resume_requested.connect(self._run_resume)
+        self.history_panel.open_requested.connect(self._open_history_folder)
+        self.history_panel.delete_requested.connect(self._delete_history_group)
+        root.addWidget(self.history_panel)
         root.addStretch(1)
         style_controls(self)
         style_page(self)
         materials.register_theme_callback(self._refresh_colors)
         self._refresh_colors()
         self._refresh_conflicts()
+        self._refresh_history()
 
     @property
     def busy(self):
@@ -306,6 +316,7 @@ class EcommercePage(QWidget):
         for label in (self.stage_label, self.summary_label, self.style_label, *self.item_labels.values()):
             label.setStyleSheet('color: %s;' % colors['text1'])
         self.result_panel.refresh_colors()
+        self.history_panel.refresh_colors()
         self.log_box.clear()
         for message, level in self._logs:
             self._insert_log(message, level)
@@ -390,19 +401,108 @@ class EcommercePage(QWidget):
             self._notice(str(error))
             return
         self._secrets = (self.config_manager.config['api']['api_key'],)
+        self._clear_results()
+        self._logs.clear()
+        self.log_box.clear()
+        self.stage_label.setText(tr('AI分析中'))
+        self._append_log(tr('AI 分析需要含文本模型权限的密钥；图片按所选配置生成。'), 'info')
+        self._launch_worker(arguments)
+
+    def _clear_results(self):
         self._group, self._items = None, {}
         for label in self.item_labels.values():
             self.items_layout.removeWidget(label)
             label.deleteLater()
         self.item_labels.clear()
         self.result_panel.clear()
-        self._logs.clear()
-        self.log_box.clear()
         self.summary_label.clear()
         self.open_output_button.setEnabled(False)
-        self.stage_label.setText(tr('AI分析中'))
-        self._append_log(tr('AI 分析需要含文本模型权限的密钥；图片按所选配置生成。'), 'info')
-        self._launch_worker(arguments)
+        self.stage_label.setText(tr('等待开始'))
+
+    def _refresh_history(self):
+        store = self.config_manager.ecommerce_store()
+        groups = store.list_groups(limit=50)
+        for group in groups:
+            if group['status'] in ('analyzing', 'generating'):
+                counts = store.item_counts(group['group_id'])
+                group['totals'] = dict(counts, total=sum(counts.values()))
+        self.history_panel.update_groups(redact_structure(groups, self._clean), store.persistence_available)
+
+    def _view_history_group(self, group_id):
+        if self.busy:
+            return
+        if not self.config_manager.ecommerce_store().get_group(group_id):
+            self._notice(tr('当前生成组不存在'))
+            self._refresh_history()
+            return
+        self._clear_results()
+        self._refresh_results(group_id)
+
+    def _run_resume(self, group_id):
+        if self.busy:
+            return
+        group = self.config_manager.ecommerce_store().get_group(group_id)
+        if not group:
+            self._notice(tr('当前生成组不存在'))
+            return
+        if group['status'] not in RESUMABLE_STATUSES:
+            self._notice(tr('当前组无需断点恢复'))
+            return
+        self._view_history_group(group_id)
+        self._secrets = (self.config_manager.config.get('api', {}).get('api_key', ''),)
+        self.summary_label.clear()
+        self.stage_label.setText(tr('图片生成中'))
+        self._append_log(tr('断点恢复'), 'info')
+        self._launch_worker(dict(group_id=group_id), operation='resume')
+
+    def _open_folder(self, output_dir):
+        try:
+            exists = bool(output_dir) and Path(output_dir).is_dir()
+        except (OSError, ValueError):
+            exists = False
+        if not exists:
+            self._notice(tr('输出文件夹不存在'))
+            return
+        open_local(output_dir, self._append_log, folder=True)
+
+    def _open_history_folder(self, group_id):
+        group = self.config_manager.ecommerce_store().get_group(group_id)
+        if group:
+            self._open_folder(group.get('output_dir'))
+        else:
+            self._notice(tr('当前生成组不存在'))
+
+    def _confirm_delete(self, group):
+        dialog = StudioDialog(self, tr('删除记录'))
+        dialog.resize(px(440), px(220))
+        dialog.body_layout.addWidget(self._text_label(
+            self._clean(group.get('product_name') or group['group_id'][:8])))
+        dialog.body_layout.addWidget(self._text_label(tr('仅删除记录，不删除已生成文件')))
+        actions = WrapLayout()
+        yes, no = PrimaryPushButton(tr('是')), PushButton(tr('否'))
+        yes.setObjectName('confirmDeleteRecord')
+        no.setObjectName('keepRecord')
+        yes.clicked.connect(dialog.accept)
+        no.clicked.connect(dialog.reject)
+        actions.addWidget(yes)
+        actions.addWidget(no)
+        dialog.body_layout.addLayout(actions)
+        style_controls(dialog)
+        try:
+            return dialog.exec_() == dialog.Accepted
+        finally:
+            safe_delete_dialog(dialog)
+
+    def _delete_history_group(self, group_id):
+        if self.busy:
+            return
+        store = self.config_manager.ecommerce_store()
+        group = store.get_group(group_id)
+        if group and self._confirm_delete(group) and not self.busy:
+            store.delete_group(group_id)
+            if self._group and self._group['group_id'] == group_id:
+                self._clear_results()
+        self._refresh_history()
 
     def _run_regenerate(self, item_keys=None):
         if self.busy:
@@ -457,6 +557,7 @@ class EcommercePage(QWidget):
             card.setEnabled(False)
         self.start_button.setEnabled(False)
         self.result_panel.set_busy(True)
+        self.history_panel.set_busy(True)
         self.cancel_button.setEnabled(True)
         worker.start()
 
@@ -480,6 +581,7 @@ class EcommercePage(QWidget):
                 self._on_item(item)
         if self._group.get('error'):
             self._append_log(self._group['error'], 'error')
+        self._refresh_history()
 
     @pyqtSlot(object)
     def _on_item(self, record):
@@ -501,6 +603,7 @@ class EcommercePage(QWidget):
             parts.append(record['error'])
         self.item_labels[key].setText(' · '.join(parts))
         self.result_panel.update_item(record)
+        self._refresh_history()
 
     def _refresh_results(self, group_id=None):
         group_id = group_id or (self._group or {}).get('group_id')
@@ -533,6 +636,7 @@ class EcommercePage(QWidget):
     @pyqtSlot(str, str)
     def _on_result(self, group_id, error):
         self._refresh_results(group_id)
+        self._refresh_history()
         if error:
             self.stage_label.setText(tr('失败'))
             self._append_log(error, 'error')
@@ -548,6 +652,7 @@ class EcommercePage(QWidget):
             card.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.result_panel.set_busy(False)
+        self.history_panel.set_busy(False)
         self._refresh_conflicts()
         self.idle.emit()
         if self._close_when_idle:
@@ -555,7 +660,11 @@ class EcommercePage(QWidget):
 
     def open_output(self):
         if self._group and self._group.get('output_dir'):
-            open_local(self._group['output_dir'], self._append_log, folder=True)
+            self._open_folder(self._group['output_dir'])
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_history()
 
     def closeEvent(self, event):
         if self.busy:

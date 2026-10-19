@@ -3,6 +3,7 @@ import copy
 import hashlib
 import io
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -179,6 +180,46 @@ class ReleaseCleanTests(unittest.TestCase):
         data = [args[index + 1] for index, value in enumerate(args) if value == '--add-data']
         self.assertCountEqual(data, [f'{assets / filename}{os.pathsep}assets' for filename in filenames])
         self.assertTrue(source.is_file())
+        collected = [args[i + 1] for i, value in enumerate(args) if value == '--collect-submodules']
+        self.assertIn('core.ecommerce', collected)
+        hidden = [args[i + 1] for i, value in enumerate(args) if value == '--hidden-import']
+        self.assertTrue({'assets', 'ui.pages.ecommerce_page',
+                         'ui.components.ecommerce_result_panel',
+                         'ui.components.ecommerce_history_panel'} <= set(hidden))
+
+    def test_ecommerce_collection_covers_every_python_module(self):
+        from PyInstaller.utils.hooks import collect_submodules
+        root = Path(__file__).resolve().parent.parent
+        collected = set(collect_submodules('core.ecommerce'))
+        for path in (root / 'core' / 'ecommerce').rglob('*.py'):
+            relative = path.relative_to(root).with_suffix('')
+            parts = relative.parts[:-1] if path.name == '__init__.py' else relative.parts
+            with self.subTest(path=relative):
+                self.assertIn('.'.join(parts), collected)
+
+    def test_collected_assets_json_loads_all_platforms_in_frozen_layout(self):
+        from core.ecommerce import platforms
+        root = Path(__file__).resolve().parent.parent
+        package_dir = self.root / '_internal' / 'assets'
+        package_dir.mkdir(parents=True)
+        init = package_dir / '__init__.py'
+        init.write_text('', encoding='utf-8')
+        resource = package_dir / 'ecommerce_platforms.json'
+        resource.write_bytes((root / 'assets' / resource.name).read_bytes())
+        self.assertEqual(len(json.loads(resource.read_text(encoding='utf-8'))), 25)
+        spec = importlib.util.spec_from_file_location(
+            '_release_assets_fixture', init, submodule_search_locations=[str(package_dir)])
+        package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(package)
+        platforms._catalog.cache_clear()
+        try:
+            with patch.object(platforms, 'platform_assets', package), \
+                    patch('sys.frozen', True, create=True), \
+                    patch('sys._MEIPASS', str(package_dir.parent), create=True):
+                self.assertEqual(len(platforms.all_platforms()), 25)
+                self.assertEqual(platforms.get_platform('amazon')['name'], '亚马逊')
+        finally:
+            platforms._catalog.cache_clear()
 
 
 if __name__ == '__main__':

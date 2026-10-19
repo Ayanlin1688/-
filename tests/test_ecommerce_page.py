@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import Qt, QThread
+from PyQt5.QtCore import Qt, QThread, QTimer
 from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QApplication, QLabel
@@ -20,6 +20,8 @@ from core.config_manager import ConfigManager
 from core.ecommerce.manager import EcommerceImageManager
 from core.ecommerce.platforms import domestic, overseas, LANGUAGE_TEXT, RATIOS, MAX_PLATFORMS
 from core.ecommerce.image_client import TIER_SHORT_EDGE
+from core.ecommerce.persistence import EcommerceImageStore
+from core.ecommerce.platforms import get_platform
 from core.i18n import set_language
 from tests.test_ecommerce_manager import TEST_KEY, fake_analysis, fake_image as manager_fake_image
 from ui import materials
@@ -120,6 +122,258 @@ class EcommercePageTests(unittest.TestCase):
         self.assertIsNotNone(self.page._worker)
         self.last_worker = self.page._worker
         self.wait_until(lambda: len(idle) == 1)
+
+    def seed_history(self, group_id='history-fixture', status='partial', *,
+                     states=('succeeded', 'failed', 'pending'), name='历史茶杯', updated=1000):
+        store = self.config.ecommerce_store()
+        output = self.root / 'saved-output' / group_id
+        output.mkdir(parents=True, exist_ok=True)
+        items = []
+        for seq, state in enumerate(states, 1):
+            file = output / f'轮{seq}.png'
+            if state == 'succeeded':
+                file.write_bytes(PNG)
+            items.append(dict(group_id=group_id, kind='carousel', seq=seq, title=f'展示{seq}',
+                              prompt=f'Saved product carousel {seq}', status=state,
+                              reference_paths=[], ratio='1:1', tier='1K',
+                              model=self.config.config['ecommerce']['image_model'],
+                              file_path=str(file) if state == 'succeeded' else '',
+                              size='1024x1024' if state == 'succeeded' else ''))
+        totals = {state: states.count(state) for state in ('pending', 'running', 'succeeded', 'failed', 'skipped')}
+        store.upsert_group(dict(group_id=group_id, created_at=updated - 10, updated_at=updated,
+                                status=status, product_name=name, platforms=[get_platform('douyin')],
+                                output_dir=str(output), totals=dict(totals, total=len(states)),
+                                config=dict(self.config.config['ecommerce'], carousel_count=len(states),
+                                            detail_count=0, product_info='保存的资料',
+                                            carousel_ratio='1:1', detail_ratio='3:4', tier='1K')))
+        store.upsert_items_many(items)
+        return store.get_group(group_id), store.list_items(group_id)
+
+    def test_history_lists_latest_groups_names_platforms_stages_times_and_totals(self):
+        from datetime import datetime
+        records = []
+        for index, status in enumerate(('succeeded', 'partial', 'failed', 'analyzing')):
+            group, _items = self.seed_history(f'history-{index}', status, updated=1000 + index,
+                                             name='' if index == 3 else f'商品{index}',
+                                             states=('succeeded',) if status == 'succeeded' else ('failed',))
+            records.append(group)
+        self.page.history_panel.refresh_button.click()
+        rows = list(self.page.history_panel.rows.values())
+        self.assertEqual([row.group['group_id'] for row in rows], [r['group_id'] for r in records[::-1]])
+        self.assertEqual([row.status_label.text() for row in rows], ['AI分析中', '失败', '部分成功', '已完成'])
+        self.assertEqual(rows[0].name_label.text(), records[-1]['group_id'][:8])
+        self.assertEqual(rows[1].name_label.text(), '商品2')
+        self.assertEqual(rows[0].platform_label.text(), get_platform('douyin')['name'])
+        self.assertEqual(rows[0].time_label.text(), datetime.fromtimestamp(993).strftime('%Y-%m-%d %H:%M'))
+        self.assertEqual(rows[-1].summary_label.text(), '成功 1 / 失败 0 / 跳过 0 / 总数 1')
+        self.assertIn(materials.palette()['error'], rows[1].status_label.styleSheet())
+        self.assertIn(materials.palette()['warning'], rows[2].status_label.styleSheet())
+        self.assertTrue(all(row.resume_button.isEnabled() for row in rows[:-1]))
+        self.assertFalse(rows[-1].resume_button.isEnabled())
+        self.factory.assert_not_called()
+
+    def test_history_refreshes_on_page_entry_and_limits_to_fifty(self):
+        self.assertFalse(self.page.history_panel.empty_label.isHidden())
+        store = self.config.ecommerce_store()
+        for index in range(52):
+            store.upsert_group(dict(group_id=f'group-{index:02d}', status='succeeded', updated_at=index))
+        self.page.show()
+        self.assertEqual(len(self.page.history_panel.rows), 50)
+        self.assertEqual(next(iter(self.page.history_panel.rows)), 'group-51')
+        self.assertNotIn('group-00', self.page.history_panel.rows)
+        self.assertTrue(self.page.history_panel.empty_label.isHidden())
+        self.factory.assert_not_called()
+
+    def test_history_view_switches_groups_without_factory_and_allows_regeneration(self):
+        first, _ = self.seed_history('first-history', states=('succeeded', 'failed'))
+        second, _ = self.seed_history('second-history', 'succeeded', states=('succeeded',))
+        self.page._refresh_history()
+        rows = self.page.history_panel.rows
+        rows[first['group_id']].view_button.click()
+        self.assertEqual(len(self.page.result_panel.cards), 2)
+        rows[second['group_id']].view_button.click()
+        self.assertEqual(self.page._group['group_id'], second['group_id'])
+        self.assertEqual(len(self.page.result_panel.cards), 1)
+        self.assertEqual(len(self.page.item_labels), 1)
+        self.assertEqual(self.page.stage_label.text(), '已完成')
+        self.factory.assert_not_called()
+        self.image.assert_not_called()
+        self.analysis.assert_not_called()
+        self.run_regenerate_to_idle(self.page.result_panel.ordered_cards()[0].regenerate_button.click)
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(self.image.call_args.args[3], 'Saved product carousel 1')
+        self.analysis.assert_not_called()
+
+    def test_history_resume_after_reopening_store_only_requests_unfinished_or_missing_files(self):
+        group, items = self.seed_history(states=('succeeded', 'pending', 'running', 'failed', 'succeeded'))
+        Path(items[-1]['file_path']).unlink()
+        # A fresh store has no session cache; recovery must use persisted prompts.
+        self.config._ecommerce_store = EcommerceImageStore(self.config.ecommerce_store().path)
+        self.page._refresh_history()
+        self.run_regenerate_to_idle(self.page.history_panel.rows[group['group_id']].resume_button.click)
+        prompts = sorted(call.args[3] for call in self.image.call_args_list)
+        self.assertEqual(prompts, [f'Saved product carousel {i}' for i in range(2, 6)])
+        self.analysis.assert_not_called()
+        self.assertEqual(Path(items[0]['file_path']).read_bytes(), PNG)
+        self.assertEqual(self.page.stage_label.text(), '已完成')
+        row = self.page.history_panel.rows[group['group_id']]
+        self.assertEqual(row.status_label.text(), '已完成')
+        self.assertEqual(row.summary_label.text(), '成功 5 / 失败 0 / 跳过 0 / 总数 5')
+        self.assertFalse(row.resume_button.isEnabled())
+        self.assertTrue(all(card.record['status'] == 'succeeded' for card in self.page.result_panel.ordered_cards()))
+        self.assertNotEqual(self.factory_threads[0], self.app.thread())
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_history_resume_leaves_skipped_items_for_explicit_regeneration(self):
+        group, _ = self.seed_history(states=('succeeded', 'failed', 'skipped'))
+        self.page._refresh_history()
+        self.run_regenerate_to_idle(lambda: self.page._run_resume(group['group_id']))
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(self.image.call_args.args[3], 'Saved product carousel 2')
+        cards = self.page.result_panel.ordered_cards()
+        self.assertEqual(cards[-1].record['status'], 'skipped')
+        self.run_regenerate_to_idle(cards[-1].regenerate_button.click)
+        self.assertEqual(self.image.call_count, 2)
+        self.assertEqual(self.page.stage_label.text(), '已完成')
+        self.analysis.assert_not_called()
+
+    def test_history_resume_locks_actions_updates_live_rows_and_supports_cancellation(self):
+        group, _ = self.seed_history('resume-running', 'generating', states=('running', 'pending', 'failed'))
+        self.page._refresh_history()
+        self.config.config['ecommerce']['max_concurrency'] = 1
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        callback_threads = []
+        original = self.page._on_item
+
+        def observe(record):
+            callback_threads.append(QThread.currentThread())
+            original(record)
+
+        def blocking_image(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('未释放断点恢复任务')
+            return fake_image(*args, **kwargs)
+
+        self.page._on_item = observe
+        self.image.side_effect = blocking_image
+        self.page._run_resume(group['group_id'])
+        self.wait_until(entered.is_set)
+        row = self.page.history_panel.rows[group['group_id']]
+        self.assertEqual(row.status_label.text(), '图片生成中')
+        self.assertFalse(row.view_button.isEnabled())
+        self.assertFalse(row.resume_button.isEnabled())
+        self.assertFalse(row.delete_button.isEnabled())
+        self.assertTrue(all(not c.isEnabled() for c in self.page._form_cards))
+        self.assertTrue(self.page.cancel_button.isEnabled())
+        self.assertEqual(self.page._worker.operation, 'resume')
+        self.page._view_history_group('missing')  # Busy navigation is ignored.
+        self.page._delete_history_group(group['group_id'])
+        self.page.cancel_button.click()
+        release.set()
+        self.wait_until(lambda: not self.page.busy)
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(row.status_label.text(), '部分成功')
+        self.assertEqual(row.summary_label.text(), '成功 1 / 失败 0 / 跳过 2 / 总数 3')
+        self.assertTrue(row.view_button.isEnabled())
+        self.assertTrue(all(t == self.app.thread() for t in callback_threads))
+        self.assertNotEqual(self.factory_threads[0], self.app.thread())
+        self.analysis.assert_not_called()
+
+    def test_history_preset_resume_cancellation_makes_no_image_requests(self):
+        group, _ = self.seed_history(status='failed', states=('failed', 'pending'))
+        self.page.cancel_event.set()
+        self.run_regenerate_to_idle(lambda: self.page._run_resume(group['group_id']))
+        self.assertEqual(self.page.stage_label.text(), '已取消')
+        self.assertFalse(self.page.history_panel.rows[group['group_id']].resume_button.isEnabled())
+        self.image.assert_not_called()
+        self.analysis.assert_not_called()
+
+    def test_history_no_analysis_results_reports_error_without_reanalyzing(self):
+        group, _ = self.seed_history(status='analyzing', states=())
+        self.run_regenerate_to_idle(lambda: self.page._run_resume(group['group_id']))
+        self.assertIn('尚无分析结果', self.page.log_box.toPlainText())
+        self.assertTrue(self.page.start_button.isEnabled())
+        self.image.assert_not_called()
+        self.analysis.assert_not_called()
+
+    def test_history_missing_groups_and_completed_resume_are_rejected_without_worker(self):
+        group, _ = self.seed_history(status='succeeded', states=('succeeded',))
+        self.page._run_resume(group['group_id'])
+        self.page._run_resume('missing')
+        self.page._view_history_group('missing')
+        self.factory.assert_not_called()
+        self.assertEqual(self.notices.call_count, 3)
+
+    def test_history_delete_confirmation_cascades_only_records_and_keeps_disk_files(self):
+        group, items = self.seed_history(name='删除测试 ' + TEST_KEY)
+        manifest = Path(group['output_dir']) / 'manifest.json'
+        manifest.write_text('{}', encoding='utf-8')
+        self.page._refresh_history()
+        self.page._view_history_group(group['group_id'])
+        for accept in (False, True):
+            observations = []
+
+            def choose():
+                dialog = QApplication.activeModalWidget()
+                observations.append('\n'.join(label.text() for label in dialog.findChildren(QLabel)))
+                name = 'confirmDeleteRecord' if accept else 'keepRecord'
+                from qfluentwidgets import PushButton
+                dialog.findChild(PushButton, name).click()
+
+            QTimer.singleShot(0, choose)
+            self.page.history_panel.rows[group['group_id']].delete_button.click()
+            self.assertIn('仅删除记录，不删除已生成文件', observations[0])
+            self.assertNotIn(TEST_KEY, observations[0])
+            store = self.config.ecommerce_store()
+            if accept:
+                self.assertIsNone(store.get_group(group['group_id']))
+                self.assertEqual(store.list_items(group['group_id']), [])
+                self.assertNotIn(group['group_id'], self.page.history_panel.rows)
+                self.assertFalse(self.page.result_panel.cards)
+            else:
+                self.assertIsNotNone(store.get_group(group['group_id']))
+                self.assertEqual(len(store.list_items(group['group_id'])), 3)
+            self.assertEqual(Path(items[0]['file_path']).read_bytes(), PNG)
+            self.assertTrue(manifest.is_file())
+        self.factory.assert_not_called()
+
+    def test_history_folder_opens_existing_directory_and_reports_missing_directory(self):
+        group, _ = self.seed_history()
+        self.page._refresh_history()
+        with patch('ui.pages.ecommerce_page.open_local') as opener:
+            self.page.history_panel.rows[group['group_id']].open_button.click()
+            opener.assert_called_once_with(group['output_dir'], self.page._append_log, folder=True)
+            self.config.ecommerce_store().upsert_group(dict(group, output_dir=str(self.root / 'absent')))
+            opener.reset_mock()
+            self.page._open_history_folder(group['group_id'])
+            opener.assert_not_called()
+        self.assertIn('输出文件夹不存在', self.notices.call_args.args[1])
+
+    def test_history_database_corruption_preserves_current_session_results(self):
+        corrupt = self.root / 'corrupt.sqlite3'
+        corrupt.write_bytes(b'invalid sqlite database')
+        self.config._ecommerce_store = EcommerceImageStore(corrupt)
+        self.page._refresh_history()
+        self.assertFalse(self.config.ecommerce_store().persistence_available)
+        self.assertEqual(self.page.history_panel.notice_label.text(), '数据库不可用，仅展示本次会话结果')
+        self.fill_valid()
+        group_id, _ = self.run_to_idle()
+        self.assertEqual(self.page.stage_label.text(), '已完成')
+        row = self.page.history_panel.rows[group_id]
+        row.view_button.click()
+        self.assertEqual(len(self.page.result_panel.cards), 3)
+        self.assertEqual(self.factory.call_count, 1)
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_new_group_completion_refreshes_history_and_moves_it_to_top(self):
+        self.seed_history('older-group', 'succeeded', states=('succeeded',))
+        self.fill_valid()
+        group_id, _ = self.run_to_idle()
+        self.assertEqual(next(iter(self.page.history_panel.rows)), group_id)
+        self.assertEqual(self.page.history_panel.rows[group_id].status_label.text(), '已完成')
+        self.assertEqual(len(self.page.history_panel.rows), 2)
 
     def test_form_uses_all_platforms_and_catalog_options_and_config_defaults(self):
         page = self.page
