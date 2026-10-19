@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import LineEdit
 
 from core.config_manager import ConfigManager
+from core.line_routing import resolve_line
 from ui.main_window import MainWindow
 from test_task_manager import wait_until
 
@@ -25,9 +26,10 @@ class StationConnectionRegressionTests(unittest.TestCase):
         self.config = ConfigManager(Path(self.temp.name) / 'config.json')
         self.config.config['api'].update(base_url='https://alpha.example/v1', api_key='fixture-alpha')
         self.config.config['stations'] = [
-            dict(id='alpha', name='Alpha', base_url='https://alpha.example/v1', api_key='fixture-alpha'),
+            dict(id='alpha', name='Alpha', enabled=True,
+                 base_url='https://alpha.example/v1', api_key='fixture-alpha'),
             dict(id='beta', name='Beta', base_url='https://beta.example/v1', api_key='fixture-beta',
-                 upload_url='https://beta.example/upload', upload_api_key='fixture-upload'),
+                 upload_url='https://beta.example/upload', upload_api_key='fixture-upload', enabled=True),
         ]
         self.config.config['stations_active'] = 'alpha'
         self.config.save_config()
@@ -79,6 +81,32 @@ class StationConnectionRegressionTests(unittest.TestCase):
         self.assertEqual(self.config.config['api']['base_url'], 'https://alpha.example/v1')
         self.assertEqual(self.window.model_catalog.catalog.base_url, 'https://alpha.example/v1')
         self.assertEqual(self.config.config['stations'][1]['base_url'], 'https://updated.example/v1')
+
+    def test_capability_route_selection_persists_without_changing_active_api(self):
+        api_before = dict(self.config.config['api'])
+        combo = self.settings.routing_combos['chat']
+        combo.setCurrentIndex(combo.findData('beta'))
+
+        self.assertEqual(self.config.config['line_routing']['chat'], 'beta')
+        self.assertEqual(self.config.config['api'], api_before)
+        self.assertEqual(resolve_line(self.config.config, 'chat')['base_url'], 'https://beta.example/v1')
+        self.assertEqual(resolve_line(self.config.config, 'chat')['api_key'], 'fixture-beta')
+
+        self.config.config['stations'][1]['enabled'] = False
+        self.assertEqual(resolve_line(self.config.config, 'chat')['base_url'], api_before['base_url'])
+        self.config.config['stations'][1]['enabled'] = True
+        self.config.config['stations'] = self.config.config['stations'][:1]
+        self.assertEqual(resolve_line(self.config.config, 'chat')['base_url'], api_before['base_url'])
+
+    def test_base_url_is_normalized_when_station_is_saved(self):
+        self._save_active_station_base_url('https://updated.example/')
+        self.assertEqual(self.config.config['api']['base_url'], 'https://updated.example/v1')
+        self.assertEqual(self.config.config['stations'][0]['base_url'], 'https://updated.example/v1')
+
+    def _save_active_station_base_url(self, url):
+        self.settings._save_station_page(
+            'alpha', self.field('Alpha normalized'), self.field(url),
+            self.field('fixture-alpha-updated'), self.field(''), self.field(''), {})
 
 
 if __name__ == '__main__':

@@ -64,6 +64,49 @@ class PoolUiTests(unittest.TestCase):
         settings._persist_models()
         self.assertEqual(len(self.config.config['model_pool']['models']), 2)
 
+    def test_capability_pool_tabs_persist_separate_model_sets(self):
+        from ui.components.model_selector import ModelComboBox, ModelPickComboBox
+
+        settings = self.window.settings_page
+        self.assertEqual(settings.pool_stack.currentIndex(), 0)
+        self.assertTrue(all(isinstance(row[2], ModelComboBox) for row in settings.pool_rows['video']))
+
+        settings.pool_tabs.setCurrentItem('chat')
+        self.assertEqual(settings.pool_stack.currentIndex(), 1)
+        settings.add_model_buttons['chat'].click()
+        _, chat_check, chat_combo, _ = settings.pool_rows['chat'][-1]
+        self.assertIsInstance(chat_combo, ModelPickComboBox)
+        chat_combo.set_value('deepseek-chat')
+        chat_check.setChecked(True)
+        self.assertEqual(self.config.config['chat_model_pool']['models'], [
+            dict(name='deepseek-chat', status='健康', enabled=True)])
+
+        settings.pool_tabs.setCurrentItem('image')
+        self.assertEqual(settings.pool_stack.currentIndex(), 2)
+        settings.add_model_buttons['image'].click()
+        _, image_check, image_combo, image_status = settings.pool_rows['image'][-1]
+        self.assertIsInstance(image_combo, ModelPickComboBox)
+        image_combo.set_value('gpt-image-2')
+        image_check.setChecked(True)
+        self.assertEqual(self.config.config['image_model_pool']['models'], [
+            dict(name='gpt-image-2', status='健康', enabled=True)])
+
+        settings.add_model_buttons['image'].click()
+        _, wrong_check, wrong_combo, wrong_status = settings.pool_rows['image'][-1]
+        wrong_combo.set_value('deepseek-chat')
+        self.assertIn('非图片模型', wrong_status.text())
+        self.assertFalse(wrong_check.isEnabled())
+        wrong_model = next(model for model in self.config.config['image_model_pool']['models']
+                           if model['name'] == 'deepseek-chat')
+        self.assertFalse(wrong_model['enabled'])
+
+        settings.pool_tabs.setCurrentItem('video')
+        self.assertEqual(settings.pool_stack.currentIndex(), 0)
+        self.assertEqual(len(self.config.config['model_pool']['models']), 3)
+        stored = ConfigManager(self.config.path).load_config()
+        self.assertEqual(stored['chat_model_pool']['models'][0]['name'], 'deepseek-chat')
+        self.assertEqual(stored['image_model_pool']['models'][0]['name'], 'gpt-image-2')
+
     def test_retry_rows_counts_selection_and_progress_are_isolated(self):
         page = self.window.workspace_page
         manager = page.task_manager

@@ -1,15 +1,21 @@
 """Fluent model selectors keep API identifiers separate from display metadata."""
+import re
+
 from PyQt5.QtCore import Qt, QSignalBlocker, QSize
-from PyQt5.QtWidgets import QSizePolicy
-from qfluentwidgets import ComboBox
+from PyQt5.QtWidgets import QAction, QSizePolicy
+from qfluentwidgets import ComboBox, EditableComboBox
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
-from core.model_catalog import builtin_models, resolve_model_id
+from core.model_catalog import builtin_models, classify_model, resolve_model_id
 from core.i18n import tr
 
 
-def catalog_snapshot(config_manager):
+def catalog_snapshot(config_manager, capability=None):
     controller = getattr(config_manager, 'model_catalog_controller', None)
-    return controller.snapshot() if controller is not None else builtin_models()
+    if controller is None:
+        return builtin_models()
+    if capability is not None:
+        return controller.snapshot_for(capability)
+    return controller.snapshot()
 
 
 def usable(record):
@@ -117,3 +123,108 @@ class ModelComboBox(ComboBox):
             self.setText(tr('暂无可提交模型'))
         del blocker
         self._update_tooltip()
+
+
+_PROVIDER_PATTERNS = (
+    ('GPT', re.compile(r'^gpt(?:[-_]|$)', re.I)),
+    ('CLAUDE', re.compile(r'^claude(?:[-_]|$)', re.I)),
+    ('GEMINI', re.compile(r'^gemini(?:[-_]|$)', re.I)),
+    ('DEEPSEEK', re.compile(r'^deepseek(?:[-_]|$)', re.I)),
+    ('GROK', re.compile(r'^grok(?:[-_]|$)', re.I)),
+    ('QWEN', re.compile(r'^qwen(?:[-_]|$)', re.I)),
+)
+_PROVIDER_ORDER = ('GPT', 'CLAUDE', 'GEMINI', 'DEEPSEEK', 'GROK', 'QWEN', 'OTHER')
+
+
+class _ModelPickMenu(ComboBoxMenu):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.tooltips = parent._item_tooltips
+
+    def addAction(self, action):
+        if isinstance(action, QAction):
+            tooltip = self.tooltips.get(action.text())
+            if tooltip:
+                action.setToolTip(tooltip)
+        return super().addAction(action)
+
+
+def _provider_group(model_id):
+    """Group model IDs using the same family tokens recognized by the catalog."""
+    value = re.sub(r'-pack$', '', str(model_id or '').strip(), flags=re.I)
+    if classify_model(value) not in {'chat', 'image'}:
+        return 'OTHER'
+    for provider, pattern in _PROVIDER_PATTERNS:
+        if pattern.search(value):
+            return provider
+    if re.match(r'^nano[\s_-]+banana(?:[\s_-]|$)', value, re.I):
+        return 'GEMINI'
+    return 'OTHER'
+
+
+class ModelPickComboBox(EditableComboBox):
+    """Editable model picker for chat and image models, including custom IDs."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setMaxVisibleItems(16)
+        self._kind = 'chat'
+        self._item_tooltips = {}
+
+    def _createComboMenu(self):
+        return _ModelPickMenu(self)
+
+    def value(self):
+        text = self.text().strip()
+        index = self.currentIndex()
+        if index >= 0 and self.itemText(index) == self.text():
+            value = self.itemData(index)
+            if value and not str(value).startswith('__separator__:'):
+                return str(value).strip()
+        return text
+
+    def set_value(self, text):
+        value = str(text or '').strip()
+        index = self.findData(value)
+        if index >= 0 and not str(self.itemData(index) or '').startswith('__separator__:'):
+            self.setCurrentIndex(index)
+        else:
+            self.setCurrentIndex(-1)
+            self.setText(value)
+
+    def set_models(self, records, selected=None, kind='chat'):
+        self._kind = kind
+        selected = self.value() if selected is None else str(selected or '').strip()
+        records = records if isinstance(records, dict) else {}
+        grouped = {provider: [] for provider in _PROVIDER_ORDER}
+        for model_id, record in records.items():
+            if not isinstance(record, dict):
+                continue
+            if record.get('kind') != kind or not record.get('available', True):
+                continue
+            provider = _provider_group(model_id)
+            grouped[provider].append((model_id, record))
+
+        blocker = QSignalBlocker(self)
+        self.clear()
+        self._item_tooltips = {}
+        for provider in _PROVIDER_ORDER:
+            rows = grouped[provider]
+            if not rows:
+                continue
+            label_text = tr('其他') if provider == 'OTHER' else provider
+            self.addItem(f'── {label_text} ──', userData=f'__separator__:{provider}')
+            separator = self.count() - 1
+            self.setItemEnabled(separator, False)
+            for model_id, record in rows:
+                display = str(record.get('display_name') or record.get('name') or model_id)
+                label_text = f'{model_id} · {display}' if display != model_id else model_id
+                self.addItem(label_text, userData=model_id)
+                description = str(record.get('description') or display)
+                self._item_tooltips[label_text] = description
+
+        # A stored/custom ID remains editable even when it is not in the catalog.
+        self.set_value(selected)
+        del blocker

@@ -7,7 +7,8 @@ from ..tokens import px
 from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
-    SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel, TransparentToolButton, ScrollArea, TimePicker,
+    SegmentedWidget, SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel,
+    TransparentToolButton, ScrollArea, TimePicker,
 )
 from ..components.custom_widgets import make_card
 from ..widgets.workspace_surface import label
@@ -21,8 +22,10 @@ from core.repository_sync import RepositorySync, repository_secrets, default_rep
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
 from core.i18n import tr
+from core.line_routing import normalize_base_url
+from core.model_catalog import classify_model
 from ..components.model_options import apply_model_options
-from ..components.model_selector import ModelComboBox, catalog_snapshot, usable
+from ..components.model_selector import ModelComboBox, ModelPickComboBox, catalog_snapshot, usable
 from datetime import datetime
 import copy
 import math
@@ -190,6 +193,7 @@ class SettingsPage(QWidget):
         self.jobs = BackgroundJobs(self)
         self.jobs.log_message.connect(self.log_callback)
         self.model_rows = []
+        self.pool_rows = {'video': self.model_rows, 'chat': [], 'image': []}
         self.groups = []
         self._pages = {}
         self._page_order = []
@@ -544,7 +548,7 @@ class SettingsPage(QWidget):
         stations = self._stations()
         for station in stations:
             if station.get('id') == sid:
-                station.update(name=name_text, base_url=base.text().strip(), api_key=key_edit.text().strip(),
+                station.update(name=name_text, base_url=normalize_base_url(base.text()), api_key=key_edit.text().strip(),
                                upload_url=upload.text().strip(), upload_api_key=upload_key.text().strip(),
                                capabilities=[k for k, b in boxes.items() if b.isChecked()])
         self._persist_stations(stations)
@@ -564,6 +568,8 @@ class SettingsPage(QWidget):
         self.config_manager.update(('stations',), stations)
         if active is not None:
             self.config_manager.update(('stations_active',), active)
+        self._refresh_routing_options()
+        self._reload_model_lines()
 
     def _build_stations(self):
         group = self._group('中转站')
@@ -709,7 +715,7 @@ class SettingsPage(QWidget):
             self.log_callback('中转站名称不能为空', 'warning')
             return
         capabilities = [key for key, box in self.station_caps.items() if box.isChecked()]
-        payload = dict(name=name, base_url=self.station_base.text().strip(), api_key=self.station_key.text().strip(),
+        payload = dict(name=name, base_url=normalize_base_url(self.station_base.text()), api_key=self.station_key.text().strip(),
                        upload_url=self.station_upload.text().strip(), upload_api_key=self.station_upload_key.text().strip(),
                        capabilities=capabilities, enabled=True)
         stations = self._stations()
@@ -740,6 +746,8 @@ class SettingsPage(QWidget):
         for key, edit in (('base_url', self.base_url), ('api_key', self.api_key),
                           ('upload_url', self.upload_url), ('upload_api_key', self.upload_key)):
             value = target.get(key, '') or ''
+            if key == 'base_url':
+                value = normalize_base_url(value)
             blocker = QSignalBlocker(edit)
             edit.setText(value)
             del blocker
@@ -764,7 +772,8 @@ class SettingsPage(QWidget):
         candidate, index = name, 2
         while candidate in taken:
             candidate = f'{name} ·{index}'; index += 1
-        station = dict(id=f'st-{int(time.time()*1000)}', name=candidate, base_url=api.get('base_url', ''),
+        station = dict(id=f'st-{int(time.time()*1000)}', name=candidate,
+                       base_url=normalize_base_url(api.get('base_url', '')),
                        api_key=api.get('api_key', ''), upload_url=api.get('upload_url', ''),
                        upload_api_key=api.get('upload_api_key', ''), capabilities=['video'], enabled=True)
         stations.append(station)
@@ -808,7 +817,10 @@ class SettingsPage(QWidget):
         edit = LineEdit()
         edit.setText(self._value(path))
         edit.setMinimumWidth(240)
-        edit.textChanged.connect(lambda v: self.config_manager.update(path, v))
+        if path == ('api', 'base_url'):
+            edit.editingFinished.connect(self._save_normalized_base_url)
+        else:
+            edit.textChanged.connect(lambda v: self.config_manager.update(path, v))
         host = QWidget()
         row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
@@ -868,7 +880,9 @@ class SettingsPage(QWidget):
     def _build_api(self):
         group = self._group("API 连接")
         self.api_group = group
+        self._build_routing_cards(group)
         self.base_url = self._line(group, "API Base URL", ("api", "base_url"))
+        self.base_url.setPlaceholderText(tr('可只填域名，如 https://api.kkone.vip/ ，自动补 /v1；官方 DeepSeek 填 https://api.deepseek.com'))
         self.api_key = self._line(group, "API Key", ("api", "api_key"), True)
         self.upload_url = self._line(group, "图床上传 URL", ("api", "upload_url"))
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
@@ -900,33 +914,154 @@ class SettingsPage(QWidget):
         diag_row.addWidget(self.diagnostics_button)
         group.addSettingCard(CustomSettingCard(tr('诊断包'), diag_host, FIF.SAVE))
 
+    def _build_routing_cards(self, group):
+        self.routing_combos = {}
+        routing_options = (
+            ('video', tr('视频线路')),
+            ('chat', tr('AI分析（文本）线路')),
+            ('image', tr('图片生成线路')),
+        )
+        for capability, title in routing_options:
+            combo = ComboBox()
+            combo.setMinimumWidth(200)
+            combo.currentIndexChanged.connect(
+                lambda index, kind=capability, control=combo: self._routing_changed(kind, control, index))
+            self.routing_combos[capability] = combo
+            group.addSettingCard(CustomSettingCard(title, combo, FIF.LINK))
+        self._refresh_routing_options()
+
+    def _refresh_routing_options(self):
+        combos = getattr(self, 'routing_combos', {})
+        if not combos:
+            return
+        stations = [station for station in self._stations() if station.get('enabled')]
+        routing = self.config_manager.config.get('line_routing', {})
+        for capability, combo in combos.items():
+            saved = (routing.get(capability, 'active') if isinstance(routing, dict) else 'active') or 'active'
+            blocker = QSignalBlocker(combo)
+            combo.clear()
+            combo.addItem(tr('当前线路'), userData='active')
+            for station in stations:
+                combo.addItem(str(station.get('name') or station.get('id') or ''), userData=station.get('id'))
+            index = combo.findData(saved)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            del blocker
+
+    def _routing_changed(self, capability, combo, index):
+        if index < 0:
+            return
+        station_id = combo.itemData(index) or 'active'
+        self.config_manager.update(('line_routing', capability), station_id)
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        if controller is not None:
+            controller.reload_lines()
+        self.api_credentials_changed.emit()
+
+    def _reload_model_lines(self):
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        if controller is not None:
+            controller.reload_lines()
+
+    def _save_normalized_base_url(self):
+        value = normalize_base_url(self.base_url.text())
+        blocker = QSignalBlocker(self.base_url)
+        self.base_url.setText(value)
+        del blocker
+        self.config_manager.update(('api', 'base_url'), value)
+        self._mirror_api_to_station()
+        self.api_credentials_changed.emit()
+
     def _build_pool(self):
-        group = self._group("模型池")
-        self.pool_group = group
-        self.pool_enabled = self._switch(group, '启用模型池', ('model_pool', 'enabled'), FIF.SYNC)
-        self.pool_enabled.setToolTip('关闭时使用工作台所选单模型。运行期间修改设置将在下一批任务生效。')
-        self.strategy = self._combo(group, "调用策略", ("model_pool", "strategy"), ["轮询", "随机", "优先级"])
-        self.failover = self._switch(group, "自动故障转移", ("model_pool", "auto_failover"), FIF.SYNC)
-        self.cooldown = self._spin(group, "冷却时间（秒）", ("model_pool", "cooldown"), 1, 3600)
-        card = make_card()
-        self.models_card = card
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
-        hint = CaptionLabel('模型列表 · 列表顺序即优先级；修改在下一批生效')
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        self.model_layout = QVBoxLayout()
-        self.model_layout.setSpacing(8)
-        layout.addLayout(self.model_layout)
-        for model in self._value(("model_pool", "models")):
-            self._add_model_row(model["name"], model["enabled"], model["status"], persist=False)
-        self.add_model = PushButton(FIF.ADD, "添加模型")
-        self.add_model.clicked.connect(lambda: self._add_model_row("video-v3", True, "健康"))
-        layout.addWidget(self.add_model, 0, Qt.AlignLeft)
-        card.setFixedHeight(layout.sizeHint().height())
-        group.addSettingCard(card)
-        card._content_height = ContentHeight(card)
+        self.pool_group = self._group('模型池')
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(12)
+        self.pool_tabs = SegmentedWidget()
+        self.pool_tabs.addItem('video', tr('视频模型'))
+        self.pool_tabs.addItem('chat', tr('AI分析模型'))
+        self.pool_tabs.addItem('image', tr('图片模型'))
+        self.pool_stack = QStackedWidget()
+        self.pool_sections = {}
+        self.pool_rows = {'video': self.model_rows, 'chat': [], 'image': []}
+        self.pool_models_cards = {}
+        self.pool_model_layouts = {}
+        self.add_model_buttons = {}
+        self.pool_controls = {}
+
+        for kind, config_key, title in (
+                ('video', 'model_pool', '视频模型'),
+                ('chat', 'chat_model_pool', 'AI分析模型'),
+                ('image', 'image_model_pool', '图片模型')):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            section = SettingCardGroup(tr(title), page)
+            self.pool_sections[kind] = section
+            enabled = self._switch(section, '启用模型池' if kind == 'video' else tr('启用模型池'),
+                                   (config_key, 'enabled'), FIF.SYNC)
+            strategy = self._combo(section, '调用策略' if kind == 'video' else tr('调用策略'),
+                                   (config_key, 'strategy'), ['轮询', '随机', '优先级'])
+            failover = self._switch(section, '自动故障转移' if kind == 'video' else tr('自动故障转移'),
+                                    (config_key, 'auto_failover'), FIF.SYNC)
+            cooldown = self._spin(section, '冷却时间（秒）' if kind == 'video' else tr('冷却时间（秒）'),
+                                  (config_key, 'cooldown'), 1, 3600)
+            self.pool_controls[kind] = (enabled, strategy, failover, cooldown)
+            if kind == 'video':
+                self.pool_enabled, self.strategy, self.failover, self.cooldown = enabled, strategy, failover, cooldown
+                self.pool_enabled.setToolTip(tr('关闭时使用工作台所选单模型。运行期间修改设置将在下一批任务生效。'))
+
+            card = make_card()
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(12)
+            hint_text = ('模型列表 · 列表顺序即优先级；修改在下一批生效'
+                         if kind == 'video' else tr('模型列表 · 列表顺序即优先级；修改在下一批生效'))
+            hint = CaptionLabel(hint_text)
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+            model_layout = QVBoxLayout()
+            model_layout.setSpacing(8)
+            layout.addLayout(model_layout)
+            self.pool_models_cards[kind] = card
+            self.pool_model_layouts[kind] = model_layout
+            for model in self._value((config_key, 'models')):
+                self._add_model_row(model.get('name', ''), model.get('enabled', True),
+                                    model.get('status', '健康'), persist=False, kind=kind)
+            add_model = PushButton(FIF.ADD, '添加模型' if kind == 'video' else tr('添加模型'))
+            add_model.clicked.connect(lambda checked=False, model_kind=kind:
+                                      self._add_model_row('video-v3' if model_kind == 'video' else '',
+                                                          True, '健康', kind=model_kind))
+            self.add_model_buttons[kind] = add_model
+            layout.addWidget(add_model, 0, Qt.AlignLeft)
+            card.setFixedHeight(layout.sizeHint().height())
+            card._content_height = ContentHeight(card)
+            section.addSettingCard(card)
+            page_layout.addWidget(section)
+            page_layout.addStretch(1)
+            self.pool_stack.addWidget(page)
+
+        self.models_card = self.pool_models_cards['video']
+        self.model_layout = self.pool_model_layouts['video']
+        self.add_model = self.add_model_buttons['video']
+        self.pool_tabs.currentItemChanged.connect(self._pool_tab_changed)
+        host_layout.addWidget(self.pool_tabs)
+        host_layout.addWidget(self.pool_stack)
+        self.pool_group.addSettingCard(CustomSettingCard(tr('模型池类别'), host, FIF.LIBRARY))
+        self.pool_tabs.setCurrentItem('video')
+        self._pool_tab_changed('video')
+
+    def _pool_tab_changed(self, kind):
+        if kind not in self.pool_sections:
+            return
+        self.pool_stack.setCurrentIndex(('video', 'chat', 'image').index(kind))
+        self._fit_pool_models_card(kind)
+
+    def _fit_pool_models_card(self, kind):
+        card = self.pool_models_cards.get(kind)
+        if card is not None:
+            card.setFixedHeight(card.layout().sizeHint().height())
+            card.updateGeometry()
 
     def _build_task(self):
         group = self._group("任务策略")
@@ -1343,50 +1478,72 @@ class SettingsPage(QWidget):
         except Exception as error:
             failed(str(error))
 
-    def _add_model_row(self, name, enabled, status, persist=True):
+    def _model_pool_config_key(self, kind):
+        return {'video': 'model_pool', 'chat': 'chat_model_pool', 'image': 'image_model_pool'}[kind]
+
+    @staticmethod
+    def _pool_model_value(combo, kind):
+        return combo.currentText() if kind == 'video' else combo.value()
+
+    def _add_model_row(self, name, enabled, status, persist=True, kind='video'):
         row = make_card()
         layout = WrapLayout(row)
         layout.setContentsMargins(20, 10, 20, 10)
-        check = CheckBox("启用")
+        check = CheckBox("启用" if kind == 'video' else tr("启用"))
         check.setChecked(enabled)
-        combo = ModelComboBox()
+        combo = ModelComboBox() if kind == 'video' else ModelPickComboBox()
         combo.setMinimumWidth(160)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
-        state = CaptionLabel(status)
+        if kind == 'video':
+            combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
+        else:
+            combo.set_models(catalog_snapshot(self.config_manager, kind), name, kind=kind)
+        state = CaptionLabel(status if kind == 'video' else tr(status))
         state.setProperty('statusTone', True)
         color = "#67c23a" if status == "健康" else "#e6a23c"
         state.setTextColor(color, color)
         dot = Dot(7, color)
         state.dot = dot
         remove = TransparentToolButton(FIF.DELETE)
-        remove.setToolTip("删除模型")
+        remove.setToolTip("删除模型" if kind == 'video' else tr("删除模型"))
         for widget in (check, combo, dot, state, remove):
             layout.addWidget(widget, 1 if widget is combo else 0)
-        self.model_layout.addWidget(row)
-        self.model_rows.append((row, check, combo, state))
-        check.stateChanged.connect(self._persist_models)
-        combo.currentTextChanged.connect(self._persist_models)
-        remove.clicked.connect(lambda: self._remove_model_row(row))
+        self.pool_model_layouts[kind].addWidget(row)
+        self.pool_rows[kind].append((row, check, combo, state))
+        check.stateChanged.connect(lambda *_args, model_kind=kind: self._persist_models(kind=model_kind))
+        combo.currentTextChanged.connect(lambda *_args, model_kind=kind: self._persist_models(kind=model_kind))
+        remove.clicked.connect(lambda checked=False, model_row=row, model_kind=kind:
+                               self._remove_model_row(model_row, model_kind))
         if persist:
             style_controls(row)
-            self._persist_models()
-            self.models_card.setFixedHeight(self.models_card.layout().sizeHint().height())
+            self._persist_models(kind=kind)
+            self._fit_pool_models_card(kind)
 
-    def _remove_model_row(self, row):
+    def _remove_model_row(self, row, kind='video'):
         # Drop Python references before deleteLater; future edits must not touch deleted Qt objects.
-        self.model_rows = [entry for entry in self.model_rows if entry[0] is not row]
-        self.model_layout.removeWidget(row)
+        self.pool_rows[kind][:] = [entry for entry in self.pool_rows[kind] if entry[0] is not row]
+        self.pool_model_layouts[kind].removeWidget(row)
         row.deleteLater()
-        self._persist_models()
-        self.models_card.setFixedHeight(self.models_card.layout().sizeHint().height())
+        self._persist_models(kind=kind)
+        self._fit_pool_models_card(kind)
 
-    def _persist_models(self, *_):
-        previous = {model['name']: model for model in self._value(('model_pool', 'models'))}
-        self.config_manager.update(("model_pool", "models"), [
-            dict(previous.get(combo.currentText(), {'status': '健康'}), name=combo.currentText(), enabled=check.isChecked())
-            for _, check, combo, _ in self.model_rows
-        ])
+    def _persist_models(self, *_args, kind='video'):
+        config_key = self._model_pool_config_key(kind)
+        previous = {model['name']: model for model in self._value((config_key, 'models'))}
+        catalog = catalog_snapshot(self.config_manager, kind) if kind != 'video' else None
+        models = []
+        for _, check, combo, _ in self.pool_rows[kind]:
+            name = self._pool_model_value(combo, kind)
+            if not name:
+                continue
+            enabled = check.isChecked()
+            if kind != 'video':
+                record = catalog.get(name)
+                enabled = enabled and bool(record and record.get('available', True)
+                                           and record.get('kind') == kind)
+            models.append(dict(previous.get(name, {'status': '健康'}), name=name,
+                               enabled=enabled))
+        self.config_manager.update((config_key, 'models'), models)
         self.refresh_pool_state()
 
     def update_pool_state(self, snapshot):
@@ -1427,30 +1584,67 @@ class SettingsPage(QWidget):
         if changed:
             self.config_manager.update(('model_pool', 'models'), models)
         states = {model['name']: model for model in models}
-        catalog = catalog_snapshot(self.config_manager)
-        for _, check, combo, label in self.model_rows:
-            model = states.get(combo.currentText(), {})
-            record = catalog.get(combo.currentText())
-            if record is None or not usable(record):
-                status = '已下架' if record is None else '非视频模型' if record.get('kind') != 'video' else '协议待确认'
-                label.setText(status)
-                label.setTextColor('#92929b', '#92929b')
-                dot = getattr(label, 'dot', None)
-                if dot is not None:
-                    dot.set_color('#92929b')
-                check.setEnabled(False)
-                check.setToolTip(tr('该模型当前不可用：已下架、不是视频模型或协议待确认，请同步模型或选择其他模型'))
+        self._refresh_pool_kind('video', catalog_snapshot(self.config_manager), states, now)
+        for kind in ('chat', 'image'):
+            config_key = self._model_pool_config_key(kind)
+            catalog = catalog_snapshot(self.config_manager, kind)
+            other_models = copy.deepcopy(self._value((config_key, 'models')))
+            changed = False
+            for model in other_models:
+                record = catalog.get(model.get('name'))
+                valid = bool(record and record.get('available', True)
+                             and record.get('kind') == kind)
+                if not valid and model.get('enabled'):
+                    model['enabled'] = False
+                    changed = True
+            if changed:
+                self.config_manager.update((config_key, 'models'), other_models)
+            other_states = {model['name']: model for model in other_models}
+            self._refresh_pool_kind(kind, catalog, other_states, now)
+
+    def _refresh_pool_kind(self, kind, catalog, states, now):
+        for _, check, combo, status_label in self.pool_rows[kind]:
+            name = self._pool_model_value(combo, kind)
+            model = states.get(name, {})
+            record = catalog.get(name)
+            if kind == 'video':
+                if record is None or not usable(record):
+                    status = '已下架' if record is None else '非视频模型' if record.get('kind') != 'video' else '协议待确认'
+                    self._set_pool_row_state(check, status_label, status, '#92929b', False)
+                    check.setToolTip(tr('该模型当前不可用：已下架、不是视频模型或协议待确认，请同步模型或选择其他模型'))
+                    continue
+                cooling = model.get('status') == '冷却中'
+                remaining = max(0, math.ceil(model.get('cooldown_until', 0) - now))
+                status = f'冷却中 {remaining}秒' if cooling else '健康'
+                self._set_pool_row_state(check, status_label, status,
+                                         '#e6a23c' if cooling else '#67c23a', True)
+                check.setToolTip(tr('启用或停用此模型'))
                 continue
-            check.setEnabled(True)
-            check.setToolTip(tr('启用或停用此模型'))
-            cooling = model.get('status') == '冷却中'
-            remaining = max(0, math.ceil(model.get('cooldown_until', 0)-now))
-            label.setText(f'冷却中 {remaining}秒' if cooling else '健康')
-            color = '#e6a23c' if cooling else '#67c23a'
-            label.setTextColor(color, color)
-            dot = getattr(label, 'dot', None)
-            if dot is not None:
-                dot.set_color(color)
+
+            if record is None or not record.get('available', True):
+                status = '已下架'
+                valid = False
+            elif record.get('kind') != kind:
+                status = '非文本模型' if kind == 'chat' else '非图片模型'
+                valid = False
+            else:
+                status, valid = '健康', True
+            if not valid and check.isChecked():
+                blocker = QSignalBlocker(check)
+                check.setChecked(False)
+                del blocker
+            self._set_pool_row_state(check, status_label, status,
+                                     '#67c23a' if valid else '#92929b', valid, translate=True)
+            check.setToolTip(tr('启用或停用此模型') if valid else tr('请同步模型或选择对应类型的模型'))
+
+    @staticmethod
+    def _set_pool_row_state(check, status_label, status, color, enabled, translate=False):
+        status_label.setText(tr(status) if translate else status)
+        status_label.setTextColor(color, color)
+        dot = getattr(status_label, 'dot', None)
+        if dot is not None:
+            dot.set_color(color)
+        check.setEnabled(enabled)
 
     def refresh_catalog(self, *_):
         catalog = catalog_snapshot(self.config_manager)
@@ -1466,6 +1660,10 @@ class SettingsPage(QWidget):
             renamed = renamed or old_name != combo.currentText()
         if renamed:
             self._persist_models()
+        for kind in ('chat', 'image'):
+            records = catalog_snapshot(self.config_manager, kind)
+            for _, _, combo, _ in self.pool_rows[kind]:
+                combo.set_models(records, self._pool_model_value(combo, kind), kind=kind)
         self._refresh_default_options()
         self.refresh_pool_state()
         self.refresh_sync_state()
@@ -1518,6 +1716,20 @@ class SettingsPage(QWidget):
                 message = f"{title}：{'成功' if item['ok'] else '失败'} · {item['message']}"
                 self.log_callback(message, 'success' if item['ok'] else 'error')
                 messages.append(message)
+            try:
+                counts = {'video': 0, 'chat': 0, 'image': 0}
+                for model_id, record in catalog_snapshot(self.config_manager).items():
+                    if not record.get('available', True):
+                        continue
+                    kind = record.get('kind') or classify_model(model_id)
+                    if kind in counts:
+                        counts[kind] += 1
+                classification = tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
+                    video=counts['video'], chat=counts['chat'], image=counts['image'])
+                messages.append(classification)
+                self.log_callback(classification, 'info')
+            except Exception:
+                pass
             self._notice('\n'.join(messages), result['ok'])
         def failed(message):
             result = dict(ok=False, video=dict(ok=False, message=message), upload=dict(ok=False, message='测试未完成'))

@@ -54,6 +54,52 @@ class ModelUiTests(unittest.TestCase):
         self.assertEqual(combo.currentData(), 'unrelated-missing')
         self.assertFalse(combo.items[combo.currentIndex()].isEnabled)
 
+    def test_model_pick_combo_groups_filters_and_keeps_custom_ids(self):
+        from ui.components.model_selector import ModelPickComboBox
+
+        combo = ModelPickComboBox()
+        self.addCleanup(combo.deleteLater)
+        records = {
+            'misc-chat': dict(id='misc-chat', kind='chat', available=True),
+            'qwen-max': dict(id='qwen-max', kind='chat', available=True),
+            'grok-4.7': dict(id='grok-4.7', kind='chat', available=True),
+            'deepseek-chat': dict(id='deepseek-chat', kind='chat', available=True),
+            'gemini-3.8-flash': dict(id='gemini-3.8-flash', kind='chat', available=True),
+            'claude-sonnet-4-6': dict(id='claude-sonnet-4-6', kind='chat', available=True),
+            'gpt-6-sol': dict(id='gpt-6-sol', kind='chat', available=True),
+            'gpt-6-sol-pack': dict(id='gpt-6-sol-pack', kind='chat', available=False),
+            'gpt-image-2': dict(id='gpt-image-2', kind='image', available=True),
+            'video-v3': dict(id='video-v3', kind='video', available=True),
+        }
+        combo.set_models(records, 'deepseek-chat', kind='chat')
+
+        separators = [combo.itemText(index) for index in range(combo.count())
+                      if str(combo.itemData(index) or '').startswith('__separator__:')]
+        self.assertEqual(separators, [
+            '── GPT ──', '── CLAUDE ──', '── GEMINI ──', '── DEEPSEEK ──',
+            '── GROK ──', '── QWEN ──', '── 其他 ──',
+        ])
+        for index in range(combo.count()):
+            if str(combo.itemData(index) or '').startswith('__separator__:'):
+                self.assertFalse(combo.items[index].isEnabled)
+        self.assertEqual(combo.findData('gpt-6-sol-pack'), -1)
+        self.assertEqual(combo.findData('gpt-image-2'), -1)
+        self.assertEqual(combo.findData('video-v3'), -1)
+        self.assertEqual(combo.value(), 'deepseek-chat')
+        from PyQt5.QtWidgets import QAction
+        model_index = combo.findData('gpt-6-sol')
+        menu = combo._createComboMenu()
+        action = QAction(combo.itemText(model_index), menu)
+        menu.addAction(action)
+        self.assertEqual(action.toolTip(), 'gpt-6-sol')
+        menu.deleteLater()
+        combo.set_value('  user/custom-model  ')
+        self.assertEqual(combo.value(), 'user/custom-model')
+
+        combo.set_models(records, 'gpt-image-2', kind='image')
+        self.assertEqual(combo.value(), 'gpt-image-2')
+        self.assertEqual(combo.findData('deepseek-chat'), -1)
+
     def test_empty_catalog_disables_submission_options_without_crashing(self):
         from core.api_client import ApiClient
         from ui.main_window import MainWindow
@@ -81,7 +127,7 @@ class ModelUiTests(unittest.TestCase):
     def test_local_sync_refreshes_catalog_and_persists_no_runtime_config(self):
         from ui.model_catalog_controller import ModelCatalogController, runtime_config
         with CatalogServer() as server:
-            server.routes['/models'] = (200, {'data': [
+            server.routes['/v1/models'] = (200, {'data': [
                 {'id': 'MiniMax-H3', 'kind': 'video'},
                 {'id': 'video-v3-480p', 'kind': 'video'},
             ]})
@@ -97,11 +143,11 @@ class ModelUiTests(unittest.TestCase):
                 self.config.save_config()
                 document = json.loads(self.config.path.read_text(encoding='utf-8'))
                 self.assertNotIn('_model_catalog', document)
-                server.routes['/models'] = (503, {'error': 'offline fixture'})
+                server.routes['/v1/models'] = (503, {'error': 'offline fixture'})
                 controller.refresh()
                 wait_until(lambda: not controller.jobs.busy)
                 self.assertEqual(set(controller.snapshot()), {'MiniMax-H3', 'video-v3-480p'})
-                self.assertTrue(any('使用离线模型缓存' in text for text, _ in logs))
+                self.assertTrue(any('使用离线缓存' in text for text, _ in logs))
             finally:
                 controller.shutdown()
                 wait_until(lambda: not controller.jobs.busy)
@@ -135,8 +181,8 @@ class ModelUiTests(unittest.TestCase):
                 entered.set()
                 release.wait(5)
                 return {'data': [{'id': 'video-v2'}]}
-            old.routes['/models'] = (200, delayed)
-            new.routes['/models'] = (200, {'data': [{'id': 'video-v3'}]})
+            old.routes['/v1/models'] = (200, delayed)
+            new.routes['/v1/models'] = (200, {'data': [{'id': 'video-v3'}]})
             self.config.config['api'].update(base_url=old.base, api_key='old-fixture-key')
             controller = ModelCatalogController(self.config, lambda *_: None, auto_sync=False)
             try:
@@ -152,7 +198,7 @@ class ModelUiTests(unittest.TestCase):
                 wait_until(lambda: not controller.jobs.busy)
                 self.assertEqual(set(controller.snapshot()), {'video-v3'})
                 self.assertEqual(cache.read_bytes(), expected)
-                self.assertEqual(json.loads(expected)['base_url'], new.base)
+                self.assertEqual(json.loads(expected)['base_url'], new.base + '/v1')
             finally:
                 release.set()
                 controller.shutdown()
@@ -165,7 +211,7 @@ class ModelUiTests(unittest.TestCase):
             self.config.config['api'].update(base_url=server.base, api_key='fixture-key')
             self.config.config['model_pool']['models'] = [dict(name='video-v2', enabled=True, status='健康')]
             self.config.save_config()
-            server.routes['/models'] = (200, {'data': [{'id': 'video-v3-480p', 'description': '新渠道说明'}]})
+            server.routes['/v1/models'] = (200, {'data': [{'id': 'video-v3-480p', 'description': '新渠道说明'}]})
             window = MainWindow(self.config, network_time=False)
             try:
                 window.settings_page.sync_models_button.click()
@@ -183,6 +229,85 @@ class ModelUiTests(unittest.TestCase):
                 window.close()
                 wait_until(lambda: not window._background_busy() and not window._close_timer.isActive())
                 window.deleteLater()
+
+    def _make_catalog_controller(self, auto_sync=False):
+        from ui.model_catalog_controller import ModelCatalogController
+        controller = ModelCatalogController(self.config, lambda *_: None, auto_sync=auto_sync)
+        self.addCleanup(controller.shutdown)
+        return controller
+
+    def test_catalog_snapshots_merge_with_video_priority_and_isolate_routes(self):
+        from test_task_manager import wait_until
+        with CatalogServer() as video, CatalogServer() as chat:
+            video.routes['/v1/models'] = (200, {'data': [
+                {'id': 'shared-chat-id', 'kind': 'chat', 'name': 'video route copy'},
+                {'id': 'video-v3'},
+            ]})
+            chat.routes['/v1/models'] = (200, {'data': [
+                {'id': 'shared-chat-id', 'kind': 'chat', 'name': 'chat route copy'},
+                {'id': 'chat-only', 'kind': 'chat'},
+            ]})
+            self.config.config['api'].update(base_url=video.base, api_key='video-fixture-key')
+            self.config.config['stations'] = [dict(
+                id='chat-route', name='Chat route', enabled=True,
+                base_url=chat.base, api_key='chat-fixture-key')]
+            self.config.config['line_routing'].update(video='active', chat='chat-route', image='active')
+            controller = self._make_catalog_controller()
+            controller.refresh()
+            wait_until(lambda: not controller.jobs.busy)
+
+            merged = controller.snapshot()
+            chat_only = controller.snapshot_for('chat')
+            video_only = controller.snapshot_for('video')
+            self.assertIn('video-v3', merged)
+            self.assertIn('chat-only', merged)
+            self.assertEqual(merged['shared-chat-id']['display_name'], 'video route copy')
+            self.assertEqual(chat_only['shared-chat-id']['display_name'], 'chat route copy')
+            self.assertEqual(set(chat_only), {'shared-chat-id', 'chat-only'})
+            self.assertIn('video-v3', video_only)
+            self.assertNotIn('chat-only', video_only)
+
+    def test_catalog_refresh_keeps_successful_route_when_another_route_fails(self):
+        from test_task_manager import wait_until
+        with CatalogServer() as video, CatalogServer() as chat:
+            video.routes['/v1/models'] = (200, {'data': [{'id': 'video-route-model'}]})
+            chat.routes['/v1/models'] = (503, {'error': 'offline fixture'})
+            self.config.config['api'].update(base_url=video.base, api_key='video-fixture-key')
+            self.config.config['stations'] = [dict(
+                id='chat-route', name='Chat route', enabled=True,
+                base_url=chat.base, api_key='chat-fixture-key')]
+            self.config.config['line_routing']['chat'] = 'chat-route'
+            controller = self._make_catalog_controller()
+            messages = []
+            controller.sync_finished.connect(lambda *args: messages.append(args))
+            controller.refresh()
+            wait_until(lambda: not controller.jobs.busy)
+            self.assertFalse(controller.syncing)
+            self.assertIn('video-route-model', controller.snapshot())
+            self.assertTrue(any('1 条线路失败' in row[2] for row in messages))
+
+    def test_reload_lines_rebuilds_identity_set_and_syncs_new_route(self):
+        from test_task_manager import wait_until
+        with CatalogServer() as video, CatalogServer() as chat:
+            video.routes['/v1/models'] = (200, {'data': [{'id': 'video-model'}]})
+            chat.routes['/v1/models'] = (200, {'data': [{'id': 'chat-model', 'kind': 'chat'}]})
+            self.config.config['api'].update(base_url=video.base, api_key='video-fixture-key')
+            self.config.config['line_routing'].update(video='active', chat='active', image='active')
+            from ui.model_catalog_controller import ModelCatalogController
+            controller = ModelCatalogController(self.config, lambda *_: None, auto_sync=True)
+            self.addCleanup(controller.shutdown)
+            controller.start()
+            wait_until(lambda: not controller.jobs.busy)
+            self.assertEqual(set(controller.snapshot_for('chat')), {'video-model'})
+
+            self.config.config['stations'] = [dict(
+                id='chat-route', name='Chat route', enabled=True,
+                base_url=chat.base, api_key='chat-fixture-key')]
+            self.config.config['line_routing']['chat'] = 'chat-route'
+            controller.reload_lines()
+            wait_until(lambda: not controller.jobs.busy)
+            self.assertEqual(set(controller.snapshot_for('chat')), {'chat-model'})
+            self.assertIn('video-model', controller.snapshot())
 
     def test_catalog_refresh_during_batch_is_applied_after_completion(self):
         from core.api_client import ApiClient
