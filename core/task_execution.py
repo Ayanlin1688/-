@@ -9,6 +9,7 @@ from .aigc import write_aigc_metadata
 from .api_client import ApiClient, SubmissionUncertain, _is_definitive_precreation_rejection
 from .http_client import Cancelled, extract
 from .image_uploader import ImageUploader
+from .line_routing import resolve_line
 from .log_redaction import redact_structure
 from .model_catalog import family_for
 from .model_parameters import GROK, validate_task_parameters, model_prompt
@@ -105,10 +106,12 @@ class TaskExecution:
 
     def run(self):
         self.control.begin(self.index)
-        api = self.config['api']
+        api = resolve_line(self.config, 'video')
+        self.api_base_url = api['base_url']
         client = ApiClient(api['base_url'], api['api_key'], debug_mode=lambda: self.owner.debug_mode,
                            log_secrets=(api.get('upload_api_key'),), log=self.log)
-        uploader = ImageUploader.from_config(self.config, log=self.log, check_cancel=self.control.check)
+        upload_config = dict(self.config, api=api)
+        uploader = ImageUploader.from_config(upload_config, log=self.log, check_cancel=self.control.check)
         downloader = VideoDownloader(self.config['download_settings']['overwrite_existing'], self.control.check,
                                      acceleration=self.config['download_settings'].get('parallel_download', True), log=self.log)
         diagnostics = ReferenceDiagnostics(self.log, self.control.check)
@@ -383,7 +386,7 @@ class TaskExecution:
             self.log(f'{self.model} 参数校验通过：' + json.dumps(fields, ensure_ascii=False))
             self.publish(request_parameters=fields, effective_parameters=params,
                          submission_model=copy.deepcopy(catalog.get(self.model)) if isinstance(catalog, dict) else None,
-                         signature=task_signature(task, self.model, params, self.config['api']['base_url'], catalog),
+                         signature=task_signature(task, self.model, params, self.api_base_url, catalog),
                          created_at=task.get('created_at') or stamp(), status='uploading')
             if not task.get('ledger_id'):
                 prevent = self.config['task_strategy'].get('prevent_duplicates', True)
@@ -472,7 +475,7 @@ class TaskExecution:
                 self.control.check()
                 self.owner.gate.wait(self.control)
                 self.control.before_task()
-                if task_signature(task, self.model, params, self.config['api']['base_url'], catalog) != task['signature']:
+                if task_signature(task, self.model, params, self.api_base_url, catalog) != task['signature']:
                     self.urls = None
                     raise ValueError('参考图片在上传过程中发生变化，已停止提交；请重新扫描')
                 self.phase = 'submit'; self.publish(status='submitting')

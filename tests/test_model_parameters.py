@@ -309,7 +309,7 @@ class ModelWorkflowTests(unittest.TestCase):
             config['workspace']['aspect_ratio'] = '9:16'
             second = TaskWorker(config, first.tasks); second.run()
             self.assertNotEqual(first.tasks[0]['task_id'], second.tasks[0]['task_id'])
-            self.assertEqual([json.loads(body)['size'] for path, _, body in server.calls if path == '/videos'], ['1920x1088', '1088x1920'])
+            self.assertEqual([json.loads(body)['size'] for path, _, body in server.calls if path.endswith('/videos')], ['1920x1088', '1088x1920'])
 
     def test_v3_effective_audio_seed_changes_submit_and_poll_only_changes_do_not(self):
         with LocalServer() as server, tempfile.TemporaryDirectory() as directory:

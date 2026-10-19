@@ -40,7 +40,7 @@ class Stage5ExecutionTests(unittest.TestCase):
         self.config['api'].update(base_url=server.base, api_key='local-fixture')
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running, timeout=15000)
-        return [json.loads(body) for path, _, body in server.calls if path == '/videos']
+        return [json.loads(body) for path, _, body in server.calls if path.endswith('/videos')]
 
     def test_failover_converts_original_and_stores_exact_wire_prompt(self):
         self.config['model_pool'].update(enabled=True, cooldown=.01, models=[dict(name='video-v2', enabled=True)])

@@ -161,7 +161,7 @@ class SubmissionSafetyTests(unittest.TestCase):
             self.manager = TaskManager()
             retried = self.run_batch(server)
             self.assertEqual(retried['status'], 'completed')
-            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), 2)
+            self.assertEqual(len([path for path, _, _ in server.calls if path.endswith('/videos')]), 2)
 
     def test_nested_auth_rejection_is_failed_and_can_be_retried(self):
         self.config['task_strategy']['auto_retry'] = False
@@ -183,7 +183,7 @@ class SubmissionSafetyTests(unittest.TestCase):
             self.manager = TaskManager()
             retried = self.run_batch(server)
             self.assertEqual(retried['status'], 'completed')
-            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), 2)
+            self.assertEqual(len([path for path, _, _ in server.calls if path.endswith('/videos')]), 2)
 
     def test_unknown_403_and_non_definitive_responses_keep_duplicate_guard(self):
         self.config['task_strategy']['auto_retry'] = False
@@ -194,11 +194,11 @@ class SubmissionSafetyTests(unittest.TestCase):
             self.assertEqual(first['status'], 'submission_unknown')
             records = SubmissionLedger(ledger_path(self.config)).records(account_scope(self.config))
             self.assertEqual(records[-1]['ledger_state'], 'unknown')
-            before = len([path for path, _, _ in server.calls if path == '/videos'])
+            before = len([path for path, _, _ in server.calls if path.endswith('/videos')])
             self.manager = TaskManager()
             second = self.run_batch(server)
             self.assertEqual(second['status'], 'submission_unknown')
-            self.assertEqual(len([path for path, _, _ in server.calls if path == '/videos']), before)
+            self.assertEqual(len([path for path, _, _ in server.calls if path.endswith('/videos')]), before)
 
     def test_500_429_and_200_without_id_remain_uncertain(self):
         self.config['task_strategy']['auto_retry'] = False
@@ -472,7 +472,7 @@ class SamePromptSerializationTests(unittest.TestCase):
                     config['api'].update(base_url=server.base, api_key='***', upload_url=server.base + '/upload')
                     self.assertTrue(manager.start_tasks(config))
                     wait_until(lambda: not manager.is_running, timeout=20000)
-                posts = [path for path, _, _ in server.calls if path == '/videos']
+                posts = [path for path, _, _ in server.calls if path.endswith('/videos')]
                 statuses = [t['status'] for t in manager.tasks]
                 self.assertEqual(len(posts), 2, statuses)
                 self.assertEqual(statuses, ['completed', 'completed'])

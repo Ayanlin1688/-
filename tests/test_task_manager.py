@@ -67,7 +67,7 @@ class TaskTests(unittest.TestCase):
         self.manager.start_tasks(self.config)
         wait_until(lambda: self.manager.tasks and self.manager.tasks[0]['status'] == 'completed')
         QTest.qWait(120)
-        self.assertEqual(len([p for p, _, _ in self.server.calls if p == '/videos']), 1)
+        self.assertEqual(len([p for p, _, _ in self.server.calls if p.endswith('/videos')]), 1)
         self.assertTrue(self.manager.is_paused)
         self.manager.resume_tasks()
         wait_until(lambda: not self.manager.is_running)
@@ -91,7 +91,7 @@ class TaskTests(unittest.TestCase):
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running)
         self.assertEqual([task['status'] for task in self.manager.tasks], ['completed'] * 3)
-        created = len([row for row in self.server.calls if row[0] == '/videos'])
+        created = len([row for row in self.server.calls if row[0].endswith('/videos')])
         for task in self.manager.tasks:
             Path(task['result_path']).unlink()
         self.manager = TaskManager()
@@ -99,7 +99,7 @@ class TaskTests(unittest.TestCase):
         wait_until(lambda: not self.manager.is_running)
         self.assertEqual([task['status'] for task in self.manager.tasks], ['completed'] * 3)
         self.assertTrue(all(Path(task['result_path']).is_file() and Path(task['result_path']).stat().st_size > 0 for task in self.manager.tasks))
-        self.assertEqual(len([row for row in self.server.calls if row[0] == '/videos']), created)
+        self.assertEqual(len([row for row in self.server.calls if row[0].endswith('/videos')]), created)
 
     def test_upload_failure_continues_and_retains_task_id_on_download_error(self):
         (Path(self.config['paths']['images']) / '1汽车.png').write_bytes(b'bad-image')
@@ -119,7 +119,7 @@ class TaskTests(unittest.TestCase):
         self.assertEqual([task['status'] for task in self.manager.tasks], ['failed', 'completed', 'completed'])
         self.assertFalse(self.manager.tasks[0]['task_id'])
         self.assertIn('读取提示词失败', self.manager.tasks[0]['error'])
-        self.assertEqual(len([row for row in self.server.calls if row[0] == '/videos']), 2)
+        self.assertEqual(len([row for row in self.server.calls if row[0].endswith('/videos')]), 2)
 
     def test_skip_current_then_cancel_marks_remaining(self):
         # “跳过当前、推进到下一个”是串行语义；全队列并发由专项测试覆盖。
@@ -188,7 +188,7 @@ class TaskTests(unittest.TestCase):
         self.server.reject = True
         self.manager.start_tasks(self.config)
         wait_until(lambda: not self.manager.is_running)
-        self.assertEqual(len([p for p, _, _ in self.server.calls if p == '/videos']), 3)
+        self.assertEqual(len([p for p, _, _ in self.server.calls if p.endswith('/videos')]), 3)
         self.assertTrue(all(t['status'] == 'submission_unknown' and not t['task_id'] for t in self.manager.tasks))
         from core.submission_ledger import SubmissionLedger, account_scope, ledger_path
         ledger = SubmissionLedger(ledger_path(self.config))

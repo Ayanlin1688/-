@@ -6,12 +6,14 @@ from pathlib import Path
 import re
 import threading
 import unittest
+from unittest.mock import patch
 
 from core.ecommerce import analysis
 from core.ecommerce.analysis import (
     DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse,
     analyze_stream, parse_prompt_items,
 )
+from core.http_client import HttpClient
 
 
 FIXTURE_KEY = 'fixture-analysis-key'
@@ -81,7 +83,7 @@ class AnalysisFixtureHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             self.wfile.write(b'0\r\n\r\n')
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # A DONE event or rejected frame lets the client close early.
             pass
 
@@ -226,6 +228,18 @@ class PromptItemsParsingTests(unittest.TestCase):
 
 
 class AnalysisStreamTests(unittest.TestCase):
+    def analyze_via_local_fixture(self, server, base_url, model, *, thinking=False):
+        original_request = HttpClient.request
+        captured_urls = []
+
+        def route_to_fixture(client, method, url, *args, **kwargs):
+            captured_urls.append(url)
+            return original_request(client, method, server.base_url + '/chat/completions', *args, **kwargs)
+
+        with patch.object(HttpClient, 'request', route_to_fixture):
+            result = analyze_stream(base_url, FIXTURE_KEY, model, 'system', 'user', thinking=thinking)
+        return result, captured_urls
+
     def test_sse_joins_frame_fragments_reasoning_and_skips_usage(self):
         text = json.dumps(prompt_items(), ensure_ascii=False)
         content, reasoning = [], []
@@ -264,6 +278,40 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertEqual(thoughts, ''.join(reasoning))
         self.assertEqual(''.join(content), text)
         self.assertEqual(DEFAULT_ANALYSIS_MODEL, 'gemini-3.8-flash')
+
+    def test_deepseek_reasoner_omits_sampling_parameters_and_logs_switch(self):
+        with LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+            with self.assertLogs('storyboard', level='INFO') as logs:
+                _result, urls = self.analyze_via_local_fixture(
+                    server, 'https://api.deepseek.com/v1', 'deepseek-chat', thinking=True)
+            body = server.calls[0][3]
+        self.assertEqual(urls, ['https://api.deepseek.com/v1/chat/completions'])
+        self.assertEqual(body['model'], 'deepseek-reasoner')
+        self.assertNotIn('temperature', body)
+        self.assertNotIn('top_p', body)
+        self.assertTrue(any('deepseek-chat 已切换为 deepseek-reasoner' in line for line in logs.output))
+
+    def test_actual_model_name_is_used_in_deepseek_error(self):
+        with LocalAnalysisServer(b'No available channel', status=503) as server:
+            with self.assertLogs('storyboard', level='INFO'):
+                with self.assertRaises(EcommerceAnalysisError) as caught:
+                    self.analyze_via_local_fixture(
+                        server, 'https://api.deepseek.com/v1', 'deepseek-chat', thinking=True)
+        self.assertIn('deepseek-reasoner', str(caught.exception))
+        self.assertNotIn('deepseek-chat', str(caught.exception))
+
+    def test_thinking_payload_is_limited_to_claude_or_explicit_thinking_models(self):
+        for model, expected_thinking in (('claude-sonnet-4-6', True),
+                                         ('gemini-3.8-flash-thinking', True),
+                                         ('gemini-3.8-flash', False)):
+            with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                self.analyze_via_local_fixture(
+                    server, 'https://text.example/v1', model, thinking=True)
+                body = server.calls[0][3]
+            self.assertEqual('thinking' in body, expected_thinking)
+            if expected_thinking:
+                self.assertEqual(body['thinking'], {'type': 'enabled', 'budget_tokens': 1024})
+            self.assertEqual(body['temperature'], 0.7)
 
     def test_no_reasoning_and_no_callbacks_are_valid(self):
         body = (sse_frame({'choices': [{'delta': {'content': '正文'}}]})

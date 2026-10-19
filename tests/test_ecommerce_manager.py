@@ -98,6 +98,77 @@ class EcommerceManagerTests(unittest.TestCase):
             self.assertEqual(call.args[4], '1:1' if 'carousel' in call.args[3] else '3:4')
         self.assertNotIn(TEST_KEY, json.dumps(group, ensure_ascii=False))
 
+    def test_distinct_chat_and_image_lines_thinking_and_redaction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = ConfigManager(Path(temporary) / 'config.json')
+            config.config = dict(
+                api={'base_url': 'https://active.example/v1', 'api_key': 'active-secret'},
+                line_routing={'video': 'active', 'chat': 'chat-station', 'image': 'image-station'},
+                stations=[
+                    {'id': 'chat-station', 'enabled': True,
+                     'base_url': 'https://chat.example', 'api_key': 'chat-secret'},
+                    {'id': 'image-station', 'enabled': True,
+                     'base_url': 'https://image.example/v1', 'api_key': 'image-secret'},
+                ],
+                paths={'output': str(Path(temporary) / 'output')},
+                ecommerce={'analysis_model': 'config-analysis', 'image_model': 'config-image'},
+                task_strategy={'max_concurrency': 1})
+            manager = EcommerceImageManager.build_from_config(
+                config, store=self.store,
+                overrides={'analysis_model': 'override-analysis', 'image_model': 'override-image'})
+            manager.analysis_func = self.analysis
+            manager.image_func = self.image
+            group_id = manager.start_group(
+                ['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K', thinking=True)
+        analysis_call = self.analysis.call_args
+        self.assertEqual(analysis_call.args[:3],
+                         ('https://chat.example/v1', 'chat-secret', 'override-analysis'))
+        self.assertTrue(analysis_call.kwargs['thinking'])
+        self.assertTrue(callable(analysis_call.kwargs['on_reasoning']))
+        image_call = self.image.call_args
+        self.assertEqual(image_call.args[:3],
+                         ('https://image.example/v1', 'image-secret', 'override-image'))
+        self.assertTrue(self.store.get_group(group_id)['config']['thinking'])
+        self.assertNotIn('chat-secret', json.dumps(self.store.get_group(group_id), ensure_ascii=False))
+        self.assertNotIn('image-secret', json.dumps(self.store.get_group(group_id), ensure_ascii=False))
+        self.assertNotIn('active-secret', json.dumps(self.store.get_group(group_id), ensure_ascii=False))
+        for secret in ('chat-secret', 'image-secret'):
+            self.assertNotIn(secret, manager._clean('failure: ' + secret))
+
+    def test_reasoning_log_is_throttled_and_bounded(self):
+        def analysis(*args, **kwargs):
+            callback = kwargs['on_reasoning']
+            callback('思考片段' * 100)
+            callback('同秒后续片段')
+            return fake_analysis(*args, **kwargs)
+
+        manager = self.make_manager(analysis_func=analysis)
+        manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        messages = [message for message, level in self.logs if message.startswith('[思考中] ')]
+        self.assertEqual(len(messages), 1)
+        self.assertLessEqual(len(messages[0]) - len('[思考中] '), 200)
+        self.assertEqual(next(level for message, level in self.logs if message.startswith('[思考中] ')), 'info')
+
+    def test_resume_and_regenerate_keep_image_line_and_item_model(self):
+        calls = []
+
+        def image(*args, **kwargs):
+            calls.append(args[:3])
+            if len(calls) == 1:
+                raise RuntimeError('offline first attempt failed')
+            return fake_image(*args, **kwargs)
+
+        manager = self.make_manager(image_func=image, analysis_base_url='chat-route-A',
+                                    analysis_api_key='chat-key-A', image_base_url='image-route-B',
+                                    image_api_key='image-key-B', image_model='saved-image-model')
+        group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        item = self.store.list_items(group_id)[0]
+        manager.image_model = 'later-config-model'
+        manager.resume_group(group_id)
+        manager.regenerate_items(group_id, [(item['kind'], item['seq'])])
+        self.assertEqual(calls, [('image-route-B', 'image-key-B', 'saved-image-model')] * 3)
+        self.assertEqual(self.analysis.call_count, 1)
+
     def test_concurrency_is_real_and_bounded(self):
         barrier = threading.Barrier(3)
         lock = threading.Lock()
@@ -465,6 +536,13 @@ class EcommerceConfigTests(unittest.TestCase):
             self.assertIs(manager.store, explicit)
             self.assertEqual(manager.output_root.name, 'alias')
             self.assertEqual(manager.concurrency, 3)
+
+    def test_legacy_constructor_falls_back_to_shared_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = EcommerceImageStore(Path(temporary) / 'history.sqlite3')
+            manager = EcommerceImageManager('same-route', 'same-key', temporary, store)
+            self.assertEqual((manager.analysis_base_url, manager.analysis_api_key), ('same-route', 'same-key'))
+            self.assertEqual((manager.image_base_url, manager.image_api_key), ('same-route', 'same-key'))
 
 
 if __name__ == '__main__':

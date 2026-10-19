@@ -194,10 +194,10 @@ class RefreshDownloadHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.gets.append(self.path)
-        if self.path in {'/videos/existing-paid-task', '/videos/new-paid-task'}:
-            if self.path == '/videos/existing-paid-task' and getattr(self.server, 'completed_without_url', False):
+        if self.path in {'/v1/videos/existing-paid-task', '/v1/videos/new-paid-task'}:
+            if self.path == '/v1/videos/existing-paid-task' and getattr(self.server, 'completed_without_url', False):
                 data = json.dumps(dict(status='completed', progress=100)).encode('utf-8')
-            elif self.path == '/videos/new-paid-task':
+            elif self.path == '/v1/videos/new-paid-task':
                 data = json.dumps(dict(status='completed', progress=100, result_url=self.server.base + '/fresh')).encode('utf-8')
             else:
                 destination = '/expired' if self.server.keep_expired else '/fresh'
@@ -256,7 +256,7 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
                 task, gets, posts, data = self.run_case(status)
                 self.assertEqual(task['status'], 'completed', task)
                 self.assertEqual(task['task_id'], 'existing-paid-task')
-                self.assertEqual(gets, ['/expired', '/videos/existing-paid-task', '/fresh'])
+                self.assertEqual(gets, ['/expired', '/v1/videos/existing-paid-task', '/fresh'])
                 self.assertEqual(posts, [])
                 self.assertEqual(data, b'renewed-video-bytes')
 
@@ -271,7 +271,7 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
         task, gets, posts, _ = self.run_case(403, keep_expired=True)
         self.assertEqual(task['status'], 'failed')
         self.assertEqual(task['task_id'], 'existing-paid-task')
-        self.assertEqual(gets, ['/expired', '/videos/existing-paid-task', '/expired'])
+        self.assertEqual(gets, ['/expired', '/v1/videos/existing-paid-task', '/expired'])
         self.assertEqual(posts, [])
         self.assertFalse(task['result_url'])
 
@@ -289,16 +289,16 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
         self.assertEqual(task['status'], 'completed', task)
         self.assertEqual(task['task_id'], 'new-paid-task')
         self.assertEqual(task['exhausted_task_id'], 'existing-paid-task')
-        self.assertEqual(posts, ['/videos'])
-        self.assertIn('/videos/new-paid-task', gets)
+        self.assertEqual(posts, ['/v1/videos'])
+        self.assertIn('/v1/videos/new-paid-task', gets)
         self.assertEqual(data, b'renewed-video-bytes')
-        self.assertNotIn('/videos/existing-paid-task', gets)
+        self.assertNotIn('/v1/videos/existing-paid-task', gets)
 
     def test_expired_cache_create_failure_does_not_repeat_submit(self):
         body = b'{"error":{"message":"Video cache has expired","type":"invalid_request_error"}}'
         task, gets, posts, _ = self.run_case(404, retries=3, expired_body=body)
         self.assertEqual(task['status'], 'submission_unknown', task)
-        self.assertEqual(posts, ['/videos'])
+        self.assertEqual(posts, ['/v1/videos'])
         self.assertFalse(task.get('task_id'))
         self.assertEqual(task['exhausted_task_id'], 'existing-paid-task')
 
@@ -309,7 +309,7 @@ class ExpiredDownloadRecoveryTests(unittest.TestCase):
         self.assertEqual(task['status'], 'completed', task)
         self.assertEqual(task['task_id'], 'new-paid-task')
         self.assertEqual(task['exhausted_task_id'], 'existing-paid-task')
-        self.assertEqual(posts, ['/videos'])
+        self.assertEqual(posts, ['/v1/videos'])
         self.assertNotIn('/expired', gets)
         self.assertEqual(data, b'renewed-video-bytes')
 

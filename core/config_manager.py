@@ -48,6 +48,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "upload_api_key": "",
         "auto_upload_missing": True,
     },
+    "line_routing": {"video": "active", "chat": "active", "image": "active"},
+    "chat_model_pool": {
+        "enabled": False, "strategy": "轮询", "auto_failover": True, "cooldown": 30, "models": [],
+    },
+    "image_model_pool": {
+        "enabled": False, "strategy": "轮询", "auto_failover": True, "cooldown": 30, "models": [],
+    },
     "model_pool": {
         "enabled": False,
         "strategy": "轮询",

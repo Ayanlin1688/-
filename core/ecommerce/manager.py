@@ -15,6 +15,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from core.log_redaction import redact_structure, redact_text
+from core.line_routing import resolve_line
 from .analysis import DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse, parse_prompt_items
 from .image_client import DEFAULT_IMAGE_MODEL, generate_image, image_dimensions
 from .platforms import _resolve_platforms, detect_conflicts
@@ -52,9 +53,14 @@ class EcommerceImageManager:
     def __init__(self, base_url, api_key, output_root, store,
                  analysis_model=DEFAULT_ANALYSIS_MODEL, image_model=DEFAULT_IMAGE_MODEL,
                  concurrency=5, log=None, *, analysis_func=None, image_func=None,
-                 on_group=None, on_item=None, on_log=None):
+                 on_group=None, on_item=None, on_log=None, analysis_base_url=None,
+                 analysis_api_key=None, image_base_url=None, image_api_key=None):
         self.base_url = base_url
         self.api_key = api_key
+        self.analysis_base_url = base_url if analysis_base_url is None else analysis_base_url
+        self.analysis_api_key = api_key if analysis_api_key is None else analysis_api_key
+        self.image_base_url = base_url if image_base_url is None else image_base_url
+        self.image_api_key = api_key if image_api_key is None else image_api_key
         self.output_root = Path(output_root).expanduser().resolve()
         self.store = store
         self.analysis_model = analysis_model
@@ -67,20 +73,25 @@ class EcommerceImageManager:
         self._warned_persistence = False
 
     @classmethod
-    def build_from_config(cls, config_manager, store=None):
+    def build_from_config(cls, config_manager, store=None, overrides=None):
         config = config_manager.config
-        api, ecommerce = config.get('api', {}), config.get('ecommerce', {})
+        analysis_line = resolve_line(config, 'chat')
+        image_line = resolve_line(config, 'image')
+        ecommerce = config.get('ecommerce', {})
+        overrides = overrides if isinstance(overrides, dict) else {}
         output = (config.get('paths', {}).get('output') or config.get('output_dir')
                   or config_manager.path.parent / 'output')
         return cls(
-            api.get('base_url', ''), api.get('api_key', ''), output,
+            analysis_line['base_url'], analysis_line['api_key'], output,
             store if store is not None else config_manager.ecommerce_store(),
-            ecommerce.get('analysis_model', DEFAULT_ANALYSIS_MODEL),
-            ecommerce.get('image_model', DEFAULT_IMAGE_MODEL),
-            ecommerce.get('max_concurrency', config.get('task_strategy', {}).get('max_concurrency', 5)))
+            overrides.get('analysis_model', ecommerce.get('analysis_model', DEFAULT_ANALYSIS_MODEL)),
+            overrides.get('image_model', ecommerce.get('image_model', DEFAULT_IMAGE_MODEL)),
+            ecommerce.get('max_concurrency', config.get('task_strategy', {}).get('max_concurrency', 5)),
+            analysis_base_url=analysis_line['base_url'], analysis_api_key=analysis_line['api_key'],
+            image_base_url=image_line['base_url'], image_api_key=image_line['api_key'])
 
     def _clean(self, value):
-        return redact_text(value, (self.api_key,))
+        return redact_text(value, (self.api_key, self.analysis_api_key, self.image_api_key))
 
     def _safe_copy(self, value):
         return redact_structure(deepcopy(value), self._clean)
@@ -151,7 +162,8 @@ class EcommerceImageManager:
 
     def start_group(self, platforms, product_name, product_info, language,
                     carousel_count, detail_count, carousel_ratio, detail_ratio, tier,
-                    product_image_paths=None, style_image_path=None, *, cancel_event=None):
+                    product_image_paths=None, style_image_path=None, *, cancel_event=None,
+                    thinking=False):
         """Run synchronously; image callbacks execute on the pool's worker threads."""
         selected = _resolve_platforms(platforms)
         conflicts = detect_conflicts(selected)
@@ -188,11 +200,22 @@ class EcommerceImageManager:
                             carousel_ratio=carousel_ratio, detail_ratio=detail_ratio, tier=tier,
                             carousel_count=carousel_count, detail_count=detail_count,
                             language=language, product_info=product_info,
-                            reference_paths=references)))
+                            reference_paths=references, thinking=bool(thinking))))
             try:
+                last_reasoning = [float('-inf')]
+                reasoning_lock = threading.Lock()
+
+                def log_reasoning(chunk):
+                    now = time.monotonic()
+                    with reasoning_lock:
+                        if now - last_reasoning[0] < 1.0:
+                            return
+                        last_reasoning[0] = now
+                    self._log('[思考中] ' + str(chunk)[:200], 'info')
+
                 items, _reasoning = self.analysis_func(
-                    self.base_url, self.api_key, self.analysis_model, system, user,
-                    carousel_count, detail_count)
+                    self.analysis_base_url, self.analysis_api_key, self.analysis_model, system, user,
+                    carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
                 # Keep injection and future adapters subject to the same strict contract.
                 items = parse_prompt_items(json.dumps(items, ensure_ascii=False),
                                            carousel_count, detail_count)
@@ -228,7 +251,7 @@ class EcommerceImageManager:
             return
         try:
             result = self.image_func(
-                self.base_url, self.api_key, item['model'], item['prompt'], item['ratio'], item['tier'],
+                self.image_base_url, self.image_api_key, item['model'], item['prompt'], item['ratio'], item['tier'],
                 reference_paths=list(item['reference_paths']))
             name = ('轮' if item['kind'] == 'carousel' else '详') + str(item['seq']) + '.png'
             path = Path(group['output_dir']).resolve() / name

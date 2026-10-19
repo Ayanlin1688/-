@@ -22,6 +22,7 @@ from .prompt_processor import reference_warnings
 from .submission_ledger import SubmissionLedger, account_scope, ledger_path
 from .submission_safety import SubmissionGate
 from .disk_guard import cleanup_disk
+from .line_routing import resolve_line
 
 
 class TaskWorker(QThread):
@@ -40,6 +41,7 @@ class TaskWorker(QThread):
         self.config = copy.deepcopy(config)
         for key in ('base_url', 'api_key', 'upload_url', 'upload_api_key'):
             self.config['api'][key] = self.config['api'].get(key, '').strip()
+        self.video_line = resolve_line(self.config, 'video')
         self.previous = copy.deepcopy(previous)
         self.control = TaskControl()
         self.tasks = []
@@ -82,7 +84,8 @@ class TaskWorker(QThread):
 
     def redact(self, message):
         api = self.config['api']
-        return redact_text(message, (api.get('api_key'), api.get('upload_api_key')))
+        return redact_text(message, (api.get('api_key'), api.get('upload_api_key'),
+                                     self.video_line.get('api_key'), self.video_line.get('upload_api_key')))
 
     def log(self, message, level='info'):
         if level.lower() == 'debug' and not self.debug_mode:
@@ -145,7 +148,7 @@ class TaskWorker(QThread):
                        legacy_task_id=old.get('task_id', ''), legacy_signature=old['signature'],
                        effective_parameters=copy.deepcopy(params), submission_model=copy.deepcopy(frozen),
                        error='旧记录的账号归属未确认，已阻止创建和查询；请核对当前账号及候选任务ID')
-        pending['signature'] = task_signature(task, model, params, self.config['api']['base_url'], catalog)
+        pending['signature'] = task_signature(task, model, params, self.video_line['base_url'], catalog)
         outcome, record = self.ledger.reserve(pending, self.scope)
         if outcome == 'claimed':
             self.ledger.save(record, 'unknown')
@@ -200,11 +203,11 @@ class TaskWorker(QThread):
             if len(actual_images) < len(task['images']):
                 self.log(f'提示词{Path(task["prompt_path"]).name}绑定了{len(task["images"])}张图，模型{model}最多支持{len(actual_images)}张，已自动截取前{len(actual_images)}张', 'warning')
             params = self._parameters(task, model)
-            signature = task_signature(task, model, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
+            signature = task_signature(task, model, params, self.video_line['base_url'], self.config.get('_model_catalog'))
             output_dir = resolve_output_directory(paths['output'], task.get('output_subdir', ''))
             task.update(status='waiting', task_id='', model=model, retry_count=0, attempts=[], result_path='',
                         local_id=uuid.uuid4().hex, signature=signature, created_at='', finished_at='', error='',
-                        api_base_url=self.config['api']['base_url'].rstrip('/'), output_dir=output_dir, sequence=sequence)
+                        api_base_url=self.video_line['base_url'], output_dir=output_dir, sequence=sequence)
             task['api_scope'] = self.scope
             if task.get('model_locked'):
                 candidate_models = [model]
@@ -216,8 +219,8 @@ class TaskWorker(QThread):
             for candidate in dict.fromkeys(candidate_models):
                 try:
                     params = self._parameters(task, candidate)
-                    key = task_signature(task, candidate, params, self.config['api']['base_url'], self.config.get('_model_catalog'))
-                    old = previous.get(key) or previous.get(task_signature(task, candidate, params, self.config['api']['base_url'], self.config.get('_model_catalog'), legacy=True))
+                    key = task_signature(task, candidate, params, self.video_line['base_url'], self.config.get('_model_catalog'))
+                    old = previous.get(key) or previous.get(task_signature(task, candidate, params, self.video_line['base_url'], self.config.get('_model_catalog'), legacy=True))
                     if old and old.get('ledger_state') != 'released' and (old.get('task_id') or old.get('ledger_state') in {'unknown', 'submitting', 'reserved'}):
                         candidates.append(old)
                 except ValueError:
@@ -245,7 +248,7 @@ class TaskWorker(QThread):
                     params = parameters_for_model(historical_model, self.config['workspace'],
                                                   self.pool.enabled or self._uses_task_model(task),
                                                   len(task['images']), historical_catalog)
-                    key = task_signature(task, historical_model, params, self.config['api']['base_url'], historical_catalog)
+                    key = task_signature(task, historical_model, params, self.video_line['base_url'], historical_catalog)
                     if key == old.get('signature'):
                         candidates.append(old)
                 except ValueError:

@@ -102,7 +102,7 @@ class ExecutionClosureTests(unittest.TestCase):
             second.run()
             self.assertEqual(second.tasks[0]['status'], 'completed', second.tasks[0])
             self.assertEqual(second.tasks[0]['task_id'], paid_id)
-            self.assertEqual(len([row for row in server.calls if row[0] == '/videos']), 1)
+            self.assertEqual(len([row for row in server.calls if row[0].endswith('/videos')]), 1)
 
     def test_lost_reference_files_recover_existing_paid_id_without_post(self):
         with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
@@ -125,7 +125,7 @@ class ExecutionClosureTests(unittest.TestCase):
             second.run()
             self.assertEqual(second.tasks[0]['status'], 'completed', second.tasks[0])
             self.assertEqual(second.tasks[0]['task_id'], paid_id)
-            self.assertEqual(len([row for row in server.calls if row[0] == '/videos']), 1)
+            self.assertEqual(len([row for row in server.calls if row[0].endswith('/videos')]), 1)
 
     def test_poll_stall_reports_elapsed_and_keeps_known_id(self):
         with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
@@ -194,7 +194,7 @@ class ExecutionClosureTests(unittest.TestCase):
             task = worker.tasks[0]
             self.assertEqual(task['status'], 'completed', task)
             self.assertGreaterEqual(server.polls.get(task['task_id'], 0), 3)
-            self.assertEqual(len([row for row in server.calls if row[0] == '/videos']), 1)
+            self.assertEqual(len([row for row in server.calls if row[0].endswith('/videos')]), 1)
             self.assertTrue(any('下载地址尚未返回' in message for message in logs), logs)
 
 

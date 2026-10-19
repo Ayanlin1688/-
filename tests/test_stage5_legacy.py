@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
 from core.submission_ledger import SubmissionLedger, account_scope
+from core.line_routing import resolve_line
 from core.task_manager import TaskManager, TaskWorker
 from core.task_state import task_signature
 from test_http_clients import LocalServer
@@ -45,14 +46,16 @@ class LegacyScopeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def history(self, server, *, legacy=True):
-        self.config['api'].update(base_url=server.base, api_key='old-account')
+        self.config['api'].update(base_url=server.base + '/v1', api_key='old-account')
         worker = TaskWorker(self.config, [])
         worker._scan()
         record = copy.deepcopy(worker.tasks[0])
         record.update(task_id='legacy-task', status='failed')
         if legacy:
             record.pop('api_scope')
-            record['signature'] = task_signature(record, record['model'], self.config['workspace'], server.base, legacy=True)
+            record['signature'] = task_signature(
+                record, record['model'], self.config['workspace'],
+                resolve_line(self.config, 'video')['base_url'], legacy=True)
         self.config['history'] = [record]
         self.config['api']['api_key'] = 'current-account'
         return record
@@ -90,8 +93,8 @@ class LegacyScopeTests(unittest.TestCase):
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(result['task_id'], 'confirmed-current-task')
             self.assertEqual(server.calls, [])
-            self.assertIn('/videos/confirmed-current-task', server.gets)
-            self.assertNotIn('/videos/legacy-task', server.gets)
+            self.assertIn('/v1/videos/confirmed-current-task', server.gets)
+            self.assertNotIn('/v1/videos/legacy-task', server.gets)
 
     def test_noncreation_confirmation_is_not_undone_by_old_history(self):
         with LocalServer() as server:
@@ -104,7 +107,7 @@ class LegacyScopeTests(unittest.TestCase):
             result = self.run_batch()
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(len(server.calls), 1)
-            self.assertNotIn('/videos/legacy-task', server.gets)
+            self.assertNotIn('/v1/videos/legacy-task', server.gets)
 
     def test_explicit_other_scope_does_not_block_current_account_generation(self):
         with LocalServer() as server:
@@ -112,7 +115,7 @@ class LegacyScopeTests(unittest.TestCase):
             result = self.run_batch()
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(len(server.calls), 1)
-            self.assertNotIn('/videos/legacy-task', server.gets)
+            self.assertNotIn('/v1/videos/legacy-task', server.gets)
 
     def test_confirmed_current_scope_record_still_resumes_without_post(self):
         with LocalServer() as server:
@@ -121,7 +124,7 @@ class LegacyScopeTests(unittest.TestCase):
             result = self.run_batch()
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(server.calls, [])
-            self.assertIn('/videos/legacy-task', server.gets)
+            self.assertIn('/v1/videos/legacy-task', server.gets)
 
     def test_recovery_dialog_binds_only_the_explicitly_entered_current_account_id(self):
         with LocalServer() as server:
@@ -162,8 +165,8 @@ class LegacyScopeTests(unittest.TestCase):
                 page.redownload(recovered)
                 wait_until(lambda: not page.jobs.busy)
                 self.assertEqual(server.calls, [])
-                self.assertIn('/videos/current-account-confirmed-id', server.gets)
-                self.assertNotIn('/videos/legacy-task', server.gets)
+                self.assertIn('/v1/videos/current-account-confirmed-id', server.gets)
+                self.assertNotIn('/v1/videos/legacy-task', server.gets)
             finally:
                 page.shutdown()
                 wait_until(lambda: not page.jobs.busy)
@@ -192,7 +195,7 @@ class LegacyScopeTests(unittest.TestCase):
                 page.redownload(record)
                 wait_until(lambda: not page.jobs.busy)
                 self.assertEqual(server.calls, [])
-                self.assertIn('/videos/legacy-task', server.gets)
+                self.assertIn('/v1/videos/legacy-task', server.gets)
             finally:
                 page.shutdown()
                 wait_until(lambda: not page.jobs.busy)

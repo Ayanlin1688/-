@@ -7,9 +7,11 @@ import sqlite3
 import time
 import uuid
 
+from .line_routing import resolve_line
+
 
 def account_scope(config):
-    api = config['api']
+    api = resolve_line(config, 'video')
     identity = [api['base_url'].strip().rstrip('/'), api['api_key'].strip()]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 

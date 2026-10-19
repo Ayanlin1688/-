@@ -47,7 +47,7 @@ class PoolHandler(FixtureHandler):
             self.server.download_errors -= 1
             self.server.gets.append(self.path)
             return self.respond({'error': 'temporary download failure'}, 503)
-        if not self.path.startswith('/videos/'):
+        if not (self.path.startswith('/videos/') or self.path.startswith('/v1/videos/')):
             return super().do_GET()
         task_id = self.path.rsplit('/', 1)[1]
         self.server.gets.append(self.path)
@@ -118,7 +118,7 @@ class PoolExecutionTests(unittest.TestCase):
     def test_round_robin_three_tasks_use_three_actual_models(self):
         with PoolServer() as server:
             tasks = self.run_tasks(server, 3)
-            self.assertEqual([json.loads(body)['model'] for path, _, body in server.calls if path == '/videos'],
+            self.assertEqual([json.loads(body)['model'] for path, _, body in server.calls if path.endswith('/videos')],
                              ['video-v2', 'video-v2-fast', 'video-v3'])
             self.assertEqual([t['model'] for t in tasks], ['video-v2', 'video-v2-fast', 'video-v3'])
             self.assertEqual([t['status'] for t in tasks], ['completed'] * 3)
@@ -154,7 +154,7 @@ class PoolExecutionTests(unittest.TestCase):
             self.assertEqual(task['status'], 'completed')
             self.assertEqual([a['phase'] for a in task['attempts'][:-1]], ['upload', 'submit'])
             self.assertEqual(task['attempts'][1]['model'], 'video-v2')
-            bodies = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            bodies = [json.loads(body) for path, _, body in server.calls if path.endswith('/videos')]
             self.assertEqual([len(body['images']) for body in bodies], [3, 3])
             self.assertEqual(bodies[0]['images'], bodies[1]['images'])
             # Failed round: 2 attempts + 2 good images. Recovery: 3 uploads.
@@ -182,7 +182,7 @@ class PoolExecutionTests(unittest.TestCase):
             server.fail_models = {'MiniMax-H3'}
             task = self.run_tasks(server)[0]
             self.assertEqual(task['status'], 'completed')
-            payloads = [json.loads(body) for path, _, body in server.calls if path == '/videos']
+            payloads = [json.loads(body) for path, _, body in server.calls if path.endswith('/videos')]
             self.assertEqual([len(p['images']) for p in payloads], [9, 10])
             self.assertEqual(task['submitted_image_count'], 10)
             self.assertEqual(len(task['images']), 10)
@@ -224,7 +224,8 @@ class PoolExecutionTests(unittest.TestCase):
             self.assertEqual(task['status'], 'completed')
             self.assertEqual(task['retry_count'], 2)
             self.assertEqual(len(server.calls), 1)
-            self.assertEqual({path.rsplit('/', 1)[-1] for path in server.gets if path.startswith('/videos/')}, {task['task_id']})
+            self.assertEqual({path.rsplit('/', 1)[-1] for path in server.gets
+                              if '/videos/' in path}, {task['task_id']})
 
     def test_remote_failed_status_allows_new_model_and_retains_failed_id(self):
         with PoolServer() as server:

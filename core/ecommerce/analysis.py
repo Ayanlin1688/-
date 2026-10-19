@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from urllib.parse import urlsplit
 
 import requests
 
@@ -68,8 +70,16 @@ def _read_sse(response, redact, on_content, on_reasoning):
     return ''.join(content_parts), ''.join(reasoning_parts)
 
 
+def _request_model(base_url, model, thinking):
+    host = (urlsplit(str(base_url or '').strip()).hostname or '').lower()
+    if thinking and model == 'deepseek-chat' and 'deepseek.com' in host:
+        logging.getLogger('storyboard').info('deepseek-chat 已切换为 deepseek-reasoner')
+        return 'deepseek-reasoner'
+    return model
+
+
 def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
-                   timeout=(15, 120), on_content=None, on_reasoning=None):
+                   timeout=(15, 120), on_content=None, on_reasoning=None, thinking=False):
     """Return complete content and reasoning, notifying callbacks per delta.
 
     Reuse the shared requests session and redaction. POST is sent once; a failed
@@ -77,30 +87,40 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
     """
     client = HttpClient(api_key=api_key, timeout=timeout)
     status_code = None
+    request_model = _request_model(base_url, model, thinking)
+    payload = {
+        'model': request_model,
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        'stream': True,
+    }
+    if request_model != 'deepseek-reasoner':
+        payload['temperature'] = 0.7
+    if thinking and (request_model.lower().startswith('claude-') or 'thinking' in request_model.lower()):
+        payload['thinking'] = {'type': 'enabled', 'budget_tokens': 1024}
     try:
         with client.request(
             'POST', base_url.strip().rstrip('/') + '/chat/completions',
             check_status=False, stream=True,
             headers={'Content-Type': 'application/json', 'Accept': 'text/event-stream'},
-            json={
-                'model': model,
-                'messages': [
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt},
-                ],
-                'stream': True,
-                'temperature': 0.7,
-            },
+            json=payload,
         ) as response:
             status_code = response.status_code
             if not 200 <= status_code < 300:
                 excerpt = client.redact(response.text)[:500]
                 raise EcommerceAnalysisError(
-                    f'HTTP {status_code}: {excerpt}', status_code, excerpt)
+                    f'模型 {client.redact(request_model)} HTTP {status_code}: {excerpt}', status_code, excerpt)
             return _read_sse(response, client.redact, on_content, on_reasoning)
+    except EcommerceAnalysisError as error:
+        message = error.message
+        if client.redact(request_model) not in message:
+            message = f'模型 {client.redact(request_model)}：{message}'
+        raise EcommerceAnalysisError(message, error.status_code, client.redact(error.body_excerpt)) from None
     except (RequestError, requests.RequestException) as error:
         raise EcommerceAnalysisError(
-            f'AI 分析连接或读取失败：{client.redact(error)}',
+            f'模型 {client.redact(request_model)} AI 分析连接或读取失败：{client.redact(error)}',
             status_code if status_code is not None else getattr(error, 'status_code', None),
             client.redact(getattr(error, 'body', '')),
         ) from None
@@ -177,8 +197,8 @@ def parse_prompt_items(text, carousel_count, detail_count):
 
 
 def analyze_and_parse(base_url, api_key, model, system_prompt, user_prompt,
-                      carousel_count, detail_count, *, on_content=None, on_reasoning=None):
+                      carousel_count, detail_count, *, on_content=None, on_reasoning=None, thinking=False):
     full_text, reasoning_text = analyze_stream(
         base_url, api_key, model, system_prompt, user_prompt,
-        on_content=on_content, on_reasoning=on_reasoning)
+        on_content=on_content, on_reasoning=on_reasoning, thinking=thinking)
     return parse_prompt_items(full_text, carousel_count, detail_count), reasoning_text
