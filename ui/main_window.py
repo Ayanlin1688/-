@@ -1125,12 +1125,15 @@ class MainWindow(FluentWindow):
         self.settings_page.pool_enabled.checkedChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.settings_page.strategy.currentTextChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.workspace_page.history_changed.connect(self.history_page.update_history)
+        self.ecommerce_page.history_records_changed.connect(self.history_page.refresh_records)
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
         self.history_page.batch_resolve_requested.connect(self.workspace_page.resolve_submissions)
         self.history_page.regenerate_requested.connect(self.workspace_page.regenerate)
         self.history_page.create_requested.connect(lambda: self.switchTo(self.workspace_page))
         self.history_page.delete_requested.connect(self.workspace_page.delete_history_records)
+        self.history_page.view_ecommerce_group.connect(self._view_ecommerce_history_group)
+        self.history_page.ecommerce_delete_requested.connect(self._delete_ecommerce_history_groups)
         self.history_page.clean_cache_requested.connect(self.workspace_page.clean_cache_now)
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
@@ -1148,6 +1151,17 @@ class MainWindow(FluentWindow):
             selectable=False,
             position=NavigationItemPosition.BOTTOM,
         )
+
+    def _view_ecommerce_history_group(self, group_id):
+        self.switchTo(self.ecommerce_page)
+        self.ecommerce_page._view_history_group(group_id)
+
+    def _delete_ecommerce_history_groups(self, group_ids):
+        store = self.config_manager.ecommerce_store()
+        for group_id in group_ids:
+            store.delete_group(group_id)
+        self.history_page.refresh_records()
+        self.ecommerce_page._refresh_history()
 
     def show_about(self) -> None:
         from PyQt5.QtWidgets import QLabel

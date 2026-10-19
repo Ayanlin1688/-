@@ -1,4 +1,7 @@
 """Persisted task records and manual download recovery in a Fluent table."""
+from datetime import datetime
+import os
+
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
 from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel, QStyle, QStyleOptionButton, QStyleOptionViewItem
 from ..responsive import CoalescedCall, WrapLayout, scrollable_body
@@ -96,6 +99,8 @@ class HistoryPage(QWidget):
     regenerate_requested = pyqtSignal(object)
     create_requested = pyqtSignal()
     delete_requested = pyqtSignal(object, bool)
+    view_ecommerce_group = pyqtSignal(str)
+    ecommerce_delete_requested = pyqtSignal(list)
     clean_cache_requested = pyqtSignal()
 
     def __init__(self, log_callback, config_manager, parent=None):
@@ -114,7 +119,8 @@ class HistoryPage(QWidget):
         caption.setWordWrap(True)
         title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
-        self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
+        self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过'), tr('部分完成')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
+        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(130); header.addWidget(self.type_filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         self.batch_resolve_button = PushButton(FIF.INFO, tr('批量处理待确认提交'))
@@ -132,7 +138,7 @@ class HistoryPage(QWidget):
         actions.addWidget(self.clean_cache_button)
         actions.addStretch(1)
         root.addLayout(actions)
-        columns = ['', tr('序号'), tr('产品'), tr('任务名'), tr('模型'), tr('状态'), tr('提交时间'), tr('完成时间'), tr('文件大小'), tr('操作')]
+        columns = ['', tr('序号'), tr('类型'), tr('产品'), tr('任务名'), tr('模型'), tr('状态'), tr('提交时间'), tr('完成时间'), tr('文件大小'), tr('操作')]
         self.table = TableWidget()
         self.table.setItemDelegate(HistoryItemDelegate(self.table))
         self.selection_header = SelectionHeader(self.table)
@@ -145,9 +151,9 @@ class HistoryPage(QWidget):
             header_item = self.table.horizontalHeaderItem(column)
             if header_item is None:
                 continue
-            if column in (2, 3, 4):
+            if column in (3, 4, 5):
                 header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            elif column in (6, 7, 8):
+            elif column in (7, 8, 9):
                 header_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             else:
                 header_item.setTextAlignment(Qt.AlignCenter)
@@ -172,7 +178,8 @@ class HistoryPage(QWidget):
         self.footer_right = CaptionLabel(tr('显示最近 100 条') + f' · v{APP_VERSION}'); footer_row.addWidget(self.footer_right)
         root.addWidget(self.footer)
         self.filter_box.currentTextChanged.connect(self._filter)
-        self.update_history(config_manager.history_records())
+        self.type_filter_box.currentTextChanged.connect(lambda *_: self._filter(self.filter_box.currentText()))
+        self.refresh_records()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -187,11 +194,11 @@ class HistoryPage(QWidget):
         self._column_relayout.schedule()
 
     def _fit_columns(self):
-        widths = [px(value) for value in (92, 72, 120, 180, 120, 110, 166, 166, 100, 160)]
+        widths = [px(value) for value in (92, 72, 76, 120, 180, 120, 110, 166, 166, 100, 160)]
         widths[0] = self.table.columnWidth(0)
         extra = max(0, self.table.viewport().width() - sum(widths))
-        widths[3] += extra // 2
-        widths[2] += extra - extra // 2
+        widths[4] += extra // 2
+        widths[3] += extra - extra // 2
         for index, width in enumerate(widths):
             if self.table.columnWidth(index) != width:
                 self.table.setColumnWidth(index, width)
@@ -227,21 +234,94 @@ class HistoryPage(QWidget):
             'duplicate': ('rgba(139,92,246,0.14)', 'rgba(124,80,230,1)'),
             'failed': ('rgba(239,68,68,0.14)', 'rgba(200,55,55,1)'),
             'submission_unknown': ('rgba(240,169,59,0.18)', 'rgba(170,110,25,1)'),
+            'ec_partial': ('rgba(240,169,59,0.18)', 'rgba(170,110,25,1)'),
+            'ec_running': ('rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'),
             'cancelled': ('rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'),
             'skipped': ('rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'),
         }
         return mapping.get(status, ('rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'))
 
+    def _ecommerce_records(self):
+        store = self.config_manager.ecommerce_store()
+        groups = store.list_groups(limit=100)
+        result = []
+        terminal = {'succeeded', 'partial', 'failed', 'cancelled'}
+        for group in groups:
+            config = group.get('config') if isinstance(group.get('config'), dict) else {}
+            totals = group.get('totals') if isinstance(group.get('totals'), dict) else {}
+            count_config = (group.get('manifest') if isinstance(group.get('manifest'), dict) else {})
+            carousel = totals.get('carousel_count', count_config.get('carousel_count', config.get('carousel_count', 0)))
+            detail = totals.get('detail_count', count_config.get('detail_count', config.get('detail_count', 0)))
+            names = [platform.get('name') for platform in group.get('platforms', [])
+                     if isinstance(platform, dict) and platform.get('name')]
+            items = store.list_items(group.get('group_id', ''))
+            size_bytes = 0
+            for item in items:
+                path = item.get('file_path')
+                if item.get('status') != 'succeeded' or not path:
+                    continue
+                try:
+                    size_bytes += os.path.getsize(path)
+                except OSError:
+                    pass
+            status = group.get('status')
+            mapped_status = {
+                'succeeded': 'completed', 'partial': 'ec_partial', 'failed': 'failed',
+                'analyzing': 'ec_running', 'generating': 'ec_running', 'cancelled': 'cancelled',
+            }.get(status, 'ec_running')
+            created = self._iso_timestamp(group.get('created_at'))
+            finished = self._iso_timestamp(group.get('updated_at')) if status in terminal else ''
+            image_model = config.get('image_model') or count_config.get('image_model', '')
+            analysis_model = config.get('analysis_model') or count_config.get('analysis_model', '')
+            result.append(dict(
+                kind='ec', local_id='ec:' + str(group.get('group_id', '')),
+                group_id=group.get('group_id', ''), group_status=status,
+                product=group.get('product_name') or '',
+                prompt_name='、'.join(names) + tr('（轮{carousel}/详{detail}）').format(
+                    carousel=carousel, detail=detail),
+                model=image_model, model_tooltip=tr('分析：{analysis_model} / 生图：{image_model}').format(
+                    analysis_model=analysis_model, image_model=image_model),
+                status=mapped_status, created_at=created, finished_at=finished,
+                size_bytes=size_bytes, result_path=group.get('output_dir') or '',
+                output_dir=group.get('output_dir') or '', task_id='', error=group.get('error') or '',
+            ))
+        return result
+
+    @staticmethod
+    def _iso_timestamp(value):
+        try:
+            return datetime.fromtimestamp(float(value)).isoformat(timespec='seconds')
+        except (TypeError, ValueError, OSError, OverflowError):
+            return str(value or '')
+
+    @staticmethod
+    def _sort_timestamp(record):
+        value = record.get('created_at')
+        try:
+            return datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp()
+        except (TypeError, ValueError, OSError, OverflowError):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
+    def refresh_records(self):
+        self.update_history(self.config_manager.history_records())
+
     def update_history(self, records):
         # 只渲染最近 100 条（页脚已承诺）；数据未变化时短路，避免整表重建与控件重挂。
-        total = len(records)
-        self._all_records = list(records)
-        display = list(reversed(records))[:HISTORY_DISPLAY_LIMIT]
+        videos = list(reversed(records))
+        combined = videos + self._ecommerce_records()
+        combined.sort(key=self._sort_timestamp, reverse=True)
+        total = len(combined)
+        self._all_records = combined
+        display = combined[:HISTORY_DISPLAY_LIMIT]
         keys = [(r.get('local_id'), r.get('product'), r.get('prompt_name'), r.get('model'),
                  r.get('status'), r.get('created_at'), r.get('finished_at'), r.get('result_path'),
-                 r.get('task_id'), r.get('error'), r.get('size_bytes') or 0) for r in display]
+                 r.get('task_id'), r.get('error'), r.get('size_bytes') or 0, r.get('kind'),
+                 r.get('group_id'), r.get('model_tooltip'), r.get('output_dir')) for r in display]
         if keys == getattr(self, '_display_keys', None) and total == getattr(self, '_total', -1):
-            gb = sum((task.get('size_bytes') or 0) for task in records) / 1024**3
+            gb = sum((task.get('size_bytes') or 0) for task in combined) / 1024**3
             self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=total, gb=gb))
             self._sync_selection()
             return
@@ -250,7 +330,7 @@ class HistoryPage(QWidget):
         has_records = bool(display)
         self.table.setVisible(has_records)
         self.empty_view.setVisible(not has_records)
-        gb = sum((t.get('size_bytes') or 0) for t in records) / 1024**3
+        gb = sum((t.get('size_bytes') or 0) for t in combined) / 1024**3
         self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=total, gb=gb))
         self.footer.setVisible(has_records)
         has_pending = any(t.get('status') == 'submission_unknown' for t in records)
@@ -273,58 +353,109 @@ class HistoryPage(QWidget):
         self.table.setRowCount(len(self.records))
         self._row_status = []
         for row, task in enumerate(self.records):
-            status = tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
+            status = self._status_text(task)
             self._row_status.append(status)
-            values = [str(len(self.records)-row), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
+            values = [str(len(self.records)-row), self._type_text(task), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
                       _stamp(task.get('created_at')), _stamp(task.get('finished_at')),
                       f"{task['size_bytes']/1024/1024:.1f} MB" if task.get('size_bytes') else '—']
             self._add_selection(row, task)
             for column, value in enumerate(values, 1):
-                if column == 5:
+                if column in (2, 6):
                     tag = QLabel(value); tag.setAlignment(Qt.AlignCenter)
-                    bg, fg = self._tag_colors(task.get('status'))
+                    if column == 2:
+                        bg, fg = self._type_colors(task)
+                        tag.setObjectName('historyTypeTag')
+                    else:
+                        bg, fg = self._tag_colors(task.get('status'))
+                        tag.setObjectName('historyStatusTag')
                     tag.setStyleSheet(f'color:{fg}; background:{bg}; border-radius:6px; padding:2px 10px;')
                     wrap = QWidget(); wrap_row = QHBoxLayout(wrap); wrap_row.setContentsMargins(0, 6, 0, 6)
                     wrap_row.addWidget(tag, 0, Qt.AlignCenter)
-                    self.table.setCellWidget(row, 5, wrap)
+                    self.table.setCellWidget(row, column, wrap)
                     continue
                 item = QTableWidgetItem(value)
-                if column in (2, 3, 4):
+                if column in (3, 4, 5):
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                elif column in (6, 7, 8):
+                elif column in (7, 8, 9):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 else:
                     item.setTextAlignment(Qt.AlignCenter)
-                item.setToolTip(task.get('error', '') or task.get('task_id', ''))
+                item.setToolTip(self._cell_tooltip(task, column))
                 self.table.setItem(row, column, item)
-            action = QWidget(); layout = QHBoxLayout(action); layout.setContentsMargins(4, 2, 4, 2)
-            open_file = TransparentToolButton(FIF.FOLDER)
-            open_file.setToolTip(tr('打开文件') if task.get('result_path') else tr('打开文件（暂无本地文件，任务完成下载后可打开）'))
-            open_file.setEnabled(bool(task.get('result_path')))
-            open_file.clicked.connect(lambda _, t=task: open_local(t.get('result_path'), self.log_callback))
-            retry = TransparentToolButton(FIF.SYNC)
-            retry.setToolTip(tr('重新查询并下载（不创建新任务）') if task.get('task_id') else
-                             tr('当前没有可查询的远端 task_id'))
-            retry.setEnabled(bool(task.get('task_id')))
-            retry.clicked.connect(lambda _, t=task: self.redownload_requested.emit(t))
-            layout.addWidget(open_file); layout.addWidget(retry)
-            if task.get('status') == 'submission_unknown':
-                resolve = TransparentToolButton(FIF.INFO)
-                resolve.setEnabled(not self._recovery_busy)
-                resolve.setToolTip(
-                    tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
-                    tr('处理待确认提交'))
-                resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
-                layout.addWidget(resolve)
-            elif task.get('status') in {'completed', 'duplicate'}:
-                regenerate = TransparentToolButton(FIF.PLAY)
-                regenerate.setToolTip(tr('重新生成（需确认，会创建新任务）'))
-                regenerate.clicked.connect(lambda _, t=task: self.regenerate_requested.emit(t))
-                layout.addWidget(regenerate)
-            self.table.setCellWidget(row, len(values) + 1, action)
+            self.table.setCellWidget(row, len(values) + 1, self._build_actions(task))
         self._filter(self.filter_box.currentText())
         from ..theme import style_controls
         style_controls(self.table)
+
+    @staticmethod
+    def _is_ecommerce(task):
+        return task.get('kind') == 'ec'
+
+    @classmethod
+    def _status_text(cls, task):
+        if cls._is_ecommerce(task):
+            if task.get('status') == 'ec_partial':
+                return tr('部分完成')
+            if task.get('status') == 'ec_running':
+                return tr('生成中')
+        return tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
+
+    @classmethod
+    def _type_text(cls, task):
+        if cls._is_ecommerce(task):
+            return tr('电商图')
+        return tr('视频')
+
+    @staticmethod
+    def _type_colors(task):
+        if task.get('kind') == 'ec':
+            return 'rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'
+        return 'rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'
+
+    @staticmethod
+    def _cell_tooltip(task, column):
+        if column == 5 and task.get('kind') == 'ec':
+            return task.get('model_tooltip', '')
+        return task.get('error', '') or task.get('task_id', '')
+
+    def _build_actions(self, task):
+        action = QWidget(); layout = QHBoxLayout(action); layout.setContentsMargins(4, 2, 4, 2)
+        if self._is_ecommerce(task):
+            open_folder = TransparentToolButton(FIF.FOLDER)
+            open_folder.setObjectName('ecommerceOpenFolder')
+            open_folder.setToolTip(tr('打开文件夹'))
+            open_folder.setEnabled(bool(task.get('output_dir')))
+            open_folder.clicked.connect(lambda _, t=task: open_local(t.get('output_dir'), self.log_callback, folder=True))
+            view = TransparentToolButton(FIF.PHOTO)
+            view.setObjectName('ecommerceViewResult')
+            view.setToolTip(tr('查看电商图结果'))
+            view.clicked.connect(lambda _, group_id=task.get('group_id', ''): self.view_ecommerce_group.emit(group_id))
+            layout.addWidget(open_folder); layout.addWidget(view)
+            return action
+        open_file = TransparentToolButton(FIF.FOLDER)
+        open_file.setToolTip(tr('打开文件') if task.get('result_path') else tr('打开文件（暂无本地文件，任务完成下载后可打开）'))
+        open_file.setEnabled(bool(task.get('result_path')))
+        open_file.clicked.connect(lambda _, t=task: open_local(t.get('result_path'), self.log_callback))
+        retry = TransparentToolButton(FIF.SYNC)
+        retry.setToolTip(tr('重新查询并下载（不创建新任务）') if task.get('task_id') else
+                         tr('当前没有可查询的远端 task_id'))
+        retry.setEnabled(bool(task.get('task_id')))
+        retry.clicked.connect(lambda _, t=task: self.redownload_requested.emit(t))
+        layout.addWidget(open_file); layout.addWidget(retry)
+        if task.get('status') == 'submission_unknown':
+            resolve = TransparentToolButton(FIF.INFO)
+            resolve.setEnabled(not self._recovery_busy)
+            resolve.setToolTip(
+                tr('待确认弹窗打开中，请先完成或关闭当前核对') if self._recovery_busy else
+                tr('处理待确认提交'))
+            resolve.clicked.connect(lambda _, t=task: self.resolve_requested.emit(t))
+            layout.addWidget(resolve)
+        elif task.get('status') in {'completed', 'duplicate'}:
+            regenerate = TransparentToolButton(FIF.PLAY)
+            regenerate.setToolTip(tr('重新生成（需确认，会创建新任务）'))
+            regenerate.clicked.connect(lambda _, t=task: self.regenerate_requested.emit(t))
+            layout.addWidget(regenerate)
+        return action
 
     def _try_update_existing_rows(self, records):
         """Update table cell contents in place when the displayed task identities are stable."""
@@ -338,27 +469,46 @@ class HistoryPage(QWidget):
         self.records = records
         self._row_status = []
         for row, task in enumerate(records):
-            status = tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
+            status = self._status_text(task)
             self._row_status.append(status)
-            values = [str(len(records)-row), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
+            values = [str(len(records)-row), self._type_text(task), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
                       _stamp(task.get('created_at')), _stamp(task.get('finished_at')),
                       f"{task['size_bytes']/1024/1024:.1f} MB" if task.get('size_bytes') else '—']
             self._update_selection(row, task)
             for column, value in enumerate(values, 1):
-                if column == 5:
+                if column in (2, 6):
                     tag_host = self.table.cellWidget(row, column)
                     tag = tag_host.findChild(QLabel) if tag_host else None
                     if tag is not None:
                         tag.setText(value)
-                        bg, fg = self._tag_colors(task.get('status'))
+                        if column == 2:
+                            bg, fg = self._type_colors(task)
+                        else:
+                            bg, fg = self._tag_colors(task.get('status'))
                         tag.setStyleSheet(f'color:{fg}; background:{bg}; border-radius:6px; padding:2px 10px;')
                     continue
                 item = self.table.item(row, column)
                 if item is not None:
                     item.setText(value)
-                    item.setToolTip(task.get('error', '') or task.get('task_id', ''))
+                    item.setToolTip(self._cell_tooltip(task, column))
             action = self.table.cellWidget(row, len(values) + 1)
             if action is not None:
+                if self._is_ecommerce(task):
+                    open_folder = action.findChild(TransparentToolButton, 'ecommerceOpenFolder')
+                    view = action.findChild(TransparentToolButton, 'ecommerceViewResult')
+                    if open_folder is None or view is None:
+                        return False
+                    for button in (open_folder, view):
+                        try:
+                            button.clicked.disconnect()
+                        except TypeError:
+                            pass
+                    open_folder.setEnabled(bool(task.get('output_dir')))
+                    open_folder.setToolTip(tr('打开文件夹'))
+                    open_folder.clicked.connect(lambda _, t=task: open_local(t.get('output_dir'), self.log_callback, folder=True))
+                    view.setToolTip(tr('查看电商图结果'))
+                    view.clicked.connect(lambda _, group_id=task.get('group_id', ''): self.view_ecommerce_group.emit(group_id))
+                    continue
                 buttons = action.findChildren(TransparentToolButton)
                 if len(buttons) >= 2:
                     open_file, retry = buttons[:2]
@@ -461,7 +611,7 @@ class HistoryPage(QWidget):
 
     def _update_selection(self, row, task):
         checkbox = self.table.cellWidget(row, 0).findChild(CheckBox)
-        eligible = bool(task.get('local_id')) and task.get('status') in DELETABLE_STATUSES
+        eligible = self._is_deletable(task)
         if not eligible:
             self._selected_ids.discard(task.get('local_id'))
         checkbox.blockSignals(True)
@@ -478,6 +628,13 @@ class HistoryPage(QWidget):
             self._selected_ids.discard(local_id)
         self._sync_selection()
 
+    @classmethod
+    def _is_deletable(cls, task):
+        if cls._is_ecommerce(task):
+            return bool(task.get('local_id')) and task.get('status') in {
+                'completed', 'ec_partial', 'failed', 'cancelled'}
+        return bool(task.get('local_id')) and task.get('status') in DELETABLE_STATUSES
+
     def _select_all(self, state):
         if state == Qt.PartiallyChecked:
             return
@@ -489,7 +646,7 @@ class HistoryPage(QWidget):
 
     def _sync_selection(self):
         eligible = {task.get('local_id') for row, task in enumerate(getattr(self, 'records', []))
-                    if not self.table.isRowHidden(row) and task.get('local_id') and task.get('status') in DELETABLE_STATUSES}
+                    if not self.table.isRowHidden(row) and self._is_deletable(task)}
         self._selected_ids.intersection_update(eligible)
         for row, task in enumerate(getattr(self, 'records', [])):
             self._update_selection(row, task)
@@ -540,6 +697,10 @@ class HistoryPage(QWidget):
             workspace._set_history_maintenance_busy(True)
             workspace._set_recovery_entry_busy(True)
 
+        video_records = [record for record in records if not self._is_ecommerce(record)]
+        ecommerce_ids = [record['group_id'] for record in records
+                         if self._is_ecommerce(record) and record.get('group_id')]
+
         def done(summary):
             delete_files = False
             accepted = False
@@ -548,6 +709,10 @@ class HistoryPage(QWidget):
                 if workspace is not None and workspace.closing.is_set():
                     return
                 dialog = DeleteHistoryDialog(records, summary, self.window())
+                if ecommerce_ids and not video_records:
+                    dialog.keep_files.setText(tr('仅删除记录，不删除已生成文件'))
+                    dialog.delete_files.setEnabled(False)
+                    dialog.keep_files.setChecked(True)
                 accepted = bool(dialog.exec()) and is_dialog_alive(dialog)
                 if accepted:
                     delete_files = dialog.delete_files.isChecked()
@@ -559,7 +724,10 @@ class HistoryPage(QWidget):
                     workspace._set_recovery_entry_busy(False)
                     workspace._set_history_maintenance_busy(False)
             if accepted:
-                self.delete_requested.emit(records, delete_files)
+                if video_records:
+                    self.delete_requested.emit(video_records, delete_files)
+                if ecommerce_ids:
+                    self.ecommerce_delete_requested.emit(ecommerce_ids)
 
         def failed(message):
             self.set_maintenance_busy(False)
@@ -570,7 +738,7 @@ class HistoryPage(QWidget):
 
         output_root = self.config_manager.config['paths'].get('output')
         try:
-            self.jobs.start(lambda: output_summary(records, output_root), done, failed)
+            self.jobs.start(lambda: output_summary(video_records, output_root), done, failed)
         except Exception as error:
             failed(str(error))
 
@@ -582,7 +750,16 @@ class HistoryPage(QWidget):
 
     def _filter(self, status):
         statuses = getattr(self, '_row_status', [])
+        selected_type = self.type_filter_box.currentText()
         for row in range(self.table.rowCount()):
             text = statuses[row] if row < len(statuses) else ''
-            self.table.setRowHidden(row, status != tr('全部状态') and text != status)
+            task = self.records[row] if row < len(self.records) else {}
+            type_text = self._type_text(task)
+            status_matches = status == tr('全部状态') or text == status
+            type_matches = selected_type == tr('全部类型') or type_text == selected_type
+            self.table.setRowHidden(row, not status_matches or not type_matches)
         self._sync_selection()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_records()

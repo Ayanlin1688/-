@@ -91,6 +91,7 @@ class EcommerceWorker(QThread):
 
 class EcommercePage(QWidget):
     idle = pyqtSignal()
+    history_records_changed = pyqtSignal()
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -528,6 +529,7 @@ class EcommercePage(QWidget):
                 counts = store.item_counts(group['group_id'])
                 group['totals'] = dict(counts, total=sum(counts.values()))
         self.history_panel.update_groups(redact_structure(groups, self._clean), store.persistence_available)
+        self.history_records_changed.emit()
 
     def _view_history_group(self, group_id):
         if self.busy:
