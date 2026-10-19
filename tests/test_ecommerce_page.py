@@ -654,7 +654,7 @@ class EcommercePageTests(unittest.TestCase):
             self.assertEqual(card.record['status'], 'succeeded')
             self.assertFalse(card.thumbnail.pixmap().isNull())
             self.assertIn('1024x1024', card.size_label.text())
-            self.assertEqual(card.status_label.text(), '成功')
+            self.assertEqual(card.status_label.text(), '成功 · 模型：gpt-image-2.5-sunburst')
             self.assertTrue(card.regenerate_button.isEnabled())
             self.assertTrue(card.folder_button.isEnabled())
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
@@ -704,7 +704,7 @@ class EcommercePageTests(unittest.TestCase):
         cards = self.page.result_panel.ordered_cards()
         failed = cards[0]
         self.assertEqual(failed.record['status'], 'failed')
-        self.assertEqual(failed.status_label.text(), '失败')
+        self.assertEqual(failed.status_label.text(), '失败 · 模型：gpt-image-2.5-sunburst')
         self.assertIn('[REDACTED]', failed.error_label.text())
         self.assertNotIn(TEST_KEY, failed.error_label.text())
         self.assertTrue(failed.regenerate_button.isEnabled())
@@ -741,6 +741,61 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.result_panel.ordered_cards(), cards)
         self.assertEqual(selected.record['status'], 'succeeded')
         self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_model_pickers_filter_by_kind_and_available_and_refresh_effective_lines(self):
+        records = {
+            'chat-good': {'id': 'chat-good', 'kind': 'chat', 'available': True},
+            'chat-hidden-pack': {'id': 'chat-hidden-pack', 'kind': 'chat', 'available': False},
+            'image-good': {'id': 'image-good', 'kind': 'image', 'available': True},
+            'image-hidden-pack': {'id': 'image-hidden-pack', 'kind': 'image', 'available': False},
+            'video-good': {'id': 'video-good', 'kind': 'video', 'available': True},
+        }
+        with patch('ui.pages.ecommerce_page.catalog_snapshot', return_value=records):
+            self.page.refresh_model_pickers()
+
+        def values(combo):
+            return [combo.itemData(index) for index in range(combo.count())
+                    if not str(combo.itemData(index) or '').startswith('__separator__:')]
+
+        self.assertEqual(values(self.page.analysis_model_picker), ['chat-good'])
+        self.assertEqual(values(self.page.image_model_picker), ['image-good'])
+
+        self.config.config['stations'] = [
+            {'id': 'chat-route', 'enabled': True, 'base_url': 'https://chat.example'},
+            {'id': 'image-route', 'enabled': True, 'base_url': 'https://image.example'},
+        ]
+        self.config.config['line_routing'] = {'chat': 'chat-route', 'image': 'image-route'}
+        self.page.refresh_effective_lines()
+        self.assertEqual(self.page.analysis_line_label.text(), '生效：chat.example')
+        self.assertEqual(self.page.image_line_label.text(), '生效：image.example')
+
+        self.config.config['line_routing']['chat'] = 'deleted-route'
+        self.config.config['api']['base_url'] = 'https://active.example/v1'
+        self.page.refresh_effective_lines()
+        self.assertEqual(self.page.analysis_line_label.text(), '生效：active.example')
+
+    def test_model_picker_values_and_thinking_persist_and_empty_overrides_are_omitted(self):
+        records = {
+            'chat-choice': {'id': 'chat-choice', 'kind': 'chat', 'available': True},
+            'image-choice': {'id': 'image-choice', 'kind': 'image', 'available': True},
+        }
+        with patch('ui.pages.ecommerce_page.catalog_snapshot', return_value=records):
+            self.page.refresh_model_pickers()
+
+        self.page.analysis_model_picker.setCurrentIndex(
+            self.page.analysis_model_picker.findData('chat-choice'))
+        self.page.image_model_picker.setCurrentIndex(
+            self.page.image_model_picker.findData('image-choice'))
+        self.page.thinking_switch.setChecked(True)
+        self.assertEqual(self.config.config['ecommerce']['analysis_model'], 'chat-choice')
+        self.assertEqual(self.config.config['ecommerce']['image_model'], 'image-choice')
+        self.assertTrue(self.config.config['ecommerce']['thinking'])
+        self.assertEqual(self.page.model_overrides(), {
+            'analysis_model': 'chat-choice', 'image_model': 'image-choice'})
+
+        self.page.analysis_model_picker.set_value('')
+        self.page.image_model_picker.set_value('')
+        self.assertEqual(self.page.model_overrides(), {})
 
     def test_regeneration_locks_all_actions_supports_cancel_and_queues_ui_callbacks(self):
         self.fill_valid()

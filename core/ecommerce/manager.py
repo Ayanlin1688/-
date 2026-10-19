@@ -11,13 +11,15 @@ import re
 import tempfile
 import threading
 import time
+from urllib.parse import urlsplit
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from core.log_redaction import redact_structure, redact_text
 from core.line_routing import resolve_line
+from core.i18n import tr
 from .analysis import DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse, parse_prompt_items
-from .image_client import DEFAULT_IMAGE_MODEL, generate_image, image_dimensions
+from .image_client import EcommerceImageError, DEFAULT_IMAGE_MODEL, generate_image, image_dimensions
 from .platforms import _resolve_platforms, detect_conflicts
 from .prompt_builder import append_reference_order, build_system, build_user
 
@@ -54,7 +56,8 @@ class EcommerceImageManager:
                  analysis_model=DEFAULT_ANALYSIS_MODEL, image_model=DEFAULT_IMAGE_MODEL,
                  concurrency=5, log=None, *, analysis_func=None, image_func=None,
                  on_group=None, on_item=None, on_log=None, analysis_base_url=None,
-                 analysis_api_key=None, image_base_url=None, image_api_key=None):
+                 analysis_api_key=None, image_base_url=None, image_api_key=None,
+                 analysis_model_candidates=(), image_model_candidates=()):
         self.base_url = base_url
         self.api_key = api_key
         self.analysis_base_url = base_url if analysis_base_url is None else analysis_base_url
@@ -65,6 +68,8 @@ class EcommerceImageManager:
         self.store = store
         self.analysis_model = analysis_model
         self.image_model = image_model
+        self.analysis_model_candidates = self._unique_models(analysis_model_candidates)
+        self.image_model_candidates = self._unique_models(image_model_candidates)
         self.concurrency = max(1, int(concurrency))
         self.log = log
         self.analysis_func = analysis_func if analysis_func is not None else analyze_and_parse
@@ -79,16 +84,113 @@ class EcommerceImageManager:
         image_line = resolve_line(config, 'image')
         ecommerce = config.get('ecommerce', {})
         overrides = overrides if isinstance(overrides, dict) else {}
+        analysis_model = overrides.get('analysis_model', ecommerce.get('analysis_model', DEFAULT_ANALYSIS_MODEL))
+        image_model = overrides.get('image_model', ecommerce.get('image_model', DEFAULT_IMAGE_MODEL))
         output = (config.get('paths', {}).get('output') or config.get('output_dir')
                   or config_manager.path.parent / 'output')
         return cls(
             analysis_line['base_url'], analysis_line['api_key'], output,
             store if store is not None else config_manager.ecommerce_store(),
-            overrides.get('analysis_model', ecommerce.get('analysis_model', DEFAULT_ANALYSIS_MODEL)),
-            overrides.get('image_model', ecommerce.get('image_model', DEFAULT_IMAGE_MODEL)),
+            analysis_model,
+            image_model,
             ecommerce.get('max_concurrency', config.get('task_strategy', {}).get('max_concurrency', 5)),
             analysis_base_url=analysis_line['base_url'], analysis_api_key=analysis_line['api_key'],
-            image_base_url=image_line['base_url'], image_api_key=image_line['api_key'])
+            image_base_url=image_line['base_url'], image_api_key=image_line['api_key'],
+            analysis_model_candidates=cls._pool_candidates(config.get('chat_model_pool'), analysis_model),
+            image_model_candidates=cls._pool_candidates(config.get('image_model_pool'), image_model))
+
+    @staticmethod
+    def _unique_models(models):
+        result = []
+        for value in models or ():
+            model = str(value or '').strip()
+            if model and model not in result:
+                result.append(model)
+        return result
+
+    @classmethod
+    def _pool_candidates(cls, pool, chosen):
+        if not isinstance(pool, dict) or not pool.get('enabled'):
+            return []
+        models = []
+        for item in pool.get('models', ()):
+            if not isinstance(item, dict) or not item.get('enabled'):
+                continue
+            name = str(item.get('name') or '').strip()
+            if name and name != str(chosen or '').strip() and name not in models:
+                models.append(name)
+        return models
+
+    @staticmethod
+    def _can_switch(error):
+        status = getattr(error, 'status_code', None)
+        return status is None or not 200 <= status < 300
+
+    @staticmethod
+    def _line_host(base_url):
+        return (urlsplit(str(base_url or '').strip()).hostname or '').lower() or tr('未配置')
+
+    def _analysis_candidates(self):
+        return self._unique_models([self.analysis_model, *self.analysis_model_candidates])[:2]
+
+    def _run_analysis(self, system, user, carousel_count, detail_count, thinking, log_reasoning):
+        candidates = self._analysis_candidates()
+        attempted = []
+        for position, model in enumerate(candidates):
+            attempted.append(model)
+            try:
+                raw_items, reasoning = self.analysis_func(
+                    self.analysis_base_url, self.analysis_api_key, model, system, user,
+                    carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
+            except EcommerceAnalysisError as error:
+                if position + 1 < len(candidates) and self._can_switch(error):
+                    next_model = candidates[position + 1]
+                    self._log(tr('分析模型 {old} 不可用（{reason}），切换 {new}').format(
+                        old=model, reason=self._clean(error), new=next_model), 'warning')
+                    continue
+                message = f'分析模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
+                raise EcommerceAnalysisError(message, error.status_code,
+                                             self._clean(error.body_excerpt)) from None
+            except Exception as error:
+                message = f'分析模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
+                raise EcommerceAnalysisError(message) from None
+
+            try:
+                items = parse_prompt_items(json.dumps(raw_items, ensure_ascii=False),
+                                           carousel_count, detail_count)
+            except EcommerceAnalysisError as error:
+                # The analysis function returned after its successful response; never switch here.
+                message = f'分析模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
+                raise EcommerceAnalysisError(message, 200, self._clean(error.body_excerpt)) from None
+            return items, reasoning
+        raise EcommerceAnalysisError(f'分析模型尝试失败（{"、".join(attempted)}）')
+
+    def _image_candidates(self, model):
+        return self._unique_models([model, self.image_model, *self.image_model_candidates])[:2]
+
+    def _request_image(self, item):
+        candidates = self._image_candidates(item.get('model') or self.image_model)
+        attempted = []
+        for position, model in enumerate(candidates):
+            attempted.append(model)
+            try:
+                result = self.image_func(
+                    self.image_base_url, self.image_api_key, model, item['prompt'], item['ratio'], item['tier'],
+                    reference_paths=list(item['reference_paths']))
+                return result, model
+            except EcommerceImageError as error:
+                if position + 1 < len(candidates) and self._can_switch(error):
+                    next_model = candidates[position + 1]
+                    self._log(tr('图片模型 {old} 不可用（{reason}），切换 {new}').format(
+                        old=model, reason=self._clean(error), new=next_model), 'warning')
+                    continue
+                if len(attempted) > 1:
+                    message = f'图片模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
+                    raise EcommerceImageError(message, error.status_code,
+                                              self._clean(error.body_excerpt),
+                                              error.failed_before_response) from None
+                raise
+        raise EcommerceImageError(f'图片模型尝试失败（{"、".join(attempted)}）')
 
     def _clean(self, value):
         return redact_text(value, (self.api_key, self.analysis_api_key, self.image_api_key))
@@ -202,6 +304,12 @@ class EcommerceImageManager:
                             language=language, product_info=product_info,
                             reference_paths=references, thinking=bool(thinking))))
             try:
+                self._log(
+                    tr('分析线路：{host} · 模型 {model}').format(
+                        host=self._line_host(self.analysis_base_url), model=self.analysis_model), 'info')
+                self._log(
+                    tr('图片线路：{host} · 模型 {model}').format(
+                        host=self._line_host(self.image_base_url), model=self.image_model), 'info')
                 last_reasoning = [float('-inf')]
                 reasoning_lock = threading.Lock()
 
@@ -213,12 +321,8 @@ class EcommerceImageManager:
                         last_reasoning[0] = now
                     self._log('[思考中] ' + str(chunk)[:200], 'info')
 
-                items, _reasoning = self.analysis_func(
-                    self.analysis_base_url, self.analysis_api_key, self.analysis_model, system, user,
-                    carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
-                # Keep injection and future adapters subject to the same strict contract.
-                items = parse_prompt_items(json.dumps(items, ensure_ascii=False),
-                                           carousel_count, detail_count)
+                items, _reasoning = self._run_analysis(
+                    system, user, carousel_count, detail_count, thinking, log_reasoning)
             except Exception as error:
                 message = self._clean(f'AI 分析失败：{error}')
                 self._group(dict(group_id=group_id, status='failed', error=message))
@@ -250,9 +354,8 @@ class EcommerceImageManager:
             self._item(dict(item, status='skipped', error='已取消，未发起图片请求'))
             return
         try:
-            result = self.image_func(
-                self.image_base_url, self.image_api_key, item['model'], item['prompt'], item['ratio'], item['tier'],
-                reference_paths=list(item['reference_paths']))
+            result, used_model = self._request_image(item)
+            item = dict(item, model=used_model)
             name = ('轮' if item['kind'] == 'carousel' else '详') + str(item['seq']) + '.png'
             path = Path(group['output_dir']).resolve() / name
             _atomic_write(path, result.png_bytes)
@@ -306,7 +409,8 @@ class EcommerceImageManager:
             totals=dict(counts, total=total), persistence_available=self.store.persistence_available,
             items=[dict(kind=i['kind'], seq=i['seq'], title=i['title'], prompt=i['prompt'],
                         file=i['file_path'], size=i['size'], image_tokens=i['image_tokens'],
-                        status=i['status'], warnings=i['warnings'], error=i['error']) for i in items])
+                        model=i['model'], status=i['status'], warnings=i['warnings'], error=i['error'])
+                   for i in items])
         manifest = self._safe_copy(manifest)
         error = ''
         try:

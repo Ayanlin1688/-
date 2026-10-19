@@ -1,6 +1,7 @@
 """Ecommerce form and queued Qt presentation of the existing Python pipeline."""
 from pathlib import Path
 import threading
+from urllib.parse import urlsplit
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
@@ -8,7 +9,7 @@ from PyQt5.QtWidgets import QFileDialog, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit, ListWidget,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
-    TextEdit, TitleLabel, FluentIcon as FIF,
+    SwitchButton, TextEdit, TitleLabel, TransparentToolButton, FluentIcon as FIF,
 )
 
 from core.ecommerce.platforms import (
@@ -17,10 +18,12 @@ from core.ecommerce.platforms import (
 from core.ecommerce.image_client import TIER_SHORT_EDGE
 from core.ecommerce.manager import EcommerceImageManager
 from core.i18n import tr
+from core.line_routing import resolve_line
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultPanel
 from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
+from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
@@ -101,6 +104,7 @@ class EcommercePage(QWidget):
         self.item_labels = {}
         self._logs = []
         self._close_when_idle = False
+        self._manager_overrides = {}
         self.product_image_paths = []
         self.style_image_paths = []
         self._form_cards = []
@@ -203,6 +207,62 @@ class EcommercePage(QWidget):
         style.addWidget(self.clear_style_button)
         references.addLayout(style)
 
+        models = self._card(root, tr('模型设置'))
+        analysis_row = WrapLayout(spacing=px(10))
+        self.analysis_model_picker = ModelPickComboBox()
+        self.analysis_model_picker.setObjectName('ecommerceAnalysisModel')
+        self.analysis_model_picker.set_models(
+            catalog_snapshot(config_manager, 'chat'),
+            defaults.get('analysis_model', 'gemini-3.8-flash'), kind='chat')
+        self.analysis_line_label = CaptionLabel()
+        self.sync_analysis_models_button = TransparentToolButton(FIF.SYNC)
+        self.sync_analysis_models_button.setObjectName('syncAnalysisModels')
+        self.sync_analysis_models_button.setToolTip(tr('同步模型'))
+        analysis_row.addLayout(self._field(tr('AI 分析模型'), self.analysis_model_picker))
+        analysis_row.addWidget(self.analysis_line_label)
+        analysis_row.addWidget(self.sync_analysis_models_button)
+        models.addLayout(analysis_row)
+
+        image_row = WrapLayout(spacing=px(10))
+        self.image_model_picker = ModelPickComboBox()
+        self.image_model_picker.setObjectName('ecommerceImageModel')
+        self.image_model_picker.set_models(
+            catalog_snapshot(config_manager, 'image'),
+            defaults.get('image_model', 'gpt-image-2.5-sunburst'), kind='image')
+        self.image_line_label = CaptionLabel()
+        self.sync_image_models_button = TransparentToolButton(FIF.SYNC)
+        self.sync_image_models_button.setObjectName('syncImageModels')
+        self.sync_image_models_button.setToolTip(tr('同步模型'))
+        image_row.addLayout(self._field(tr('图片模型'), self.image_model_picker))
+        image_row.addWidget(self.image_line_label)
+        image_row.addWidget(self.sync_image_models_button)
+        models.addLayout(image_row)
+
+        thinking_row = WrapLayout(spacing=px(10))
+        self.thinking_switch = SwitchButton()
+        self.thinking_switch.setObjectName('ecommerceThinking')
+        self.thinking_switch.setChecked(bool(defaults.get('thinking', False)))
+        self.thinking_switch.setToolTip(tr(
+            '开启后，DeepSeek 官方线路的 deepseek-chat 自动切换为 deepseek-reasoner；'
+            'Claude 思考模型加 thinking 参数；其他模型不受影响'))
+        thinking_row.addWidget(CaptionLabel(tr('深度思考')))
+        thinking_row.addWidget(self.thinking_switch)
+        models.addLayout(thinking_row)
+        self.sync_analysis_models_button.clicked.connect(lambda: self._sync_catalog('chat'))
+        self.sync_image_models_button.clicked.connect(lambda: self._sync_catalog('image'))
+        self.analysis_model_picker.currentTextChanged.connect(
+            lambda _text: self._persist_model('analysis_model', self.analysis_model_picker.value()))
+        self.image_model_picker.currentTextChanged.connect(
+            lambda _text: self._persist_model('image_model', self.image_model_picker.value()))
+        self.analysis_model_picker.textEdited.connect(
+            lambda _text: self._persist_model('analysis_model', self.analysis_model_picker.value()))
+        self.image_model_picker.textEdited.connect(
+            lambda _text: self._persist_model('image_model', self.image_model_picker.value()))
+        self.thinking_switch.checkedChanged.connect(
+            lambda value: self._persist_model('thinking', bool(value)))
+        self.refresh_effective_lines()
+        self.refresh_model_pickers()
+
         actions = WrapLayout()
         self.start_button = PrimaryPushButton(tr('开始生成'))
         self.cancel_button = PushButton(tr('取消'))
@@ -284,6 +344,40 @@ class EcommercePage(QWidget):
             if combo.itemData(index) == value:
                 combo.setCurrentIndex(index)
                 return
+
+    def _persist_model(self, key, value):
+        self.config_manager.update(('ecommerce', key), value)
+
+    def model_overrides(self):
+        values = {
+            'analysis_model': self.analysis_model_picker.value().strip(),
+            'image_model': self.image_model_picker.value().strip(),
+        }
+        return {key: value for key, value in values.items() if value}
+
+    def refresh_model_pickers(self, *_args):
+        analysis = self.analysis_model_picker.value()
+        image = self.image_model_picker.value()
+        self.analysis_model_picker.set_models(
+            catalog_snapshot(self.config_manager, 'chat'), analysis, kind='chat')
+        self.image_model_picker.set_models(
+            catalog_snapshot(self.config_manager, 'image'), image, kind='image')
+
+    @staticmethod
+    def _line_host(line):
+        return (urlsplit(str(line.get('base_url') or '').strip()).hostname or '').lower() or tr('未配置')
+
+    def refresh_effective_lines(self, *_args):
+        config = self.config_manager.config
+        self.analysis_line_label.setText(tr('生效：{host}').format(
+            host=self._line_host(resolve_line(config, 'chat'))))
+        self.image_line_label.setText(tr('生效：{host}').format(
+            host=self._line_host(resolve_line(config, 'image'))))
+
+    def _sync_catalog(self, _capability):
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        if controller is not None:
+            controller.refresh()
 
     def selected_platforms(self):
         return [key for key, checkbox in self.platform_checkboxes.items() if checkbox.isChecked()]
@@ -378,8 +472,10 @@ class EcommercePage(QWidget):
             raise ValueError(tr('至少生成 1 张图'))
         if len(self.product_image_paths) > 6 or len(self.style_image_paths) > 1:
             raise ValueError(tr('产品图最多 6 张，风格图最多 1 张'))
-        api = self.config_manager.config.get('api', {})
-        if not str(api.get('base_url') or '').strip() or not str(api.get('api_key') or '').strip():
+        config = self.config_manager.config
+        lines = (resolve_line(config, 'chat'), resolve_line(config, 'image'))
+        if any(not str(line.get('base_url') or '').strip()
+               or not str(line.get('api_key') or '').strip() for line in lines):
             raise ValueError(tr('请先到“设置”页填写 API 地址与密钥；AI 分析需要含文本模型权限的密钥'))
         return dict(platforms=selected, product_name=name, product_info=info,
                     language=self.language.currentData(), carousel_count=d, detail_count=g,
@@ -389,8 +485,9 @@ class EcommercePage(QWidget):
                     style_image_path=str(Path(self.style_image_paths[0]).resolve()) if self.style_image_paths else None)
 
     def _make_manager(self):
-        # Called in the worker; this factory reads configuration, never QWidget state.
-        return EcommerceImageManager.build_from_config(self.config_manager)
+        # Model values are snapshotted on the UI thread before the worker starts.
+        return EcommerceImageManager.build_from_config(
+            self.config_manager, overrides=dict(self._manager_overrides))
 
     def start_generation(self):
         if self.busy:
@@ -400,7 +497,11 @@ class EcommercePage(QWidget):
         except ValueError as error:
             self._notice(str(error))
             return
-        self._secrets = (self.config_manager.config['api']['api_key'],)
+        config = self.config_manager.config
+        self._manager_overrides = self.model_overrides()
+        arguments['thinking'] = bool(self.thinking_switch.isChecked())
+        self._secrets = tuple(resolve_line(config, capability).get('api_key', '')
+                               for capability in ('chat', 'image'))
         self._clear_results()
         self._logs.clear()
         self.log_box.clear()
@@ -596,6 +697,8 @@ class EcommercePage(QWidget):
             label.setStyleSheet('color: %s;' % materials.palette()['text1'])
         name = tr('轮') if record['kind'] == 'carousel' else tr('详')
         parts = [f'{name}{record["seq"]}：{_item_text(record["status"])}']
+        if record.get('model'):
+            parts.append(tr('模型：{model}').format(model=record['model']))
         if record.get('size'):
             parts.append(record['size'])
         parts.extend(record.get('warnings', []))
@@ -603,6 +706,10 @@ class EcommercePage(QWidget):
             parts.append(record['error'])
         self.item_labels[key].setText(' · '.join(parts))
         self.result_panel.update_item(record)
+        card = self.result_panel.cards.get(record.get('item_id'))
+        if card is not None and record.get('model'):
+            card.status_label.setText('{} · {}'.format(
+                card.status_label.text(), tr('模型：{model}').format(model=record['model'])))
         self._refresh_history()
 
     def _refresh_results(self, group_id=None):

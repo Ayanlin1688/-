@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from core.config_manager import ConfigManager
 from core.ecommerce.analysis import EcommerceAnalysisError
-from core.ecommerce.image_client import ImageResult
+from core.ecommerce.image_client import EcommerceImageError, ImageResult
 from core.ecommerce.manager import EcommerceImageManager
 from core.ecommerce.persistence import EcommerceImageStore
 from core.ecommerce.platforms import get_platform
@@ -61,6 +61,20 @@ class EcommerceManagerTests(unittest.TestCase):
                        carousel_ratio='1:1', detail_ratio='3:4', tier='1K')
         options.update(updates)
         return self.manager.start_group(**options)
+
+    def build_pool_manager(self, *, analysis_model='chosen-analysis', image_model='chosen-image',
+                           chat_pool=None, image_pool=None):
+        config = ConfigManager(self.root / 'pool-config.json')
+        config.config['api'].update(base_url='offline-fixture', api_key=TEST_KEY)
+        config.config['paths']['output'] = str(self.root / 'pool-output')
+        config.config['ecommerce'].update(analysis_model=analysis_model, image_model=image_model)
+        config.config['chat_model_pool'] = chat_pool or {'enabled': False, 'models': []}
+        config.config['image_model_pool'] = image_pool or {'enabled': False, 'models': []}
+        manager = EcommerceImageManager.build_from_config(config, store=self.store)
+        manager.analysis_func = self.analysis
+        manager.image_func = self.image
+        manager.on_log = lambda message, level: self.logs.append((message, level))
+        return manager
 
     def manifest(self, group_id):
         group = self.store.get_group(group_id)
@@ -134,6 +148,134 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertNotIn('active-secret', json.dumps(self.store.get_group(group_id), ensure_ascii=False))
         for secret in ('chat-secret', 'image-secret'):
             self.assertNotIn(secret, manager._clean('failure: ' + secret))
+
+    def test_disabled_model_pools_use_only_the_selected_models(self):
+        manager = self.build_pool_manager()
+        manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(self.analysis.call_args.args[2], 'chosen-analysis')
+        self.assertEqual(self.image.call_args.args[2], 'chosen-image')
+        self.assertEqual(manager.analysis_model_candidates, [])
+        self.assertEqual(manager.image_model_candidates, [])
+
+    def test_selected_models_are_first_and_pool_candidates_are_deduplicated(self):
+        manager = self.build_pool_manager(
+            chat_pool={'enabled': True, 'models': [
+                {'name': 'fallback-analysis', 'enabled': True},
+                {'name': 'chosen-analysis', 'enabled': True},
+                {'name': 'disabled-analysis', 'enabled': False},
+                {'name': 'fallback-analysis', 'enabled': True},
+            ]},
+            image_pool={'enabled': True, 'models': [
+                {'name': 'fallback-image', 'enabled': True},
+                {'name': 'chosen-image', 'enabled': True},
+            ]})
+        self.assertEqual(manager._analysis_candidates(), ['chosen-analysis', 'fallback-analysis'])
+        self.assertEqual(manager._image_candidates('chosen-image'), ['chosen-image', 'fallback-image'])
+
+    def test_build_from_config_overrides_remain_first_with_enabled_pools(self):
+        manager = self.build_pool_manager(
+            chat_pool={'enabled': True, 'models': [
+                {'name': 'pool-analysis', 'enabled': True},
+                {'name': 'disabled-analysis', 'enabled': False},
+            ]},
+            image_pool={'enabled': True, 'models': [
+                {'name': 'pool-image', 'enabled': True},
+            ]})
+        manager.analysis_model = 'form-analysis'
+        manager.image_model = 'form-image'
+        self.assertEqual(manager._analysis_candidates(), ['form-analysis', 'pool-analysis'])
+        self.assertEqual(manager._image_candidates('form-image'), ['form-image', 'pool-image'])
+
+    def test_resume_image_candidate_uses_saved_model_then_current_choice(self):
+        manager = self.build_pool_manager(image_model='current-image')
+        self.assertEqual(manager._image_candidates('saved-image'), ['saved-image', 'current-image'])
+
+    def test_analysis_retries_once_after_http_failure_and_logs_model_switch(self):
+        analysis_models = []
+
+        def fail_once(*args, **kwargs):
+            analysis_models.append(args[2])
+            if len(analysis_models) == 1:
+                raise EcommerceAnalysisError('HTTP 503: unavailable', 503)
+            return fake_analysis(*args, **kwargs)
+
+        self.analysis.side_effect = fail_once
+        manager = self.build_pool_manager(chat_pool={
+            'enabled': True, 'models': [{'name': 'fallback-analysis', 'enabled': True}]})
+        group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertEqual(analysis_models, ['chosen-analysis', 'fallback-analysis'])
+        self.assertTrue(any('切换 fallback-analysis' in message for message, _level in self.logs))
+
+    def test_analysis_stream_failure_after_http_200_never_switches(self):
+        self.analysis.side_effect = EcommerceAnalysisError('流式中断', 200)
+        manager = self.build_pool_manager(chat_pool={
+            'enabled': True, 'models': [{'name': 'fallback-analysis', 'enabled': True}]})
+        with self.assertRaises(EcommerceAnalysisError) as caught:
+            manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(caught.exception.status_code, 200)
+        self.assertEqual(self.analysis.call_count, 1)
+        self.assertEqual(self.store.list_groups(limit=1)[0]['status'], 'failed')
+        self.image.assert_not_called()
+
+    def test_analysis_connection_failure_allows_one_fallback(self):
+        analysis_models = []
+
+        def fail_connection_once(*args, **kwargs):
+            analysis_models.append(args[2])
+            if len(analysis_models) == 1:
+                raise EcommerceAnalysisError('connection failed')
+            return fake_analysis(*args, **kwargs)
+
+        self.analysis.side_effect = fail_connection_once
+        manager = self.build_pool_manager(chat_pool={
+            'enabled': True, 'models': [{'name': 'fallback-analysis', 'enabled': True}]})
+        group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertEqual(analysis_models, ['chosen-analysis', 'fallback-analysis'])
+
+    def test_image_retries_503_and_persists_the_model_that_succeeded(self):
+        self.image.side_effect = [EcommerceImageError('HTTP 503: unavailable', 503), fake_image]
+        manager = self.build_pool_manager(image_pool={
+            'enabled': True, 'models': [{'name': 'fallback-image', 'enabled': True}]})
+        group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        item = self.store.list_items(group_id)[0]
+        self.assertEqual([call.args[2] for call in self.image.call_args_list],
+                         ['chosen-image', 'fallback-image'])
+        self.assertEqual(item['model'], 'fallback-image')
+        self.assertEqual(self.manifest(group_id)['items'][0]['model'], 'fallback-image')
+
+    def test_image_resume_can_fall_back_to_current_choice_when_pool_is_disabled(self):
+        group_id = self.start(carousel_count=1, detail_count=0)
+        item = self.store.list_items(group_id)[0]
+        item.update(status='failed', error='offline', model='saved-image')
+        self.store.upsert_item(item)
+        manager = self.build_pool_manager(image_model='current-image')
+        manager.image_func.reset_mock()
+        manager.image_func.side_effect = [EcommerceImageError('HTTP 503', 503), fake_image]
+        manager.resume_group(group_id)
+        self.assertEqual([call.args[2] for call in manager.image_func.call_args_list],
+                         ['saved-image', 'current-image'])
+        self.assertEqual(self.store.list_items(group_id)[0]['model'], 'current-image')
+
+    def test_image_write_failure_does_not_retry_a_second_model(self):
+        self.image.side_effect = fake_image
+        manager = self.build_pool_manager(image_pool={
+            'enabled': True, 'models': [{'name': 'fallback-image', 'enabled': True}]})
+        from core.ecommerce import manager as manager_module
+        original_write = manager_module._atomic_write
+
+        def fail_image_write(path, content):
+            if Path(path).name != 'manifest.json':
+                raise OSError('offline disk failure')
+            return original_write(path, content)
+
+        with patch.object(manager_module, '_atomic_write', side_effect=fail_image_write):
+            group_id = manager.start_group(
+                ['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'failed')
+        self.assertEqual(self.store.list_items(group_id)[0]['status'], 'failed')
 
     def test_reasoning_log_is_throttled_and_bounded(self):
         def analysis(*args, **kwargs):

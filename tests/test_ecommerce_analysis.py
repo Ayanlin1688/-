@@ -359,14 +359,16 @@ class AnalysisStreamTests(unittest.TestCase):
                     with self.assertRaises(EcommerceAnalysisError) as caught:
                         analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
                     self.assertEqual(len(server.calls), 1)
+                self.assertEqual(caught.exception.status_code, 200)
                 self.assertNotIn(FIXTURE_KEY, str(caught.exception))
                 self.assertNotIn(FIXTURE_KEY, caught.exception.body_excerpt)
 
     def test_truncated_http_body_is_wrapped_without_replay(self):
         with LocalAnalysisServer(b'data: ', mode='truncated') as server:
-            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败'):
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败') as caught:
                 analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
             self.assertEqual(len(server.calls), 1)
+        self.assertEqual(caught.exception.status_code, 200)
 
     def test_read_timeout_is_wrapped(self):
         with LocalAnalysisServer(b'', mode='timeout') as server:
@@ -386,8 +388,9 @@ class AnalysisStreamTests(unittest.TestCase):
 
     def test_wrapper_propagates_parser_errors(self):
         with LocalAnalysisServer(replay_sse('[]')) as server:
-            with self.assertRaisesRegex(EcommerceAnalysisError, '期望 4、实际 0'):
+            with self.assertRaisesRegex(EcommerceAnalysisError, '期望 4、实际 0') as caught:
                 analyze_and_parse(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', 2, 2)
+        self.assertEqual(caught.exception.status_code, 200)
 
     def test_error_fields_and_module_contains_no_embedded_credentials_or_urls(self):
         error = EcommerceAnalysisError('失败', body_excerpt='文' * 600)

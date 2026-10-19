@@ -117,7 +117,8 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
         message = error.message
         if client.redact(request_model) not in message:
             message = f'模型 {client.redact(request_model)}：{message}'
-        raise EcommerceAnalysisError(message, error.status_code, client.redact(error.body_excerpt)) from None
+        response_status = error.status_code if error.status_code is not None else status_code
+        raise EcommerceAnalysisError(message, response_status, client.redact(error.body_excerpt)) from None
     except (RequestError, requests.RequestException) as error:
         raise EcommerceAnalysisError(
             f'模型 {client.redact(request_model)} AI 分析连接或读取失败：{client.redact(error)}',
@@ -201,4 +202,10 @@ def analyze_and_parse(base_url, api_key, model, system_prompt, user_prompt,
     full_text, reasoning_text = analyze_stream(
         base_url, api_key, model, system_prompt, user_prompt,
         on_content=on_content, on_reasoning=on_reasoning, thinking=thinking)
-    return parse_prompt_items(full_text, carousel_count, detail_count), reasoning_text
+    try:
+        items = parse_prompt_items(full_text, carousel_count, detail_count)
+    except EcommerceAnalysisError as error:
+        # A complete 2xx stream has already been received; parsing failure must
+        # never make the manager submit the analysis to another model.
+        raise EcommerceAnalysisError(error.message, 200, error.body_excerpt) from None
+    return items, reasoning_text
