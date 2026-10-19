@@ -146,7 +146,7 @@ class ModelUiTests(unittest.TestCase):
                 controller.credentials_changed()
                 controller.refresh()
                 wait_until(lambda: not controller.syncing)
-                cache = self.config.path.parent/'models_cache.json'
+                cache = controller.catalog.cache_path
                 expected = cache.read_bytes()
                 release.set()
                 wait_until(lambda: not controller.jobs.busy)

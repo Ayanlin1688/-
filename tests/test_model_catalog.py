@@ -1,6 +1,7 @@
 """Model discovery uses local HTTP and isolated temporary caches only."""
 import importlib
 import importlib.util
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -8,12 +9,50 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 
 from core.api_client import ApiClient
 from core.http_client import HttpClient, RequestError
+from core import model_catalog
+
+
+# Fixed offline examples from the documented families, including billing variants.
+_CLASSIFICATION_MODELS = {
+    'video': [
+        'MiniMax-H3', 'video-v2', 'video-v2-fast', 'video-v2-特价版',
+        'video-v2-480P', 'video-v2-720P', 'video-v3', 'video-v3-480p',
+        'video-v3-480P（按条计费）', 'video-v3-720P（按条计费）',
+        'video-v3-特价版', 'wan-3.0',
+    ],
+    'image': [
+        'gpt-image-2', 'gpt-image-2-cf', 'gpt-image-2.5-flare',
+        'gpt-image-2.5-flare-cf', 'gpt-image-2.5-sunburst',
+        'gpt-image-2.5-sunburst-cf', 'Nano Banana 2', 'Nano Banana 2.1',
+        'Nano Banana Pro', 'grok-imagine-image', 'grok-imagine-image-edit',
+    ],
+    'chat': [
+        'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-sonnet-4-6',
+        'claude-sonnet-4-6-thinking', 'claude-sonnet-5', 'claude-sonnet-5.5',
+        'claude-opus-4.5', 'claude-opus-4.6', 'claude-opus-4.7',
+        'claude-opus-5', 'claude-opus-5.5', 'claude-fable-5',
+        'gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol',
+        'codex-auto-review', 'gemini-3-flash-preview', 'gemini-3.1-pro-high',
+        'gemini-3.1-pro-preview', 'gemini-3.5-flash-lite',
+        'gemini-3.6-flash-high', 'gemini-3.7-flash-high', 'gemini-3.8-flash',
+        'gemini-4-argon', 'grok-4.5', 'grok-4.6', 'grok-4.7',
+        'claude-haiku-4-5-pack', 'claude-sonnet-4-5-pack',
+        'claude-sonnet-4-6-pack', 'claude-sonnet-4-6-thinking-pack',
+        'claude-sonnet-5-pack', 'claude-sonnet-5.5-pack',
+        'claude-opus-4.5-pack', 'claude-opus-4.6-pack', 'claude-opus-4.7-pack',
+        'claude-opus-5-pack', 'claude-opus-5.5-pack', 'claude-fable-5-pack',
+        'gemini-3-flash-preview-pack', 'gemini-3.1-pro-high-pack',
+        'gemini-3.1-pro-preview-pack', 'gemini-3.5-flash-lite-pack',
+        'gemini-3.6-flash-high-pack', 'gemini-3.7-flash-high-pack',
+        'gemini-3.8-flash-pack',
+    ],
+}
 
 
 class CatalogHandler(BaseHTTPRequestHandler):
@@ -114,6 +153,124 @@ class FetchModelsTests(unittest.TestCase):
             self.assertLessEqual(len(server.calls), 9)
 
 
+class ModelClassificationTests(unittest.TestCase):
+    def test_70_offline_models_have_expected_kind_and_pack_availability(self):
+        cases = [(model, kind) for kind, models in _CLASSIFICATION_MODELS.items() for model in models]
+        self.assertEqual(len(cases), 70)
+        self.assertEqual(len({model for model, _ in cases}), 70)
+        for model, kind in cases:
+            with self.subTest(model=model):
+                self.assertEqual(model_catalog.classify_model(model), kind)
+                record = model_catalog._record_from_upstream({'id': model})
+                self.assertEqual(record['kind'], kind)
+                self.assertEqual(record['available'], not model.endswith('-pack'))
+                self.assertTrue(model_catalog._valid_record(record))
+
+    def test_regex_fallbacks_cover_chat_image_and_video_families(self):
+        cases = {
+            'chat': ['deepseek-v4-pro', 'claude-sonnet-5', 'qwen-max', 'grok-4.9',
+                     'GPT-OSS-120B', 'glm-5', 'kimi-k2', 'moonshot-v1', 'llama-4',
+                     'codex-latest', 'o1', 'o3-mini', 'o9-preview'],
+            'image': ['DALL-E-3', 'dalle-3', 'FLUX-dev', 'midjourney-v7',
+                      'stable-diffusion-xl', 'seedream-4', 'jimeng-v4',
+                      'ideogram-v3', 'qwen-image-edit', 'wanx-2.1', 'cogview-4',
+                      'imagen-4', 'NANO BANANA PRO'],
+            'video': ['video-v1', 'video-v2（按秒计费）', 'MiniMax-H3（特价版）',
+                      'grok-imagine-1.5-video', 'seedance-2.5', 'sd2.5'],
+            'unknown': ['some-random-video-xyz', 'video-v20', 'fluxology',
+                        'notimagen', 'random-qwen-imageextra', ''],
+        }
+        for kind, models in cases.items():
+            for model in models:
+                with self.subTest(model=model):
+                    self.assertEqual(model_catalog.classify_model(model), kind)
+
+    def test_id_rules_precede_endpoint_fallbacks_and_endpoint_order_is_stable(self):
+        cases = [
+            ('video-v3', ['chat'], 'video'),
+            ('gpt-image-2', ['chat', 'openai-video'], 'image'),
+            ('gemini-3.8-flash', ['images'], 'chat'),
+            ('unknown-model', ['chat/completions', 'images', 'video'], 'chat'),
+            ('unknown-model', ['images', 'video'], 'image'),
+            ('unknown-model', ['openai-video'], 'video'),
+            ('unknown-model', 'CHAT', 'chat'),
+            ('unknown-model', ['llm'], 'chat'),
+            ('unknown-model', ['image'], 'image'),
+            ('unknown-model', ['unsupported'], 'unknown'),
+        ]
+        for model, endpoints, kind in cases:
+            with self.subTest(model=model, endpoints=endpoints):
+                self.assertEqual(model_catalog.classify_model(model, endpoints), kind)
+
+    def test_chat_and_image_records_ignore_video_capabilities_and_validate(self):
+        for row in ({'id': 'provider-text', 'supported_endpoint_types': ['chat']},
+                    {'id': 'gpt-image-2'},
+                    {'id': 'gemini-3.8-flash'}):
+            with self.subTest(row=row):
+                record = model_catalog._record_from_upstream(dict(row,
+                    description='1080p, 16:9, 5 seconds',
+                    capabilities={'resolutions': ['4K'], 'ratios': ['9:16'],
+                                  'durations': [10], 'audio': True, 'seed': True, 'max_images': 9}))
+                self.assertTrue(model_catalog._valid_record(record))
+                self.assertTrue(record['protocol_known'])
+                for field in ('resolutions', 'ratios', 'durations'):
+                    self.assertEqual(record[field], [])
+                self.assertFalse(record['audio'])
+                self.assertFalse(record['seed'])
+                self.assertEqual(record['max_images'], 0)
+
+    def test_explicit_chat_aliases_are_normalized_and_other_explicit_kinds_survive(self):
+        for field in ('kind', 'type'):
+            for explicit in ('chat', 'llm', 'text', ' TEXT '):
+                with self.subTest(field=field, explicit=explicit):
+                    record = model_catalog._record_from_upstream({'id': 'custom-model', field: explicit})
+                    self.assertEqual(record['kind'], 'chat')
+                    self.assertTrue(model_catalog._valid_record(record))
+        for kind in ('video', 'image', 'unknown'):
+            with self.subTest(kind=kind):
+                self.assertEqual(model_catalog._record_from_upstream(
+                    {'id': 'custom-model', 'kind': kind})['kind'], kind)
+
+    def test_pack_models_keep_classification_and_video_protocol_but_are_unavailable(self):
+        for model in ('video-v3', 'seedance2.5', 'wan-3.0', 'grok-imagine-1.5-video',
+                      'gpt-image-2', 'Nano Banana Pro', 'gemini-3.8-flash', 'deepseek-chat'):
+            with self.subTest(model=model):
+                base = model_catalog._record_from_upstream({'id': model})
+                pack = model_catalog._record_from_upstream({'id': model + '-PACK'})
+                self.assertEqual(pack['kind'], base['kind'])
+                self.assertFalse(pack['available'])
+                for field in ('family', 'resolutions', 'ratios', 'durations', 'protocol_known'):
+                    self.assertEqual(pack[field], base[field])
+
+    def test_builtins_preserve_all_original_video_records_and_add_complete_non_video_records(self):
+        records = model_catalog.builtin_models()
+        video_ids = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5',
+                     'MiniMax-H3', 'grok-imagine-1.5-video', 'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0']
+        self.assertEqual([model for model, row in records.items() if row['kind'] == 'video'], video_ids)
+        for model in video_ids:
+            with self.subTest(model=model):
+                row = records[model]
+                self.assertEqual(row['family'], model_catalog._base_family(model))
+                for field, value in model_catalog._defaults(row['family'], model).items():
+                    self.assertEqual(row[field], value)
+                self.assertTrue(model_catalog._valid_record(row))
+        for model, kind, family in [
+                ('deepseek-chat', 'chat', 'deepseek'), ('deepseek-reasoner', 'chat', 'deepseek'),
+                ('gemini-3.8-flash', 'chat', 'gemini'),
+                ('gpt-image-2.5-sunburst', 'image', 'gpt-image-sunburst'),
+                ('gpt-image-2', 'image', 'gpt-image')]:
+            with self.subTest(model=model):
+                row = records[model]
+                self.assertEqual((row['kind'], row['family']), (kind, family))
+                self.assertEqual(set(row), set(model_catalog._FIELDS))
+                self.assertTrue(model_catalog._valid_record(row))
+                self.assertTrue(row['protocol_known'])
+                self.assertTrue(row['available'])
+                for field in ('resolutions', 'ratios', 'durations'):
+                    self.assertEqual(row[field], ())
+                self.assertEqual((row['audio'], row['seed'], row['max_images']), (False, False, 0))
+
+
 class ModelCatalogTests(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('core.model_catalog'), '模型目录模块尚未实现')
@@ -157,8 +314,10 @@ class ModelCatalogTests(unittest.TestCase):
                 raise AssertionError('无 key 不应请求上游')
         snapshot = catalog.refresh(ForbiddenClient())
         self.assertIn('MiniMax-H3', snapshot)
+        self.assertIn('deepseek-chat', snapshot)
+        self.assertIn('deepseek-reasoner', snapshot)
         self.assertEqual(catalog.source, 'builtin')
-        self.assertFalse((self.config_path.parent / 'models_cache.json').exists())
+        self.assertEqual(list(self.config_path.parent.glob('models_cache*.json')), [])
 
     def test_fullwidth_channel_names_use_their_base_protocol(self):
         for model, family in [('MiniMax-H3（限时）', 'MiniMax-H3'),
@@ -179,7 +338,8 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertEqual(sum(row['kind'] == 'video' for row in snapshot.values()), 11)
         self.assertEqual(sum(row['kind'] == 'image' for row in snapshot.values()), 10)
         self.assertTrue(all(row['pricing_text'] == '计费未提供' for row in snapshot.values()))
-        self.assertTrue(all(not row['protocol_known'] for row in snapshot.values()))
+        self.assertTrue(all(not row['protocol_known'] for row in snapshot.values() if row['kind'] == 'video'))
+        self.assertTrue(all(row['protocol_known'] for row in snapshot.values() if row['kind'] == 'image'))
         self.assertEqual(catalog.source, 'upstream')
         self.assertFalse(catalog.expired)
 
@@ -233,7 +393,7 @@ class ModelCatalogTests(unittest.TestCase):
 
     def test_cache_roundtrip_isolated_by_key_and_base_and_never_saves_credentials(self):
         catalog, snapshot = self.refresh(self.catalog(), [{'id': 'video-v2', 'description': 'fixture-key is private'}])
-        cache = self.config_path.parent / 'models_cache.json'
+        cache = catalog.cache_path
         document = json.loads(cache.read_text(encoding='utf-8'))
         self.assertNotIn('fixture-key', cache.read_text(encoding='utf-8'))
         self.assertIsInstance(document['fetched_at'], (int, float))
@@ -247,7 +407,7 @@ class ModelCatalogTests(unittest.TestCase):
 
     def test_offline_refresh_preserves_last_good_snapshot_and_reports_failure(self):
         catalog, before = self.refresh(self.catalog(), [{'id': 'video-v2'}])
-        cache = self.config_path.parent / 'models_cache.json'
+        cache = catalog.cache_path
         previous = cache.read_bytes()
         class OfflineClient:
             def fetch_models(self):
@@ -271,7 +431,7 @@ class ModelCatalogTests(unittest.TestCase):
 
     def test_atomic_replace_failure_retains_old_disk_and_memory_state(self):
         catalog, before = self.refresh(self.catalog(), [{'id': 'video-v2'}])
-        cache = self.config_path.parent / 'models_cache.json'
+        cache = catalog.cache_path
         previous = cache.read_bytes()
         class NewClient:
             def fetch_models(self):
@@ -287,15 +447,167 @@ class ModelCatalogTests(unittest.TestCase):
         cache.write_text('{invalid', encoding='utf-8')
         self.assertEqual(self.catalog().source, 'builtin')
         catalog, _ = self.refresh(self.catalog(), [{'id': 'video-v2'}])
-        document = json.loads(cache.read_text(encoding='utf-8'))
+        document = json.loads(catalog.cache_path.read_text(encoding='utf-8'))
         document['fetched_at'] = time.time() - 25 * 3600
-        cache.write_text(json.dumps(document), encoding='utf-8')
+        catalog.cache_path.write_text(json.dumps(document), encoding='utf-8')
         reopened = self.catalog(catalog.base_url)
         self.assertEqual(reopened.source, 'cache')
         self.assertTrue(reopened.expired)
         document['models']['video-v2']['durations'] = ['bad']
-        cache.write_text(json.dumps(document), encoding='utf-8')
+        catalog.cache_path.write_text(json.dumps(document), encoding='utf-8')
         self.assertEqual(self.catalog(catalog.base_url).source, 'builtin')
+
+    def test_cache_paths_hash_each_normalized_identity_and_are_dynamic(self):
+        catalog = self.catalog(base=' https://api.kkone.vip/v1/ ', key=' fixture-key ')
+        self.assertEqual(catalog.base_url, 'https://api.kkone.vip/v1')
+        base_hash = hashlib.sha256(catalog.base_url.encode('utf-8')).hexdigest()[:8]
+        key_hash = hashlib.sha256(b'fixture-key').hexdigest()[:8]
+        self.assertEqual(catalog.cache_path.name, f'models_cache_{base_hash}{key_hash}.json')
+        first = catalog.cache_path
+        catalog.api_key = 'other-fixture-key'
+        second = catalog.cache_path
+        catalog.base_url += '/another'
+        third = catalog.cache_path
+        self.assertEqual(len({first, second, third}), 3)
+        self.assertEqual(first.parent, self.config_path.parent)
+        self.assertNotIn('fixture-key', first.name)
+
+    def test_two_lines_and_two_keys_keep_independent_disk_snapshots(self):
+        identities = [
+            ('http://127.0.0.1:9/v1', 'fixture-key', 'video-v2'),
+            ('http://127.0.0.1:10/v1', 'fixture-key', 'gemini-3.8-flash'),
+            ('http://127.0.0.1:9/v1', 'another-fixture-key', 'gpt-image-2'),
+        ]
+        paths = []
+        for base, key, model in identities:
+            catalog = self.catalog(base, key)
+            client = Mock()
+            client.fetch_models.return_value = [{'id': model}]
+            self.assertEqual(set(catalog.refresh(client)), {model})
+            paths.append(catalog.cache_path)
+        self.assertEqual(len(set(paths)), 3)
+        self.assertFalse((self.config_path.parent / 'models_cache.json').exists())
+        for base, key, model in identities:
+            with self.subTest(base=base, model=model):
+                reopened = self.catalog(base, key)
+                self.assertEqual(reopened.source, 'cache')
+                self.assertEqual(set(reopened.snapshot()), {model})
+
+    def test_matching_legacy_cache_is_migrated_once_and_left_byte_identical(self):
+        catalog = self.catalog()
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'video-v2'}]
+        snapshot = catalog.refresh(client)
+        document = json.loads(catalog.cache_path.read_text(encoding='utf-8'))
+        catalog.cache_path.unlink()
+        legacy = self.config_path.parent / 'models_cache.json'
+        legacy.write_text(json.dumps(document, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        previous = legacy.read_bytes()
+        migrated = self.catalog()
+        self.assertEqual(migrated.source, 'cache')
+        self.assertEqual(migrated.snapshot(), snapshot)
+        self.assertEqual(json.loads(migrated.cache_path.read_text(encoding='utf-8')), document)
+        self.assertEqual(legacy.read_bytes(), previous)
+        legacy.write_text('{invalid legacy after migration', encoding='utf-8')
+        with patch.object(self.module.ModelCatalog, '_atomic_write') as write:
+            self.assertEqual(self.catalog().snapshot(), snapshot)
+        write.assert_not_called()
+
+    def test_wrong_identity_or_invalid_legacy_cache_is_never_migrated(self):
+        catalog = self.catalog()
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'video-v2'}]
+        catalog.refresh(client)
+        document = json.loads(catalog.cache_path.read_text(encoding='utf-8'))
+        catalog.cache_path.unlink()
+        legacy = self.config_path.parent / 'models_cache.json'
+        variants = [
+            dict(document, base_url=document['base_url'] + '/another'),
+            dict(document, key_fingerprint=hashlib.sha256(b'another-fixture-key').hexdigest()),
+            dict(document, source='builtin'), dict(document, unexpected=True),
+            dict(document, models={'bad': {'id': 'bad'}}),
+        ]
+        for invalid in variants:
+            with self.subTest(fields=set(invalid)):
+                legacy.write_text(json.dumps(invalid), encoding='utf-8')
+                previous = legacy.read_bytes()
+                reopened = self.catalog()
+                self.assertEqual(reopened.source, 'builtin')
+                self.assertFalse(reopened.cache_path.exists())
+                self.assertEqual(legacy.read_bytes(), previous)
+
+    def test_migration_write_failure_keeps_readable_legacy_snapshot(self):
+        catalog = self.catalog()
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'video-v2'}]
+        snapshot = catalog.refresh(client)
+        previous = catalog.cache_path.read_bytes()
+        catalog.cache_path.unlink()
+        legacy = self.config_path.parent / 'models_cache.json'
+        legacy.write_bytes(previous)
+        with patch.object(self.module.ModelCatalog, '_atomic_write', side_effect=OSError('read-only fixture')):
+            reopened = self.catalog()
+        self.assertEqual(reopened.source, 'cache')
+        self.assertEqual(reopened.snapshot(), snapshot)
+        self.assertFalse(reopened.cache_path.exists())
+        self.assertEqual(legacy.read_bytes(), previous)
+
+    def test_identity_cache_takes_precedence_without_modifying_legacy(self):
+        catalog = self.catalog()
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'video-v2'}]
+        catalog.refresh(client)
+        legacy = self.config_path.parent / 'models_cache.json'
+        legacy.write_bytes(catalog.cache_path.read_bytes())
+        previous = legacy.read_bytes()
+        client.fetch_models.return_value = [{'id': 'video-v3'}]
+        catalog.refresh(client)
+        self.assertEqual(legacy.read_bytes(), previous)
+        self.assertEqual(set(self.catalog().snapshot()), {'video-v3'})
+        catalog.cache_path.write_text('{invalid current cache', encoding='utf-8')
+        self.assertEqual(self.catalog().source, 'builtin')
+        self.assertEqual(legacy.read_bytes(), previous)
+
+    def test_pack_records_survive_refresh_save_and_reload_but_stay_unavailable(self):
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'gemini-3.8-flash'},
+                                           {'id': 'gemini-3.8-flash-pack'}]
+        catalog = self.catalog()
+        snapshot = catalog.refresh(client, persist=False)
+        self.assertEqual(len(snapshot), 2)
+        self.assertFalse(catalog.cache_path.exists())
+        catalog.save()
+        reopened = self.catalog()
+        self.assertEqual(reopened.snapshot(), snapshot)
+        self.assertTrue(snapshot['gemini-3.8-flash']['available'])
+        self.assertFalse(snapshot['gemini-3.8-flash-pack']['available'])
+
+    def test_deepseek_host_merges_missing_models_without_overwriting_provider_metadata(self):
+        catalog = self.catalog(base='https://api.deepseek.com/v1')
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'deepseek-chat', 'name': 'provider-chat',
+                                           'description': 'provider metadata'}]
+        for _ in range(2):
+            snapshot = catalog.refresh(client)
+            self.assertEqual(set(snapshot), {'deepseek-chat', 'deepseek-reasoner'})
+            self.assertEqual(snapshot['deepseek-chat']['display_name'], 'provider-chat')
+            self.assertEqual(snapshot['deepseek-chat']['description'], 'provider metadata')
+            self.assertTrue(all(self.module._valid_record(row) for row in snapshot.values()))
+        self.assertEqual(self.catalog(catalog.base_url).snapshot(), snapshot)
+        client.fetch_models.return_value = []
+        self.assertEqual(set(catalog.refresh(client)), {'deepseek-chat', 'deepseek-reasoner'})
+
+    def test_deepseek_cache_with_missing_defaults_is_merged_on_load(self):
+        catalog = self.catalog(base='https://api.deepseek.com/v1')
+        client = Mock()
+        client.fetch_models.return_value = []
+        catalog.refresh(client)
+        document = json.loads(catalog.cache_path.read_text(encoding='utf-8'))
+        document['models'] = {}
+        catalog.cache_path.write_text(json.dumps(document), encoding='utf-8')
+        reopened = self.catalog(catalog.base_url)
+        self.assertEqual(reopened.source, 'cache')
+        self.assertEqual(set(reopened.snapshot()), {'deepseek-chat', 'deepseek-reasoner'})
 
 
 if __name__ == '__main__':

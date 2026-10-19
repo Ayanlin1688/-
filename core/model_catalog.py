@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlparse
 
 
 _FIELDS = (
@@ -17,6 +18,17 @@ _FIELDS = (
 _CACHE_FIELDS = set(_FIELDS)
 _VIDEO_ENDPOINTS = {'openai-video', 'video', 'videos', 'video-generation'}
 _IMAGE_ENDPOINTS = {'openai', 'openai-image', 'gemini', 'image', 'images'}
+_IMAGE_MODEL_RE = re.compile(
+    r'(?<![a-z0-9])(?:gpt[-_]?image|dall-?e|nano[\s_-]+banana|'
+    r'grok[-_]?imagine[-_]?image|flux|midjourney|stable[-_]?diffusion|'
+    r'seedream|jimeng|ideogram|qwen[-_]?image|wanx|cogview|imagen)(?![a-z0-9])',
+    re.I,
+)
+_CHAT_MODEL_RE = re.compile(
+    r'(?:claude|gpt[-_]?\d|gpt[-_]?oss|gemini|grok[-_]?\d|deepseek|'
+    r'qwen(?![-_]?image)|glm|kimi|moonshot|llama|codex|^o[1-9])',
+    re.I,
+)
 _RESOLUTION_RE = re.compile(r'(?<![A-Za-z0-9])(?:480p|720p|768p|1080p|2K|4K)(?![A-Za-z0-9])', re.I)
 _RATIO_RE = re.compile(r'(?<!\d)(\d{1,2}\s*:\s*\d{1,2})(?!\d)')
 _DURATION_RANGE_RE = re.compile(r'(?<!\d)(\d{1,3})\s*(?:-|~|至|到)\s*(\d{1,3})\s*(?:秒|seconds?\b|sec\b|s\b)', re.I)
@@ -47,6 +59,33 @@ def _base_family(model):
     if re.match(r'^video-v3(?:$|[-(])', value):
         return 'video-v3'
     return ''
+
+
+def classify_model(model_id, endpoint_types=()):
+    """Classify a provider model without relying on provider-specific metadata."""
+    value = str(model_id or '').strip()
+    if not value:
+        return 'unknown'
+    candidate = re.sub(r'-pack$', '', value, flags=re.I)
+    if _base_family(candidate) or candidate.lower() == 'wan-3.0':
+        return 'video'
+    if _IMAGE_MODEL_RE.search(candidate):
+        return 'image'
+    if _CHAT_MODEL_RE.search(candidate):
+        return 'chat'
+    if isinstance(endpoint_types, str):
+        endpoint_types = [endpoint_types]
+    endpoints = {str(item).strip().lower() for item in endpoint_types or []}
+    if endpoints & {'chat', 'chat/completions', 'llm'}:
+        return 'chat'
+    if endpoints & {'images', 'image'}:
+        return 'image'
+    if endpoints & _VIDEO_ENDPOINTS:
+        return 'video'
+    # Older KKOne responses used provider names for image routes.
+    if endpoints & _IMAGE_ENDPOINTS:
+        return 'image'
+    return 'unknown'
 
 
 def family_for(model, catalog=None):
@@ -102,8 +141,18 @@ def _defaults(family, model=''):
 
 def _builtin_record(model, description='', display_name=None):
     family = _base_family(model)
+    family = {
+        'deepseek-chat': 'deepseek',
+        'deepseek-reasoner': 'deepseek',
+        'gemini-3.8-flash': 'gemini',
+        'gpt-image-2.5-sunburst': 'gpt-image-sunburst',
+        'gpt-image-2': 'gpt-image',
+    }.get(model, family)
     defaults = _defaults(family, model)
-    kind = 'video' if family or model == 'wan-3.0' else 'unknown'
+    kind = classify_model(model)
+    if kind in {'chat', 'image'}:
+        defaults = dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False,
+                        max_images=0, protocol_known=True)
     return dict(id=model, name=model, display_name=display_name or model, description=description,
                 kind=kind, family=family, pricing_text='计费未提供', aliases=[], available=True,
                 capability_source='builtin', **{key: defaults[key] for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')})
@@ -111,7 +160,8 @@ def _builtin_record(model, description='', display_name=None):
 
 def builtin_models():
     names = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5', 'MiniMax-H3', 'grok-imagine-1.5-video',
-             'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0']
+             'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0', 'deepseek-chat', 'deepseek-reasoner',
+             'gemini-3.8-flash', 'gpt-image-2.5-sunburst', 'gpt-image-2']
     records = {_name: _builtin_record(_name) for _name in names}
     # Alias models retain their wire IDs while sharing the protocol family.
     return records
@@ -154,8 +204,9 @@ def _record_from_upstream(row):
     if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id'].strip():
         raise ValueError('上游模型条目缺少有效 id')
     model = row['id'].strip()
-    family = _base_family(model)
-    defaults = _defaults(family, model)
+    base_model = re.sub(r'-pack$', '', model, flags=re.I)
+    family = _base_family(base_model)
+    defaults = _defaults(family, base_model)
     description = str(row.get('description') or '')
     detail = {name: row[name] for name in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images') if name in row}
     if isinstance(row.get('capabilities'), dict):
@@ -164,16 +215,16 @@ def _record_from_upstream(row):
     endpoint_types = row.get('supported_endpoint_types')
     if isinstance(endpoint_types, str):
         endpoint_types = [endpoint_types]
-    endpoints = {str(item).lower() for item in endpoint_types or []}
-    explicit_kind = str(row.get('kind') or row.get('type') or '').lower()
-    if explicit_kind in {'video', 'image', 'unknown'}:
+    explicit_kind = str(row.get('kind') or row.get('type') or '').strip().lower()
+    if explicit_kind in {'chat', 'llm', 'text'}:
+        kind = 'chat'
+    elif explicit_kind in {'video', 'image', 'unknown'}:
         kind = explicit_kind
-    elif endpoints & _VIDEO_ENDPOINTS or family:
-        kind = 'video'
-    elif endpoints & _IMAGE_ENDPOINTS:
-        kind = 'image'
     else:
-        kind = 'unknown'
+        kind = classify_model(model, endpoint_types)
+    if kind in {'chat', 'image'}:
+        defaults = dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False,
+                        max_images=0, protocol_known=True)
 
     def choose(name, cast=None):
         explicit = _as_list(detail.get(name), cast)
@@ -190,6 +241,9 @@ def _record_from_upstream(row):
     audio = detail.get('audio') if isinstance(detail.get('audio'), bool) else defaults['audio']
     seed = detail.get('seed') if isinstance(detail.get('seed'), bool) else defaults['seed']
     max_images = detail.get('max_images') if isinstance(detail.get('max_images'), int) and not isinstance(detail.get('max_images'), bool) else defaults['max_images']
+    if kind in {'chat', 'image'}:
+        resolutions, ratios, durations = [], [], []
+        audio, seed, max_images = False, False, 0
     source_name = 'upstream' if detail else ('description' if any((described['resolutions'], described['ratios'], described['durations'], described['pricing_text'])) else 'builtin')
     pricing = row.get('pricing_text') or row.get('price') or row.get('pricing') or row.get('cost')
     if not isinstance(pricing, str) or not pricing.strip():
@@ -199,7 +253,8 @@ def _record_from_upstream(row):
     return dict(id=model, name=model, display_name=str(row.get('display_name') or row.get('name') or model),
                 description=description, kind=kind, family=family, resolutions=resolutions, ratios=ratios,
                 durations=durations, audio=audio, seed=seed, max_images=max_images, pricing_text=pricing,
-                aliases=aliases, available=True, protocol_known=bool(defaults['protocol_known']), capability_source=source_name)
+                aliases=aliases, available=not model.lower().endswith('-pack'),
+                protocol_known=bool(defaults['protocol_known']), capability_source=source_name)
 
 
 def options_for(model, catalog=None):
@@ -233,6 +288,12 @@ class ModelCatalog:
 
     @property
     def cache_path(self):
+        base_hash = hashlib.sha256(self.base_url.encode('utf-8')).hexdigest()[:8]
+        key_hash = hashlib.sha256(self.api_key.encode('utf-8')).hexdigest()[:8]
+        return self.config_path.parent / f'models_cache_{base_hash}{key_hash}.json'
+
+    @property
+    def legacy_cache_path(self):
         return self.config_path.parent / self.CACHE_NAME
 
     @property
@@ -241,29 +302,65 @@ class ModelCatalog:
 
     def _load(self):
         if not self.api_key:
-            self._models = builtin_models()
+            self._models = self._with_line_defaults(builtin_models())
             self.source = 'builtin'
             return
+        cache_path = self.cache_path
         try:
-            document = json.loads(self.cache_path.read_text(encoding='utf-8'))
-            if set(document) != {'source', 'base_url', 'key_fingerprint', 'fetched_at', 'models'}:
-                raise ValueError('缓存结构包含未知字段')
-            if document.get('source') != 'upstream':
-                raise ValueError('缓存来源无效')
-            if document.get('base_url') != self.base_url or document.get('key_fingerprint') != self.key_fingerprint:
-                raise ValueError('缓存身份不匹配')
-            models = document.get('models')
-            if not isinstance(models, dict) or not all(key == item.get('id') and _valid_record(item) for key, item in models.items()):
-                raise ValueError('缓存模型内容无效')
+            migrate = False
+            if cache_path.exists():
+                document = self._read_cache(cache_path)
+            elif self.legacy_cache_path.exists():
+                document = self._read_cache(self.legacy_cache_path)
+                migrate = True
+            else:
+                raise FileNotFoundError(cache_path)
+            models = document['models']
             self._models = deepcopy(models)
             self.fetched_at = float(document.get('fetched_at', 0))
             self.expired = bool(self.fetched_at and time.time() - self.fetched_at > self.CACHE_TTL)
             self.source = 'cache'
+            self._with_line_defaults(self._models)
+            if migrate:
+                try:
+                    self._atomic_write(document)
+                except OSError:
+                    # A read-only cache is still usable; the next refresh can retry migration.
+                    pass
         except Exception:
-            self._models = builtin_models()
+            self._models = self._with_line_defaults(builtin_models())
             self.source = 'builtin'
             self.fetched_at = 0
             self.expired = False
+
+    def _read_cache(self, path):
+        document = json.loads(path.read_text(encoding='utf-8'))
+        if set(document) != {'source', 'base_url', 'key_fingerprint', 'fetched_at', 'models'}:
+            raise ValueError('缓存结构包含未知字段')
+        if document.get('source') != 'upstream':
+            raise ValueError('缓存来源无效')
+        if document.get('base_url') != self.base_url or document.get('key_fingerprint') != self.key_fingerprint:
+            raise ValueError('缓存身份不匹配')
+        models = document.get('models')
+        if not isinstance(models, dict) or not all(
+                key == item.get('id') and _valid_record(item) for key, item in models.items()):
+            raise ValueError('缓存模型内容无效')
+        return document
+
+    def _with_line_defaults(self, models):
+        try:
+            hostname = urlparse(self.base_url).hostname or ''
+        except ValueError:
+            hostname = ''
+        if 'deepseek.com' not in hostname.lower():
+            return models
+        for model in ('deepseek-chat', 'deepseek-reasoner'):
+            if model not in models:
+                record = _builtin_record(model)
+                for field in ('resolutions', 'ratios', 'durations'):
+                    record[field] = list(record[field])
+                models[model] = record
+        return models
 
     def snapshot(self):
         return deepcopy(self._models)
@@ -272,7 +369,7 @@ class ModelCatalog:
         if not self.api_key:
             self.last_error = None
             self.source = 'builtin'
-            self._models = builtin_models()
+            self._models = self._with_line_defaults(builtin_models())
             self.fetched_at = 0
             self.expired = False
             return self.snapshot()
@@ -284,6 +381,7 @@ class ModelCatalog:
             for row in raw:
                 record = _record_from_upstream(_scrub(row, self.api_key))
                 models[record['id']] = record
+            self._with_line_defaults(models)
             if not all(_valid_record(item) for item in models.values()):
                 raise ValueError('上游模型记录无效')
             fetched_at = time.time()
@@ -312,11 +410,12 @@ class ModelCatalog:
                                 'fetched_at': self.fetched_at, 'models': self._models})
 
     def _atomic_write(self, document):
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.cache_path.with_name(self.cache_path.name + '.tmp')
+        path = self.cache_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(path.name + '.tmp')
         try:
             temp_path.write_text(json.dumps(document, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
-            os.replace(temp_path, self.cache_path)
+            os.replace(temp_path, path)
         except Exception:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -347,7 +446,7 @@ def _valid_record(record):
         return False
     if not isinstance(record['id'], str) or not record['id'] or record['name'] != record['id']:
         return False
-    if record['kind'] not in {'video', 'image', 'unknown'} or not isinstance(record['family'], str):
+    if record['kind'] not in {'video', 'image', 'chat', 'unknown'} or not isinstance(record['family'], str):
         return False
     if not isinstance(record['resolutions'], (list, tuple)) or not all(isinstance(item, str) for item in record['resolutions']):
         return False
@@ -358,4 +457,4 @@ def _valid_record(record):
     return isinstance(record['audio'], bool) and isinstance(record['seed'], bool) and isinstance(record['max_images'], int) and not isinstance(record['max_images'], bool)
 
 
-__all__ = ['ModelCatalog', 'builtin_models', 'options_for', 'family_for']
+__all__ = ['ModelCatalog', 'builtin_models', 'options_for', 'family_for', 'classify_model']
