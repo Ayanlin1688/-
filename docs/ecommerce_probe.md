@@ -80,6 +80,19 @@
 
 - `grok-imagine-image-edit`：图生图要求 `POST /v1/images/edits` 且 **`Content-Type: application/json`**，字段 `image`/`images` 为 **1–8 个 HTTPS 图片 URL**（拒绝 data URI/裸 base64：`URL 必须是无用户信息的 HTTPS 地址`）；需先上传图床拿公网 URL。
 - `Nano Banana Pro`：在 `/images/generations` JSON 与 `/images/edits` JSON 下均未成功（`no images generated` / `unsupported MIME`），其参考图格式待后续单独验证，本期不作为默认。
+
+### 4.5 返图形态与 PNG 归一化
+
+- 请求统一带 `response_format: "b64_json"`。生成和编辑接口都使用同一字段；编辑接口以 multipart 普通表单字段发送。
+- 响应优先读取 `data[0].b64_json`。若没有该字段，则接受 `data[0].url`，只允许 `http`/`https`，并用不携带 Authorization 或上传令牌的独立 GET 跟随重定向下载。
+- 下载结果按 PNG、JPEG、WEBP、GIF、BMP 魔数识别。非 PNG 通过 Qt 图像解码后重新编码为 PNG，并在结果 warning 标明源格式和转换。
+- 生成结果记录 `delivery`（`b64` 或 `url`），便于清单和排障区分原始返图形态。
+- URL 非法、CDN 非 2xx、下载读取中断或图像解码失败，都发生在生成请求已收到 200 之后，按已计费失败处理，禁止重试或切换模型。
+
+### 4.6 response_format 协商与重试边界
+
+- 仅当网关返回未计费的 HTTP 400，且错误正文明确表示 `response_format` 不支持或参数未知时，才去掉该参数对同一尺寸重试一次。
+- 内容政策（包括 `upstream_text_reply`）、其它 400、所有其它非 2xx，以及已经收到 2xx 响应后的任何解析、下载或写盘失败，均不得重试或切换模型。
 - gpt-image 系列无异步任务，`GET /v1/images/generations/{id}` 实测 404（不要写轮询逻辑给 gpt-image）。
 
 ## 5. 图床（仅供 grok 等需要公网 URL 的模型）

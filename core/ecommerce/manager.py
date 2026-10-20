@@ -76,6 +76,7 @@ class EcommerceImageManager:
         self.image_func = image_func if image_func is not None else generate_image
         self.on_group, self.on_item, self.on_log = on_group, on_item, on_log
         self._warned_persistence = False
+        self._deliveries = {}
 
     @classmethod
     def build_from_config(cls, config_manager, store=None, overrides=None):
@@ -361,6 +362,7 @@ class EcommerceImageManager:
             _atomic_write(path, result.png_bytes)
             if not _valid_file(path):
                 raise OSError('图片输出文件不存在或为空')
+            self._deliveries[item['item_id']] = getattr(result, 'delivery', 'b64')
             self._item(dict(item, status='succeeded', file_path=str(path), size=result.size,
                             image_tokens=result.image_tokens, warnings=list(result.warnings), error=''))
         except Exception as error:
@@ -399,6 +401,16 @@ class EcommerceImageManager:
         else:
             status = 'failed'
         config = group['config']
+        previous_deliveries = {}
+        previous_manifest = group.get('manifest')
+        if isinstance(previous_manifest, dict):
+            for previous in previous_manifest.get('items', ()):
+                if not isinstance(previous, dict):
+                    continue
+                key = (previous.get('kind'), previous.get('seq'))
+                delivery = previous.get('delivery')
+                if key[0] and type(key[1]) is int and delivery in ('b64', 'url'):
+                    previous_deliveries[key] = delivery
         manifest = dict(
             group_id=group_id, product_name=group['product_name'], product_info=config.get('product_info', ''),
             platforms=group['platforms'], created_at=group['created_at'], status=status,
@@ -409,7 +421,9 @@ class EcommerceImageManager:
             totals=dict(counts, total=total), persistence_available=self.store.persistence_available,
             items=[dict(kind=i['kind'], seq=i['seq'], title=i['title'], prompt=i['prompt'],
                         file=i['file_path'], size=i['size'], image_tokens=i['image_tokens'],
-                        model=i['model'], status=i['status'], warnings=i['warnings'], error=i['error'])
+                        model=i['model'], delivery=self._deliveries.get(
+                            i['item_id'], previous_deliveries.get((i['kind'], i['seq']), 'b64')),
+                        status=i['status'], warnings=i['warnings'], error=i['error'])
                    for i in items])
         manifest = self._safe_copy(manifest)
         error = ''

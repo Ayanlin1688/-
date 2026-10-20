@@ -101,6 +101,7 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(manifest['totals']['succeeded'], 3)
         self.assertEqual(manifest['totals']['total'], 3)
         self.assertEqual(len(manifest['items']), 3)
+        self.assertEqual({item['delivery'] for item in manifest['items']}, {'b64'})
         self.assertEqual(self.analysis.call_count, 1)
         self.assertEqual(self.image.call_count, 3)
         self.assertEqual(self.groups[0]['status'], 'analyzing')
@@ -111,6 +112,17 @@ class EcommerceManagerTests(unittest.TestCase):
             self.assertEqual(call.args[:3], ('offline-fixture', TEST_KEY, 'gpt-image-2.5-sunburst'))
             self.assertEqual(call.args[4], '1:1' if 'carousel' in call.args[3] else '3:4')
         self.assertNotIn(TEST_KEY, json.dumps(group, ensure_ascii=False))
+
+    def test_manifest_records_url_delivery_and_200_errors_cannot_switch(self):
+        self.image.side_effect = lambda *args, **kwargs: ImageResult(
+            PNG, args[2], '1024x1024', args[5], 'auto', '/images/generations',
+            delivery='url')
+        group_id = self.start(carousel_count=1, detail_count=0)
+        self.assertEqual(self.manifest(group_id)['items'][0]['delivery'], 'url')
+        self.assertFalse(self.manager._can_switch(EcommerceImageError('read failed', 200)))
+        self.assertFalse(self.manager._can_switch(EcommerceImageError('redirect response', 201)))
+        self.assertTrue(self.manager._can_switch(EcommerceImageError('rejected', 400)))
+        self.assertTrue(self.manager._can_switch(EcommerceImageError('connection failed')))
 
     def test_distinct_chat_and_image_lines_thinking_and_redaction(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -6,8 +6,11 @@ import binascii
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
+from PyQt5.QtCore import QBuffer, QByteArray, QIODevice
+from PyQt5.QtGui import QImage
 
 from core.ecommerce.platforms import RATIOS
 from core.http_client import HttpClient, RequestError
@@ -40,6 +43,7 @@ class ImageResult:
     revised_prompt: str | None = None
     image_tokens: int | None = None
     warnings: list[str] = field(default_factory=list)
+    delivery: str = 'b64'
 
 
 def _even(n):
@@ -104,6 +108,15 @@ def _is_size_rejection(status_code, body):
                 'size', 'dimension', 'resolution', '分辨率', '尺寸', 'too large')))
 
 
+def _is_response_format_rejection(status_code, body):
+    text = str(body).lower()
+    return (status_code == 400
+            and 'response_format' in text
+            and any(word in text for word in (
+                'unsupported', 'unknown parameter', 'not supported',
+                '不支持', '未知参数', '不支持的参数')))
+
+
 def _reference_files(paths, redact):
     """Read every reference before sending a potentially billable request."""
     mime_types = {'.png': 'image/png', '.jpg': 'image/jpeg',
@@ -121,8 +134,70 @@ def _reference_files(paths, redact):
     return files
 
 
+def _image_format(content):
+    if content.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'PNG'
+    if content.startswith(b'\xff\xd8\xff'):
+        return 'JPEG'
+    if content.startswith(b'RIFF') and content[8:12] == b'WEBP':
+        return 'WEBP'
+    if content.startswith((b'GIF87a', b'GIF89a')):
+        return 'GIF'
+    if content.startswith(b'BM'):
+        return 'BMP'
+    return None
+
+
+def _to_png(content, image_format, redact):
+    image = QImage.fromData(content)
+    if image.isNull():
+        raise EcommerceImageError('图片生成响应的图片数据无法解码', 200, redact=redact)
+    output = QByteArray()
+    buffer = QBuffer(output)
+    if not buffer.open(QIODevice.WriteOnly):
+        raise EcommerceImageError('图片生成响应无法转换为 PNG', 200, redact=redact)
+    try:
+        if not image.save(buffer, 'PNG'):
+            raise EcommerceImageError('图片生成响应无法转换为 PNG', 200, redact=redact)
+    finally:
+        buffer.close()
+    return bytes(output), [f'源图为 {image_format}，已转为 PNG']
+
+
+def _download_image(url, redact):
+    try:
+        parsed = urlsplit(url) if isinstance(url, str) else None
+    except ValueError:
+        parsed = None
+    if (parsed is None or parsed.scheme.lower() not in ('http', 'https')
+            or not parsed.netloc or parsed.username is not None or parsed.password is not None):
+        raise EcommerceImageError('图片生成响应的 url 必须是 http/https 地址', 200, redact=redact)
+    response = None
+    try:
+        # This independent request deliberately carries no API or upload credentials.
+        response = requests.get(url, stream=True, allow_redirects=True, timeout=(15, 300))
+    except requests.RequestException as error:
+        raise EcommerceImageError(
+            f'图片下载连接失败：{type(error).__name__}', 200, redact=redact) from None
+    try:
+        status = response.status_code
+        if not 200 <= status < 300:
+            excerpt = redact(response.text)[:500]
+            raise EcommerceImageError(
+                f'图片下载失败：HTTP {status}: {excerpt}', 200, excerpt, redact=redact)
+        try:
+            return response.content
+        except requests.RequestException as error:
+            raise EcommerceImageError(
+                f'图片下载响应读取失败：{type(error).__name__}', 200, redact=redact) from None
+    except EcommerceImageError:
+        raise
+    finally:
+        response.close()
+
+
 def _decode_image(response, redact):
-    """A successful response must contain inline PNG bytes, never a task ID."""
+    """Decode inline base64 or anonymously download a returned image URL."""
     def invalid(message):
         return EcommerceImageError(
             message, response.status_code, response.text, redact=redact)
@@ -135,14 +210,29 @@ def _decode_image(response, redact):
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         raise invalid('图片生成响应缺少有效的 data 数组')
     encoded = data[0].get('b64_json')
-    if not isinstance(encoded, str) or not encoded.strip():
-        raise invalid('图片生成响应缺少 b64_json')
-    try:
-        png_bytes = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error):
-        raise invalid('图片生成响应的 b64_json 不是合法 Base64') from None
-    if not png_bytes.startswith(b'\x89PNG'):
-        raise invalid('图片生成响应不是 PNG 图片（魔数错误）')
+    warnings = []
+    delivery = 'b64'
+    if isinstance(encoded, str) and encoded.strip():
+        try:
+            png_bytes = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise invalid('图片生成响应的 b64_json 不是合法 Base64') from None
+        if not png_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise invalid('图片生成响应不是 PNG 图片（魔数错误）')
+    else:
+        image_url = data[0].get('url')
+        if not isinstance(image_url, str) or not image_url.strip():
+            raise invalid('图片生成响应缺少 b64_json 或可下载的 url')
+        delivery = 'url'
+        content = _download_image(image_url.strip(), redact)
+        image_format = _image_format(content)
+        if image_format is None:
+            raise EcommerceImageError(
+                '图片下载响应无法识别图片格式', 200, response.text, redact=redact)
+        if image_format == 'PNG':
+            png_bytes = content
+        else:
+            png_bytes, warnings = _to_png(content, image_format, redact)
 
     usage = payload.get('usage')
     details = usage.get('input_tokens_details') if isinstance(usage, dict) else None
@@ -151,7 +241,7 @@ def _decode_image(response, redact):
     revised_prompt = data[0].get('revised_prompt', payload.get('revised_prompt'))
     if not isinstance(revised_prompt, str):
         revised_prompt = None
-    return png_bytes, revised_prompt, image_tokens
+    return png_bytes, revised_prompt, image_tokens, delivery, warnings
 
 
 def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
@@ -182,26 +272,38 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
         for position, candidate in enumerate(plan):
             status_code = None
             body = dict(model=model, prompt=prompt, n=1,
-                        size=candidate['size'], quality=candidate['quality'])
-            kwargs = dict(data=body, files=files) if files else dict(json=body)
-            with client.request('POST', url, check_status=False, stream=True,
-                                allow_redirects=False, **kwargs) as response:
-                status_code = response.status_code
-                # Read completely once. Any read failure after headers is final.
-                response.content
-                if not 200 <= status_code < 300:
-                    excerpt = client.redact(response.text)[:500]
-                    if (_is_size_rejection(status_code, response.text)
-                            and position + 1 < len(plan)):
-                        warnings.append(
-                            f"{candidate['tier']} 尺寸 {candidate['size']} 被拒绝："
-                            f'HTTP {status_code}: {excerpt}；尝试下一候选尺寸')
-                        continue
-                    raise EcommerceImageError(
-                        f'HTTP {status_code}: {excerpt}', status_code,
-                        response.text, redact=client.redact)
-                png_bytes, revised_prompt, image_tokens = _decode_image(
-                    response, client.redact)
+                        size=candidate['size'], quality=candidate['quality'],
+                        response_format='b64_json')
+            without_format = False
+            while True:
+                request_body = dict(body)
+                if without_format:
+                    request_body.pop('response_format', None)
+                kwargs = dict(data=request_body, files=files) if files else dict(json=request_body)
+                with client.request('POST', url, check_status=False, stream=True,
+                                    allow_redirects=False, **kwargs) as response:
+                    status_code = response.status_code
+                    # Read completely once. Any read failure after headers is final.
+                    response.content
+                    if not 200 <= status_code < 300:
+                        excerpt = client.redact(response.text)[:500]
+                        if (not without_format and _is_response_format_rejection(
+                                status_code, response.text)):
+                            warnings.append('服务不支持 response_format，已移除参数重试一次')
+                            without_format = True
+                            continue
+                        if (_is_size_rejection(status_code, response.text)
+                                and position + 1 < len(plan)):
+                            warnings.append(
+                                f"{candidate['tier']} 尺寸 {candidate['size']} 被拒绝："
+                                f'HTTP {status_code}: {excerpt}；尝试下一候选尺寸')
+                            break
+                        raise EcommerceImageError(
+                            f'HTTP {status_code}: {excerpt}', status_code,
+                            response.text, redact=client.redact)
+                    png_bytes, revised_prompt, image_tokens, delivery, decode_warnings = _decode_image(
+                        response, client.redact)
+                warnings.extend(decode_warnings)
                 if files and image_tokens == 0:
                     warnings.append('参考图可能未被模型采用（image_tokens=0）')
                 if position:
@@ -212,7 +314,7 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
                     png_bytes=png_bytes, model=model, size=candidate['size'],
                     tier_used=candidate['tier'], quality=candidate['quality'],
                     endpoint=endpoint, revised_prompt=revised_prompt,
-                    image_tokens=image_tokens, warnings=warnings)
+                    image_tokens=image_tokens, warnings=warnings, delivery=delivery)
     except (RequestError, requests.RequestException) as error:
         raise EcommerceImageError(
             f'图片生成连接或读取失败：{error}', status_code,

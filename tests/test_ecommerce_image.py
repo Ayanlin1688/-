@@ -9,6 +9,9 @@ import tempfile
 import threading
 import unittest
 
+from PyQt5.QtCore import QByteArray, QBuffer, QIODevice
+from PyQt5.QtGui import QImage
+
 from core.ecommerce import image_client
 from core.ecommerce.image_client import (
     DEFAULT_IMAGE_MODEL, TIER_SHORT_EDGE, EcommerceImageError,
@@ -33,6 +36,17 @@ def image_payload(*, image_tokens=None, revised_prompt=None):
     if image_tokens is not None:
         payload['usage'] = {'input_tokens_details': {'image_tokens': image_tokens}}
     return payload
+
+
+def encoded_image(fmt):
+    image = QImage(1, 1, QImage.Format_ARGB32)
+    image.fill(0xff44c877)
+    output = QByteArray()
+    buffer = QBuffer(output)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, fmt)
+    buffer.close()
+    return bytes(output)
 
 
 class ImageFixtureHandler(BaseHTTPRequestHandler):
@@ -73,6 +87,27 @@ class ImageFixtureHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
+    def do_GET(self):
+        self.server.get_calls.append({'path': self.path, 'headers': dict(self.headers)})
+        status, payload, redirect = self.server.get_responder(self.path)
+        if redirect:
+            self.send_response(status)
+            self.send_header('Location', redirect)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        self.send_response(status)
+        self.send_header('Content-Type', 'image/png')
+        self.send_header('Connection', 'close')
+        incomplete = self.server.get_mode == 'truncated'
+        self.send_header('Content-Length', str(len(payload) + (100 if incomplete else 0)))
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
 
 class LocalImageServer:
     def __init__(self, payload=None, *, status=200, responder=None, mode='normal'):
@@ -84,9 +119,12 @@ class LocalImageServer:
     def __enter__(self):
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), ImageFixtureHandler)
         self.server.calls = []
+        self.server.get_calls = []
+        self.server.get_mode = 'normal'
         self.server.mode = self.mode
         self.server.release = threading.Event()
         self.server.responder = self.responder or (lambda call, count: (self.status, self.payload))
+        self.server.get_responder = lambda path: (200, PNG_BYTES, None)
         self.server.base_url = f'http://127.0.0.1:{self.server.server_port}/v1'
         self.thread = threading.Thread(
             target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
@@ -244,6 +282,7 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(call['body']), {
             'model': DEFAULT_IMAGE_MODEL, 'prompt': 'Studio photograph of a bottle.',
             'n': 1, 'size': '2048x2560', 'quality': 'high',
+            'response_format': 'b64_json',
         })
         self.assertEqual(result.png_bytes, PNG_BYTES)
         self.assertEqual(result.model, DEFAULT_IMAGE_MODEL)
@@ -254,6 +293,85 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(result.revised_prompt, 'A refined prompt.')
         self.assertIsNone(result.image_tokens)
         self.assertEqual(result.warnings, [])
+
+    def test_url_delivery_follows_redirect_without_credentials(self):
+        with LocalImageServer() as server:
+            server.responder = lambda call, count: (200, {
+                'data': [{'url': server.base_url + '/download',
+                          'revised_prompt': 'URL prompt'}]})
+            server.get_responder = lambda path: (
+                (302, b'', '/v1/final') if path == '/v1/download' else (200, PNG_BYTES, None))
+            result = self.generate(server)
+        self.assertEqual(result.delivery, 'url')
+        self.assertEqual(result.png_bytes, PNG_BYTES)
+        self.assertEqual(result.revised_prompt, 'URL prompt')
+        self.assertEqual([call['path'] for call in server.get_calls], ['/v1/download', '/v1/final'])
+        self.assertTrue(all('Authorization' not in call['headers'] for call in server.get_calls))
+
+    def test_url_delivery_converts_jpeg_and_webp_to_png(self):
+        for fmt in ('JPEG', 'WEBP'):
+            with self.subTest(fmt=fmt), LocalImageServer() as server:
+                source = encoded_image(fmt)
+                server.responder = lambda call, count: (200, {
+                    'data': [{'url': server.base_url + '/source'}]})
+                server.get_responder = lambda path, source=source: (200, source, None)
+                result = self.generate(server)
+            self.assertEqual(result.delivery, 'url')
+            self.assertTrue(result.png_bytes.startswith(b'\x89PNG\r\n\x1a\n'))
+            self.assertIn(f'源图为 {fmt}，已转为 PNG', result.warnings)
+
+    def test_url_download_failures_are_billed_200_and_not_retried(self):
+        cases = [
+            ('ftp://example.invalid/image.png', None),
+            ('http://[malformed', None),
+            ('http://fixture-user:fixture-pass@example.invalid/image.png', None),
+            ('http://127.0.0.1:1/image.png', None),
+        ]
+        for image_url, responder in cases:
+            with self.subTest(image_url=image_url), LocalImageServer() as server:
+                server.responder = lambda call, count, image_url=image_url: (200, {
+                    'data': [{'url': image_url}]})
+                with self.assertRaises(EcommerceImageError) as caught:
+                    self.generate(server)
+            self.assertEqual(caught.exception.status_code, 200)
+            self.assertEqual(len(server.calls), 1)
+        for status in (403, 404):
+            with self.subTest(status=status), LocalImageServer() as server:
+                server.responder = lambda call, count: (200, {
+                    'data': [{'url': server.base_url + '/missing'}]})
+                server.get_responder = lambda path, status=status: (status, b'nope', None)
+                with self.assertRaises(EcommerceImageError) as caught:
+                    self.generate(server)
+            self.assertEqual(caught.exception.status_code, 200)
+            self.assertEqual(len(server.calls), 1)
+        with LocalImageServer() as server:
+            server.responder = lambda call, count: (200, {
+                'data': [{'url': server.base_url + '/truncated'}]})
+            server.get_mode = 'truncated'
+            with self.assertRaises(EcommerceImageError) as caught:
+                self.generate(server, timeout=(1, 0.1))
+        self.assertEqual(caught.exception.status_code, 200)
+        self.assertEqual(len(server.calls), 1)
+
+    def test_response_format_rejection_retries_once_without_parameter(self):
+        def responder(call, count):
+            if count == 1:
+                return 400, 'unknown parameter: response_format'
+            return 200, image_payload()
+
+        with LocalImageServer(responder=responder) as server:
+            result = self.generate(server)
+        self.assertEqual(len(server.calls), 2)
+        self.assertIn('response_format', json.loads(server.calls[0]['body']))
+        self.assertNotIn('response_format', json.loads(server.calls[1]['body']))
+        self.assertTrue(any('移除参数重试' in text for text in result.warnings))
+
+    def test_content_policy_rejection_is_not_retried(self):
+        with LocalImageServer('upstream_text_reply: content policy', status=400) as server:
+            with self.assertRaises(EcommerceImageError) as caught:
+                self.generate(server)
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(len(server.calls), 1)
 
     def test_empty_reference_list_uses_generations_and_wrapper(self):
         with LocalImageServer() as server:
@@ -292,7 +410,8 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(server.calls[0]['headers']['Authorization'], 'Bearer ' + FIXTURE_KEY)
         self.assertEqual(fields, {'model': DEFAULT_IMAGE_MODEL,
                                  'prompt': 'Use the last image as style only.',
-                                 'n': '1', 'size': '1024x1364', 'quality': 'auto'})
+                                 'n': '1', 'size': '1024x1364', 'quality': 'auto',
+                                 'response_format': 'b64_json'})
         self.assertEqual(result.png_bytes, PNG_BYTES)
         self.assertEqual(result.endpoint, '/images/edits')
         self.assertEqual(result.image_tokens, 16)
