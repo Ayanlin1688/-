@@ -17,7 +17,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "PyQt-Fluent-Widgets", "--upgrade"])
     from qfluentwidgets import Theme, setTheme
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 
@@ -89,7 +89,8 @@ def main() -> int:
     guard.activation_requested.connect(lambda: _bring_window_to_front(window))
     window.show()
     if splash is not None:
-        splash.finish(window)
+        app.processEvents()
+        QTimer.singleShot(150, lambda: splash.finish(window))
     return app.exec_()
 
 

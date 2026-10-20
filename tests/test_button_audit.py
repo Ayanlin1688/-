@@ -123,13 +123,16 @@ class ButtonAuditTests(unittest.TestCase):
         self.assertEqual(len(self.config.config['model_pool']['models']), before)
 
     def test_connection_button_runs_check_and_restores_itself(self):
-        result = dict(ok=True, video=dict(ok=True, message='local-fixture'),
-                      upload=dict(ok=True, message='local-fixture'))
-        with patch('core.api_client.ApiClient.test_connection', return_value=result) as check:
+        line_result = dict(ok=True, level='success', message='local-fixture',
+                           counts={'video': 1, 'chat': 1, 'image': 1}, model='fixture-model')
+        upload_result = dict(ok=False, level='error', message='local-upload-error')
+        with patch('ui.pages.settings_page.probe_line', return_value=line_result) as check, \
+                patch('ui.pages.settings_page.probe_upload', return_value=upload_result):
             self.settings.test_button.click()
             wait_until(lambda: not self.settings.jobs.busy)
-            check.assert_called_once()
-        self.assertEqual(self.settings.last_connection_result, result)
+            self.assertEqual([entry.args[2] for entry in check.call_args_list], ['video', 'chat', 'image'])
+        self.assertTrue(self.settings.last_connection_result['ok'])
+        self.assertFalse(self.settings.last_connection_result['upload']['ok'])
         self.assertTrue(self.settings.test_button.isEnabled())
         self.assertEqual(self.settings.test_button.text(), '测试连接')
 

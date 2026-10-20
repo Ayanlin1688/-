@@ -22,7 +22,8 @@ from core.repository_sync import RepositorySync, repository_secrets, default_rep
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
 from core.i18n import tr
-from core.line_routing import normalize_base_url
+from core.line_routing import normalize_base_url, resolve_line
+from core.line_probe import probe_line, probe_upload, looks_like_upload_token, valid_http_url
 from core.model_catalog import classify_model
 from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, ModelPickComboBox, catalog_snapshot, usable
@@ -518,25 +519,30 @@ class SettingsPage(QWidget):
             field.setFixedHeight(32)
             row.addWidget(lbl, 0, Qt.AlignVCenter); row.addWidget(field, 1)
             layout.addLayout(row)
+            if field is upload:
+                self._attach_upload_url_hint(upload, upload_key, layout)
         caps = WrapLayout(spacing=14)
         caps_label = CaptionLabel('能力标签'); caps_label.setMinimumWidth(110)
         caps.addWidget(caps_label, 0, Qt.AlignVCenter)
         boxes = {}
-        for key2, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
+        for key2, text in (('video', tr('视频')), ('llm', tr('文本（AI分析）')), ('image', tr('生图'))):
             box = CheckBox(text); box.setChecked(key2 in (station.get('capabilities') or []))
             boxes[key2] = box; caps.addWidget(box)
         caps.addStretch(1); layout.addLayout(caps)
         buttons = WrapLayout(spacing=8)
-        save = PushButton('保存修改'); use = PushButton('设为当前'); remove = PushButton('删除该中转站')
+        save = PushButton(tr('保存修改')); use = PushButton(tr('设为当前')); remove = PushButton(tr('删除该中转站'))
+        test = PushButton(FIF.CONNECT, tr('测试'))
         save.setFixedHeight(32); use.setFixedHeight(32); remove.setFixedHeight(32)
         # 破坏性操作按危险语义标色（当前设置中仅此一处破坏性操作）。
         remove.setStyleSheet('QPushButton {color:#E5484D; border:1px solid rgba(229,72,77,0.45); border-radius:8px; background:transparent; padding:0 12px;}'
                              'QPushButton:hover {background:rgba(229,72,77,0.10); border-color:rgba(229,72,77,0.70);}')
-        buttons.addWidget(save); buttons.addWidget(use); buttons.addStretch(1); buttons.addWidget(remove)
+        buttons.addWidget(save); buttons.addWidget(test); buttons.addWidget(use); buttons.addStretch(1); buttons.addWidget(remove)
         layout.addLayout(buttons)
         self.root.addWidget(card)
         save.clicked.connect(lambda checked=False, s=sid, n=name, b=base, k=key_edit, u=upload, uk=upload_key, bx=boxes:
                              self._save_station_page(s, n, b, k, u, uk, bx))
+        test.clicked.connect(lambda checked=False, b=base, k=key_edit, u=upload, uk=upload_key, bx=boxes, button=test:
+                             self._test_station_fields(b, k, u, uk, bx, button))
         use.clicked.connect(lambda checked=False, s=sid: self._set_current_station(s))
         remove.clicked.connect(lambda checked=False, s=sid: self._delete_station(s))
 
@@ -544,6 +550,8 @@ class SettingsPage(QWidget):
         name_text = name.text().strip()
         if not name_text:
             self.log_callback('中转站名称不能为空', 'warning')
+            return
+        if not self._repair_upload_fields(upload, upload_key):
             return
         stations = self._stations()
         for station in stations:
@@ -576,7 +584,7 @@ class SettingsPage(QWidget):
         self.stations_group = group
         card = make_card(); self.stations_card = card
         layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
-        hint = CaptionLabel('每个中转站独立成一项（左侧导航可直达）；「设为当前」后任务走该线路；可标记视频 / 语言 / 生图能力。')
+        hint = CaptionLabel(tr('每个中转站独立成一项（左侧导航可直达）；「设为当前」后任务走该线路；可标记视频 / 文本（AI分析）/ 生图能力。'))
         hint.setWordWrap(True); layout.addWidget(hint)
         self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
         holder = QWidget(); holder.setLayout(self.station_list); layout.addWidget(holder)
@@ -607,15 +615,20 @@ class SettingsPage(QWidget):
         self.station_upload = LineEdit(); self.station_upload.setPlaceholderText('上传接口 URL（可留空沿用默认）'); editor.addWidget(self.station_upload)
         self.station_upload_key = LineEdit(); self.station_upload_key.setPlaceholderText('上传 Token（可留空）')
         self.station_upload_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_upload_key)
+        self._attach_upload_url_hint(self.station_upload, self.station_upload_key, editor)
         caps = WrapLayout(spacing=14)
         self.station_caps = {}
-        for key, text in (('video', '视频'), ('llm', '语言'), ('image', '生图')):
+        for key, text in (('video', tr('视频')), ('llm', tr('文本（AI分析）')), ('image', tr('生图'))):
             box = CheckBox(text); self.station_caps[key] = box; caps.addWidget(box)
         caps.addStretch(1); editor.addLayout(caps)
         editor_buttons = WrapLayout(spacing=8)
-        save = PushButton('保存'); save.clicked.connect(self._save_station_editor)
-        cancel = PushButton('取消'); cancel.clicked.connect(self._close_station_editor)
-        editor_buttons.addWidget(save); editor_buttons.addWidget(cancel); editor_buttons.addStretch(1)
+        save = PushButton(tr('保存')); save.clicked.connect(self._save_station_editor)
+        test = PushButton(FIF.CONNECT, tr('测试'))
+        test.clicked.connect(lambda checked=False, button=test: self._test_station_fields(
+            self.station_base, self.station_key, self.station_upload, self.station_upload_key,
+            self.station_caps, button))
+        cancel = PushButton(tr('取消')); cancel.clicked.connect(self._close_station_editor)
+        editor_buttons.addWidget(save); editor_buttons.addWidget(test); editor_buttons.addWidget(cancel); editor_buttons.addStretch(1)
         editor.addLayout(editor_buttons)
         layout.addWidget(self.station_editor_host)
         self.root.addWidget(card)
@@ -647,7 +660,7 @@ class SettingsPage(QWidget):
             self._refresh_api_group_title()
             self._render_station_pages()
             return
-        cap_texts = {'video': '视频', 'llm': '语言', 'image': '生图'}
+        cap_texts = {'video': tr('视频'), 'llm': tr('文本（AI分析）'), 'image': tr('生图')}
         for station in stations:
             row = make_card()
             row_layout = QVBoxLayout(row); row_layout.setContentsMargins(14, 10, 14, 10); row_layout.setSpacing(6)
@@ -713,6 +726,8 @@ class SettingsPage(QWidget):
         name = self.station_name.text().strip()
         if not name:
             self.log_callback('中转站名称不能为空', 'warning')
+            return
+        if not self._repair_upload_fields(self.station_upload, self.station_upload_key):
             return
         capabilities = [key for key, box in self.station_caps.items() if box.isChecked()]
         payload = dict(name=name, base_url=normalize_base_url(self.station_base.text()), api_key=self.station_key.text().strip(),
@@ -822,7 +837,16 @@ class SettingsPage(QWidget):
         else:
             edit.textChanged.connect(lambda v: self.config_manager.update(path, v))
         host = QWidget()
-        row = WrapLayout(host)
+        if path == ('api', 'upload_url'):
+            column = QVBoxLayout(host)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(4)
+            row_host = QWidget(host)
+            row = WrapLayout(row_host)
+            column.addWidget(row_host)
+        else:
+            column = None
+            row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(edit, 1)
         if secret:
@@ -832,10 +856,17 @@ class SettingsPage(QWidget):
             reveal.clicked.connect(lambda: self._toggle_secret(edit, reveal))
             row.addWidget(reveal)
         if path == ("api", "api_key"):
-            self.test_button = PushButton(FIF.CONNECT, "测试连接")
-            self.test_button.setToolTip('分别检查视频 API 和上传 API；上传一张微型测试图片，不创建视频任务')
+            self.test_button = PushButton(FIF.CONNECT, tr('测试连接'))
+            self.test_button.setToolTip(tr('分别检查视频、文本和图片 API；上传 Token 未配置时跳过上传测试'))
             self.test_button.clicked.connect(self.test_connection)
             row.addWidget(self.test_button)
+        if column is not None:
+            hint = CaptionLabel('')
+            hint.setWordWrap(True)
+            hint.setStyleSheet('color:#D98282;')
+            hint.hide()
+            column.addWidget(hint)
+            self._api_upload_url_hint = hint
         group.addSettingCard(CustomSettingCard(title, host, FIF.LINK))
         return edit
 
@@ -886,11 +917,13 @@ class SettingsPage(QWidget):
         self.api_key = self._line(group, "API Key", ("api", "api_key"), True)
         self.upload_url = self._line(group, "图床上传 URL", ("api", "upload_url"))
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
+        self._register_upload_url_hint(self.upload_url, self.upload_key, self._api_upload_url_hint)
         self.upload_key.setPlaceholderText('服务商签发的素材上传 Token')
         self.upload_key.setToolTip('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限')
         self.base_url.textChanged.connect(self._persist_base_url_input)
         for field in (self.api_key, self.upload_url, self.upload_key):
             field.textChanged.connect(self._mirror_api_to_station)
+        self.upload_url.editingFinished.connect(lambda: self._repair_upload_fields(self.upload_url, self.upload_key))
         self._refresh_api_group_title()
         self.auto_upload = self._switch(group, "自动上传缺失图片", ("api", "auto_upload_missing"), FIF.CLOUD)
         self.debug_mode = self._switch(group, '调试模式', ('diagnostics', 'debug_mode'), FIF.INFO)
@@ -917,6 +950,7 @@ class SettingsPage(QWidget):
 
     def _build_routing_cards(self, group):
         self.routing_combos = {}
+        self.routing_test_buttons = {}
         routing_options = (
             ('video', tr('视频线路')),
             ('chat', tr('AI分析（文本）线路')),
@@ -928,8 +962,160 @@ class SettingsPage(QWidget):
             combo.currentIndexChanged.connect(
                 lambda index, kind=capability, control=combo: self._routing_changed(kind, control, index))
             self.routing_combos[capability] = combo
-            group.addSettingCard(CustomSettingCard(title, combo, FIF.LINK))
+            host = QWidget()
+            row = WrapLayout(host, spacing=8)
+            row.setContentsMargins(0, 0, 0, 0)
+            test = PushButton(FIF.CONNECT, tr('测试'))
+            test.setFixedHeight(32)
+            test.clicked.connect(lambda checked=False, kind=capability, button=test:
+                                 self._test_routing_line(kind, button))
+            row.addWidget(combo, 1)
+            row.addWidget(test)
+            self.routing_test_buttons[capability] = test
+            group.addSettingCard(CustomSettingCard(title, host, FIF.LINK))
         self._refresh_routing_options()
+
+    def _test_routing_line(self, capability, button):
+        config = copy.deepcopy(self.config_manager.config)
+        line = resolve_line(config, capability)
+        models = catalog_snapshot(self.config_manager, capability)
+        button.setEnabled(False)
+        button.setText(tr('测试中'))
+
+        def work():
+            return probe_line(line.get('base_url', ''), line.get('api_key', ''), capability, models=models)
+
+        def done(result):
+            button.setEnabled(True)
+            button.setText(tr('测试'))
+            counts = result.get('counts') or {}
+            count_text = tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
+                video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
+            suffix = f"\n{count_text}"
+            if result.get('model'):
+                suffix += '\n' + tr('文本实际命中模型：{model}').format(model=result['model'])
+            detail = self._redact_probe_error(result.get('message', ''))
+            message = f"{tr('成功') if result.get('ok') else tr('失败')} · {detail}{suffix}"
+            self.log_callback(f"{tr('测试')} {capability}: {message}", 'success' if result.get('ok') else 'error')
+            self._notice(message, bool(result.get('ok')))
+
+        def failed(message):
+            done(dict(ok=False, message=self._redact_probe_error(message), counts={}))
+
+        try:
+            self.jobs.start(work, done, failed)
+        except Exception as error:
+            failed(error)
+
+    def _attach_upload_url_hint(self, url_field, token_field, layout):
+        hint = CaptionLabel('')
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color:#D98282;')
+        hint.hide()
+        layout.addWidget(hint)
+        self._register_upload_url_hint(url_field, token_field, hint)
+
+    def _register_upload_url_hint(self, url_field, token_field, hint):
+        hints = getattr(self, '_upload_url_hints', None)
+        if hints is None:
+            hints = self._upload_url_hints = {}
+        hints[url_field] = hint
+        url_field.editingFinished.connect(
+            lambda url=url_field, token=token_field: self._repair_upload_fields(url, token))
+
+    def _redact_probe_error(self, message):
+        text = str(message)
+        config = getattr(self.config_manager, 'config', {})
+        secrets = []
+        api = config.get('api', {}) if isinstance(config, dict) else {}
+        if isinstance(api, dict):
+            secrets.extend((api.get('api_key'), api.get('upload_api_key')))
+        stations = config.get('stations', []) if isinstance(config, dict) else []
+        for station in stations if isinstance(stations, list) else ():
+            if isinstance(station, dict):
+                secrets.extend((station.get('api_key'), station.get('upload_api_key')))
+        for secret in secrets:
+            if secret:
+                text = text.replace(str(secret), '[REDACTED]')
+        return tr(text)
+
+    def _repair_upload_fields(self, url_field, token_field):
+        raw_url = url_field.text().strip()
+        token = token_field.text().strip()
+        if raw_url and looks_like_upload_token(raw_url) and not token:
+            token_field.setText(raw_url)
+            url_field.clear()
+            self._notice(tr('已将上传 Token 移入 Token 字段，并清空上传 URL。'), True)
+            raw_url = ''
+        valid = valid_http_url(raw_url)
+        hint = getattr(self, '_upload_url_hints', {}).get(url_field)
+        if hint is not None:
+            if valid:
+                hint.clear()
+                hint.hide()
+            else:
+                hint.setText(tr('上传 URL 必须以 http:// 或 https:// 开头，或留空使用默认地址。'))
+                hint.show()
+        if not valid:
+            self.log_callback(tr('上传 URL 格式无效，请修正后再保存或测试。'), 'warning')
+        return valid
+
+    def _test_station_fields(self, base_field, key_field, upload_field, upload_key_field,
+                             capability_boxes, button):
+        if not self._repair_upload_fields(upload_field, upload_key_field):
+            return
+        selected = [(key, {'llm': 'chat'}.get(key, key))
+                    for key in ('video', 'llm', 'image')
+                    if key in capability_boxes and capability_boxes[key].isChecked()]
+        if not selected:
+            self._notice(tr('请至少勾选一项能力后再测试。'), False)
+            return
+        base_url = normalize_base_url(base_field.text())
+        api_key = key_field.text().strip()
+        button.setEnabled(False)
+        button.setText(tr('测试中'))
+
+        def work():
+            results = {}
+            for key, capability in selected:
+                try:
+                    results[key] = probe_line(base_url, api_key, capability)
+                except Exception as error:
+                    results[key] = dict(ok=False, level='error',
+                                       message=self._redact_probe_error(error), counts={})
+            return results
+
+        def finish(results):
+            button.setEnabled(True)
+            button.setText(tr('测试'))
+            titles = {'video': tr('视频 API'), 'llm': tr('AI分析（文本）API'),
+                      'image': tr('图片 API')}
+            messages = []
+            all_ok = True
+            for key, _capability in selected:
+                result = results.get(key, {})
+                ok = bool(result.get('ok'))
+                all_ok = all_ok and ok
+                line = f"{titles[key]}：{tr('成功') if ok else tr('失败')} · " \
+                       f"{self._redact_probe_error(result.get('message', ''))}"
+                counts = result.get('counts') or {}
+                if counts:
+                    line += '\n' + tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
+                        video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
+                if result.get('model'):
+                    line += '\n' + tr('文本实际命中模型：{model}').format(model=result['model'])
+                messages.append(line)
+                self.log_callback(line, 'success' if ok else 'error')
+            self._notice('\n'.join(messages), all_ok)
+
+        def failed(message):
+            finish({key: dict(ok=False, message=self._redact_probe_error(message))
+                    for key, _capability in selected})
+
+        try:
+            self.jobs.start(work, finish, failed)
+        except Exception as error:
+            failed(error)
 
     def _refresh_routing_options(self):
         combos = getattr(self, 'routing_combos', {})
@@ -1700,53 +1886,78 @@ class SettingsPage(QWidget):
             del blocker
 
     def test_connection(self):
+        self._repair_upload_fields(self.upload_url, self.upload_key)
+        self._save_normalized_base_url()
         config = copy.deepcopy(self.config_manager.config)
+        config.setdefault('api', {})['upload_url'] = self.upload_url.text().strip()
+        config['api']['upload_api_key'] = self.upload_key.text().strip()
         self.test_button.setEnabled(False)
-        self.test_button.setText('正在测试...')
+        self.test_button.setText(tr('测试中'))
         self.test_button.setToolTip(tr('正在测试连接，完成后恢复'))
+
         def check():
-            client = ApiClient(config['api']['base_url'], config['api']['api_key'], log=self.jobs.log_message.emit)
-            uploader = ImageUploader.from_config(config, log=self.jobs.log_message.emit)
+            results = {}
+            for capability in ('video', 'chat', 'image'):
+                line = resolve_line(config, capability)
+                try:
+                    results[capability] = probe_line(
+                        line.get('base_url', ''), line.get('api_key', ''), capability,
+                        models=catalog_snapshot(self.config_manager, capability))
+                except Exception as error:
+                    results[capability] = dict(ok=False, level='error',
+                                               message=self._redact_probe_error(error), counts={})
             try:
-                return client.test_connection(uploader)
-            finally:
-                client.close()
-                uploader.close()
+                results['upload'] = probe_upload(config.get('api', {}))
+            except Exception as error:
+                results['upload'] = dict(ok=False, level='error',
+                                         message=self._redact_probe_error(error))
+            results['ok'] = all(results[key].get('ok') for key in ('video', 'chat', 'image'))
+            return results
+
         def finish(result):
             self.test_button.setEnabled(True)
-            self.test_button.setText('测试连接')
-            self.test_button.setToolTip(tr('测试当前线路的视频和上传连接'))
+            self.test_button.setText(tr('测试连接'))
+            self.test_button.setToolTip(tr('分别检查视频、文本和图片 API；上传 Token 未配置时跳过上传测试'))
             self.last_connection_result = result
             messages = []
-            for name, title in (('video', '视频 API'), ('upload', '上传 API')):
-                item = result[name]
-                message = f"{title}：{'成功' if item['ok'] else '失败'} · {item['message']}"
-                self.log_callback(message, 'success' if item['ok'] else 'error')
+            for name, title in (('video', tr('视频 API')), ('chat', tr('AI分析（文本）API')),
+                                ('image', tr('图片 API')), ('upload', tr('上传 API'))):
+                item = result.get(name, {})
+                if item.get('level') == 'warning':
+                    status, level = tr('跳过'), 'warning'
+                elif item.get('ok'):
+                    status, level = tr('成功'), 'success'
+                else:
+                    status, level = tr('失败'), 'error'
+                detail = self._redact_probe_error(item.get('message', tr('测试未完成')))
+                message = f"{title}：{status} · {detail}"
+                if name in ('video', 'chat', 'image'):
+                    counts = item.get('counts') or {}
+                    message += '\n' + tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
+                        video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
+                    if item.get('model'):
+                        message += '\n' + tr('文本实际命中模型：{model}').format(model=item['model'])
+                self.log_callback(message, level)
                 messages.append(message)
-            try:
-                counts = {'video': 0, 'chat': 0, 'image': 0}
-                for model_id, record in catalog_snapshot(self.config_manager).items():
-                    if not record.get('available', True):
-                        continue
-                    kind = record.get('kind') or classify_model(model_id)
-                    if kind in counts:
-                        counts[kind] += 1
-                classification = tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
-                    video=counts['video'], chat=counts['chat'], image=counts['image'])
-                messages.append(classification)
-                self.log_callback(classification, 'info')
-            except Exception:
-                pass
-            self._notice('\n'.join(messages), result['ok'])
+            self._notice('\n'.join(messages), bool(result.get('ok')))
+
         def failed(message):
-            result = dict(ok=False, video=dict(ok=False, message=message), upload=dict(ok=False, message='测试未完成'))
+            clean = self._redact_probe_error(message)
+            result = dict(ok=False,
+                          video=dict(ok=False, message=clean),
+                          chat=dict(ok=False, message=tr('测试未完成')),
+                          image=dict(ok=False, message=tr('测试未完成')),
+                          upload=dict(ok=True, level='warning', message=tr('测试未完成')))
             finish(result)
-        self.jobs.start(check, finish, failed)
+        try:
+            self.jobs.start(check, finish, failed)
+        except Exception as error:
+            failed(error)
 
     def _notice(self, message, success=True):
         from qfluentwidgets import InfoBar
         self.log_callback(message, 'success' if success else 'error')
-        (InfoBar.success if success else InfoBar.error)('测试连接', message, parent=self, duration=4500)
+        (InfoBar.success if success else InfoBar.error)(tr('测试连接'), message, parent=self, duration=4500)
 
     @staticmethod
     def _toggle_secret(field, button):
