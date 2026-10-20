@@ -255,6 +255,7 @@ class ModelClassificationTests(unittest.TestCase):
                     self.assertEqual(row[field], value)
                 self.assertTrue(model_catalog._valid_record(row))
         for model, kind, family in [
+                ('deepseek-flash', 'chat', 'deepseek'), ('deepseek-v4-pro', 'chat', 'deepseek'),
                 ('deepseek-chat', 'chat', 'deepseek'), ('deepseek-reasoner', 'chat', 'deepseek'),
                 ('gemini-3.8-flash', 'chat', 'gemini'),
                 ('gpt-image-2.5-sunburst', 'image', 'gpt-image-sunburst'),
@@ -585,17 +586,26 @@ class ModelCatalogTests(unittest.TestCase):
     def test_deepseek_host_merges_missing_models_without_overwriting_provider_metadata(self):
         catalog = self.catalog(base='https://api.deepseek.com/v1')
         client = Mock()
-        client.fetch_models.return_value = [{'id': 'deepseek-chat', 'name': 'provider-chat',
-                                           'description': 'provider metadata'}]
+        client.fetch_models.return_value = [
+            {'id': 'deepseek-flash', 'name': 'provider-flash', 'description': 'flash metadata'},
+            {'id': 'deepseek-v4-pro', 'name': 'provider-v4', 'description': 'v4 metadata'},
+            {'id': 'deepseek-chat', 'name': 'provider-chat', 'description': 'chat metadata'},
+        ]
         for _ in range(2):
             snapshot = catalog.refresh(client)
-            self.assertEqual(set(snapshot), {'deepseek-chat', 'deepseek-reasoner'})
-            self.assertEqual(snapshot['deepseek-chat']['display_name'], 'provider-chat')
-            self.assertEqual(snapshot['deepseek-chat']['description'], 'provider metadata')
+            self.assertEqual(set(snapshot), {'deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'})
+            self.assertEqual(snapshot['deepseek-flash']['display_name'], 'provider-flash')
+            self.assertEqual(snapshot['deepseek-v4-pro']['display_name'], 'provider-v4')
+            self.assertEqual(snapshot['deepseek-flash']['description'], 'flash metadata')
+            self.assertEqual(snapshot['deepseek-v4-pro']['description'], 'v4 metadata')
+            self.assertTrue(all(snapshot[name]['kind'] == 'chat' for name in (
+                'deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner')))
+            self.assertTrue(all(snapshot[name]['family'] == 'deepseek' for name in (
+                'deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner')))
             self.assertTrue(all(self.module._valid_record(row) for row in snapshot.values()))
         self.assertEqual(self.catalog(catalog.base_url).snapshot(), snapshot)
         client.fetch_models.return_value = []
-        self.assertEqual(set(catalog.refresh(client)), {'deepseek-chat', 'deepseek-reasoner'})
+        self.assertEqual(set(catalog.refresh(client)), {'deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'})
 
     def test_deepseek_cache_with_missing_defaults_is_merged_on_load(self):
         catalog = self.catalog(base='https://api.deepseek.com/v1')
@@ -607,7 +617,7 @@ class ModelCatalogTests(unittest.TestCase):
         catalog.cache_path.write_text(json.dumps(document), encoding='utf-8')
         reopened = self.catalog(catalog.base_url)
         self.assertEqual(reopened.source, 'cache')
-        self.assertEqual(set(reopened.snapshot()), {'deepseek-chat', 'deepseek-reasoner'})
+        self.assertEqual(set(reopened.snapshot()), {'deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'})
 
 
 if __name__ == '__main__':

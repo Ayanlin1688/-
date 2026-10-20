@@ -279,17 +279,16 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertEqual(''.join(content), text)
         self.assertEqual(DEFAULT_ANALYSIS_MODEL, 'gemini-3.8-flash')
 
-    def test_deepseek_reasoner_omits_sampling_parameters_and_logs_switch(self):
+    def test_deepseek_v4_pro_keeps_sampling_parameters_when_switching_from_chat(self):
         with LocalAnalysisServer(b'data: [DONE]\n\n') as server:
             with self.assertLogs('storyboard', level='INFO') as logs:
                 _result, urls = self.analyze_via_local_fixture(
                     server, 'https://api.deepseek.com/v1', 'deepseek-chat', thinking=True)
             body = server.calls[0][3]
         self.assertEqual(urls, ['https://api.deepseek.com/v1/chat/completions'])
-        self.assertEqual(body['model'], 'deepseek-reasoner')
-        self.assertNotIn('temperature', body)
-        self.assertNotIn('top_p', body)
-        self.assertTrue(any('deepseek-chat 已切换为 deepseek-reasoner' in line for line in logs.output))
+        self.assertEqual(body['model'], 'deepseek-v4-pro')
+        self.assertEqual(body['temperature'], 0.7)
+        self.assertTrue(any('deepseek-chat 已切换为 deepseek-v4-pro' in line for line in logs.output))
 
     def test_actual_model_name_is_used_in_deepseek_error(self):
         with LocalAnalysisServer(b'No available channel', status=503) as server:
@@ -297,8 +296,25 @@ class AnalysisStreamTests(unittest.TestCase):
                 with self.assertRaises(EcommerceAnalysisError) as caught:
                     self.analyze_via_local_fixture(
                         server, 'https://api.deepseek.com/v1', 'deepseek-chat', thinking=True)
-        self.assertIn('deepseek-reasoner', str(caught.exception))
+        self.assertIn('deepseek-v4-pro', str(caught.exception))
         self.assertNotIn('deepseek-chat', str(caught.exception))
+
+    def test_deepseek_flash_thinking_switches_to_v4_pro(self):
+        with LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+            self.analyze_via_local_fixture(
+                server, 'https://api.deepseek.com/v1', 'deepseek-flash', thinking=True)
+            body = server.calls[0][3]
+        self.assertEqual(body['model'], 'deepseek-v4-pro')
+        self.assertEqual(body['temperature'], 0.7)
+
+    def test_reasoning_only_sse_is_parsed(self):
+        body = (sse_frame({'choices': [{'delta': {'reasoning_content': '只思考'}}]})
+                + 'data: [DONE]\n\n').encode('utf-8')
+        with LocalAnalysisServer(body) as server:
+            content, reasoning = analyze_stream(
+                server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
+        self.assertEqual(content, '')
+        self.assertEqual(reasoning, '只思考')
 
     def test_thinking_payload_is_limited_to_claude_or_explicit_thinking_models(self):
         for model, expected_thinking in (('claude-sonnet-4-6', True),

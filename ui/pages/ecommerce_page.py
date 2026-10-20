@@ -244,7 +244,7 @@ class EcommercePage(QWidget):
         self.thinking_switch.setObjectName('ecommerceThinking')
         self.thinking_switch.setChecked(bool(defaults.get('thinking', False)))
         self.thinking_switch.setToolTip(tr(
-            '开启后，DeepSeek 官方线路的 deepseek-chat 自动切换为 deepseek-reasoner；'
+            '开启后，DeepSeek 官方线路的 deepseek-chat 自动切换为 deepseek-v4-pro；'
             'Claude 思考模型加 thinking 参数；其他模型不受影响'))
         thinking_row.addWidget(CaptionLabel(tr('深度思考')))
         thinking_row.addWidget(self.thinking_switch)

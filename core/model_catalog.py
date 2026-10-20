@@ -142,6 +142,8 @@ def _defaults(family, model=''):
 def _builtin_record(model, description='', display_name=None):
     family = _base_family(model)
     family = {
+        'deepseek-flash': 'deepseek',
+        'deepseek-v4-pro': 'deepseek',
         'deepseek-chat': 'deepseek',
         'deepseek-reasoner': 'deepseek',
         'gemini-3.8-flash': 'gemini',
@@ -160,7 +162,8 @@ def _builtin_record(model, description='', display_name=None):
 
 def builtin_models():
     names = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5', 'MiniMax-H3', 'grok-imagine-1.5-video',
-             'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0', 'deepseek-chat', 'deepseek-reasoner',
+             'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0', 'deepseek-flash', 'deepseek-v4-pro',
+             'deepseek-chat', 'deepseek-reasoner',
              'gemini-3.8-flash', 'gpt-image-2.5-sunburst', 'gpt-image-2']
     records = {_name: _builtin_record(_name) for _name in names}
     # Alias models retain their wire IDs while sharing the protocol family.
@@ -206,6 +209,8 @@ def _record_from_upstream(row):
     model = row['id'].strip()
     base_model = re.sub(r'-pack$', '', model, flags=re.I)
     family = _base_family(base_model)
+    if base_model.lower().startswith('deepseek-'):
+        family = 'deepseek'
     defaults = _defaults(family, base_model)
     description = str(row.get('description') or '')
     detail = {name: row[name] for name in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images') if name in row}
@@ -354,7 +359,7 @@ class ModelCatalog:
             hostname = ''
         if 'deepseek.com' not in hostname.lower():
             return models
-        for model in ('deepseek-chat', 'deepseek-reasoner'):
+        for model in ('deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'):
             if model not in models:
                 record = _builtin_record(model)
                 for field in ('resolutions', 'ratios', 'durations'):

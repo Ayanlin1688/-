@@ -72,9 +72,9 @@ def _read_sse(response, redact, on_content, on_reasoning):
 
 def _request_model(base_url, model, thinking):
     host = (urlsplit(str(base_url or '').strip()).hostname or '').lower()
-    if thinking and model == 'deepseek-chat' and 'deepseek.com' in host:
-        logging.getLogger('storyboard').info('deepseek-chat 已切换为 deepseek-reasoner')
-        return 'deepseek-reasoner'
+    if thinking and 'deepseek.com' in host and model in {'deepseek-chat', 'deepseek-flash'}:
+        logging.getLogger('storyboard').info('%s 已切换为 deepseek-v4-pro', model)
+        return 'deepseek-v4-pro'
     return model
 
 

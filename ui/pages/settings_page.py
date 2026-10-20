@@ -32,6 +32,7 @@ import copy
 import math
 import sys
 import time
+from urllib.parse import urlsplit
 
 
 class ResponsiveSettingCard:
@@ -201,6 +202,7 @@ class SettingsPage(QWidget):
         self._rail_buttons = {}
         self._page_buttons = {}
         self._station_nav_buttons = {}
+        self._station_page_key_fields = {}
         self.page_stack = QStackedWidget()
         # —— 服务线路页 ——
         self.root = self._make_page('stations')
@@ -477,6 +479,7 @@ class SettingsPage(QWidget):
     def _render_station_pages(self):
         previous_root = getattr(self, 'root', None)
         current = self._current_page_key()
+        self._station_page_key_fields = {}
         for key in [k for k in list(self._pages) if k.startswith('station:')]:
             area, content = self._pages.pop(key)
             if key in self._page_order:
@@ -508,6 +511,7 @@ class SettingsPage(QWidget):
         name = LineEdit(); name.setText(station.get('name', '')); name.setPlaceholderText('名称，例如：主线路 · 国内')
         base = LineEdit(); base.setText(station.get('base_url', '')); base.setPlaceholderText('API Base URL')
         key_edit = LineEdit(); key_edit.setText(station.get('api_key', '')); key_edit.setEchoMode(LineEdit.Password); key_edit.setPlaceholderText('API Key')
+        self._station_page_key_fields[sid] = key_edit
         upload = LineEdit(); upload.setText(station.get('upload_url', '')); upload.setPlaceholderText('上传接口 URL（可留空）')
         upload_key = LineEdit(); upload_key.setText(station.get('upload_api_key', '')); upload_key.setEchoMode(LineEdit.Password); upload_key.setPlaceholderText('上传 Token（可留空）')
         for caption_text, field in (('名称', name), ('API Base URL', base), ('API Key', key_edit),
@@ -591,9 +595,13 @@ class SettingsPage(QWidget):
         buttons = WrapLayout(spacing=8)
         self.add_station_button = PushButton(FIF.ADD, '新增中转站')
         self.add_station_button.clicked.connect(lambda: self._open_station_editor(None))
+        self.add_deepseek_button = PushButton(FIF.ADD, tr('添加官方 DeepSeek（模板）'))
+        self.add_deepseek_button.setToolTip(tr('创建官方 DeepSeek 文本线路，API Key 留空后填写'))
+        self.add_deepseek_button.clicked.connect(self._add_official_deepseek_template)
         self.capture_station_button = PushButton(FIF.SAVE, '把当前 API 配置保存为中转站')
         self.capture_station_button.clicked.connect(self._capture_current_station)
-        buttons.addWidget(self.add_station_button); buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
+        buttons.addWidget(self.add_station_button); buttons.addWidget(self.add_deepseek_button)
+        buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
         layout.addLayout(buttons)
         group.addSettingCard(card)
         card._content_height = ContentHeight(card)
@@ -707,6 +715,9 @@ class SettingsPage(QWidget):
         self._editing_station_id = ''
         if station_id and station_id in {s.get('id') for s in self._stations()}:
             self._switch_page(f'station:{station_id}', highlight=True)
+            field = self._station_page_key_fields.get(station_id)
+            if field is not None:
+                QTimer.singleShot(0, field.setFocus)
             return
         self.station_editor_title.setText('新增中转站')
         self.station_name.setText('')
@@ -717,6 +728,36 @@ class SettingsPage(QWidget):
         for key, box in self.station_caps.items():
             box.setChecked(key == 'video')
         self._switch_page('station-new', highlight=True)
+
+    def _add_official_deepseek_template(self):
+        """Create or focus the one official DeepSeek station without a key."""
+        target_host = 'api.deepseek.com'
+        existing = None
+        for station in self._stations():
+            try:
+                host = (urlsplit(str(station.get('base_url') or '')).hostname or '').lower()
+            except ValueError:
+                host = ''
+            if host == target_host:
+                existing = station
+                break
+        if existing is None:
+            existing = {
+                'id': f'st-{int(time.time() * 1000)}',
+                'name': '官方 DeepSeek',
+                'base_url': normalize_base_url('https://api.deepseek.com'),
+                'api_key': '',
+                'upload_url': '',
+                'upload_api_key': '',
+                'capabilities': ['llm'],
+                'enabled': True,
+            }
+            stations = self._stations()
+            stations.append(existing)
+            self._persist_stations(stations)
+            self._render_stations()
+        self._open_station_editor(existing.get('id'))
+        self.log_callback(tr('官方 DeepSeek 模板已准备，请填写 API Key'), 'info')
 
     def _close_station_editor(self):
         self._editing_station_id = ''
@@ -1123,7 +1164,9 @@ class SettingsPage(QWidget):
             return
         stations = [station for station in self._stations() if station.get('enabled')]
         routing = self.config_manager.config.get('line_routing', {})
+        restored_route = False
         for capability, combo in combos.items():
+            previous = combo.currentData() or 'active'
             saved = (routing.get(capability, 'active') if isinstance(routing, dict) else 'active') or 'active'
             blocker = QSignalBlocker(combo)
             combo.clear()
@@ -1132,7 +1175,14 @@ class SettingsPage(QWidget):
                 combo.addItem(str(station.get('name') or station.get('id') or ''), userData=station.get('id'))
             index = combo.findData(saved)
             combo.setCurrentIndex(index if index >= 0 else 0)
+            restored_route |= (combo.currentData() or 'active') != previous
             del blocker
+        # Rebuilding the options can restore a persisted station without a
+        # currentIndexChanged signal (signals are blocked above).  Notify the
+        # existing connection chain so route labels and capability catalogs
+        # reflect that restored selection as well.
+        if restored_route:
+            self.api_credentials_changed.emit()
 
     def _routing_changed(self, capability, combo, index):
         if index < 0:
