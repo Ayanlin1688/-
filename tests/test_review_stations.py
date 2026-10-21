@@ -145,14 +145,16 @@ class StationConnectionRegressionTests(unittest.TestCase):
         catalog._models = deepseek_records
         controller.changed.emit(controller.snapshot())
         page = self.window.ecommerce_page
-        self.assertEqual(page.analysis_line_label.text(), '生效：api.deepseek.com')
+        self.assertEqual(page.analysis_line_label.text(), '已生效')
+        self.assertIn('api.deepseek.com', page.analysis_line_label.toolTip())
         values = [page.analysis_model_picker.itemData(index)
                   for index in range(page.analysis_model_picker.count())
                   if not str(page.analysis_model_picker.itemData(index) or '').startswith('__separator__:')]
         self.assertEqual(values, list(deepseek_records))
         self.assertEqual(controller._route_identities['chat'], identity)
         combo.setCurrentIndex(combo.findData('active'))
-        self.assertEqual(page.analysis_line_label.text(), '生效：alpha.example')
+        self.assertEqual(page.analysis_line_label.text(), '已生效')
+        self.assertIn('alpha.example', page.analysis_line_label.toolTip())
         restored = [page.analysis_model_picker.itemData(index)
                     for index in range(page.analysis_model_picker.count())
                     if not str(page.analysis_model_picker.itemData(index) or '').startswith('__separator__:')]

@@ -39,6 +39,7 @@ class EcommerceResultCard(CardWidget):
         self.record = {}
         self._busy = False
         self._has_image = False
+        self._feedback_positive = False
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(px(14), px(14), px(14), px(14))
@@ -87,11 +88,22 @@ class EcommerceResultCard(CardWidget):
         self.size_label.setText(str(record.get('size') or ''))
         self.error_label.setText(str(record.get('error') or ''))
         self.error_label.setVisible(bool(self.error_label.text()))
-        warnings = self.record['warnings'][:]
-        if record.get('image_tokens') == 0 or any('image_tokens=0' in str(w) for w in warnings):
+        references = list(record.get('reference_paths') or [])
+        warnings = [warning for warning in self.record['warnings']
+                    if references or '参考图可能未被模型采用' not in str(warning)]
+        image_tokens = record.get('image_tokens')
+        self._feedback_positive = False
+        if references and isinstance(image_tokens, int) and image_tokens > 0:
+            warnings.append(tr('已参考 {count} 张图（image_tokens={tokens}）').format(
+                count=len(references), tokens=image_tokens))
+            self._feedback_positive = True
+        elif references and image_tokens == 0:
             note = tr('参考图可能未被模型采用，请核对')
             if note not in warnings:
                 warnings.append(note)
+        elif image_tokens is None:
+            warnings = [warning for warning in warnings
+                        if '参考图可能未被模型采用' not in str(warning)]
         self.warning_label.setText('\n'.join(str(warning) for warning in warnings))
         self.warning_label.setVisible(bool(warnings))
         self._render_thumbnail()
@@ -172,7 +184,8 @@ class EcommerceResultCard(CardWidget):
         self.status_label.setStyleSheet('color: %s;' % status_color)
         self.size_label.setStyleSheet('color: %s;' % colors['text2'])
         self.error_label.setStyleSheet('color: %s;' % colors['error'])
-        self.warning_label.setStyleSheet('color: %s;' % colors['warning'])
+        self.warning_label.setStyleSheet('color: %s;' % (
+            colors['success'] if self._feedback_positive else colors['warning']))
         background = QColor(colors['bg2']).name()
         self.thumbnail.setStyleSheet(
             'color: %s; background: %s; border-radius: %dpx;' %

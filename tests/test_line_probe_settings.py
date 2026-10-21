@@ -111,6 +111,24 @@ class LineProbeSettingsTests(unittest.TestCase):
         self.assertFalse(hint.isHidden())
         self.assertIn('http://', hint.text())
 
+    def test_upload_url_hint_card_shrinks_after_url_is_corrected(self):
+        url = self.settings.upload_url
+        card = self.settings._upload_url_hint_cards[url]
+        base_height = card.height()
+
+        url.setText('not a URL')
+        self.assertFalse(self.settings._repair_upload_fields(url, self.settings.upload_key))
+        QTest.qWait(30)
+        expanded_height = card.height()
+        self.assertFalse(self.settings._upload_url_hints[url].isHidden())
+        self.assertGreaterEqual(expanded_height, base_height)
+
+        url.clear()
+        self.assertTrue(self.settings._repair_upload_fields(url, self.settings.upload_key))
+        QTest.qWait(30)
+        self.assertTrue(self.settings._upload_url_hints[url].isHidden())
+        self.assertLessEqual(card.height(), base_height)
+
     def test_upload_token_correction_handles_same_and_replaces_old_token_idempotently(self):
         url = self.settings.upload_url
         token = self.settings.upload_key

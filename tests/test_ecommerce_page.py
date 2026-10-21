@@ -15,6 +15,7 @@ from PyQt5.QtCore import Qt, QThread, QTimer
 from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QApplication, QLabel
+from qfluentwidgets import ComboBox
 
 from core.config_manager import ConfigManager
 from core.ecommerce.manager import EcommerceImageManager
@@ -26,6 +27,7 @@ from core.i18n import set_language
 from tests.test_ecommerce_manager import TEST_KEY, fake_analysis, fake_image as manager_fake_image
 from ui import materials
 from ui.tokens import px
+from ui.components.ecommerce_result_panel import EcommerceResultCard
 from ui.pages.ecommerce_page import EcommercePage, EcommerceWorker, _LIVE_WORKERS
 
 
@@ -37,6 +39,46 @@ def fake_image(*args, **kwargs):
     result = manager_fake_image(*args, **kwargs)
     result.png_bytes = PNG
     return result
+
+
+class EcommerceResultCardWarningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        set_language('zh-CN')
+
+    def test_reference_token_notices(self):
+        base = dict(item_id='fixture-item', kind='carousel', seq=1, status='pending')
+
+        cases = (
+            ('no references and zero tokens',
+             dict(reference_paths=[], image_tokens=0,
+                  warnings=['参考图可能未被模型采用（image_tokens=0）',
+                            '参考图可能未被模型采用，请核对']),
+             '', False, 'warning'),
+            ('references and zero tokens',
+             dict(reference_paths=['reference.png'], image_tokens=0, warnings=[]),
+             '参考图可能未被模型采用，请核对', False, 'warning'),
+            ('references and positive tokens',
+             dict(reference_paths=['one.png', 'two.png'], image_tokens=24, warnings=[]),
+             '已参考 2 张图（image_tokens=24）', True, 'success'),
+            ('references and unknown tokens',
+             dict(reference_paths=['reference.png'], image_tokens=None,
+                  warnings=['参考图可能未被模型采用（image_tokens=0）']),
+             '', False, 'warning'),
+        )
+        colors = materials.palette()
+        for label, fields, expected_text, feedback_positive, color in cases:
+            with self.subTest(case=label):
+                card = EcommerceResultCard(dict(base, **fields))
+                self.assertEqual(card.warning_label.text(), expected_text)
+                self.assertEqual(card.warning_label.isHidden(), not bool(expected_text))
+                self.assertEqual(card._feedback_positive, feedback_positive)
+                self.assertIn(colors[color], card.warning_label.styleSheet())
+                card.deleteLater()
+                self.app.processEvents()
 
 
 class EcommercePageTests(unittest.TestCase):
@@ -516,22 +558,69 @@ class EcommercePageTests(unittest.TestCase):
 
     def test_reference_choosers_preserve_order_remove_clear_and_replace(self):
         paths = [str(self.root / name) for name in ('产品一.png', '产品二.jpg')]
+        self.page._refresh_references()
+        self.assertEqual(self.page.product_count_label.text(), '产品图 0/6')
+        self.assertEqual(self.page.product_list.count(), 0)
+        self.assertEqual(self.page.style_preview.count(), 0)
+        self.assertEqual(self.page.style_label.text(), '未选择风格图')
         with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames', return_value=(paths, '')):
             self.page.add_products_button.click()
         self.assertEqual(self.page.product_image_paths, paths)
         self.assertEqual(self.page.product_list.item(0).text(), '产品一.png')
+        self.assertEqual(self.page.product_count_label.text(), '产品图 2/6')
+        self.assertEqual([self.page.product_list.item(i).widget.path
+                          for i in range(self.page.product_list.count())], paths)
         self.page.product_list.setCurrentRow(0)
+        self.assertTrue(self.page.product_list.item(0).widget.selected)
+        self.assertFalse(self.page.product_list.item(1).widget.selected)
         self.page.remove_product_button.click()
         self.assertEqual(self.page.product_image_paths, paths[1:])
+        self.assertEqual(self.page.product_count_label.text(), '产品图 1/6')
+        self.assertEqual(self.page.product_list.count(), 1)
+        self.assertEqual(self.page.product_list.item(0).widget.path, paths[1])
         with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[0], '')):
             self.page.choose_style_button.click()
+        self.assertEqual(self.page.style_preview.count(), 1)
+        self.assertEqual(self.page.style_preview.item(0).widget.path, paths[0])
+        self.assertEqual(self.page.style_label.text(), '产品一.png')
         with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[1], '')):
             self.page.choose_style_button.click()
         self.assertEqual(self.page.style_image_paths, paths[1:])
+        self.assertEqual(self.page.style_preview.count(), 1)
+        self.assertEqual(self.page.style_preview.item(0).widget.path, paths[1])
+        self.assertEqual(self.page.style_label.text(), '产品二.jpg')
         self.page.clear_products_button.click()
+        self.assertEqual(self.page.product_count_label.text(), '产品图 0/6')
+        self.assertEqual(self.page.product_list.count(), 0)
         self.page.clear_style_button.click()
         self.assertEqual(self.page.product_image_paths, [])
         self.assertEqual(self.page.style_image_paths, [])
+        self.assertEqual(self.page.style_preview.count(), 0)
+        self.assertEqual(self.page.style_label.text(), '未选择风格图')
+
+    def test_thumbnail_close_button_removes_its_product_and_missing_style_is_safe(self):
+        paths = [str(self.root / name) for name in ('first.png', 'missing.png', 'third.png')]
+        self.page.product_image_paths = paths.copy()
+        self.page._refresh_references()
+        self.page.product_list.item(1).widget.close_button.click()
+        self.assertEqual(self.page.product_image_paths, [paths[0], paths[2]])
+        self.assertEqual([self.page.product_list.item(i).widget.path
+                          for i in range(self.page.product_list.count())], [paths[0], paths[2]])
+        self.page.style_image_paths = [str(self.root / 'absent-style.png')]
+        self.page._refresh_references()
+        self.assertEqual(self.page.style_preview.item(0).widget.preview.text(), '无法预览')
+        self.assertEqual(self.page.style_preview.item(0).toolTip(), str(self.root / 'absent-style.png'))
+
+    def test_arguments_preserve_product_order_and_submit_style_last(self):
+        self.fill_valid()
+        products = [str(self.root / name) for name in ('second.png', 'first.png')]
+        style = str(self.root / 'style.png')
+        self.page.product_image_paths = products.copy()
+        self.page.style_image_paths = [style]
+        self.page._refresh_references()
+        arguments = self.page._arguments()
+        self.assertEqual(arguments['product_image_paths'], [str(Path(path).resolve()) for path in products])
+        self.assertEqual(arguments['style_image_path'], str(Path(style).resolve()))
 
     def test_product_picker_rejects_seventh_image_without_changing_order(self):
         paths = [str(self.root / f'{i}.png') for i in range(6)]
@@ -759,20 +848,115 @@ class EcommercePageTests(unittest.TestCase):
 
         self.assertEqual(values(self.page.analysis_model_picker), ['chat-good'])
         self.assertEqual(values(self.page.image_model_picker), ['image-good'])
+        for picker in (self.page.analysis_model_picker, self.page.image_model_picker):
+            self.assertGreaterEqual(picker.minimumWidth(), px(260))
+            self.assertGreaterEqual(picker.sizeHint().width(), px(260))
+        self.page.analysis_model_picker.set_value('chat-good')
+        self.page.image_model_picker.set_value('image-good')
+        self.assertEqual(self.page.analysis_model_picker.value(), 'chat-good')
+        self.assertEqual(self.page.image_model_picker.value(), 'image-good')
 
         self.config.config['stations'] = [
-            {'id': 'chat-route', 'enabled': True, 'base_url': 'https://chat.example'},
-            {'id': 'image-route', 'enabled': True, 'base_url': 'https://image.example'},
+            {'id': 'chat-route', 'name': 'Chat', 'enabled': True,
+             'base_url': 'https://chat.example/v1', 'api_key': 'test-chat-key'},
+            {'id': 'image-route', 'name': 'Image', 'enabled': True,
+             'base_url': 'https://image.example/v1', 'api_key': 'test-image-key'},
         ]
         self.config.config['line_routing'] = {'chat': 'chat-route', 'image': 'image-route'}
         self.page.refresh_effective_lines()
-        self.assertEqual(self.page.analysis_line_label.text(), '生效：chat.example')
-        self.assertEqual(self.page.image_line_label.text(), '生效：image.example')
+        self.assertEqual(self.page.analysis_line_label.text(), '已生效')
+        self.assertEqual(self.page.image_line_label.text(), '已生效')
+        self.assertIn('chat.example', self.page.analysis_line_label.toolTip())
+        self.assertIn('image.example', self.page.image_line_label.toolTip())
 
         self.config.config['line_routing']['chat'] = 'deleted-route'
         self.config.config['api']['base_url'] = 'https://active.example/v1'
         self.page.refresh_effective_lines()
-        self.assertEqual(self.page.analysis_line_label.text(), '生效：active.example')
+        self.assertEqual(self.page.analysis_line_label.text(), '已生效')
+        self.assertIn('active.example', self.page.analysis_line_label.toolTip())
+
+    def test_in_page_routes_persist_refresh_pickers_and_sync_settings_combos(self):
+        self.config.config['stations'] = [
+            {'id': 'chat-station', 'name': '文本站', 'enabled': True,
+             'base_url': 'https://chat.example/v1', 'api_key': 'test-chat-key'},
+            {'id': 'image-station', 'name': '图片站', 'enabled': True,
+             'base_url': 'https://image.example/v1', 'api_key': 'test-image-key'},
+            {'id': 'disabled-station', 'name': '停用站', 'enabled': False,
+             'base_url': 'https://disabled.example/v1', 'api_key': 'test-disabled-key'},
+        ]
+        self.config.config['line_routing'] = {'chat': 'active', 'image': 'active'}
+        self.page.refresh_line_routes()
+        for combo in (self.page.analysis_line_combo, self.page.image_line_combo):
+            self.assertEqual(combo.itemData(0), 'active')
+            self.assertNotIn('disabled-station', [combo.itemData(index) for index in range(combo.count())])
+
+        self.config.model_catalog_controller = Mock()
+        chat_settings_combo, image_settings_combo = ComboBox(), ComboBox()
+        chat_settings_combo.addItem('当前线路', userData='active')
+        chat_settings_combo.addItem('文本站', userData='chat-station')
+        image_settings_combo.addItem('当前线路', userData='active')
+        image_settings_combo.addItem('图片站', userData='image-station')
+        settings_refreshes = []
+
+        def refresh_settings_routes():
+            from PyQt5.QtCore import QSignalBlocker
+            for combo, capability in ((chat_settings_combo, 'chat'),
+                                      (image_settings_combo, 'image')):
+                blocker = QSignalBlocker(combo)
+                index = combo.findData(self.config.config['line_routing'][capability])
+                combo.setCurrentIndex(index)
+                del blocker
+            settings_refreshes.append(True)
+
+        self.page.line_changed.connect(refresh_settings_routes)
+        records_seen = []
+
+        def snapshot(_config, capability):
+            route = self.config.config['line_routing'][capability]
+            model_id = f'{route}-{capability}-model'
+            records_seen.append((capability, route))
+            return {model_id: {'id': model_id, 'kind': capability, 'available': True}}
+
+        with patch('ui.pages.ecommerce_page.catalog_snapshot', side_effect=snapshot), \
+                patch.object(self.page, 'refresh_model_pickers', wraps=self.page.refresh_model_pickers) as refresh:
+            self.page.analysis_line_combo.setCurrentIndex(
+                self.page.analysis_line_combo.findData('chat-station'))
+            self.assertEqual(self.config.config['line_routing']['chat'], 'chat-station')
+            self.assertEqual(chat_settings_combo.currentData(), 'chat-station')
+            self.assertEqual(image_settings_combo.currentData(), 'active')
+            self.config.model_catalog_controller.reload_lines.assert_called_once_with()
+            refresh.assert_called_once_with()
+            self.assertIn('chat-station-chat-model', [self.page.analysis_model_picker.itemData(index)
+                                                       for index in range(self.page.analysis_model_picker.count())])
+            self.assertTrue(self.page.image_model_picker.minimumWidth() >= px(260))
+            self.assertTrue(any(item == ('chat', 'chat-station') for item in records_seen))
+
+            self.page.image_line_combo.setCurrentIndex(
+                self.page.image_line_combo.findData('image-station'))
+            self.assertEqual(self.config.config['line_routing']['image'], 'image-station')
+            self.assertEqual(chat_settings_combo.currentData(), 'chat-station')
+            self.assertEqual(image_settings_combo.currentData(), 'image-station')
+            self.assertEqual(self.config.model_catalog_controller.reload_lines.call_count, 2)
+            self.assertEqual(refresh.call_count, 2)
+            self.assertIn('image-station-image-model', [self.page.image_model_picker.itemData(index)
+                                                        for index in range(self.page.image_model_picker.count())])
+            self.assertTrue(any(item == ('image', 'image-station') for item in records_seen))
+
+            self.page.analysis_line_combo.setCurrentIndex(
+                self.page.analysis_line_combo.findData('active'))
+            self.assertEqual(self.config.config['line_routing']['chat'], 'active')
+            self.assertEqual(chat_settings_combo.currentData(), 'active')
+            self.page.image_line_combo.setCurrentIndex(
+                self.page.image_line_combo.findData('active'))
+            self.assertEqual(self.config.config['line_routing']['image'], 'active')
+            self.assertEqual(image_settings_combo.currentData(), 'active')
+            self.assertEqual(self.config.model_catalog_controller.reload_lines.call_count, 4)
+            self.assertEqual(refresh.call_count, 4)
+            self.assertIn('active-chat-model', [self.page.analysis_model_picker.itemData(index)
+                                                for index in range(self.page.analysis_model_picker.count())])
+            self.assertIn('active-image-model', [self.page.image_model_picker.itemData(index)
+                                                 for index in range(self.page.image_model_picker.count())])
+        self.assertEqual(len(settings_refreshes), 4)
 
     def test_model_picker_values_and_thinking_persist_and_empty_overrides_are_omitted(self):
         records = {
@@ -842,7 +1026,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 跳过 2')
         self.assertNotIn(TEST_KEY, self.ui_text())
 
-    def test_result_warnings_zero_image_tokens_and_missing_file_placeholder(self):
+    def test_result_without_references_hides_token_warning_and_missing_file_placeholder(self):
         self.fill_valid()
 
         def warned_image(*args, **kwargs):
@@ -857,10 +1041,9 @@ class EcommercePageTests(unittest.TestCase):
         self.image.side_effect = warned_image
         self.run_to_idle()
         cards = self.page.result_panel.ordered_cards()
-        self.assertIn('参考图可能未被模型采用，请核对', cards[0].warning_label.text())
+        self.assertNotIn('参考图可能未被模型采用', cards[0].warning_label.text())
         self.assertIn('尺寸已降档', cards[1].warning_label.text())
         self.assertIn('[REDACTED]', cards[1].warning_label.text())
-        self.assertIn(materials.palette()['warning'], cards[0].warning_label.styleSheet())
         Path(cards[0].record['file_path']).unlink()
         self.page._refresh_results()
         self.assertIs(self.page.result_panel.ordered_cards()[0], cards[0])
@@ -868,12 +1051,12 @@ class EcommercePageTests(unittest.TestCase):
         self.assertIn('文件缺失', placeholder)
         pixmap = cards[0].thumbnail.pixmap()
         self.assertTrue(pixmap is None or pixmap.isNull())
-        # The same warning can be persisted even when usage details are absent.
+        # A stale persisted reference warning must not affect pure text-to-image items.
         store = self.config.ecommerce_store()
         store.upsert_item(dict(cards[1].record, image_tokens=None,
                                warnings=['参考图可能未被模型采用（image_tokens=0）']))
         self.page._refresh_results()
-        self.assertIn('参考图可能未被模型采用，请核对', cards[1].warning_label.text())
+        self.assertNotIn('参考图可能未被模型采用', cards[1].warning_label.text())
         Path(cards[0].record['file_path']).write_bytes(b'invalid-image')
         self.page._refresh_results()
         self.assertEqual(cards[0].thumbnail.text(), '文件缺失')

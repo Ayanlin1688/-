@@ -3,11 +3,11 @@ from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import QFileDialog, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit, ListWidget,
+    CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
     SwitchButton, TextEdit, TitleLabel, TransparentToolButton, FluentIcon as FIF,
 )
@@ -24,6 +24,7 @@ from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultPanel
 from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
+from ..components.reference_thumbnail import ReferenceGrid, ReferenceThumbnail
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
@@ -92,6 +93,7 @@ class EcommerceWorker(QThread):
 class EcommercePage(QWidget):
     idle = pyqtSignal()
     history_records_changed = pyqtSignal()
+    line_changed = pyqtSignal()
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -184,8 +186,10 @@ class EcommercePage(QWidget):
         reference_hint = CaptionLabel(tr('产品图最多 6 张，风格图最多 1 张；按产品图在前、风格图最后提交。'))
         reference_hint.setWordWrap(True)
         references.addWidget(reference_hint)
-        self.product_list = ListWidget()
-        self.product_list.setFixedHeight(px(120))
+        self.product_count_label = CaptionLabel()
+        references.addWidget(self.product_count_label)
+        self.product_list = ReferenceGrid()
+        self.product_list.setMinimumHeight(px(112))
         references.addWidget(self.product_list)
         products = WrapLayout()
         self.add_products_button = PushButton(tr('添加产品图'))
@@ -199,6 +203,9 @@ class EcommercePage(QWidget):
         references.addLayout(products)
         self.style_label = self._text_label(tr('未选择风格图'))
         references.addWidget(self.style_label)
+        self.style_preview = ReferenceGrid()
+        self.style_preview.setMinimumHeight(px(144))
+        references.addWidget(self.style_preview)
         style = WrapLayout()
         self.choose_style_button = PushButton(tr('选择 / 替换风格图'))
         self.clear_style_button = PushButton(tr('清除风格图'))
@@ -212,14 +219,19 @@ class EcommercePage(QWidget):
         analysis_row = WrapLayout(spacing=px(10))
         self.analysis_model_picker = ModelPickComboBox()
         self.analysis_model_picker.setObjectName('ecommerceAnalysisModel')
+        self.analysis_model_picker.setMinimumWidth(px(260))
         self.analysis_model_picker.set_models(
             catalog_snapshot(config_manager, 'chat'),
             defaults.get('analysis_model', 'gemini-3.8-flash'), kind='chat')
         self.analysis_line_label = CaptionLabel()
+        self.analysis_line_combo = ComboBox()
+        self.analysis_line_combo.setObjectName('ecommerceAnalysisLine')
+        self.analysis_line_combo.setMinimumWidth(px(200))
         self.sync_analysis_models_button = TransparentToolButton(FIF.SYNC)
         self.sync_analysis_models_button.setObjectName('syncAnalysisModels')
         self.sync_analysis_models_button.setToolTip(tr('同步模型'))
         analysis_row.addLayout(self._field(tr('AI 分析模型'), self.analysis_model_picker))
+        analysis_row.addWidget(self.analysis_line_combo)
         analysis_row.addWidget(self.analysis_line_label)
         analysis_row.addWidget(self.sync_analysis_models_button)
         models.addLayout(analysis_row)
@@ -227,14 +239,19 @@ class EcommercePage(QWidget):
         image_row = WrapLayout(spacing=px(10))
         self.image_model_picker = ModelPickComboBox()
         self.image_model_picker.setObjectName('ecommerceImageModel')
+        self.image_model_picker.setMinimumWidth(px(260))
         self.image_model_picker.set_models(
             catalog_snapshot(config_manager, 'image'),
             defaults.get('image_model', 'gpt-image-2.5-sunburst'), kind='image')
         self.image_line_label = CaptionLabel()
+        self.image_line_combo = ComboBox()
+        self.image_line_combo.setObjectName('ecommerceImageLine')
+        self.image_line_combo.setMinimumWidth(px(200))
         self.sync_image_models_button = TransparentToolButton(FIF.SYNC)
         self.sync_image_models_button.setObjectName('syncImageModels')
         self.sync_image_models_button.setToolTip(tr('同步模型'))
         image_row.addLayout(self._field(tr('图片模型'), self.image_model_picker))
+        image_row.addWidget(self.image_line_combo)
         image_row.addWidget(self.image_line_label)
         image_row.addWidget(self.sync_image_models_button)
         models.addLayout(image_row)
@@ -261,6 +278,11 @@ class EcommercePage(QWidget):
             lambda _text: self._persist_model('image_model', self.image_model_picker.value()))
         self.thinking_switch.checkedChanged.connect(
             lambda value: self._persist_model('thinking', bool(value)))
+        self.analysis_line_combo.currentIndexChanged.connect(
+            lambda index: self._route_changed('chat', self.analysis_line_combo, index))
+        self.image_line_combo.currentIndexChanged.connect(
+            lambda index: self._route_changed('image', self.image_line_combo, index))
+        self._refresh_line_routes()
         self.refresh_effective_lines()
         self.refresh_model_pickers()
 
@@ -370,10 +392,44 @@ class EcommercePage(QWidget):
 
     def refresh_effective_lines(self, *_args):
         config = self.config_manager.config
-        self.analysis_line_label.setText(tr('生效：{host}').format(
-            host=self._line_host(resolve_line(config, 'chat'))))
-        self.image_line_label.setText(tr('生效：{host}').format(
-            host=self._line_host(resolve_line(config, 'image'))))
+        colors = materials.palette()
+        for capability, label in (('chat', self.analysis_line_label), ('image', self.image_line_label)):
+            host = self._line_host(resolve_line(config, capability))
+            configured = host != tr('未配置')
+            label.setText(tr('已生效') if configured else tr('未配置'))
+            label.setToolTip(tr('{capability}线路：{host}').format(
+                capability=tr('AI 分析') if capability == 'chat' else tr('图片生成'), host=host))
+            label.setStyleSheet('color: %s;' % (colors['text1'] if configured else colors['warning']))
+
+    def _refresh_line_routes(self, *_args):
+        stations = [station for station in self.config_manager.config.get('stations', [])
+                    if isinstance(station, dict) and station.get('enabled')]
+        routing = self.config_manager.config.get('line_routing', {})
+        for capability, combo in (('chat', self.analysis_line_combo), ('image', self.image_line_combo)):
+            saved = (routing.get(capability, 'active') if isinstance(routing, dict) else 'active') or 'active'
+            blocker = QSignalBlocker(combo)
+            combo.clear()
+            combo.addItem(tr('当前线路'), userData='active')
+            for station in stations:
+                combo.addItem(str(station.get('name') or station.get('id') or ''),
+                              userData=station.get('id'))
+            index = combo.findData(saved)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            del blocker
+
+    refresh_line_routes = _refresh_line_routes
+
+    def _route_changed(self, capability, combo, index):
+        if index < 0:
+            return
+        station_id = combo.itemData(index) or 'active'
+        self.config_manager.update(('line_routing', capability), station_id)
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        if controller is not None:
+            controller.reload_lines()
+        self.refresh_model_pickers()
+        self.refresh_effective_lines()
+        self.line_changed.emit()
 
     def _sync_catalog(self, _capability):
         controller = getattr(self.config_manager, 'model_catalog_controller', None)
@@ -452,11 +508,26 @@ class EcommercePage(QWidget):
 
     def _refresh_references(self):
         self.product_list.clear()
+        self.product_count_label.setText(tr('产品图 {count}/6').format(count=len(self.product_image_paths)))
         for path in self.product_image_paths:
-            self.product_list.addItem(self._clean(Path(path).name))
-            self.product_list.item(self.product_list.count() - 1).setToolTip(self._clean(path))
+            thumbnail = ReferenceThumbnail(path, size=84, selectable=True, parent=self.product_list)
+            thumbnail.removed.connect(lambda _checked=False, path=path: self._remove_product_path(path))
+            self.product_list.add_thumbnail(thumbnail)
+        self.style_preview.clear()
+        if self.style_image_paths:
+            thumbnail = ReferenceThumbnail(self.style_image_paths[0], size=112,
+                                           selectable=False, parent=self.style_preview)
+            thumbnail.removed.connect(self._clear_style)
+            self.style_preview.add_thumbnail(thumbnail)
         self.style_label.setText(self._clean(Path(self.style_image_paths[0]).name)
                                  if self.style_image_paths else tr('未选择风格图'))
+
+    def _remove_product_path(self, path):
+        try:
+            self.product_image_paths.remove(path)
+        except ValueError:
+            return
+        self._refresh_references()
 
     def _arguments(self):
         selected = self.selected_platforms()
