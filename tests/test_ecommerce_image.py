@@ -3,6 +3,7 @@ import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import random
 import re
 import socket
 import tempfile
@@ -45,6 +46,24 @@ def encoded_image(fmt):
     buffer = QBuffer(output)
     buffer.open(QIODevice.WriteOnly)
     image.save(buffer, fmt)
+    buffer.close()
+    return bytes(output)
+
+
+def encoded_large_image(*, alpha=False):
+    """Create a deliberately large, locally generated PNG fixture."""
+    width, height = 2200, 1300
+    image = QImage(width, height, QImage.Format_RGBA8888)
+    bits = image.bits()
+    bits.setsize(image.byteCount())
+    raw = bytearray(random.Random(217).randbytes(image.byteCount()))
+    if not alpha:
+        raw[3::4] = b'\xff' * (width * height)
+    bits[:] = bytes(raw)
+    output = QByteArray()
+    buffer = QBuffer(output)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, 'PNG')
     buffer.close()
     return bytes(output)
 
@@ -417,6 +436,90 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(result.image_tokens, 16)
         self.assertFalse(any('image_tokens=0' in warning for warning in result.warnings))
 
+    def test_small_reference_is_sent_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'small.png'
+            path.write_bytes(PNG_BYTES)
+            with LocalImageServer() as server:
+                self.generate(server, reference_paths=[path])
+            files = [part for part in multipart_parts(server.calls[0])
+                     if part['filename']]
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]['filename'], 'small.png')
+        self.assertIn('Content-Type: image/png', files[0]['headers'])
+        self.assertEqual(files[0]['body'], PNG_BYTES)
+
+    def test_oversized_opaque_reference_is_scaled_to_jpeg(self):
+        content = encoded_large_image()
+        self.assertGreater(len(content), image_client.REFERENCE_MAX_BYTES)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'large.png'
+            path.write_bytes(content)
+            with LocalImageServer() as server:
+                self.generate(server, reference_paths=[path])
+            files = [part for part in multipart_parts(server.calls[0])
+                     if part['filename']]
+        self.assertEqual(files[0]['filename'], 'large.jpg')
+        self.assertIn('Content-Type: image/jpeg', files[0]['headers'])
+        self.assertTrue(files[0]['body'].startswith(b'\xff\xd8\xff'))
+        scaled = QImage.fromData(files[0]['body'])
+        self.assertFalse(scaled.isNull())
+        self.assertLessEqual(max(scaled.width(), scaled.height()), 2048)
+        self.assertFalse(scaled.hasAlphaChannel())
+
+    def test_multipart_compression_preserves_reference_count_and_order(self):
+        opaque = encoded_large_image()
+        alpha = encoded_large_image(alpha=True)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / name
+                     for name in ('first.png', 'second.png', 'style.png')]
+            for path, content in zip(paths, (PNG_BYTES, opaque, alpha)):
+                path.write_bytes(content)
+            with LocalImageServer() as server:
+                self.generate(server, reference_paths=paths)
+            files = [part for part in multipart_parts(server.calls[0])
+                     if part['filename']]
+        self.assertEqual(len(files), 3)
+        self.assertEqual([part['name'] for part in files], ['image'] * 3)
+        self.assertEqual([part['filename'] for part in files],
+                         ['first.png', 'second.jpg', 'style.png'])
+        self.assertEqual(files[0]['body'], PNG_BYTES)
+
+    def test_oversized_transparent_reference_stays_png(self):
+        content = encoded_large_image(alpha=True)
+        self.assertGreater(len(content), image_client.REFERENCE_MAX_BYTES)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'alpha.png'
+            path.write_bytes(content)
+            with LocalImageServer() as server:
+                self.generate(server, reference_paths=[path])
+            files = [part for part in multipart_parts(server.calls[0])
+                     if part['filename']]
+        self.assertEqual(files[0]['filename'], 'alpha.png')
+        self.assertIn('Content-Type: image/png', files[0]['headers'])
+        self.assertTrue(files[0]['body'].startswith(b'\x89PNG\r\n\x1a\n'))
+        scaled = QImage.fromData(files[0]['body'])
+        self.assertFalse(scaled.isNull())
+        self.assertLessEqual(max(scaled.width(), scaled.height()), 2048)
+        self.assertTrue(scaled.hasAlphaChannel())
+        self.assertTrue(image_client._has_transparency(scaled))
+
+    def test_oversized_undecodable_reference_falls_back_to_original(self):
+        content = b'not-an-image-' * 150000
+        self.assertGreater(len(content), image_client.REFERENCE_MAX_BYTES)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'broken.png'
+            path.write_bytes(content)
+            with self.assertLogs('storyboard', level='WARNING') as logs:
+                with LocalImageServer() as server:
+                    self.generate(server, reference_paths=[path])
+            files = [part for part in multipart_parts(server.calls[0])
+                     if part['filename']]
+        self.assertEqual(files[0]['filename'], 'broken.png')
+        self.assertIn('Content-Type: image/png', files[0]['headers'])
+        self.assertEqual(files[0]['body'], content)
+        self.assertTrue(any('参考图压缩失败，按原图发送' in line for line in logs.output))
+
     def test_seven_reference_files_are_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = self.make_references(directory, [f'product-{i}.png' for i in range(6)] + ['style.png'])
@@ -605,9 +708,12 @@ class ImageClientHTTPTests(unittest.TestCase):
             with self.assertLogs('storyboard', level='ERROR'):
                 with self.assertRaises(EcommerceImageError) as caught:
                     self.generate(server, ratio='9:16', tier='4K', timeout=(1, 1))
+        # The next request reached the server, so losing its response cannot
+        # prove it was unbilled and must not cause a replay.
         self.assertEqual(len(server.calls), 2)
         self.assertTrue(caught.exception.failed_before_response)
         self.assertIsNone(caught.exception.status_code)
+        self.assertFalse(caught.exception.retry_safe)
 
     def test_closed_port_is_failure_before_response_without_key(self):
         with socket.socket() as listener:
@@ -620,6 +726,7 @@ class ImageClientHTTPTests(unittest.TestCase):
                                timeout=(0.2, 0.2))
         self.assertTrue(caught.exception.failed_before_response)
         self.assertIsNone(caught.exception.status_code)
+        self.assertTrue(caught.exception.retry_safe)
         self.assertNotIn(FIXTURE_KEY, str(caught.exception))
         self.assertNotIn(FIXTURE_KEY, caught.exception.body_excerpt)
 
@@ -629,7 +736,25 @@ class ImageClientHTTPTests(unittest.TestCase):
                 with self.assertRaises(EcommerceImageError) as caught:
                     self.generate(server, ratio='9:16', tier='4K', timeout=(1, 1))
         self.assertTrue(caught.exception.failed_before_response)
+        self.assertFalse(caught.exception.retry_safe)
         self.assertEqual(len(server.calls), 1)
+
+    def test_disconnect_after_submission_does_not_switch_pool_model(self):
+        from core.ecommerce.manager import EcommerceImageManager
+
+        with LocalImageServer(mode='before_headers') as server, \
+                tempfile.TemporaryDirectory() as directory:
+            manager = EcommerceImageManager(
+                server.base_url, FIXTURE_KEY, directory, None,
+                image_model_candidates=['fixture-backup'])
+            item = dict(model=DEFAULT_IMAGE_MODEL, prompt='A bottle.', ratio='1:1',
+                        tier='1K', reference_paths=[])
+            with self.assertLogs('storyboard', level='ERROR'):
+                with self.assertRaises(EcommerceImageError) as caught:
+                    manager._request_image(item)
+        self.assertEqual(len(server.calls), 1)
+        self.assertFalse(caught.exception.retry_safe)
+        self.assertFalse(manager._can_switch(caught.exception))
 
     def test_body_failure_after_headers_is_not_retryable_or_retried(self):
         for mode in ('truncated', 'timeout'):

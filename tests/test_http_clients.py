@@ -1,11 +1,15 @@
 """Real HTTP against a local fixture; never represents a paid provider run."""
 import json
+from io import BytesIO
 import tempfile
 import threading
 import unittest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import requests
+from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
 
 from core.api_client import ApiClient, GROK, V3_MODELS
 from core.image_uploader import ImageUploader, upload_credentials, DEFAULT_UPLOAD_URL
@@ -167,6 +171,192 @@ class HttpTests(unittest.TestCase):
         client.request('GET', 'http://localhost/example')
         self.assertEqual(session.request.call_args.kwargs['timeout'], (10, 30))
         self.assertEqual(session.request.call_args.kwargs['headers']['Authorization'], 'Bearer key-with-surrounding-spaces')
+
+    def test_proxy_failure_retries_once_on_direct_session(self):
+        session = Mock()
+        session.request.side_effect = requests.exceptions.ProxyError('proxy refused')
+        direct = Mock()
+        direct.proxies = {}
+        direct.request.return_value.status_code = 200
+        logs = []
+        client = HttpClient('fixture-key', session=session, direct_session=direct,
+                            log=lambda message, level='info': logs.append((message, level)))
+        files = [('image', ('fixture.png', b'fixture-image', 'image/png'))]
+        response = client.request('POST', 'http://localhost/example', data={'model': 'fixture'}, files=files,
+                                  timeout=(15, 300), stream=True, headers={'X-Fixture': 'same'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.request.call_count, 1)
+        self.assertEqual(direct.request.call_count, 1)
+        self.assertFalse(direct.trust_env)
+        self.assertIsNone(direct.proxies.get('http'))
+        self.assertIsNone(direct.proxies.get('https'))
+        self.assertEqual(session.request.call_args, direct.request.call_args)
+        self.assertNotIn('proxies', direct.request.call_args.kwargs)
+        self.assertTrue(any('直连重试一次' in message for message, _ in logs))
+
+    def test_connect_timeout_retries_once_with_lazy_direct_session(self):
+        session = Mock()
+        session.request.side_effect = requests.exceptions.ConnectTimeout('connect timeout')
+        direct = Mock()
+        direct.proxies = {}
+        direct.request.return_value.status_code = 200
+        with patch('core.http_client.requests.Session', return_value=direct) as factory:
+            logs = []
+            client = HttpClient(session=session, log=lambda message, level='info': logs.append((message, level)))
+            response = client.request('GET', 'http://localhost/example')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.request.call_count, 1)
+        self.assertEqual(direct.request.call_count, 1)
+        factory.assert_called_once_with()
+        self.assertFalse(direct.trust_env)
+        self.assertTrue(any('直连重试一次' in message for message, _ in logs))
+
+    def test_confirmed_connection_establishment_failure_retries_direct(self):
+        refused = NewConnectionError(None, 'fixture connection refused')
+        for reason in (refused, MaxRetryError(None, 'http://localhost/example', reason=refused)):
+            with self.subTest(reason=type(reason).__name__):
+                session, direct = Mock(), Mock()
+                session.request.side_effect = requests.exceptions.ConnectionError(reason)
+                direct.request.return_value.status_code = 200
+                client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+                response = client.request('POST', 'http://localhost/example', json={'fixture': True})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(session.request.call_count, 1)
+                self.assertEqual(direct.request.call_count, 1)
+
+    def test_ambiguous_connection_error_does_not_replay_a_submitted_request(self):
+        from http.client import RemoteDisconnected
+
+        for reason in ('connection lost', ProtocolError(
+                'Connection aborted', RemoteDisconnected('server accepted body then closed'))):
+            with self.subTest(reason=type(reason).__name__):
+                session, direct = Mock(), Mock()
+                session.request.side_effect = requests.exceptions.ConnectionError(reason)
+                client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+                with self.assertRaises(RequestError) as caught:
+                    client.request('POST', 'http://localhost/example', json={'fixture': True})
+                self.assertFalse(caught.exception.retry_safe)
+                self.assertEqual(session.request.call_count, 1)
+                direct.request.assert_not_called()
+
+    def test_proxy_retry_rewinds_multipart_stream_to_original_position(self):
+        stream = BytesIO(b'prefix:fixture-image')
+        stream.seek(len(b'prefix:'))
+        payloads = []
+
+        def failed_request(*args, **kwargs):
+            payloads.append(kwargs['files']['image'][1].read())
+            raise requests.exceptions.ProxyError('proxy refused')
+
+        def direct_request(*args, **kwargs):
+            payloads.append(kwargs['files']['image'][1].read())
+            response = Mock()
+            response.status_code = 200
+            return response
+
+        session, direct = Mock(), Mock()
+        session.request.side_effect = failed_request
+        direct.request.side_effect = direct_request
+        client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+        client.request('POST', 'http://localhost/upload', files={'image': ('fixture.png', stream)})
+        self.assertEqual(payloads, [b'fixture-image', b'fixture-image'])
+        self.assertEqual(session.request.call_count, 1)
+        self.assertEqual(direct.request.call_count, 1)
+
+    def test_non_rewindable_multipart_stream_does_not_retry_empty_payload(self):
+        stream = Mock()
+        stream.tell.side_effect = OSError('not seekable')
+        session, direct = Mock(), Mock()
+        session.request.side_effect = requests.exceptions.ProxyError('proxy refused')
+        client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+        with self.assertRaises(RequestError):
+            client.request('POST', 'http://localhost/upload', files={'image': ('fixture.png', stream)})
+        direct.request.assert_not_called()
+
+    def test_multipart_generator_is_preserved_for_primary_and_direct_request(self):
+        session, direct = Mock(), Mock()
+        session.request.side_effect = requests.exceptions.ProxyError('proxy refused')
+        direct.request.return_value.status_code = 200
+        files = [('image', ('fixture.png', b'fixture-image', 'image/png'))]
+        client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+        client.request('POST', 'http://localhost/upload', files=iter(files))
+        self.assertEqual(session.request.call_args.kwargs['files'], files)
+        self.assertEqual(direct.request.call_args.kwargs['files'], files)
+
+    def test_direct_failure_is_wrapped_after_one_retry(self):
+        session = Mock()
+        direct = Mock()
+        session.request.side_effect = requests.exceptions.ProxyError('proxy refused')
+        direct.request.side_effect = requests.exceptions.ProxyError('direct refused fixture-secret')
+        client = HttpClient('fixture-secret', session=session, direct_session=direct, log=lambda *args: None)
+        with self.assertRaises(RequestError) as caught:
+            client.request('GET', 'http://localhost/example')
+        self.assertEqual(session.request.call_count, 1)
+        self.assertEqual(direct.request.call_count, 1)
+        self.assertNotIn('fixture-secret', str(caught.exception))
+        self.assertTrue(caught.exception.retry_safe)
+
+    def test_http_error_does_not_retry_direct(self):
+        for status in (400, 401):
+            with self.subTest(status=status):
+                session = Mock()
+                response = session.request.return_value
+                response.status_code = status
+                response.text = 'invalid secret-test'
+                direct = Mock()
+                client = HttpClient('secret-test', session=session, direct_session=direct, log=lambda *args: None)
+                with self.assertRaisesRegex(RequestError, f'HTTP {status}') as caught:
+                    client.request('GET', 'http://localhost/example')
+                self.assertEqual(direct.request.call_count, 0)
+                self.assertNotIn('secret-test', str(caught.exception))
+
+    def test_body_read_error_does_not_retry_direct(self):
+        for error_type in (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError,
+                           requests.exceptions.ReadTimeout, requests.exceptions.SSLError):
+            with self.subTest(error_type=error_type):
+                session = Mock()
+                session.request.side_effect = error_type('connection dropped while reading')
+                direct = Mock()
+                client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+                with self.assertRaises(RequestError) as caught:
+                    client.request('GET', 'http://localhost/example')
+                self.assertEqual(direct.request.call_count, 0)
+                self.assertFalse(caught.exception.retry_safe)
+
+    def test_error_with_received_response_does_not_retry_direct(self):
+        session = Mock()
+        received = requests.Response()
+        received.status_code = 200
+        session.request.side_effect = requests.exceptions.ConnectionError('response interrupted', response=received)
+        direct = Mock()
+        client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+        with self.assertRaises(RequestError):
+            client.request('GET', 'http://localhost/example')
+        self.assertEqual(direct.request.call_count, 0)
+
+    def test_direct_session_is_cached_and_closed_with_primary(self):
+        session = Mock()
+        session.request.side_effect = requests.exceptions.ProxyError('proxy refused')
+        direct = Mock()
+        direct.request.return_value.status_code = 200
+        with patch('core.http_client.requests.Session', return_value=direct) as factory:
+            client = HttpClient(session=session, log=lambda *args: None)
+            client.request('GET', 'http://localhost/first')
+            client.request('GET', 'http://localhost/second')
+            client.close()
+        factory.assert_called_once_with()
+        self.assertEqual(direct.request.call_count, 2)
+        session.close.assert_called_once_with()
+        direct.close.assert_called_once_with()
+
+    def test_request_value_error_is_not_retried_or_wrapped(self):
+        session = Mock()
+        session.request.side_effect = ValueError('invalid multipart file')
+        direct = Mock()
+        client = HttpClient(session=session, direct_session=direct, log=lambda *args: None)
+        with self.assertRaisesRegex(ValueError, 'invalid multipart file'):
+            client.request('POST', 'http://localhost/example')
+        self.assertEqual(direct.request.call_count, 0)
 
     def test_every_model_payload_and_query_auth(self):
         with LocalServer() as server, tempfile.TemporaryDirectory() as temp:

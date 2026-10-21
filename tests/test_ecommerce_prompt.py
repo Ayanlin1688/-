@@ -250,14 +250,31 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertEqual(append_reference_order(prompt, 6, has_style_reference=True),
                              prompt + '\n\n' + expected)
 
-    def test_without_style_or_product_photos_prompt_is_unchanged(self):
+    def test_product_only_references_preserve_product_identity_and_text(self):
         prompt = 'A product on a table.'
-        self.assertEqual(append_reference_order(prompt, 6), prompt)
-        self.assertEqual(append_reference_order(prompt, 6, has_style_reference=False), prompt)
-        self.assertEqual(append_reference_order(prompt, 0, has_style_reference=True), prompt)
+        suffix = build_reference_order(2, has_style_reference=False)
+        self.assertIn('Images 1-2 are product photos', suffix)
+        self.assertIn('appearance, shape, colors, materials, branding and text', suffix)
+        self.assertTrue(suffix.endswith('Images 1-2 are all product references.'))
+        self.assertNotIn('style reference', suffix)
+        self.assertEqual(append_reference_order(prompt, 2), prompt + '\n\n' + suffix)
+
+    def test_style_only_reference_excludes_objects_logos_and_text(self):
+        prompt = 'A product on a table.'
+        suffix = build_reference_order(0, has_style_reference=True)
+        self.assertIn('Image 1 (the only reference image) is style reference only', suffix)
+        self.assertIn('color palette, lighting, mood, composition', suffix)
+        self.assertIn('do not copy objects, products, logos or text', suffix)
+        self.assertEqual(append_reference_order(prompt, 0, True), prompt + '\n\n' + suffix)
+
+    def test_without_reference_photos_prompt_is_unchanged_and_counts_are_validated(self):
+        prompt = 'A product on a table.'
+        self.assertEqual(append_reference_order(prompt, 0), prompt)
+        self.assertEqual(append_reference_order(prompt, 0, has_style_reference=False), prompt)
         self.assertEqual(build_reference_order(0), '')
-        with self.assertRaises(ValueError):
-            build_reference_order(-1)
+        for count in (-1, 1.5, True):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                build_reference_order(count)
 
 
 if __name__ == '__main__':

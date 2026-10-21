@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
-from PyQt5.QtCore import QBuffer, QByteArray, QIODevice
-from PyQt5.QtGui import QImage
+from PyQt5.QtCore import QBuffer, QByteArray, QIODevice, Qt
+from PyQt5.QtGui import QImage, QImageWriter
 
 from core.ecommerce.platforms import RATIOS
 from core.http_client import HttpClient, RequestError
@@ -18,17 +19,20 @@ from core.http_client import HttpClient, RequestError
 
 DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst'
 TIER_SHORT_EDGE = {'1K': 1024, '2K': 2048, '4K': 4096}
+REFERENCE_MAX_BYTES = int(1.5 * 1024 * 1024)
+REFERENCE_MAX_EDGE = 2048
 
 
 class EcommerceImageError(Exception):
     def __init__(self, message, status_code=None, body_excerpt='',
-                 failed_before_response=False, *, redact=None):
+                 failed_before_response=False, *, redact=None, retry_safe=None):
         clean = redact or str
         self.message = clean(str(message))
         self.status_code = status_code
         # Redact before truncation, including credentials crossing the boundary.
         self.body_excerpt = clean(str(body_excerpt))[:500]
         self.failed_before_response = failed_before_response
+        self.retry_safe = retry_safe
         super().__init__(self.message)
 
 
@@ -117,10 +121,90 @@ def _is_response_format_rejection(status_code, body):
                 '不支持', '未知参数', '不支持的参数')))
 
 
-def _reference_files(paths, redact):
-    """Read every reference before sending a potentially billable request."""
+def _has_transparency(image):
+    """Return whether any pixel has an alpha value below fully opaque."""
+    if not image.hasAlphaChannel():
+        return False
+    rgba = image.convertToFormat(QImage.Format_RGBA8888)
+    bits = rgba.constBits()
+    bits.setsize(rgba.byteCount())
+    raw = bytes(bits)
+    opaque = b'\xff' * rgba.width()
+    stride = rgba.bytesPerLine()
+    for row_index in range(rgba.height()):
+        row = raw[row_index * stride:row_index * stride + rgba.width() * 4]
+        if row[3::4] != opaque:
+            return True
+    return False
+
+
+def _compress_reference(path, content, redact):
+    """Return a bounded reference payload, or the original on conversion errors."""
+    logger = logging.getLogger('storyboard')
+    original_size = len(content)
+    suffix = path.suffix.lower()
     mime_types = {'.png': 'image/png', '.jpg': 'image/jpeg',
                   '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+    original = (path.name, content, mime_types.get(suffix, 'image/png'))
+    if original_size <= REFERENCE_MAX_BYTES:
+        logger.debug('参考图 %s：%d→%d 字节，格式 %s',
+                     redact(path.name), original_size, original_size,
+                     suffix.lstrip('.').upper() or 'PNG')
+        return original
+
+    try:
+        image = QImage.fromData(content)
+        if image.isNull():
+            raise ValueError('无法解码')
+        width, height = image.width(), image.height()
+        longest = max(width, height)
+        if longest > REFERENCE_MAX_EDGE:
+            scale = REFERENCE_MAX_EDGE / longest
+            scaled = image.scaled(
+                max(1, int(round(width * scale))),
+                max(1, int(round(height * scale))),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        else:
+            scaled = image
+        if scaled.isNull():
+            raise ValueError('无法缩放')
+
+        transparent = _has_transparency(scaled)
+        output = QByteArray()
+        buffer = QBuffer(output)
+        if not buffer.open(QIODevice.WriteOnly):
+            raise ValueError('无法打开编码缓冲区')
+        try:
+            image_format = 'PNG' if transparent else 'JPEG'
+            writer = QImageWriter(buffer, image_format.encode('ascii'))
+            if not transparent:
+                writer.setQuality(92)
+            if not writer.write(scaled):
+                raise ValueError('无法编码')
+        finally:
+            buffer.close()
+        encoded = bytes(output)
+        if not encoded:
+            raise ValueError('编码结果为空')
+        if transparent:
+            filename, mime = path.stem + '.png', 'image/png'
+        else:
+            filename, mime = path.stem + '.jpg', 'image/jpeg'
+        logger.debug('参考图 %s：%d→%d 字节，格式 %s',
+                     redact(path.name), original_size, len(encoded), image_format)
+        return filename, encoded, mime
+    except Exception:
+        # Reference compression is an optimization. Preserve the original if
+        # Qt cannot decode, scale, or encode the source bytes.
+        logger.warning('参考图压缩失败，按原图发送：%s', redact(path.name))
+        logger.debug('参考图 %s：%d→%d 字节，格式 %s',
+                     redact(path.name), original_size, original_size,
+                     suffix.lstrip('.').upper() or 'PNG')
+        return original
+
+
+def _reference_files(paths, redact):
+    """Read every reference before sending a potentially billable request."""
     files = []
     for value in paths:
         try:
@@ -129,8 +213,7 @@ def _reference_files(paths, redact):
         except (OSError, TypeError, ValueError) as error:
             raise EcommerceImageError(
                 f'读取参考图失败：{error}', redact=redact) from None
-        files.append(('image', (path.name, content,
-                                mime_types.get(path.suffix.lower(), 'image/png'))))
+        files.append(('image', _compress_reference(path, content, redact)))
     return files
 
 
@@ -320,7 +403,7 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
             f'图片生成连接或读取失败：{error}', status_code,
             getattr(error, 'body', ''),
             failed_before_response=status_code is None,
-            redact=client.redact) from None
+            redact=client.redact, retry_safe=getattr(error, 'retry_safe', False)) from None
     finally:
         client.close()
 

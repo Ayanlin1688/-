@@ -514,9 +514,15 @@ class DownloadAccelerationTests(unittest.TestCase):
         self.addCleanup(session.close)
         self.client.session.close()
         self.client.session = session
-        with patch.object(session, 'request', side_effect=requests.ConnectionError('failed https://local.invalid/video?signature=local-signed-secret')):
+        direct = requests.Session()
+        self.client.direct_session = direct
+        error = requests.exceptions.ProxyError('failed https://local.invalid/video?signature=local-signed-secret')
+        with patch.object(session, 'request', side_effect=error) as primary_request, \
+                patch.object(direct, 'request', side_effect=error) as direct_request:
             with self.assertRaises(Exception):
                 self.client.download_video('https://local.invalid/video?signature=local-signed-secret', self.folder, 'error.mp4')
+        self.assertEqual(primary_request.call_count, DOWNLOAD_ATTEMPTS)
+        self.assertEqual(direct_request.call_count, DOWNLOAD_ATTEMPTS)
         self.assertNotIn('local-signed-secret', '\n'.join(self.logs))
         self.assertEqual(list(self.folder.iterdir()), [])
 

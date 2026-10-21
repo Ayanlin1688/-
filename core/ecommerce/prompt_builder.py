@@ -81,12 +81,33 @@ def build_user(product_name: str, product_info: str, platform_names: Iterable[st
             f'请严格按配置生成 {d + g} 条电商图提示词（{quantity}）。')
 
 
-def build_reference_order(product_count: int) -> str:
-    """Return the style-reference suffix; zero product photos need no suffix."""
+def build_reference_order(product_count: int, has_style_reference: bool | None = None) -> str:
+    """Return reference-image instructions for the supplied image layout.
+
+    ``None`` preserves the historical one-argument helper contract (a positive
+    count describes a product-plus-style layout).  Callers that
+    know the actual layout pass an explicit boolean so product-only and
+    style-only prompts receive their precise instructions.
+    """
     if type(product_count) is not int or product_count < 0:
         raise ValueError('产品图数量必须为非负整数')
-    if product_count == 0:
+    legacy_layout = has_style_reference is None
+    has_style = True if legacy_layout else bool(has_style_reference)
+    if product_count == 0 and (legacy_layout or not has_style):
         return ''
+    if product_count == 0:
+        return (
+            'Reference image order (critical): Image 1 (the only reference image) is style '
+            'reference only — match its color palette, lighting, mood, composition and visual '
+            'atmosphere; do not copy objects, products, logos or text from the style reference '
+            'image.'
+        )
+    if not has_style:
+        return (
+            f'Reference image order (critical): Images 1-{product_count} are product photos — '
+            'preserve the product appearance, shape, colors, materials, branding and text from '
+            f'these images. Images 1-{product_count} are all product references.'
+        )
     return (
         f'Reference image order (critical): Images 1-{product_count} are product photos — '
         'preserve the product appearance, shape, colors, materials and branding from these images. '
@@ -98,6 +119,6 @@ def build_reference_order(product_count: int) -> str:
 
 def append_reference_order(prompt: str, product_count: int,
                            has_style_reference: bool = False) -> str:
-    """Append to each image prompt only when product and style photos both exist."""
-    suffix = build_reference_order(product_count) if has_style_reference else ''
+    """Append reference-image instructions when either reference type is present."""
+    suffix = build_reference_order(product_count, has_style_reference)
     return f'{prompt}\n\n{suffix}' if suffix else prompt

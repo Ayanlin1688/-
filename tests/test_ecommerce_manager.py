@@ -397,12 +397,29 @@ class EcommerceManagerTests(unittest.TestCase):
         for item in self.store.list_items(group_id):
             self.assertEqual(item['reference_paths'], expected)
 
-    def test_no_style_or_no_product_does_not_append_style_suffix(self):
-        for references in (dict(product_image_paths=[self.root / '产品.png']),
-                           dict(style_image_path=self.root / '风格.png'), {}):
-            self.image.reset_mock()
-            self.start(**references)
-            self.assertTrue(all('Reference image order' not in c.args[3] for c in self.image.call_args_list))
+    def test_product_only_suffix_is_used_and_persisted_for_every_item(self):
+        products = [self.root / '产品1.png', self.root / '产品2.png']
+        group_id = self.start(product_image_paths=products)
+        expected_paths = [str(path.resolve()) for path in products]
+        for call in self.image.call_args_list:
+            self.assertTrue(call.args[3].endswith('Images 1-2 are all product references.'))
+            self.assertIn('branding and text', call.args[3])
+            self.assertNotIn('style reference', call.args[3])
+            self.assertEqual(call.kwargs['reference_paths'], expected_paths)
+        for item in self.store.list_items(group_id):
+            self.assertTrue(item['prompt'].endswith('Images 1-2 are all product references.'))
+            self.assertEqual(item['reference_paths'], expected_paths)
+
+    def test_style_only_uses_one_style_reference_and_no_references_keep_prompt(self):
+        style = self.root / '风格.png'
+        self.start(style_image_path=style)
+        for call in self.image.call_args_list:
+            self.assertIn('Image 1 (the only reference image) is style reference only', call.args[3])
+            self.assertEqual(call.kwargs['reference_paths'], [str(style.resolve())])
+        self.image.reset_mock()
+        self.start()
+        self.assertTrue(all('Reference image order' not in c.args[3]
+                            for c in self.image.call_args_list))
 
     def test_invalid_counts_ratios_tier_or_reference_counts_have_no_side_effects(self):
         for options in (dict(carousel_count=-1), dict(carousel_count=0, detail_count=0),

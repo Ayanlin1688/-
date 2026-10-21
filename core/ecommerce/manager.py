@@ -125,6 +125,8 @@ class EcommerceImageManager:
     @staticmethod
     def _can_switch(error):
         status = getattr(error, 'status_code', None)
+        if status is None and getattr(error, 'retry_safe', None) is False:
+            return False
         return status is None or not 200 <= status < 300
 
     @staticmethod
@@ -189,7 +191,8 @@ class EcommerceImageManager:
                     message = f'图片模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
                     raise EcommerceImageError(message, error.status_code,
                                               self._clean(error.body_excerpt),
-                                              error.failed_before_response) from None
+                                              error.failed_before_response,
+                                              retry_safe=error.retry_safe) from None
                 raise
         raise EcommerceImageError(f'图片模型尝试失败（{"、".join(attempted)}）')
 

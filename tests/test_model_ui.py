@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QCoreApplication, QEvent, Qt
 from core.config_manager import ConfigManager
 from core.model_catalog import builtin_models
 from test_model_catalog import CatalogServer
@@ -21,9 +21,17 @@ class ModelUiTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self._drain_deferred_deletes()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        self.addCleanup(self._drain_deferred_deletes)
         self.config = ConfigManager(Path(self.temp.name) / 'config.json')
+
+    @staticmethod
+    def _drain_deferred_deletes():
+        # Finish queued widget destruction before the next window refreshes
+        # Fluent's shared theme registry. Cleanups run after deleteLater calls.
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     def test_selector_keeps_wire_id_while_showing_model_metadata(self):
         from ui.components.model_selector import ModelComboBox
