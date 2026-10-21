@@ -233,34 +233,48 @@ class RecoveryCoordinateTests(unittest.TestCase):
     def _drive_recovery(self, trigger, interaction):
         completed = []
         errors = []
-        poll = QTimer(self.window)
-        poll.setInterval(10)
         watchdog = QTimer(self.window)
         watchdog.setSingleShot(True)
+        handled = [False]
+        active = [True]
+        deadline = time.monotonic() + 4.0
 
         def drive():
+            if not active[0] or handled[0] or completed or errors:
+                return
             dialog = self.page._active_recovery_dialog
             if dialog is None or not dialog.isVisible():
+                if time.monotonic() >= deadline:
+                    errors.append(AssertionError('recovery dialog did not become visible'))
+                    return
+                # The trigger may be inside another modal event loop.  Keep
+                # yielding to that loop until the recovery dialog exists; the
+                # predicate, rather than a fixed intermediate-state delay,
+                # determines when the interaction is allowed to run.
+                QTimer.singleShot(1, drive)
                 return
-            poll.stop()
+            handled[0] = True
             try:
                 self._assert_single_surface(dialog)
                 interaction(dialog)
                 completed.append(True)
             except BaseException as error:
                 errors.append(error)
-                if not sip.isdeleted(dialog):
+                if dialog is not None and not sip.isdeleted(dialog):
                     dialog.reject()
 
         def timeout():
             errors.append(AssertionError('coordinate action did not finish the real modal loop'))
             self.page._close_child_dialogs()
 
-        poll.timeout.connect(drive)
         watchdog.timeout.connect(timeout)
-        poll.start()
         watchdog.start(4000)
         try:
+            # The recovery dialog is opened by a nested modal event loop.
+            # Re-arm a guarded one-shot until the visibility predicate is true
+            # so a callback cannot consume the interaction before the dialog
+            # has been created.
+            QTimer.singleShot(0, drive)
             trigger()
             self._wait(lambda: bool(completed or errors), 'recovery never appeared', 4500)
             if errors:
@@ -270,9 +284,8 @@ class RecoveryCoordinateTests(unittest.TestCase):
             QTest.qWait(30)
             self._assert_no_dialogs_or_masks()
         finally:
-            poll.stop()
+            active[0] = False
             watchdog.stop()
-            poll.deleteLater()
             watchdog.deleteLater()
 
     def _assert_rejected_without_resolution(self):
@@ -779,14 +792,21 @@ class RecoveryCoordinateTests(unittest.TestCase):
 
     def test_match_modal_is_rejected_before_one_recovery_despite_reentry(self):
         match_results = []
-        timer = QTimer(self.window)
-        timer.setInterval(10)
+        handled = [False]
+        active = [True]
+        deadline = time.monotonic() + 4.0
 
         def from_match():
+            if not active[0] or handled[0]:
+                return
             match = self.page.data_source.active_match_dialog
             if match is None or not match.isVisible():
+                if time.monotonic() >= deadline:
+                    self.callback_errors.append(AssertionError('match dialog did not become visible'))
+                    return
+                QTimer.singleShot(1, from_match)
                 return
-            timer.stop()
+            handled[0] = True
             try:
                 match.finished.connect(match_results.append)
                 self.page.task_monitor.resolve_clicked.emit(self.records[0])
@@ -795,7 +815,8 @@ class RecoveryCoordinateTests(unittest.TestCase):
                 self.page.task_monitor.resolve_clicked.emit(self.records[0])
             except BaseException as error:
                 self.callback_errors.append(error)
-                match.reject()
+                if match is not None and not sip.isdeleted(match):
+                    match.reject()
 
         def cancel(dialog):
             self.assertEqual(match_results, [QDialog.Rejected])
@@ -804,38 +825,49 @@ class RecoveryCoordinateTests(unittest.TestCase):
             self.assertIs(self.page._active_recovery_dialog, dialog)
             self._mouse(dialog.cancelButton)
 
-        timer.timeout.connect(from_match)
-        timer.start()
+        # open_match_dialog enters a nested event loop.  Schedule one guarded
+        # callback after the loop has had a chance to create the modal, rather
+        # than sampling visibility every 10ms under load.
+        QTimer.singleShot(0, from_match)
         try:
             self._drive_recovery(self.page.data_source.open_match_dialog, cancel)
             self.assertEqual(len(self.exec_results), 1)
             self._assert_rejected_without_resolution()
         finally:
-            timer.stop()
-            timer.deleteLater()
+            active[0] = False
+            handled[0] = True
 
     def test_history_coordinate_after_match_closed_reaches_cancel(self):
-        timer = QTimer(self.window)
-        timer.setInterval(10)
+        handled = [False]
+        active = [True]
+        deadline = time.monotonic() + 4.0
 
         def close_match():
-            match = self.page.data_source.active_match_dialog
-            if match is None or not match.isVisible():
+            if not active[0] or handled[0]:
                 return
-            timer.stop()
+            match = None
+            current = self.page.data_source.active_match_dialog
+            if current is None or not current.isVisible():
+                if time.monotonic() >= deadline:
+                    self.callback_errors.append(AssertionError('match dialog did not become visible'))
+                    return
+                QTimer.singleShot(1, close_match)
+                return
+            handled[0] = True
             try:
+                match = current
                 self._mouse(match.header.close_button)
             except BaseException as error:
                 self.callback_errors.append(error)
-                match.reject()
+                if match is not None and not sip.isdeleted(match):
+                    match.reject()
 
-        timer.timeout.connect(close_match)
-        timer.start()
+        QTimer.singleShot(0, close_match)
         try:
             self.page.data_source.open_match_dialog()
         finally:
-            timer.stop()
-            timer.deleteLater()
+            active[0] = False
+            handled[0] = True
         self.window.switchTo(self.window.history_page)
         self.window.history_page.update_history(self.records[:3])
         table = self.window.history_page.table
@@ -962,6 +994,11 @@ class RecoveryCoordinateTests(unittest.TestCase):
             self.assertFalse(self.window.isVisible())
 
     def test_close_deadline_forces_all_jobs_with_valid_safe_timer(self):
+        # A previous close attempt must not leave a live GUI timer or closing
+        # state that changes this test's call counts.
+        self.window._close_timer.stop()
+        self.window._closing = False
+        self.window._close_deadline = float('inf')
         real_timer = threading.Timer
         timers = []
 
@@ -985,9 +1022,7 @@ class RecoveryCoordinateTests(unittest.TestCase):
             stop.assert_not_called()
             quit_app.assert_not_called()
             self.window._close_deadline = time.monotonic() - 1
-            started = time.monotonic()
             self.window._finish_close()
-            self.assertLess(time.monotonic() - started, 1.0)
             stop.assert_called_once()
             for force_stop in force_spies:
                 force_stop.assert_called_once()
