@@ -172,27 +172,83 @@ class ModelPickComboBox(EditableComboBox):
         self.setMaxVisibleItems(16)
         self._kind = 'chat'
         self._item_tooltips = {}
+        self._full_value = ''
+        self._rendered_value = ''
+        self._rendering_value = False
+        self.textChanged.connect(self._edited_value_changed)
+        self.currentIndexChanged.connect(self._selected_value_changed)
+
+    def sizeHint(self):
+        return QSize(260, 33)
+
+    def minimumSizeHint(self):
+        return QSize(140, 33)
 
     def _createComboMenu(self):
         return _ModelPickMenu(self)
 
     def value(self):
         text = self.text().strip()
-        index = self.currentIndex()
-        if index >= 0 and self.itemText(index) == self.text():
-            value = self.itemData(index)
-            if value and not str(value).startswith('__separator__:'):
-                return str(value).strip()
+        if self._rendered_value and text == self._rendered_value:
+            return self._full_value.strip()
         return text
 
     def set_value(self, text):
         value = str(text or '').strip()
         index = self.findData(value)
-        if index >= 0 and not str(self.itemData(index) or '').startswith('__separator__:'):
-            self.setCurrentIndex(index)
-        else:
-            self.setCurrentIndex(-1)
-            self.setText(value)
+        if index >= 0 and str(self.itemData(index) or '').startswith('__separator__:'):
+            index = -1
+        self._full_value = value
+        self._rendering_value = True
+        self.setCurrentIndex(index)
+        self.setText(value)
+        self._rendering_value = False
+        self._render_value()
+
+    def _edited_value_changed(self, text):
+        if self._rendering_value:
+            return
+        self._full_value = str(text or '').strip()
+        self._rendered_value = ''
+        self.setToolTip(self._full_value)
+
+    def _selected_value_changed(self, index):
+        if self._rendering_value or index < 0:
+            return
+        value = self.itemData(index)
+        if value and not str(value).startswith('__separator__:'):
+            self.set_value(value)
+
+    def _render_value(self):
+        value = self._full_value
+        if not value:
+            self._rendered_value = ''
+            self.setToolTip('')
+            return
+        if self.hasFocus():
+            self.setToolTip(value)
+            return
+        display = self.fontMetrics().elidedText(value, Qt.ElideRight, max(30, self.width() - 42))
+        self._rendered_value = display
+        self._rendering_value = True
+        self.setText(display)
+        self._rendering_value = False
+        self.setToolTip(value)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render_value()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._rendered_value = ''
+        self._rendering_value = True
+        self.setText(self._full_value)
+        self._rendering_value = False
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._render_value()
 
     def set_models(self, records, selected=None, kind='chat'):
         self._kind = kind

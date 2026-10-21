@@ -17,6 +17,11 @@ def response(status, payload):
 
 
 class UploadFixTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
     def test_connection_probe_is_a_decodable_png(self):
         from PyQt5.QtGui import QImage
         captured = []
@@ -85,9 +90,7 @@ class UploadFixTests(unittest.TestCase):
 
     def test_oversized_reference_is_normalized_before_upload(self):
         from PyQt5.QtGui import QImage
-        from PyQt5.QtWidgets import QApplication
         from core.image_uploader import fit_reference_image, MAX_REFERENCE_RATIO, MAX_REFERENCE_SIDE
-        QApplication.instance() or QApplication([])
         image = QImage(8000, 1000, QImage.Format_RGB32)
         image.fill(0xFF224466)
         fitted, changed = fit_reference_image(image)

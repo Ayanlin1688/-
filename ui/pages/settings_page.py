@@ -192,6 +192,7 @@ class SettingsPage(QWidget):
         self.setObjectName("settingsPage")
         self.config_manager = config_manager
         self.log_callback = log_callback
+        self._sanitize_upload_fields_once()
         self.jobs = BackgroundJobs(self)
         self.jobs.log_message.connect(self.log_callback)
         self.model_rows = []
@@ -908,7 +909,12 @@ class SettingsPage(QWidget):
             hint.hide()
             column.addWidget(hint)
             self._api_upload_url_hint = hint
-        group.addSettingCard(CustomSettingCard(title, host, FIF.LINK))
+            self._api_upload_url_hint_layout = column
+        card = CustomSettingCard(title, host, FIF.LINK)
+        group.addSettingCard(card)
+        if column is not None:
+            self._upload_url_hint_cards = getattr(self, '_upload_url_hint_cards', {})
+            self._upload_url_hint_cards[edit] = card
         return edit
 
     def _combo(self, group, title, path, choices, texts=None):
@@ -958,7 +964,8 @@ class SettingsPage(QWidget):
         self.api_key = self._line(group, "API Key", ("api", "api_key"), True)
         self.upload_url = self._line(group, "图床上传 URL", ("api", "upload_url"))
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
-        self._register_upload_url_hint(self.upload_url, self.upload_key, self._api_upload_url_hint)
+        self._register_upload_url_hint(self.upload_url, self.upload_key, self._api_upload_url_hint,
+                                       self._api_upload_url_hint_layout)
         self.upload_key.setPlaceholderText('服务商签发的素材上传 Token')
         self.upload_key.setToolTip('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限')
         self.base_url.textChanged.connect(self._persist_base_url_input)
@@ -1054,15 +1061,114 @@ class SettingsPage(QWidget):
         hint.setStyleSheet('color:#D98282;')
         hint.hide()
         layout.addWidget(hint)
-        self._register_upload_url_hint(url_field, token_field, hint)
+        self._register_upload_url_hint(url_field, token_field, hint, layout)
 
-    def _register_upload_url_hint(self, url_field, token_field, hint):
+    def _register_upload_url_hint(self, url_field, token_field, hint, layout=None):
         hints = getattr(self, '_upload_url_hints', None)
         if hints is None:
             hints = self._upload_url_hints = {}
         hints[url_field] = hint
+        layouts = getattr(self, '_upload_url_hint_layouts', None)
+        if layouts is None:
+            layouts = self._upload_url_hint_layouts = {}
+        if layout is not None:
+            layouts[url_field] = layout
         url_field.editingFinished.connect(
             lambda url=url_field, token=token_field: self._repair_upload_fields(url, token))
+
+    @staticmethod
+    def _correct_upload_pair(upload_url, upload_token):
+        url = str(upload_url or '').strip()
+        token = str(upload_token or '').strip()
+        if not url or not looks_like_upload_token(url):
+            return url, token, False, False
+        overwritten = bool(token and token != url)
+        return '', url, True, overwritten
+
+    def _sanitize_upload_fields_once(self):
+        if getattr(self, '_upload_fields_sanitized', False):
+            return 0
+        self._upload_fields_sanitized = True
+        config = getattr(self.config_manager, 'config', {})
+        if not isinstance(config, dict):
+            return 0
+
+        corrected = 0
+        api = dict(config.get('api') or {})
+        url, token, changed, _overwritten = self._correct_upload_pair(
+            api.get('upload_url', ''), api.get('upload_api_key', ''))
+        if changed:
+            api['upload_url'] = url
+            api['upload_api_key'] = token
+            self._write_config_value(('api',), api)
+            corrected += 1
+
+        source_stations = config.get('stations', [])
+        stations = [dict(station) for station in source_stations if isinstance(station, dict)] \
+            if isinstance(source_stations, list) else []
+        stations_changed = False
+        for station in stations:
+            url, token, changed, _overwritten = self._correct_upload_pair(
+                station.get('upload_url', ''), station.get('upload_api_key', ''))
+            if not changed:
+                continue
+            station['upload_url'] = url
+            station['upload_api_key'] = token
+            stations_changed = True
+            corrected += 1
+        if stations_changed:
+            self._write_config_value(('stations',), stations)
+
+        if corrected:
+            self.log_callback(tr('启动时已自动纠正 {count} 条上传 URL 中的 Token').format(count=corrected), 'info')
+        return corrected
+
+    def _write_config_value(self, path, value):
+        update = getattr(self.config_manager, 'update', None)
+        if callable(update):
+            update(path, value)
+            return
+        target = self.config_manager.config
+        for key in path[:-1]:
+            target = target.setdefault(key, {})
+        target[path[-1]] = value
+
+    def _fit_upload_url_hint(self, url_field):
+        layout = getattr(self, '_upload_url_hint_layouts', {}).get(url_field)
+        if layout is None:
+            return
+        layout.invalidate()
+        owner = layout.parentWidget()
+        if owner is not None:
+            owner.updateGeometry()
+
+        setting_card = getattr(self, '_upload_url_hint_cards', {}).get(url_field)
+        if setting_card is None and owner is not None:
+            candidate = owner
+            while candidate is not None:
+                if hasattr(candidate, '_card_relayout'):
+                    setting_card = candidate
+                    break
+                if hasattr(candidate, 'setBorderRadius'):
+                    break
+                candidate = candidate.parentWidget()
+        if setting_card is not None and hasattr(setting_card, '_card_relayout'):
+            setting_card._card_relayout.schedule()
+            return
+
+        candidate = owner
+        while candidate is not None and not hasattr(candidate, 'setBorderRadius'):
+            candidate = candidate.parentWidget()
+        if candidate is None or candidate.layout() is None:
+            return
+
+        def fit_card(card=candidate):
+            card.layout().invalidate()
+            card.layout().activate()
+            card.setFixedHeight(max(1, card.layout().sizeHint().height()))
+            card.updateGeometry()
+
+        QTimer.singleShot(0, fit_card)
 
     def _redact_probe_error(self, message):
         text = str(message)
@@ -1080,14 +1186,18 @@ class SettingsPage(QWidget):
                 text = text.replace(str(secret), '[REDACTED]')
         return tr(text)
 
-    def _repair_upload_fields(self, url_field, token_field):
-        raw_url = url_field.text().strip()
-        token = token_field.text().strip()
-        if raw_url and looks_like_upload_token(raw_url) and not token:
-            token_field.setText(raw_url)
-            url_field.clear()
-            self._notice(tr('已将上传 Token 移入 Token 字段，并清空上传 URL。'), True)
-            raw_url = ''
+    def _repair_upload_fields(self, url_field, token_field, *, notify=True, log_invalid=True):
+        raw_url, token, changed, overwritten = self._correct_upload_pair(
+            url_field.text(), token_field.text())
+        if changed:
+            if token_field.text().strip() != token:
+                token_field.setText(token)
+            if url_field.text().strip():
+                url_field.clear()
+            if notify:
+                message = (tr('已把误填到 URL 的上传 Token 移入 Token 字段（覆盖旧值）')
+                           if overwritten else tr('已将上传 Token 移入 Token 字段，并清空上传 URL。'))
+                self._notice(message, True)
         valid = valid_http_url(raw_url)
         hint = getattr(self, '_upload_url_hints', {}).get(url_field)
         if hint is not None:
@@ -1097,19 +1207,20 @@ class SettingsPage(QWidget):
             else:
                 hint.setText(tr('上传 URL 必须以 http:// 或 https:// 开头，或留空使用默认地址。'))
                 hint.show()
-        if not valid:
+            self._fit_upload_url_hint(url_field)
+        if not valid and log_invalid:
             self.log_callback(tr('上传 URL 格式无效，请修正后再保存或测试。'), 'warning')
         return valid
 
     def _test_station_fields(self, base_field, key_field, upload_field, upload_key_field,
                              capability_boxes, button):
-        if not self._repair_upload_fields(upload_field, upload_key_field):
-            return
+        upload_valid = self._repair_upload_fields(
+            upload_field, upload_key_field, notify=False, log_invalid=False)
         selected = [(key, {'llm': 'chat'}.get(key, key))
                     for key in ('video', 'llm', 'image')
                     if key in capability_boxes and capability_boxes[key].isChecked()]
         if not selected:
-            self._notice(tr('请至少勾选一项能力后再测试。'), False)
+            self._notice(tr('请至少勾选一项能力后再测试。'), False, level='warning')
             return
         base_url = normalize_base_url(base_field.text())
         api_key = key_field.text().strip()
@@ -1147,7 +1258,14 @@ class SettingsPage(QWidget):
                     line += '\n' + tr('文本实际命中模型：{model}').format(model=result['model'])
                 messages.append(line)
                 self.log_callback(line, 'success' if ok else 'error')
-            self._notice('\n'.join(messages), all_ok)
+            level = 'error' if not all_ok else 'success'
+            if not upload_valid:
+                warning = tr('上传 URL 未配置或格式无效，本次仅测试所选 API 线路')
+                messages.append(warning)
+                self.log_callback(warning, 'warning')
+                if all_ok:
+                    level = 'warning'
+            self._notice('\n'.join(messages), all_ok, level=level)
 
         def failed(message):
             finish({key: dict(ok=False, message=self._redact_probe_error(message))
@@ -1218,6 +1336,10 @@ class SettingsPage(QWidget):
         host_layout = QVBoxLayout(host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         host_layout.setSpacing(12)
+        self.pool_category_title = CaptionLabel(tr('模型池类别'))
+        self.pool_category_title.setAlignment(Qt.AlignCenter)
+        self.pool_category_title.setStyleSheet('font-weight:600;')
+        host_layout.addWidget(self.pool_category_title)
         self.pool_tabs = SegmentedWidget()
         self.pool_tabs.addItem('video', tr('视频模型'))
         self.pool_tabs.addItem('chat', tr('AI分析模型'))
@@ -1290,7 +1412,10 @@ class SettingsPage(QWidget):
         self.pool_tabs.currentItemChanged.connect(self._pool_tab_changed)
         host_layout.addWidget(self.pool_tabs)
         host_layout.addWidget(self.pool_stack)
-        self.pool_group.addSettingCard(CustomSettingCard(tr('模型池类别'), host, FIF.LIBRARY))
+        self.pool_category_card = CustomSettingCard('', host, FIF.LIBRARY)
+        self.pool_category_card.iconLabel.hide()
+        self.pool_category_card.iconLabel.setFixedSize(0, 0)
+        self.pool_group.addSettingCard(self.pool_category_card)
         self.pool_tabs.setCurrentItem('video')
         self._pool_tab_changed('video')
 
@@ -1732,10 +1857,11 @@ class SettingsPage(QWidget):
         row = make_card()
         layout = WrapLayout(row)
         layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(8)
         check = CheckBox("启用" if kind == 'video' else tr("启用"))
         check.setChecked(enabled)
         combo = ModelComboBox() if kind == 'video' else ModelPickComboBox()
-        combo.setMinimumWidth(160)
+        combo.setMinimumWidth(160 if kind == 'video' else 140)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         if kind == 'video':
             combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
@@ -2004,10 +2130,13 @@ class SettingsPage(QWidget):
         except Exception as error:
             failed(error)
 
-    def _notice(self, message, success=True):
+    def _notice(self, message, success=True, level=None):
         from qfluentwidgets import InfoBar
-        self.log_callback(message, 'success' if success else 'error')
-        (InfoBar.success if success else InfoBar.error)(tr('测试连接'), message, parent=self, duration=4500)
+        tone = level or ('success' if success else 'error')
+        self.log_callback(message, tone)
+        notice = {'success': InfoBar.success, 'warning': InfoBar.warning, 'error': InfoBar.error}.get(
+            tone, InfoBar.error)
+        notice(tr('测试连接'), message, parent=self, duration=4500)
 
     @staticmethod
     def _toggle_secret(field, button):

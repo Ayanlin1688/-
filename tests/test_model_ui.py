@@ -8,6 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
 from core.config_manager import ConfigManager
 from core.model_catalog import builtin_models
 from test_model_catalog import CatalogServer
@@ -99,6 +100,53 @@ class ModelUiTests(unittest.TestCase):
         combo.set_models(records, 'gpt-image-2', kind='image')
         self.assertEqual(combo.value(), 'gpt-image-2')
         self.assertEqual(combo.findData('deepseek-chat'), -1)
+
+    def test_model_pick_combo_has_stable_size_and_elides_without_losing_value(self):
+        from ui.components.model_selector import ModelPickComboBox
+
+        combo = ModelPickComboBox()
+        self.addCleanup(combo.deleteLater)
+        combo.set_models({'jt-image-2.5-sunburst': dict(
+            id='jt-image-2.5-sunburst', kind='image', available=True)},
+            'jt-image-2.5-sunburst', kind='image')
+        self.assertEqual(combo.sizeHint().width(), 260)
+        self.assertEqual(combo.sizeHint().height(), 33)
+        self.assertGreaterEqual(combo.minimumSizeHint().width(), 140)
+        self.assertEqual(combo.minimumSizeHint().height(), 33)
+        combo.show()
+        combo.resize(140, 33)
+        self.app.processEvents()
+        self.assertEqual(combo.value(), 'jt-image-2.5-sunburst')
+        self.assertEqual(combo.toolTip(), 'jt-image-2.5-sunburst')
+        combo.setFocus()
+        self.app.processEvents()
+        self.assertEqual(combo.text(), 'jt-image-2.5-sunburst')
+
+    def test_pool_category_is_centered_and_chat_image_rows_do_not_overlap(self):
+        from ui.pages.settings_page import SettingsPage
+
+        self.config.config['chat_model_pool']['models'] = [
+            dict(name='deepseek-chat', enabled=True, status='健康')]
+        self.config.config['image_model_pool']['models'] = [
+            dict(name='gpt-image-2.5-sunburst', enabled=True, status='健康')]
+        page = SettingsPage(self.config, lambda *_: None)
+        self.addCleanup(page.deleteLater)
+        page.stop_timers()
+        page.resize(1024, 760)
+        page.show()
+        page._switch_page('pool', highlight=True)
+        self.app.processEvents()
+
+        self.assertTrue(page.pool_category_card.iconLabel.isHidden())
+        self.assertTrue(page.pool_category_title.alignment() & Qt.AlignHCenter)
+        self.assertEqual(page.pool_category_card.titleLabel.text(), '')
+        for kind in ('chat', 'image'):
+            row, check, combo, _state = page.pool_rows[kind][0]
+            row.resize(420, 64)
+            row.layout().setGeometry(row.rect())
+            self.app.processEvents()
+            self.assertGreaterEqual(combo.minimumSizeHint().width(), 140)
+            self.assertGreaterEqual(combo.geometry().left() - check.geometry().right(), 8)
 
     def test_empty_catalog_disables_submission_options_without_crashing(self):
         from core.api_client import ApiClient
