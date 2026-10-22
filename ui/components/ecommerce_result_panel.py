@@ -1,10 +1,10 @@
 """Incremental, width-aware presentation of the current ecommerce image group."""
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRectF, pyqtSignal
+from PyQt5.QtCore import Qt, QRectF, QSignalBlocker, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
-from qfluentwidgets import CardWidget, PushButton, StrongBodyLabel
+from qfluentwidgets import CardWidget, CheckBox, PushButton, StrongBodyLabel
 
 from core.i18n import tr
 from .. import materials
@@ -32,6 +32,7 @@ class _Thumbnail(QLabel):
 
 class EcommerceResultCard(CardWidget):
     regenerate_requested = pyqtSignal(object)
+    selection_changed = pyqtSignal()
     log_message = pyqtSignal(str, str)
 
     def __init__(self, record, parent=None):
@@ -46,7 +47,11 @@ class EcommerceResultCard(CardWidget):
         layout.setSpacing(px(8))
         self.badge_label = StrongBodyLabel()
         self.status_label = self._label()
+        self.select_checkbox = CheckBox(tr('选择'))
+        self.select_checkbox.setToolTip(tr('选择此失败图进行重生'))
+        self.select_checkbox.toggled.connect(self.selection_changed)
         layout.addWidget(self.badge_label)
+        layout.addWidget(self.select_checkbox)
         layout.addWidget(self.status_label)
         self.thumbnail = _Thumbnail()
         self.thumbnail.setAlignment(Qt.AlignCenter)
@@ -85,6 +90,10 @@ class EcommerceResultCard(CardWidget):
         kind = tr('轮') if record['kind'] == 'carousel' else tr('详')
         self.badge_label.setText(f'{kind}{record["seq"]}')
         self.status_label.setText(_status_text(record.get('status', 'pending')))
+        failed = record.get('status') == 'failed'
+        self.select_checkbox.setVisible(failed)
+        if not failed:
+            self.select_checkbox.setChecked(False)
         self.size_label.setText(str(record.get('size') or ''))
         self.error_label.setText(str(record.get('error') or ''))
         self.error_label.setVisible(bool(self.error_label.text()))
@@ -167,6 +176,9 @@ class EcommerceResultCard(CardWidget):
 
     def set_busy(self, busy):
         self._busy = bool(busy)
+        if self._busy:
+            self.select_checkbox.setChecked(False)
+        self.select_checkbox.setEnabled(not self._busy and self.record.get('status') == 'failed')
         self.regenerate_button.setEnabled(not self._busy)
         try:
             path = self._folder_path()
@@ -195,6 +207,7 @@ class EcommerceResultCard(CardWidget):
 class EcommerceResultPanel(QWidget):
     regenerate_requested = pyqtSignal(object)
     regenerate_failed_requested = pyqtSignal()
+    regenerate_selected_requested = pyqtSignal(list)
     log_message = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
@@ -209,10 +222,20 @@ class EcommerceResultPanel(QWidget):
         self.regenerate_failed_button = PushButton(tr('重生成失败项'))
         self.regenerate_failed_button.setEnabled(False)
         self.regenerate_failed_button.clicked.connect(self.regenerate_failed_requested)
-        layout.addWidget(self.regenerate_failed_button, alignment=Qt.AlignLeft)
+        self.regenerate_selected_button = PushButton()
+        self.regenerate_selected_button.clicked.connect(
+            lambda: self.regenerate_selected_requested.emit(self.selected_keys()))
+        self.select_all_checkbox = CheckBox(tr('全选失败'))
+        self.select_all_checkbox.toggled.connect(self._select_all_failed)
+        actions = WrapLayout(spacing=px(12))
+        actions.addWidget(self.select_all_checkbox)
+        actions.addWidget(self.regenerate_selected_button)
+        actions.addWidget(self.regenerate_failed_button)
+        layout.addLayout(actions)
         self.grid = WrapLayout(spacing=px(12), card_width=260, max_columns=4)
         layout.addLayout(self.grid)
         style_controls(self)
+        self._refresh_selection()
         self.refresh_colors()
 
     def ordered_cards(self):
@@ -225,6 +248,7 @@ class EcommerceResultPanel(QWidget):
         else:
             card = EcommerceResultCard(record, self)
             card.regenerate_requested.connect(self.regenerate_requested)
+            card.selection_changed.connect(self._refresh_selection)
             card.log_message.connect(self.log_message)
             self.cards[item_id] = card
             # Only the layout order changes when an item is first seen. Existing
@@ -238,13 +262,15 @@ class EcommerceResultPanel(QWidget):
         self.updateGeometry()
 
     def clear(self):
+        for card in self.cards.values():
+            card.select_checkbox.setChecked(False)
         while self.grid.count():
             item = self.grid.takeAt(0)
             if item.widget() is not None:
                 item.widget().hide()
                 item.widget().deleteLater()
         self.cards.clear()
-        self.regenerate_failed_button.setEnabled(False)
+        self._refresh_selection()
         self.grid.invalidate()
         self.updateGeometry()
 
@@ -252,8 +278,29 @@ class EcommerceResultPanel(QWidget):
         self._busy = bool(busy)
         for card in self.cards.values():
             card.set_busy(self._busy)
+        self._refresh_selection()
+
+    def selected_keys(self):
+        return [card.record['item_id'] for card in self.ordered_cards()
+                if card.record.get('status') == 'failed' and card.select_checkbox.isChecked()]
+
+    def _select_all_failed(self, checked):
+        for card in self.cards.values():
+            card.select_checkbox.setChecked(
+                checked and not self._busy and card.record.get('status') == 'failed')
+        self._refresh_selection()
+
+    def _refresh_selection(self):
+        failed = [card for card in self.cards.values() if card.record.get('status') == 'failed']
+        count = len(self.selected_keys())
+        blocker = QSignalBlocker(self.select_all_checkbox)
+        self.select_all_checkbox.setChecked(bool(failed) and count == len(failed))
+        del blocker
+        self.select_all_checkbox.setEnabled(not self._busy and bool(failed))
+        self.regenerate_selected_button.setText(tr('重生成选中（{count}）').format(count=count))
+        self.regenerate_selected_button.setEnabled(not self._busy and count > 0)
         self.regenerate_failed_button.setEnabled(
-            not self._busy and any(card.record.get('status') == 'failed' for card in self.cards.values()))
+            not self._busy and bool(failed))
 
     def refresh_colors(self):
         self.title_label.setStyleSheet('color: %s;' % materials.palette()['text1'])

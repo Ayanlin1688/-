@@ -71,10 +71,17 @@ class EcommerceWorker(QThread):
         return redact_text(value, self.secrets)
 
     def run(self):
+        group_id = self.arguments.get('group_id', '')
+
+        def on_group(record):
+            nonlocal group_id
+            group_id = record['group_id']
+            self.group_changed.emit(redact_structure(record, self._clean))
+
         try:
             manager = self.manager_factory()
             self.secrets += (manager.api_key,)
-            manager.on_group = lambda rec: self.group_changed.emit(redact_structure(rec, self._clean))
+            manager.on_group = on_group
             manager.on_item = lambda rec: self.item_changed.emit(redact_structure(rec, self._clean))
             manager.on_log = lambda msg, level: self.log_message.emit(self._clean(msg), level)
             runners = {
@@ -85,7 +92,7 @@ class EcommerceWorker(QThread):
             group_id = runners[self.operation](**self.arguments, cancel_event=self.cancel_event)
             self.finished.emit(group_id, '')
         except Exception as error:
-            self.finished.emit('', self._clean(error))
+            self.finished.emit(group_id, self._clean(error))
         finally:
             self.manager_factory = None
 
@@ -314,6 +321,7 @@ class EcommercePage(QWidget):
         self.result_panel = EcommerceResultPanel(self)
         self.result_panel.regenerate_requested.connect(lambda key: self._run_regenerate([key]))
         self.result_panel.regenerate_failed_requested.connect(self._run_regenerate)
+        self.result_panel.regenerate_selected_requested.connect(self._run_regenerate)
         self.result_panel.log_message.connect(self._append_log)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
         root.addWidget(self.result_panel)
@@ -743,6 +751,9 @@ class EcommercePage(QWidget):
 
     @pyqtSlot(object)
     def _on_group(self, record):
+        if (self._group and self._group['group_id'] == record['group_id']
+                and self._group.get('updated_at', 0) > record.get('updated_at', 0)):
+            return
         self._group = redact_structure(record, self._clean)
         status = self._group['status']
         self.stage_label.setText(_stage_text(status))
@@ -759,9 +770,13 @@ class EcommercePage(QWidget):
 
     @pyqtSlot(object)
     def _on_item(self, record):
+        key = (record['kind'], record['seq'])
+        previous = self._items.get(key)
+        if (previous and previous['item_id'] == record['item_id']
+                and previous.get('updated_at', 0) > record.get('updated_at', 0)):
+            return
         record = redact_structure(record, self._clean)
         record['output_dir'] = (self._group or {}).get('output_dir', '')
-        key = (record['kind'], record['seq'])
         self._items[key] = record
         if key not in self.item_labels:
             label = self._text_label()
@@ -826,6 +841,9 @@ class EcommercePage(QWidget):
 
     @pyqtSlot()
     def _thread_stopped(self):
+        # Pool callbacks may be queued from different threads. Read the final
+        # database snapshot once more before enabling regeneration actions.
+        self._refresh_results()
         self._worker = None
         self.cancel_event = threading.Event()
         for card in self._form_cards:

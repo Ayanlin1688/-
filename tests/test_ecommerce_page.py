@@ -165,6 +165,17 @@ class EcommercePageTests(unittest.TestCase):
         self.last_worker = self.page._worker
         self.wait_until(lambda: len(idle) == 1)
 
+    def assert_results_match_store(self):
+        records = self.config.ecommerce_store().list_items(self.page._group['group_id'])
+        self.assertTrue(records)
+        self.assertTrue(all(record['status'] not in ('pending', 'running') for record in records))
+        self.assertEqual(len(self.page.result_panel.cards), len(records))
+        for record in records:
+            card = self.page.result_panel.cards[record['item_id']]
+            for field, value in record.items():
+                self.assertEqual(card.record[field], value, (record['item_id'], field))
+            self.assertNotIn('生成中', card.status_label.text())
+
     def seed_history(self, group_id='history-fixture', status='partial', *,
                      states=('succeeded', 'failed', 'pending'), name='历史茶杯', updated=1000):
         store = self.config.ecommerce_store()
@@ -680,12 +691,14 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.image.call_count, 1)
         self.assertEqual(self.page.stage_label.text(), '部分成功')
         self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 跳过 2')
+        self.assert_results_match_store()
 
     def test_analysis_error_is_redacted_in_notice_and_log_and_restores_form(self):
         self.fill_valid()
         self.analysis.side_effect = RuntimeError('无文本权限 ' + TEST_KEY)
         group_id, error = self.run_to_idle()
-        self.assertEqual(group_id, '')
+        self.assertEqual(group_id, self.page._group['group_id'])
+        self.assertEqual(self.config.ecommerce_store().get_group(group_id)['status'], 'failed')
         self.assertIn('[REDACTED]', error)
         self.assertEqual(self.page.stage_label.text(), '失败')
         self.assertNotIn(TEST_KEY, self.ui_text() + str(self.notices.call_args))
@@ -706,6 +719,8 @@ class EcommercePageTests(unittest.TestCase):
         self.run_to_idle()
         self.assertEqual(self.page.stage_label.text(), '部分成功')
         self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 跳过 0')
+        self.assert_results_match_store()
+        self.assertTrue(self.page.result_panel.regenerate_failed_button.isEnabled())
         self.assertNotIn(TEST_KEY, self.ui_text())
         self.page._append_log('测试警告 ' + TEST_KEY, 'warning')
         self.assertIn('[warning]', self.page.log_box.toPlainText())
@@ -814,6 +829,145 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.stage_label.text(), '已完成')
         self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 跳过 0')
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_failed_selection_visibility_all_toggle_busy_and_clear_reset(self):
+        group, records = self.seed_history(states=('failed', 'failed', 'failed', 'succeeded', 'succeeded'))
+        self.page._view_history_group(group['group_id'])
+        panel = self.page.result_panel
+        cards = panel.ordered_cards()
+        self.assertEqual([not card.select_checkbox.isHidden() for card in cards],
+                         [True, True, True, False, False])
+        self.assertFalse(panel.regenerate_selected_button.isEnabled())
+        cards[0].select_checkbox.setChecked(True)
+        cards[2].select_checkbox.setChecked(True)
+        self.assertEqual(panel.selected_keys(), [records[0]['item_id'], records[2]['item_id']])
+        self.assertEqual(panel.regenerate_selected_button.text(), '重生成选中（2）')
+        self.assertTrue(panel.regenerate_selected_button.isEnabled())
+        self.assertFalse(panel.select_all_checkbox.isChecked())
+        panel.select_all_checkbox.setChecked(True)
+        self.assertEqual(panel.selected_keys(), [record['item_id'] for record in records[:3]])
+        cards[1].select_checkbox.setChecked(False)
+        self.assertFalse(panel.select_all_checkbox.isChecked())
+        cards[1].select_checkbox.setChecked(True)
+        self.assertTrue(panel.select_all_checkbox.isChecked())
+        panel.select_all_checkbox.setChecked(False)
+        self.assertEqual(panel.selected_keys(), [])
+        panel.select_all_checkbox.setChecked(True)
+        panel.set_busy(True)
+        self.assertEqual(panel.selected_keys(), [])
+        self.assertFalse(panel.select_all_checkbox.isEnabled())
+        self.assertFalse(panel.regenerate_selected_button.isEnabled())
+        self.assertFalse(panel.regenerate_failed_button.isEnabled())
+        self.assertTrue(all(not card.regenerate_button.isEnabled() for card in cards))
+        self.assertTrue(all(not card.select_checkbox.isEnabled() for card in cards))
+        panel.set_busy(False)
+        self.assertFalse(panel.regenerate_selected_button.isEnabled())
+        panel.select_all_checkbox.setChecked(True)
+        panel.clear()
+        self.assertEqual(panel.selected_keys(), [])
+        self.assertTrue(all(not card.select_checkbox.isChecked() for card in cards))
+        self.assertFalse(panel.select_all_checkbox.isChecked())
+        self.assertEqual(panel.regenerate_selected_button.text(), '重生成选中（0）')
+        self.assertFalse(panel.regenerate_selected_button.isEnabled())
+
+    def test_selected_signal_launches_regenerate_with_current_item_ids(self):
+        group, records = self.seed_history(states=('failed', 'failed', 'failed', 'succeeded', 'succeeded'))
+        self.page._view_history_group(group['group_id'])
+        panel = self.page.result_panel
+        keys = [records[0]['item_id'], records[2]['item_id']]
+        for key in keys:
+            panel.cards[key].select_checkbox.setChecked(True)
+        selected = QSignalSpy(panel.regenerate_selected_requested)
+        with patch.object(self.page, '_launch_worker') as launch:
+            panel.regenerate_selected_button.click()
+        self.assertEqual(list(selected[0]), [keys])
+        launch.assert_called_once_with(dict(group_id=group['group_id'], item_keys=keys),
+                                       operation='regenerate')
+
+    def test_selected_regeneration_updates_only_two_chosen_failed_items(self):
+        group, records = self.seed_history(states=('failed', 'failed', 'failed', 'succeeded', 'succeeded'))
+        self.page._view_history_group(group['group_id'])
+        panel = self.page.result_panel
+        for index in (0, 2):
+            panel.cards[records[index]['item_id']].select_checkbox.setChecked(True)
+        self.run_regenerate_to_idle(panel.regenerate_selected_button.click)
+        self.assertEqual(self.last_worker.operation, 'regenerate')
+        self.assertEqual(self.last_worker.arguments['item_keys'],
+                         [records[0]['item_id'], records[2]['item_id']])
+        self.assertEqual(self.image.call_count, 2)
+        self.assertEqual({call.args[3] for call in self.image.call_args_list},
+                         {records[0]['prompt'], records[2]['prompt']})
+        self.analysis.assert_not_called()
+        current = self.config.ecommerce_store().list_items(group['group_id'])
+        for index in (1, 3, 4):
+            self.assertEqual(current[index], records[index])
+        self.assertEqual([record['status'] for record in current],
+                         ['succeeded', 'failed', 'succeeded', 'succeeded', 'succeeded'])
+        self.assertEqual(panel.selected_keys(), [])
+        self.assertTrue(panel.regenerate_failed_button.isEnabled())
+        self.assertTrue(all(panel.cards[records[index]['item_id']].select_checkbox.isHidden()
+                            for index in (0, 2)))
+        self.assert_results_match_store()
+
+    def test_finished_refreshes_database_even_without_terminal_progress_callbacks(self):
+        self.fill_valid()
+
+        def make_quiet_manager():
+            manager = self.make_manager()
+            start = manager.start_group
+
+            def quiet_start(**arguments):
+                item_callback, group_callback = manager.on_item, manager.on_group
+                manager.on_item = lambda record: (
+                    item_callback(record) if record['status'] in ('pending', 'running') else None)
+                manager.on_group = lambda record: (
+                    group_callback(record) if record['status'] in ('analyzing', 'generating') else None)
+                return start(**arguments)
+
+            manager.start_group = quiet_start
+            return manager
+
+        self.factory.side_effect = make_quiet_manager
+
+        def image(*args, **kwargs):
+            if args[3].endswith('carousel 2'):
+                raise RuntimeError('offline image failed')
+            return fake_image(*args, **kwargs)
+
+        self.image.side_effect = image
+        self.run_to_idle()
+        self.assertEqual(self.page.stage_label.text(), '部分成功')
+        self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 跳过 0')
+        self.assert_results_match_store()
+        self.assertTrue(self.page.regenerate_failed_button.isEnabled())
+
+    def test_worker_exception_settles_cards_and_late_progress_cannot_restore_running(self):
+        self.fill_valid()
+
+        def make_crashing_manager():
+            manager = self.make_manager()
+            generate = manager._generate
+
+            def crash(group, item, cancel_event):
+                if item['kind'] == 'carousel' and item['seq'] == 2:
+                    manager._item(dict(item, status='running'))
+                    raise RuntimeError('worker failed ' + TEST_KEY)
+                return generate(group, item, cancel_event)
+
+            manager._generate = crash
+            return manager
+
+        self.factory.side_effect = make_crashing_manager
+        self.run_to_idle()
+        self.assert_results_match_store()
+        group = self.page._group.copy()
+        record = self.config.ecommerce_store().list_items(group['group_id'])[0]
+        self.page._on_item(dict(record, status='running', updated_at=record['updated_at'] - 1))
+        self.page._on_group(dict(group, status='generating', updated_at=group['updated_at'] - 1))
+        self.assert_results_match_store()
+        self.assertEqual(self.page._group['status'], 'failed')
+        self.assertEqual(self.page.stage_label.text(), '失败')
         self.assertNotIn(TEST_KEY, self.ui_text())
 
     def test_successful_card_can_explicitly_regenerate_its_own_prompt(self):

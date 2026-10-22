@@ -457,6 +457,66 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(self.manifest(group_id)['totals']['failed'], 3)
         self.assertEqual(self.image.call_count, 3)
 
+    def test_worker_exception_settles_running_items_without_another_request(self):
+        self.manager = self.make_manager(concurrency=1)
+        generate = self.manager._generate
+
+        def crash_after_request(group, item, cancel_event):
+            if item['kind'] == 'carousel' and item['seq'] == 2:
+                self.manager._item(dict(item, status='running'))
+                self.manager._request_image(item)
+                raise RuntimeError('worker failure ' + TEST_KEY)
+            return generate(group, item, cancel_event)
+
+        with patch.object(self.manager, '_generate', side_effect=crash_after_request):
+            group_id = self.start()
+        items = self.store.list_items(group_id)
+        self.assertEqual([item['status'] for item in items], ['succeeded', 'failed', 'succeeded'])
+        self.assertEqual(self.image.call_count, 3)
+        self.assertEqual(self.groups[-1]['status'], 'failed')
+        self.assertEqual(self.manifest(group_id)['totals']['running'], 0)
+        self.assertNotIn(TEST_KEY, json.dumps([items, self.groups, self.logs], ensure_ascii=False))
+
+    def test_pool_submission_failure_skips_unsubmitted_items_and_waits_for_active_job(self):
+        self.manager = self.make_manager(concurrency=1)
+        submit = ThreadPoolExecutor.submit
+        submitted = []
+
+        def reject_second(pool, *args, **kwargs):
+            submitted.append(args)
+            if len(submitted) == 2:
+                raise RuntimeError('pool closed ' + TEST_KEY)
+            return submit(pool, *args, **kwargs)
+
+        with patch('core.ecommerce.manager.ThreadPoolExecutor.submit', new=reject_second):
+            group_id = self.start()
+        self.assertEqual(len(submitted), 2)
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual([item['status'] for item in self.store.list_items(group_id)],
+                         ['succeeded', 'skipped', 'skipped'])
+        manifest = self.manifest(group_id)
+        self.assertEqual(manifest['status'], 'failed')
+        self.assertEqual(manifest['totals']['pending'], 0)
+        self.assertEqual(manifest['totals']['running'], 0)
+
+    def test_output_failure_settles_pending_and_running_items_without_requests(self):
+        group_id = self.start()
+        items = self.store.list_items(group_id)
+        self.store.upsert_item(dict(items[0], status='pending'))
+        self.store.upsert_item(dict(items[1], status='running'))
+        blocked = self.root / 'not-a-directory'
+        blocked.write_bytes(b'file')
+        self.store.upsert_group(dict(group_id=group_id, output_dir=str(blocked)))
+        self.image.reset_mock()
+        self.manager.resume_group(group_id)
+        self.image.assert_not_called()
+        self.assertEqual([item['status'] for item in self.store.list_items(group_id)],
+                         ['skipped', 'failed', 'succeeded'])
+        group = self.store.get_group(group_id)
+        self.assertEqual(group['status'], 'failed')
+        self.assertEqual(group['totals']['pending'], 0)
+        self.assertEqual(group['totals']['running'], 0)
+
     def test_analysis_failure_is_persisted_and_raises_typed_redacted_error(self):
         self.analysis.side_effect = EcommerceAnalysisError('analysis ' + TEST_KEY, 503, 'body ' + TEST_KEY)
         with self.assertRaises(EcommerceAnalysisError) as caught:

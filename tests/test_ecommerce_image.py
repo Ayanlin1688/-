@@ -39,8 +39,8 @@ def image_payload(*, image_tokens=None, revised_prompt=None):
     return payload
 
 
-def encoded_image(fmt):
-    image = QImage(1, 1, QImage.Format_ARGB32)
+def encoded_image(fmt, width=1, height=1):
+    image = QImage(width, height, QImage.Format_ARGB32)
     image.fill(0xff44c877)
     output = QByteArray()
     buffer = QBuffer(output)
@@ -326,6 +326,106 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(result.revised_prompt, 'URL prompt')
         self.assertEqual([call['path'] for call in server.get_calls], ['/v1/download', '/v1/final'])
         self.assertTrue(all('Authorization' not in call['headers'] for call in server.get_calls))
+
+    def assert_inline_conversion(self, fmt, *, prefix='', field='b64_json'):
+        source = encoded_image(fmt, 23, 17)
+        self.assertTrue(source, 'Qt must encode the local fixture')
+        payload = image_payload(image_tokens=415, revised_prompt='Inline refined prompt')
+        payload['data'][0].pop('b64_json')
+        payload['data'][0][field] = '  ' + prefix + base64.b64encode(source).decode('ascii') + '  '
+        with LocalImageServer(payload) as server:
+            result = self.generate(server)
+        self.assertEqual(len(server.calls), 1)
+        self.assertEqual(server.get_calls, [])
+        self.assertTrue(result.png_bytes.startswith(b'\x89PNG\r\n\x1a\n'))
+        decoded = QImage.fromData(result.png_bytes)
+        self.assertFalse(decoded.isNull())
+        self.assertEqual((decoded.width(), decoded.height()), (23, 17))
+        self.assertEqual(result.delivery, 'b64')
+        self.assertEqual(result.image_tokens, 415)
+        self.assertEqual(result.revised_prompt, 'Inline refined prompt')
+        self.assertEqual(result.warnings, [f'源图为 {fmt}，已转为 PNG'])
+        return result
+
+    def test_jpeg_b64_normalizes_and_persists_png_with_manifest(self):
+        from core.ecommerce.manager import EcommerceImageManager
+        from core.ecommerce.persistence import EcommerceImageStore
+        from tests.test_ecommerce_manager import fake_analysis
+
+        result = self.assert_inline_conversion('JPEG')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EcommerceImageStore(root / 'history.sqlite3')
+            manager = EcommerceImageManager(
+                'offline-fixture', FIXTURE_KEY, root / 'output', store,
+                analysis_func=fake_analysis, image_func=lambda *a, **k: result)
+            group_id = manager.start_group(
+                ['douyin'], 'fixture', 'fixture details', 'zh', 1, 0, '1:1', '3:4', '1K')
+            group = store.get_group(group_id)
+            item = store.list_items(group_id)[0]
+            self.assertEqual(item['status'], 'succeeded')
+            self.assertEqual(Path(item['file_path']).read_bytes(), result.png_bytes)
+            manifest = json.loads((Path(group['output_dir']) / 'manifest.json').read_text('utf-8'))
+            self.assertEqual(manifest['items'][0]['delivery'], 'b64')
+            self.assertEqual(manifest['items'][0]['warnings'], result.warnings)
+
+    def test_jpeg_data_url_normalizes_to_png(self):
+        self.assert_inline_conversion('JPEG', prefix='data:image/jpeg;base64,')
+
+    def test_webp_and_bmp_b64_normalize_to_png(self):
+        for fmt in ('WEBP', 'BMP'):
+            with self.subTest(fmt=fmt):
+                self.assert_inline_conversion(fmt)
+
+    def test_b64_alias_is_used_only_when_b64_json_is_absent(self):
+        self.assert_inline_conversion('JPEG', field='b64')
+        payload = {'data': [{'b64_json': None, 'b64': base64.b64encode(PNG_BYTES).decode('ascii')}]}
+        with LocalImageServer(payload) as server:
+            with self.assertRaises(EcommerceImageError):
+                self.generate(server)
+        self.assertEqual(len(server.calls), 1)
+
+    def test_unknown_magic_uses_qimage_decoder(self):
+        source = b'P6\n2 1\n255\n' + b'\xff\x00\x00\x00\xff\x00'
+        self.assertIsNone(image_client._image_format(source))
+        payload = {'data': [{'b64_json': base64.b64encode(source).decode('ascii')}]}
+        with LocalImageServer(payload) as server:
+            result = self.generate(server)
+        decoded = QImage.fromData(result.png_bytes)
+        self.assertEqual((decoded.width(), decoded.height()), (2, 1))
+        self.assertEqual(result.delivery, 'b64')
+        self.assertEqual(len(server.calls), 1)
+
+    def test_invalid_b64_images_are_billed_and_never_switch_models(self):
+        from core.ecommerce.manager import EcommerceImageManager
+        from core.ecommerce.persistence import EcommerceImageStore
+        from tests.test_ecommerce_manager import fake_analysis
+
+        cases = ((base64.b64encode(b'not-an-image' * 3).decode('ascii'),
+                  '前 8 字节：6E 6F 74 2D 61 6E 2D 69'),
+                 (base64.b64encode(b'\xff\xd8\xffbroken').decode('ascii'),
+                  '不是受支持的图片格式'),
+                 ('!!!invalid!!!', 'b64_json 不是合法 Base64'),
+                 ('data:image/jpeg;base64', 'b64_json 不是合法 Base64'))
+        for encoded, message in cases:
+            payload = {'data': [{'b64_json': encoded}], 'debug': FIXTURE_KEY}
+            with self.subTest(message=message), LocalImageServer(payload) as server:
+                with self.assertRaises(EcommerceImageError) as caught:
+                    self.generate(server, tier='4K')
+                self.assertIn(message, str(caught.exception))
+                self.assertEqual(caught.exception.status_code, 200)
+                self.assertNotIn(FIXTURE_KEY, str(caught.exception) + caught.exception.body_excerpt)
+                self.assertFalse(EcommerceImageManager._can_switch(caught.exception))
+                self.assertEqual(len(server.calls), 1)
+                with tempfile.TemporaryDirectory() as directory:
+                    store = EcommerceImageStore(Path(directory) / 'history.sqlite3')
+                    manager = EcommerceImageManager(
+                        server.base_url, FIXTURE_KEY, Path(directory) / 'output', store,
+                        image_model_candidates=['must-not-be-used'], analysis_func=fake_analysis)
+                    group_id = manager.start_group(
+                        ['douyin'], 'fixture', 'fixture details', 'zh', 1, 0, '1:1', '3:4', '1K')
+                    self.assertEqual(store.list_items(group_id)[0]['status'], 'failed')
+                    self.assertEqual(len(server.calls), 2, 'Each explicit operation sends only one request')
 
     def test_url_delivery_converts_jpeg_and_webp_to_png(self):
         for fmt in ('JPEG', 'WEBP'):

@@ -375,27 +375,38 @@ class EcommerceImageManager:
 
     def _execute(self, group_id, items, cancel_event):
         group = self._group(dict(group_id=group_id, status='generating', error=''))
+        error = ''
         try:
-            Path(group['output_dir']).mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            error = self._clean(f'输出目录不可用：{exc}')
+            try:
+                Path(group['output_dir']).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                error = self._clean(f'输出目录不可用：{exc}')
+                raise
+            with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix='ecommerce-image') as pool:
+                futures = [pool.submit(self._generate, group, item, cancel_event) for item in items]
+                for future in futures:
+                    future.result()
+        except Exception as exc:
+            error = error or self._clean(f'图片任务执行失败：{exc}')
             self._log(error, 'error')
-            self._group(dict(group_id=group_id, status='failed', error=error,
-                             totals=dict(self.store.item_counts(group_id),
-                                         total=len(self.store.list_items(group_id)))))
-            return
-        with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix='ecommerce-image') as pool:
-            futures = [pool.submit(self._generate, group, item, cancel_event) for item in items]
-            for future in futures:
-                future.result()
-        self._finalize(group_id)
+        # The pool has stopped before settling leftovers. Never issue another
+        # request for a worker that failed after a potentially billed response.
+        cancelled = cancel_event is not None and cancel_event.is_set()
+        for item in self.store.list_items(group_id):
+            if item['status'] in ('pending', 'running'):
+                status = 'skipped' if cancelled or item['status'] == 'pending' else 'failed'
+                message = error or ('已取消，未发起图片请求' if cancelled else '图片任务未完成')
+                self._item(dict(item, status=status, error=message))
+        self._finalize(group_id, error=error)
 
-    def _finalize(self, group_id):
+    def _finalize(self, group_id, *, error=''):
         group = self.store.get_group(group_id)
         items = self.store.list_items(group_id)
         counts = self.store.item_counts(group_id)
         total = len(items)
-        if total and counts['succeeded'] == total:
+        if error:
+            status = 'failed'
+        elif total and counts['succeeded'] == total:
             status = 'succeeded'
         elif counts['succeeded']:
             status = 'partial'
@@ -429,12 +440,13 @@ class EcommerceImageManager:
                         status=i['status'], warnings=i['warnings'], error=i['error'])
                    for i in items])
         manifest = self._safe_copy(manifest)
-        error = ''
+        if error:
+            manifest['error'] = error
         try:
             _atomic_write(Path(group['output_dir']) / 'manifest.json',
                           (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
         except OSError as exc:
-            status, error = 'failed', self._clean(f'输出清单写入失败：{exc}')
+            status, error = 'failed', error or self._clean(f'输出清单写入失败：{exc}')
             manifest.update(status=status, error=error)
             self._log(error, 'error')
         return self._group(dict(group_id=group_id, status=status, totals=manifest['totals'],

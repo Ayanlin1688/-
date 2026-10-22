@@ -234,7 +234,9 @@ def _image_format(content):
 def _to_png(content, image_format, redact):
     image = QImage.fromData(content)
     if image.isNull():
-        raise EcommerceImageError('图片生成响应的图片数据无法解码', 200, redact=redact)
+        prefix = content[:8].hex(' ').upper()
+        raise EcommerceImageError(
+            f'图片生成响应不是受支持的图片格式（前 8 字节：{prefix}）', 200, redact=redact)
     output = QByteArray()
     buffer = QBuffer(output)
     if not buffer.open(QIODevice.WriteOnly):
@@ -292,16 +294,22 @@ def _decode_image(response, redact):
     data = payload.get('data') if isinstance(payload, dict) else None
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         raise invalid('图片生成响应缺少有效的 data 数组')
-    encoded = data[0].get('b64_json')
+    encoded = data[0].get('b64_json') if 'b64_json' in data[0] else data[0].get('b64')
     warnings = []
     delivery = 'b64'
     if isinstance(encoded, str) and encoded.strip():
+        encoded = encoded.strip()
+        if encoded.startswith('data:') and ',' in encoded:
+            encoded = encoded.split(',', 1)[1]
         try:
-            png_bytes = base64.b64decode(encoded, validate=True)
+            content = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error):
             raise invalid('图片生成响应的 b64_json 不是合法 Base64') from None
-        if not png_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
-            raise invalid('图片生成响应不是 PNG 图片（魔数错误）')
+        image_format = _image_format(content)
+        if image_format == 'PNG':
+            png_bytes = content
+        else:
+            png_bytes, warnings = _to_png(content, image_format or '未知格式', redact)
     else:
         image_url = data[0].get('url')
         if not isinstance(image_url, str) or not image_url.strip():
