@@ -8,6 +8,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import requests
+
 from core.ecommerce import analysis
 from core.ecommerce.analysis import (
     DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse,
@@ -362,14 +364,17 @@ class AnalysisStreamTests(unittest.TestCase):
 
     def test_malformed_frames_and_stream_error_are_domain_errors(self):
         payloads = (
-            b'data: not JSON\n\n',
-            sse_frame([]).encode('utf-8'),
-            sse_frame({'choices': 'bad'}).encode('utf-8'),
-            sse_frame({'choices': [None]}).encode('utf-8'),
-            sse_frame({'choices': [{'delta': {'content': []}}]}).encode('utf-8'),
-            sse_frame({'error': {'message': 'channel failed ' + FIXTURE_KEY}}).encode('utf-8'),
+            (b'data: not JSON\n\n', '帧不是合法 JSON'),
+            (sse_frame([]).encode('utf-8'), '帧格式错误：期望 JSON 对象'),
+            (sse_frame({'choices': 'bad'}).encode('utf-8'), 'choices 格式错误：期望数组'),
+            (sse_frame({'choices': [None]}).encode('utf-8'), 'delta 格式错误：期望对象'),
+            (sse_frame({'choices': [{'delta': {'content': []}}]}).encode('utf-8'),
+             'content 格式错误：期望字符串'),
+            (sse_frame({'choices': [{'delta': {'reasoning_content': []}}]}).encode('utf-8'),
+             'reasoning_content 格式错误：期望字符串'),
+            (sse_frame({'error': {'message': 'channel failed ' + FIXTURE_KEY}}).encode('utf-8'), None),
         )
-        for payload in payloads:
+        for payload, protocol_message in payloads:
             with self.subTest(payload=payload):
                 with LocalAnalysisServer(payload) as server:
                     with self.assertRaises(EcommerceAnalysisError) as caught:
@@ -378,6 +383,13 @@ class AnalysisStreamTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 200)
                 self.assertNotIn(FIXTURE_KEY, str(caught.exception))
                 self.assertNotIn(FIXTURE_KEY, caught.exception.body_excerpt)
+                self.assertFalse(caught.exception.retryable)
+                self.assertFalse(caught.exception.switchable)
+                self.assertNotIn('无法连接到中转站', caught.exception.message)
+                if protocol_message is not None:
+                    self.assertEqual(caught.exception.category, 'analysis_error')
+                    self.assertIn(protocol_message, caught.exception.message)
+                    self.assertEqual(caught.exception.user_message, caught.exception.message)
 
     def test_truncated_http_body_is_wrapped_without_replay(self):
         with LocalAnalysisServer(b'data: ', mode='truncated') as server:
@@ -401,6 +413,21 @@ class AnalysisStreamTests(unittest.TestCase):
                 analyze_stream(base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 1))
         self.assertIsNone(caught.exception.status_code)
         self.assertNotIn(FIXTURE_KEY, str(caught.exception))
+        self.assertEqual(caught.exception.category, 'connection')
+        self.assertTrue(caught.exception.retryable)
+        self.assertTrue(caught.exception.switchable)
+
+    def test_connect_timeout_remains_an_explicit_connection_error(self):
+        with patch.object(HttpClient, 'request', side_effect=requests.exceptions.ConnectTimeout('fixture timeout')) as request:
+            with self.assertRaises(EcommerceAnalysisError) as caught:
+                analyze_stream('http://127.0.0.1:1/v1', FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
+        request.assert_called_once()
+        error = caught.exception
+        self.assertIsNone(error.status_code)
+        self.assertEqual(error.category, 'connection')
+        self.assertTrue(error.retryable)
+        self.assertTrue(error.switchable)
+        self.assertIn('连接中转站超时', error.message)
 
     def test_wrapper_propagates_parser_errors(self):
         with LocalAnalysisServer(replay_sse('[]')) as server:
@@ -414,6 +441,10 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertEqual(str(error), '失败')
         self.assertIsNone(error.status_code)
         self.assertEqual(error.body_excerpt, '文' * 500)
+        self.assertEqual(error.category, 'analysis_error')
+        self.assertEqual(error.user_message, '失败')
+        self.assertFalse(error.retryable)
+        self.assertFalse(error.switchable)
         source = Path(analysis.__file__).read_text(encoding='utf-8')
         self.assertNotIn('sk' + '-', source)
         self.assertIsNone(re.search(r'https?://', source))
@@ -464,6 +495,27 @@ class GeminiAnalysisTests(unittest.TestCase):
         self.assertNotIn(FIXTURE_KEY, error.message + error.body_excerpt)
         self.assertNotIn('{', error.message)
         self.assertEqual(len(server.calls), 1)
+
+    def test_gemini_protocol_errors_preserve_description_and_never_retry(self):
+        for frame, message in (
+                ({'candidates': 'bad'}, 'candidates 格式错误：期望数组'),
+                ({'candidates': [{'content': {'parts': 'bad'}}]}, 'parts 格式错误：期望数组'),
+                ({'candidates': [{'content': {'parts': [{'text': []}]}}]},
+                 'text 格式错误：期望字符串')):
+            with self.subTest(frame=frame):
+                with LocalAnalysisServer(sse_frame(frame).encode('utf-8')) as server:
+                    with self.assertRaises(EcommerceAnalysisError) as caught:
+                        analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
+                                       'gemini', 's', 'u')
+                error = caught.exception
+                self.assertEqual(error.status_code, 200)
+                self.assertEqual(error.category, 'analysis_error')
+                self.assertFalse(error.retryable)
+                self.assertFalse(error.switchable)
+                self.assertIn(message, error.message)
+                self.assertEqual(error.user_message, error.message)
+                self.assertNotIn('无法连接到中转站', error.message)
+                self.assertEqual(len(server.calls), 1)
 
     def test_gemini_401_is_classified_and_not_retried(self):
         with LocalAnalysisServer(b'{"error":{"code":401,"message":"UNAUTHENTICATED"}}', status=401) as server:

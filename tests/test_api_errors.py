@@ -9,14 +9,43 @@ from core.api_errors import classify_http_error, classify_connection_error
 class ApiErrorTests(unittest.TestCase):
     def test_multilingual_content_rejections_never_retry_or_switch(self):
         for code in (400, 422):
-            for word in ('nudity', 'nude', 'desnudez', 'sexual', 'erotic', 'erótico',
-                         'sexualidad', 'safety', 'content policy', 'policy',
-                         'invalid_request_error', 'upstream_text_reply', '敏感', '审核', '违规', '色情'):
+            for word in ('nudity', 'nude', 'nsfw', 'desnudez', 'desnud', 'sexual',
+                         'erotic', 'erótico', 'sexualidad', 'adult', 'safety',
+                         'content policy', 'content-policy', 'content_policy',
+                         'content filter', 'content_filter', 'upstream_text_reply',
+                         '敏感', '审核', '违规', '色情'):
                 with self.subTest(code=code, word=word):
                     result = classify_http_error(code, json.dumps({'error': {'message': word}}, ensure_ascii=False))
                     self.assertEqual(result, dict(
                         message='内容被上游安全审核拒绝，请修改提示词或参考图后重新生成',
                         category='content_policy', retryable=False, switchable=False))
+
+    def test_parameter_rejections_are_generic_non_retryable_errors(self):
+        for code in (400, 422):
+            for message in ('Unknown parameter: response_format', 'unsupported size 4096x7282',
+                            'upstream_error: unsupported response_format',
+                            'service unavailable for requested size'):
+                with self.subTest(code=code, message=message):
+                    body = json.dumps({'error': {'type': 'invalid_request_error', 'message': message}})
+                    result = classify_http_error(code, body)
+                    self.assertEqual(result, dict(message=f'HTTP {code}：{message}',
+                                                  category='http', retryable=False, switchable=False))
+                    self.assertNotIn('安全审核', result['message'])
+        self.assertEqual(classify_http_error(400, '{"error":{"type":"invalid_request_error"}}'),
+                         dict(message='HTTP 400：上游请求被拒绝，请检查线路与参数',
+                              category='http', retryable=False, switchable=False))
+
+    def test_only_explicit_policy_signals_are_content_rejections(self):
+        for message, category in (('content policy violation', 'content_policy'),
+                                  ('billing policy does not support this parameter', 'http')):
+            with self.subTest(message=message):
+                result = classify_http_error(400, json.dumps({'error': {'message': message}}))
+                self.assertEqual(result['category'], category)
+                self.assertFalse(result['retryable'])
+                self.assertFalse(result['switchable'])
+        body = json.dumps({'error': {'type': 'invalid_request_error',
+                                    'code': 'upstream_text_reply', 'message': 'desnudez erótico'}})
+        self.assertEqual(classify_http_error(400, body)['category'], 'content_policy')
 
     def test_auth_model_rate_limit_and_upstream_categories(self):
         for code, body, category, retry, switch in (

@@ -492,6 +492,41 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(len(server.calls), 1)
 
+    def test_typed_response_format_rejection_retries_without_parameter(self):
+        def responder(call, count):
+            if count == 1:
+                return 400, {'error': {'type': 'invalid_request_error',
+                                       'message': 'Unknown parameter: response_format'}}
+            return 200, image_payload()
+
+        with LocalImageServer(responder=responder) as server:
+            result = self.generate(server)
+        payloads = [json.loads(call['body']) for call in server.calls]
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0].pop('response_format'), 'b64_json')
+        self.assertNotIn('response_format', payloads[1])
+        self.assertEqual(payloads[0], payloads[1])
+        self.assertEqual(result.png_bytes, PNG_BYTES)
+        self.assertTrue(any('移除参数重试' in text for text in result.warnings))
+        self.assertNotIn('安全审核', '\n'.join(result.warnings))
+
+    def test_typed_size_rejection_falls_back_to_next_candidate(self):
+        def responder(call, count):
+            if count == 1:
+                return 400, {'error': {'type': 'invalid_request_error',
+                                       'message': 'unsupported size 4096x7282'}}
+            return 200, image_payload()
+
+        with LocalImageServer(responder=responder) as server:
+            result = self.generate(server, ratio='9:16', tier='4K')
+        payloads = [json.loads(call['body']) for call in server.calls]
+        self.assertEqual([payload['size'] for payload in payloads], ['4096x7282', '4096x6144'])
+        self.assertTrue(all(payload['response_format'] == 'b64_json' for payload in payloads))
+        self.assertEqual(result.png_bytes, PNG_BYTES)
+        self.assertEqual(result.size, '4096x6144')
+        self.assertEqual(result.tier_used, '4K')
+        self.assertNotIn('安全审核', '\n'.join(result.warnings))
+
     def test_multilingual_policy_rejection_is_chinese_and_never_switchable(self):
         from core.ecommerce.manager import EcommerceImageManager
         for status, body in ((400, '{"error":{"type":"invalid_request_error","code":"upstream_text_reply","message":"desnudez erótico size response_format unsupported"}}'),

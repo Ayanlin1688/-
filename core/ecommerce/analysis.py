@@ -21,9 +21,12 @@ class EcommerceAnalysisError(Exception):
         self.message = str(message)
         self.status_code = status_code
         self.body_excerpt = str(body_excerpt)[:500]
-        classification = (classify_connection_error(message) if status_code is None else
-                          classify_http_error(status_code, body_excerpt or self.message))
         accepted = status_code is not None and 200 <= status_code < 300
+        if status_code is None or accepted:
+            classification = dict(message=self.message, category='analysis_error',
+                                  retryable=False, switchable=False)
+        else:
+            classification = classify_http_error(status_code, body_excerpt or self.message)
         self.category = category or classification['category']
         self.user_message = self.message if category is not None else classification['message']
         self.retryable = not accepted and (classification['retryable'] if retryable is None else retryable)
@@ -57,9 +60,10 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
             frame = json.loads(data)
         except ValueError:
             raise EcommerceAnalysisError(
-                'AI 流式响应帧不是合法 JSON', body_excerpt=redact(data)) from None
+                'AI 流式响应帧不是合法 JSON', response.status_code,
+                body_excerpt=redact(data)) from None
         if not isinstance(frame, dict):
-            raise EcommerceAnalysisError('AI 流式响应帧格式错误：期望 JSON 对象')
+            raise EcommerceAnalysisError('AI 流式响应帧格式错误：期望 JSON 对象', response.status_code)
         if frame.get('error'):
             error = frame['error']
             code = error.get('code') if isinstance(error, dict) else None
@@ -77,18 +81,18 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
         if gemini:
             candidates = frame.get('candidates') or []
             if not isinstance(candidates, list):
-                raise EcommerceAnalysisError('AI 流式响应 candidates 格式错误：期望数组')
+                raise EcommerceAnalysisError('AI 流式响应 candidates 格式错误：期望数组', response.status_code)
             candidate = candidates[0] if candidates else {}
             content = candidate.get('content', {}) if isinstance(candidate, dict) else {}
             parts = content.get('parts', []) if isinstance(content, dict) else []
             if not isinstance(parts, list):
-                raise EcommerceAnalysisError('AI 流式响应 parts 格式错误：期望数组')
+                raise EcommerceAnalysisError('AI 流式响应 parts 格式错误：期望数组', response.status_code)
             for part in parts:
                 value = part.get('text') if isinstance(part, dict) else None
                 if value is None:
                     continue
                 if not isinstance(value, str):
-                    raise EcommerceAnalysisError('AI 流式响应 text 格式错误：期望字符串')
+                    raise EcommerceAnalysisError('AI 流式响应 text 格式错误：期望字符串', response.status_code)
                 content_parts.append(value)
                 if on_content is not None:
                     on_content(value)
@@ -98,11 +102,11 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
             # The final usage-only event has choices=[].
             continue
         if not isinstance(choices, list):
-            raise EcommerceAnalysisError('AI 流式响应 choices 格式错误：期望数组')
+            raise EcommerceAnalysisError('AI 流式响应 choices 格式错误：期望数组', response.status_code)
         for choice in choices:
             delta = choice.get('delta') if isinstance(choice, dict) else None
             if not isinstance(delta, dict):
-                raise EcommerceAnalysisError('AI 流式响应 delta 格式错误：期望对象')
+                raise EcommerceAnalysisError('AI 流式响应 delta 格式错误：期望对象', response.status_code)
             for field, parts, callback in (
                 ('content', content_parts, on_content),
                 ('reasoning_content', reasoning_parts, on_reasoning),
@@ -111,7 +115,8 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
                 if value is None or value == '':
                     continue
                 if not isinstance(value, str):
-                    raise EcommerceAnalysisError(f'AI 流式响应 {field} 格式错误：期望字符串')
+                    raise EcommerceAnalysisError(
+                        f'AI 流式响应 {field} 格式错误：期望字符串', response.status_code)
                 parts.append(value)
                 if callback is not None:
                     callback(value)

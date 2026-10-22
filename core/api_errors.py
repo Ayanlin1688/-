@@ -22,8 +22,9 @@ def classify_http_error(status_code, body_text, *, kind='chat'):
         return dict(message=message, category=category, retryable=retryable, switchable=switchable)
 
     if status_code in (400, 422) and any(word in text for word in (
-            'nudity', 'nude', 'desnudez', 'sexual', 'erotic', 'erótico', 'sexualidad',
-            'safety', 'content policy', 'policy', 'invalid_request_error',
+            'nudity', 'nude', 'nsfw', 'desnudez', 'desnud', 'sexual', 'erotic',
+            'erótico', 'sexualidad', 'adult', 'safety', 'content policy',
+            'content-policy', 'content_policy', 'content filter', 'content_filter',
             'upstream_text_reply', '敏感', '审核', '违规', '色情')):
         return result('内容被上游安全审核拒绝，请修改提示词或参考图后重新生成', 'content_policy')
     if status_code in (401, 403):
@@ -33,8 +34,9 @@ def classify_http_error(status_code, body_text, *, kind='chat'):
         return result('模型不存在或未在该中转站开通', 'model_not_found', switchable=True)
     if status_code == 429:
         return result('上游限流（429），请稍后重试或更换模型', 'rate_limit', True, True)
-    if status_code in (500, 502, 503, 504) or any(word in text for word in (
-            'overloaded', 'upstream_error', 'temporarily unavailable', 'service unavailable')):
+    if status_code in (500, 502, 503, 504) or (status_code not in (400, 422) and any(
+            word in text for word in (
+                'overloaded', 'upstream_error', 'temporarily unavailable', 'service unavailable'))):
         return result('上游服务暂时不可用，请稍后重试或更换模型', 'upstream', True, True)
     upstream = ''
     try:

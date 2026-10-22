@@ -308,7 +308,8 @@ class EcommerceManagerTests(unittest.TestCase):
         def fail_connection_once(*args, **kwargs):
             analysis_models.append(args[2])
             if len(analysis_models) == 1:
-                raise EcommerceAnalysisError('connection failed')
+                raise EcommerceAnalysisError('无法连接到中转站，请检查网络、代理或 API 地址',
+                                             category='connection', retryable=True, switchable=True)
             return fake_analysis(*args, **kwargs)
 
         self.analysis.side_effect = fail_connection_once
@@ -317,6 +318,32 @@ class EcommerceManagerTests(unittest.TestCase):
         group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
         self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
         self.assertEqual(analysis_models, ['chosen-analysis', 'chosen-analysis'])
+
+    def test_analysis_protocol_error_never_retries_or_switches(self):
+        message = 'AI 流式响应帧不是合法 JSON'
+        for status in (200, None):
+            with self.subTest(status=status):
+                self.analysis.reset_mock()
+                self.wait_mock.reset_mock()
+                self.logs.clear()
+                self.analysis.side_effect = EcommerceAnalysisError(message, status)
+                manager = self.make_manager(analysis_model='primary', analysis_model_candidates=['fallback'])
+                with self.assertRaises(EcommerceAnalysisError) as caught:
+                    manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+                self.assertEqual(self.analysis.call_count, 1)
+                self.assertEqual(self.analysis.call_args.args[2], 'primary')
+                self.wait_mock.assert_not_called()
+                self.image.assert_not_called()
+                self.assertFalse(any('切换 fallback' in text for text, _ in self.logs))
+                group = self.groups[-1]
+                self.assertEqual(group['status'], 'failed')
+                self.assertEqual(self.store.get_group(group['group_id'])['status'], 'failed')
+                self.assertIn(message, group['error'])
+                self.assertNotIn('无法连接到中转站', group['error'])
+                self.assertIn(message, caught.exception.message)
+                self.assertNotIn('无法连接到中转站', caught.exception.message)
+                self.assertFalse(caught.exception.retryable)
+                self.assertFalse(caught.exception.switchable)
 
     def test_image_retries_503_and_persists_the_model_that_succeeded(self):
         self.image.side_effect = [EcommerceImageError('HTTP 503: unavailable', 503), fake_image]
