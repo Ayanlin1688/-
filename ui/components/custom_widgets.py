@@ -7,11 +7,12 @@ throughout to keep every Fluent widget on one Qt binding.
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFontDatabase, QColor, QPainter, QPen
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtGui import QFont, QFontDatabase, QColor, QPainter, QPen
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, CardWidget, ComboBox, ElevatedCardWidget,
     FluentIcon, HyperlinkButton, LineEdit, PrimaryPushButton, ProgressBar,
@@ -21,23 +22,49 @@ from qfluentwidgets import (
 from ..materials import paint_surface
 
 _font_loaded = False
+_font_result = ([], False, '')
 
 
-def ensure_ui_font() -> list[str]:
-    """Register a CJK-capable font when Qt cannot enumerate Windows fonts."""
-    global _font_loaded
-    if _font_loaded:
-        return ["Microsoft YaHei", "Microsoft YaHei UI"]
-
-    windows_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))
-    font_path = windows_dir / "Fonts" / "msyh.ttc"
-    if not font_path.is_file():
-        return []
-
-    font_id = QFontDatabase.addApplicationFont(str(font_path))
-    families = QFontDatabase.applicationFontFamilies(font_id)
-    _font_loaded = font_id >= 0
-    return families
+def ensure_ui_font() -> tuple[list[str], bool, str]:
+    """Select a CJK font without resetting an already scaled application size."""
+    global _font_loaded, _font_result
+    app = QApplication.instance()
+    if app is None:
+        return [], False, ''
+    if not _font_loaded:
+        preferred, source = '', ''
+        windows_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+        for name in ('msyh.ttc', 'msyhbd.ttc', 'msyhl.ttc', 'simhei.ttf', 'simsun.ttc', 'msjh.ttc'):
+            font_path = windows_dir / 'Fonts' / name
+            if not font_path.is_file():
+                continue
+            font_id = QFontDatabase.addApplicationFont(str(font_path))
+            families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+            if families:
+                preferred, source = families[0], str(font_path)
+                break
+        if not preferred:
+            preferred = next((family for family in QFontDatabase().families()
+                              if any(name in family.lower() for name in
+                                     ('yahei', 'jhenghei', 'simhei', 'simsun', 'noto sans cjk'))), '')
+        families = list(dict.fromkeys([preferred, 'Microsoft YaHei UI', 'Microsoft YaHei',
+                                      'Microsoft JhengHei UI', 'SimHei', 'Segoe UI', 'sans-serif'])) if preferred else []
+        _font_result = families, bool(source), source
+        _font_loaded = True
+        if not families:
+            logging.getLogger(__name__).warning('No CJK UI font found; keeping the system font')
+    families, registered, source = _font_result
+    if families:
+        font = QFont(app.font())
+        if hasattr(font, 'setFamilies'):
+            font.setFamilies(families)
+        else:
+            font.setFamily(families[0])
+            font.setStyleHint(QFont.AnyStyle)
+        font.setStyleStrategy(QFont.PreferMatch | QFont.PreferAntialias)
+        if app.font() != font:
+            app.setFont(font)
+    return list(families), registered, source
 
 
 class StudioCard(CardWidget):

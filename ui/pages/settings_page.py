@@ -1,6 +1,6 @@
 """Fluent setting cards backed by the application's JSON config."""
 
-from PyQt5.QtCore import Qt, QPoint, QSize, pyqtSignal, QTime, QSignalBlocker, QTimer
+from PyQt5.QtCore import Qt, QPoint, QSize, QEvent, pyqtSignal, QTime, QSignalBlocker, QTimer
 from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QBoxLayout, QLayout, QProgressBar, QScrollArea, QVBoxLayout, QWidget, QPushButton, QSizePolicy, QStackedWidget
 from ..responsive import CoalescedCall, ContentHeight, WrapLayout
 from ..tokens import px
@@ -8,7 +8,7 @@ from qfluentwidgets import (
     CheckBox, ComboBox, ComboBoxSettingCard, FluentIcon as FIF, LineEdit,
     OptionsConfigItem, OptionsValidator, PushButton, SettingCard, SettingCardGroup,
     SegmentedWidget, SpinBox, SwitchSettingCard, CaptionLabel, TitleLabel,
-    TransparentToolButton, ScrollArea, TimePicker,
+    TransparentToolButton, ScrollArea, TimePicker, InfoBar, InfoBarIcon, InfoBarPosition,
 )
 from ..components.custom_widgets import make_card
 from ..widgets.workspace_surface import label
@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 
 class ResponsiveSettingCard:
     def _prepare_responsive_card(self):
+        self._card_minimum_height = max(64, self.minimumHeight())
         heading = QWidget(self)
         heading_layout = QHBoxLayout(heading)
         heading_layout.setContentsMargins(0, 0, 0, 0)
@@ -49,9 +50,18 @@ class ResponsiveSettingCard:
             else:
                 heading_layout.addItem(item)
         self._heading = heading
-        self.titleLabel.setWordWrap(True)
-        self.contentLabel.setWordWrap(True)
+        self._card_label_texts = {}
+        self._card_label_rendered = {}
+        for text_label in (self.titleLabel, self.contentLabel):
+            text_label.setWordWrap(False)
+            text_label.setMinimumWidth(0)
+            text_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            self.vBoxLayout.setAlignment(text_label, Qt.Alignment())
+            text_label.installEventFilter(self)
+        heading.setMinimumWidth(0)
         heading.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        heading_layout.setStretchFactor(self.vBoxLayout, 1)
+        heading.installEventFilter(self)
         controls = QWidget(self)
         controls_layout = WrapLayout(controls)
         while self.hBoxLayout.count():
@@ -66,18 +76,90 @@ class ResponsiveSettingCard:
         self._card_relayout = CoalescedCall(self, self._fit_responsive_card, 0)
         self._fit_responsive_card()
 
+    def _elide_card_labels(self):
+        for text_label in (self.titleLabel, self.contentLabel):
+            text = text_label.text()
+            if text != self._card_label_rendered.get(text_label):
+                self._card_label_texts[text_label] = text
+            full_text = self._card_label_texts.get(text_label, text)
+            text_label.setToolTip(full_text)
+            width = max(0, text_label.contentsRect().width() - px(2))
+            rendered = text_label.fontMetrics().elidedText(full_text, Qt.ElideRight, width)
+            self._card_label_rendered[text_label] = rendered
+            if text != rendered:
+                text_label.setText(rendered)
+
     def _fit_responsive_card(self):
+        # Retain source strings even after setText() has rendered an ellipsis.
+        for text_label in (self.titleLabel, self.contentLabel):
+            if text_label.text() != self._card_label_rendered.get(text_label):
+                self._card_label_texts[text_label] = text_label.text()
+        empty_heading = not any(text.strip() for text in self._card_label_texts.values())
+        self._heading.setVisible(not empty_heading)
+        if empty_heading:
+            self._heading.setFixedWidth(0)
+        else:
+            self._heading.setMaximumWidth(16777215)
+        self.hBoxLayout.setStretchFactor(self._heading, 0 if empty_heading else 1)
+        self.hBoxLayout.setStretchFactor(self._responsive_controls, 1)
         compact = self.width() < px(680)
         self.hBoxLayout.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
         self.hBoxLayout.setContentsMargins(px(16), px(12), px(16), px(12))
         self.hBoxLayout.setSpacing(px(10))
         width = max(1, self.width() - px(32))
-        if compact:
-            height = (self._heading.layout().totalHeightForWidth(width)
-                      + self._responsive_controls.layout().heightForWidth(width) + px(34))
-        else:
-            height = self.hBoxLayout.totalHeightForWidth(self.width())
-        self.setFixedHeight(max(px(64), height))
+        controls_width = width if compact or empty_heading else max(1, (width - px(10)) // 2)
+        heading_height = 0
+        if not empty_heading:
+            labels = [text_label for text_label in (self.titleLabel, self.contentLabel)
+                      if not text_label.isHidden()]
+            for text_label in labels:
+                line_height = text_label.fontMetrics().lineSpacing() + 2 * text_label.margin()
+                if text_label.minimumHeight() != line_height:
+                    text_label.setMinimumHeight(line_height)
+            heading_height = sum(text_label.minimumHeight() for text_label in labels)
+            heading_height += max(0, len(labels) - 1) * self.vBoxLayout.spacing()
+            if not self.iconLabel.isHidden():
+                heading_height = max(heading_height, self.iconLabel.height())
+        controls_height = self._responsive_controls.layout().heightForWidth(controls_width)
+        body_height = (heading_height + controls_height + (px(10) if heading_height else 0)
+                       if compact else max(heading_height, controls_height))
+        height = max(px(self._card_minimum_height), body_height + px(24) + px(10))
+        if self.height() != height or self.minimumHeight() != height or self.maximumHeight() != height:
+            self.setFixedHeight(height)
+        self.hBoxLayout.invalidate()
+        self.hBoxLayout.activate()
+        self._heading.layout().activate()
+        self.vBoxLayout.activate()
+        self._elide_card_labels()
+
+    def eventFilter(self, watched, event):
+        if hasattr(self, '_card_relayout') and event.type() in (QEvent.LayoutRequest, QEvent.FontChange):
+            self._card_relayout.schedule()
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, '_card_relayout') and event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._card_relayout.schedule()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, '_card_relayout'):
+            self._card_relayout.schedule()
+
+    def setTitle(self, title):
+        super().setTitle(title)
+        if hasattr(self, '_card_relayout'):
+            self._card_label_texts[self.titleLabel] = title
+            self._card_label_rendered.pop(self.titleLabel, None)
+            self._card_relayout.schedule()
+
+    def setContent(self, content):
+        super().setContent(content)
+        if hasattr(self, '_card_relayout'):
+            self._card_label_texts[self.contentLabel] = content
+            self._card_label_rendered.pop(self.contentLabel, None)
+            self._card_relayout.schedule()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -142,6 +224,33 @@ class RepositorySyncSettingCard(SettingSurface, SettingCard):
         super().resizeEvent(event)
         if event.size().width() != event.oldSize().width() and not self._fit_timer.isActive():
             self._fit_timer.start()
+
+
+class _ResultInfoBar(InfoBar):
+    """Wrap probe details within the visible window, including after resizing."""
+    def _adjustText(self):
+        parent = self.parentWidget()
+        width = min(px(680), max(1, parent.width() - 48)) if parent else px(680)
+        self.hBoxLayout.setSizeConstraint(QLayout.SetNoConstraint)
+        self.textLayout.setSizeConstraint(QLayout.SetNoConstraint)
+        self.titleLabel.setWordWrap(False)
+        self.titleLabel.setText(self.title)
+        self.contentLabel.setTextFormat(Qt.PlainText)
+        self.contentLabel.setWordWrap(True)
+        self.contentLabel.setMinimumWidth(0)
+        self.contentLabel.setText(self.content)
+        margins = self.hBoxLayout.contentsMargins()
+        text_margins = self.textLayout.contentsMargins()
+        reserved = (margins.left() + margins.right() + self.iconWidget.sizeHint().width()
+                    + self.closeButton.width() + 12 + text_margins.left() + text_margins.right())
+        text_width = max(1, width - reserved)
+        self.titleLabel.setFixedWidth(text_width)
+        self.contentLabel.setFixedWidth(text_width)
+        self.setFixedWidth(width)
+        self.hBoxLayout.invalidate()
+        height = self.hBoxLayout.totalHeightForWidth(width)
+        self.setFixedHeight(max(height, self.hBoxLayout.minimumSize().height()))
+        self.hBoxLayout.activate()
 
 
 class SettingsPage(QWidget):
@@ -2131,12 +2240,18 @@ class SettingsPage(QWidget):
             failed(error)
 
     def _notice(self, message, success=True, level=None):
-        from qfluentwidgets import InfoBar
         tone = level or ('success' if success else 'error')
         self.log_callback(message, tone)
-        notice = {'success': InfoBar.success, 'warning': InfoBar.warning, 'error': InfoBar.error}.get(
-            tone, InfoBar.error)
-        notice(tr('测试连接'), message, parent=self, duration=4500)
+        return self._show_result_infobar(tr('测试连接'), message, tone)
+
+    def _show_result_infobar(self, title, message, tone):
+        icon = {'success': InfoBarIcon.SUCCESS, 'warning': InfoBarIcon.WARNING,
+                'error': InfoBarIcon.ERROR}.get(tone, InfoBarIcon.ERROR)
+        duration = {'success': 5000, 'warning': 7000, 'error': 9000}.get(tone, 9000)
+        bar = _ResultInfoBar(icon, title, self._redact_probe_error(message), orient=Qt.Vertical,
+                             parent=self.window(), duration=duration, position=InfoBarPosition.TOP)
+        bar.show()
+        return bar
 
     @staticmethod
     def _toggle_secret(field, button):
