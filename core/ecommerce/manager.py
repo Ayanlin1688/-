@@ -18,6 +18,8 @@ from weakref import WeakValueDictionary
 from core.log_redaction import redact_structure, redact_text
 from core.line_routing import resolve_line
 from core.i18n import tr
+from core.api_errors import classify_http_error
+from core.http_client import Cancelled
 from .analysis import DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse, parse_prompt_items
 from .image_client import EcommerceImageError, DEFAULT_IMAGE_MODEL, generate_image, image_dimensions
 from .platforms import _resolve_platforms, detect_conflicts
@@ -127,7 +129,12 @@ class EcommerceImageManager:
         status = getattr(error, 'status_code', None)
         if status is None and getattr(error, 'retry_safe', None) is False:
             return False
-        return status is None or not 200 <= status < 300
+        if status is not None:
+            if 200 <= status < 300:
+                return False
+            return getattr(error, 'switchable', classify_http_error(
+                status, getattr(error, 'body_excerpt', '') or str(error))['switchable'])
+        return getattr(error, 'switchable', True)
 
     @staticmethod
     def _line_host(base_url):
@@ -136,27 +143,53 @@ class EcommerceImageManager:
     def _analysis_candidates(self):
         return self._unique_models([self.analysis_model, *self.analysis_model_candidates])[:2]
 
-    def _run_analysis(self, system, user, carousel_count, detail_count, thinking, log_reasoning):
+    @staticmethod
+    def _wait_analysis_retry(delay, cancel_event):
+        event = cancel_event if cancel_event is not None else threading.Event()
+        for _ in range(int(delay * 10)):
+            if event.wait(0.1):
+                raise Cancelled('已取消 AI 分析')
+
+    def _run_analysis(self, system, user, carousel_count, detail_count, thinking, log_reasoning,
+                      cancel_event=None):
         candidates = self._analysis_candidates()
-        attempted = []
+        attempted, retries = [], 0
         for position, model in enumerate(candidates):
             attempted.append(model)
-            try:
-                raw_items, reasoning = self.analysis_func(
-                    self.analysis_base_url, self.analysis_api_key, model, system, user,
-                    carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
-            except EcommerceAnalysisError as error:
-                if position + 1 < len(candidates) and self._can_switch(error):
-                    next_model = candidates[position + 1]
-                    self._log(tr('分析模型 {old} 不可用（{reason}），切换 {new}').format(
-                        old=model, reason=self._clean(error), new=next_model), 'warning')
-                    continue
-                message = f'分析模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
-                raise EcommerceAnalysisError(message, error.status_code,
-                                             self._clean(error.body_excerpt)) from None
-            except Exception as error:
-                message = f'分析模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
-                raise EcommerceAnalysisError(message) from None
+            failed = False
+            for attempt in range(3):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise Cancelled('已取消 AI 分析')
+                try:
+                    raw_items, reasoning = self.analysis_func(
+                        self.analysis_base_url, self.analysis_api_key, model, system, user,
+                        carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
+                    break
+                except EcommerceAnalysisError as error:
+                    if error.retryable and attempt < 2:
+                        self._wait_analysis_retry(2 ** (attempt + 1), cancel_event)
+                        retries += 1
+                        continue
+                    if position + 1 < len(candidates) and self._can_switch(error) and error.switchable:
+                        next_model = candidates[position + 1]
+                        self._log(tr('分析模型 {old} 不可用（{reason}），切换 {new}').format(
+                            old=model, reason=error.user_message, new=next_model), 'warning')
+                        failed = True
+                        break
+                    reason = (error.user_message if error.status_code is None
+                              or not 200 <= error.status_code < 300 else self._clean(error.message))
+                    message = (f'AI 分析失败：{reason}（已重试 {retries} 次、尝试模型 '
+                               f'{"、".join(attempted)}），请稍后再试或更换文本模型')
+                    raise EcommerceAnalysisError(self._clean(message), error.status_code,
+                                                 self._clean(error.body_excerpt), retryable=False,
+                                                 switchable=False) from None
+                except Cancelled:
+                    raise
+                except Exception:
+                    raise EcommerceAnalysisError('AI 分析失败：分析处理异常，请检查配置或诊断日志',
+                                                 retryable=False, switchable=False) from None
+            if failed:
+                continue
 
             try:
                 items = parse_prompt_items(json.dumps(raw_items, ensure_ascii=False),
@@ -326,9 +359,23 @@ class EcommerceImageManager:
                     self._log('[思考中] ' + str(chunk)[:200], 'info')
 
                 items, _reasoning = self._run_analysis(
-                    system, user, carousel_count, detail_count, thinking, log_reasoning)
+                    system, user, carousel_count, detail_count, thinking, log_reasoning, cancel_event)
+            except Cancelled:
+                # No prompts exist yet. Keep every planned output visibly skipped,
+                # with a manifest, without submitting analysis or image requests.
+                for kind, count, ratio in (('carousel', carousel_count, carousel_ratio),
+                                           ('detail', detail_count, detail_ratio)):
+                    for seq in range(1, count + 1):
+                        self._item(dict(group_id=group_id, kind=kind, seq=seq,
+                                        title='AI 分析已取消，未生成提示词', prompt='',
+                                        reference_paths=references, ratio=ratio, tier=tier,
+                                        model=self.image_model, status='skipped', error='已取消 AI 分析'))
+                self._finalize(group_id)
+                return group_id
             except Exception as error:
-                message = self._clean(f'AI 分析失败：{error}')
+                message = self._clean(str(error))
+                if not message.startswith('AI 分析失败：'):
+                    message = 'AI 分析失败：' + message
                 self._group(dict(group_id=group_id, status='failed', error=message))
                 raise EcommerceAnalysisError(
                     message, getattr(error, 'status_code', None),

@@ -15,6 +15,7 @@ from PyQt5.QtGui import QImage, QImageWriter
 
 from core.ecommerce.platforms import RATIOS
 from core.http_client import HttpClient, RequestError
+from core.api_errors import classify_http_error, classify_connection_error
 
 
 DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst'
@@ -32,7 +33,14 @@ class EcommerceImageError(Exception):
         # Redact before truncation, including credentials crossing the boundary.
         self.body_excerpt = clean(str(body_excerpt))[:500]
         self.failed_before_response = failed_before_response
-        self.retry_safe = retry_safe
+        classification = classify_http_error(status_code, clean(str(body_excerpt)) or self.message, kind='image')
+        self.category = classification['category']
+        self.switchable = classification['switchable'] if status_code is not None else retry_safe is not False
+        self.retry_safe = (classification['retryable']
+                           if retry_safe is None and status_code is not None else retry_safe)
+        if status_code is not None and 200 <= status_code < 300:
+            self.retry_safe = False
+            self.switchable = False
         super().__init__(self.message)
 
 
@@ -378,6 +386,10 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
                     response.content
                     if not 200 <= status_code < 300:
                         excerpt = client.redact(response.text)[:500]
+                        classification = classify_http_error(status_code, client.redact(response.text), kind='image')
+                        if classification['category'] in ('content_policy', 'authentication'):
+                            raise EcommerceImageError(classification['message'], status_code,
+                                                      response.text, redact=client.redact, retry_safe=False)
                         if (not without_format and _is_response_format_rejection(
                                 status_code, response.text)):
                             warnings.append('服务不支持 response_format，已移除参数重试一次')
@@ -390,8 +402,8 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
                                 f'HTTP {status_code}: {excerpt}；尝试下一候选尺寸')
                             break
                         raise EcommerceImageError(
-                            f'HTTP {status_code}: {excerpt}', status_code,
-                            response.text, redact=client.redact)
+                            classification['message'], status_code,
+                            response.text, redact=client.redact, retry_safe=classification['retryable'])
                     png_bytes, revised_prompt, image_tokens, delivery, decode_warnings = _decode_image(
                         response, client.redact)
                 warnings.extend(decode_warnings)
@@ -408,7 +420,7 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
                     image_tokens=image_tokens, warnings=warnings, delivery=delivery)
     except (RequestError, requests.RequestException) as error:
         raise EcommerceImageError(
-            f'图片生成连接或读取失败：{error}', status_code,
+            classify_connection_error(error)['message'], status_code,
             getattr(error, 'body', ''),
             failed_before_response=status_code is None,
             redact=client.redact, retry_safe=getattr(error, 'retry_safe', False)) from None

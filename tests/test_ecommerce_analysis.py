@@ -381,14 +381,14 @@ class AnalysisStreamTests(unittest.TestCase):
 
     def test_truncated_http_body_is_wrapped_without_replay(self):
         with LocalAnalysisServer(b'data: ', mode='truncated') as server:
-            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败') as caught:
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接中转站|无法连接到中转站') as caught:
                 analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '')
             self.assertEqual(len(server.calls), 1)
         self.assertEqual(caught.exception.status_code, 200)
 
     def test_read_timeout_is_wrapped(self):
         with LocalAnalysisServer(b'', mode='timeout') as server:
-            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败'):
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接中转站|无法连接到中转站'):
                 analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 0.05))
             self.assertEqual(len(server.calls), 1)
 
@@ -397,7 +397,7 @@ class AnalysisStreamTests(unittest.TestCase):
         with LocalAnalysisServer(b'') as server:
             base_url = server.base_url
         with self.assertLogs('storyboard', level='ERROR'):
-            with self.assertRaisesRegex(EcommerceAnalysisError, '连接或读取失败') as caught:
+            with self.assertRaisesRegex(EcommerceAnalysisError, '连接中转站|无法连接到中转站') as caught:
                 analyze_stream(base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 1))
         self.assertIsNone(caught.exception.status_code)
         self.assertNotIn(FIXTURE_KEY, str(caught.exception))
@@ -418,6 +418,78 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertNotIn('sk' + '-', source)
         self.assertIsNone(re.search(r'https?://', source))
 
+
+
+class GeminiAnalysisTests(unittest.TestCase):
+    def test_protocol_detection(self):
+        for base in ('https://generativelanguage.googleapis.com/v1beta',
+                     'http://127.0.0.1/v1beta/', 'http://127.0.0.1/v1beta'):
+            self.assertTrue(analysis.is_gemini_native(base))
+        self.assertFalse(analysis.is_gemini_native('https://api.deepseek.com'))
+        self.assertFalse(analysis.is_gemini_native('https://compatible.example/v1'))
+
+    def test_gemini_sse_payload_headers_and_prompt_parsing(self):
+        text = json.dumps(prompt_items(), ensure_ascii=False)
+        frames = ''.join(sse_frame({'candidates': [{'content': {'parts': [{'text': piece}]}},
+                                                  {'content': {'parts': [{'text': 'ignored'}]}}]})
+                         for piece in (text[:40], text[40:]))
+        chunks = []
+        with LocalAnalysisServer(frames.encode('utf-8')) as server:
+            base = server.base_url.replace('/v1', '/v1beta')
+            items, reasoning = analyze_and_parse(base, FIXTURE_KEY, 'gemini-flash', 'system', 'user', 2, 2,
+                                                 on_content=chunks.append)
+        self.assertEqual(items, prompt_items())
+        self.assertEqual(reasoning, '')
+        self.assertEqual(''.join(chunks), text)
+        method, path, headers, payload = server.calls[0]
+        self.assertEqual((method, path), ('POST', '/v1beta/models/gemini-flash:streamGenerateContent?alt=sse'))
+        self.assertEqual(headers['Authorization'], 'Bearer ' + FIXTURE_KEY)
+        self.assertEqual(headers['x-goog-api-key'], FIXTURE_KEY)
+        self.assertEqual(payload, {
+            'systemInstruction': {'parts': [{'text': 'system'}]},
+            'contents': [{'role': 'user', 'parts': [{'text': 'user'}]}],
+            'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'}})
+        self.assertEqual(len(server.calls), 1)
+
+    def test_gemini_error_frame_is_final_after_200(self):
+        frame = sse_frame({'error': {'code': 503, 'message': 'temporarily unavailable ' + FIXTURE_KEY}})
+        with LocalAnalysisServer(frame.encode()) as server:
+            with self.assertRaises(EcommerceAnalysisError) as caught:
+                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
+        error = caught.exception
+        self.assertEqual(error.status_code, 200)
+        self.assertFalse(error.retryable)
+        self.assertFalse(error.switchable)
+        self.assertIn('上游服务暂时不可用', error.message)
+        self.assertNotIn(FIXTURE_KEY, error.message + error.body_excerpt)
+        self.assertNotIn('{', error.message)
+        self.assertEqual(len(server.calls), 1)
+
+    def test_gemini_401_is_classified_and_not_retried(self):
+        with LocalAnalysisServer(b'{"error":{"code":401,"message":"UNAUTHENTICATED"}}', status=401) as server:
+            with self.assertRaises(EcommerceAnalysisError) as caught:
+                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
+        self.assertIn('密钥无效', caught.exception.message)
+        self.assertFalse(caught.exception.retryable)
+        self.assertFalse(caught.exception.switchable)
+        self.assertEqual(len(server.calls), 1)
+
+    def test_error_frames_without_numeric_code_are_chinese_and_final(self):
+        for detail, expected in (({'message': 'channel failed'}, '上游服务暂时不可用'),
+                                 ({'code': 'bad_request', 'type': 'upstream_text_reply',
+                                   'message': 'desnudez'}, '安全审核拒绝')):
+            for path in ('/v1', '/v1beta'):
+                with self.subTest(detail=detail, path=path):
+                    frame = sse_frame({'error': detail})
+                    with LocalAnalysisServer(frame.encode()) as server:
+                        with self.assertRaises(EcommerceAnalysisError) as caught:
+                            analyze_stream(server.base_url.replace('/v1', path), FIXTURE_KEY,
+                                           'fixture-model', 's', 'u')
+                    self.assertIn(expected, caught.exception.message)
+                    self.assertEqual(caught.exception.status_code, 200)
+                    self.assertFalse(caught.exception.retryable)
+                    self.assertFalse(caught.exception.switchable)
+                    self.assertEqual(len(server.calls), 1)
 
 if __name__ == '__main__':
     unittest.main()

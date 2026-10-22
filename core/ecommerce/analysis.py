@@ -9,20 +9,38 @@ from urllib.parse import urlsplit
 import requests
 
 from core.http_client import HttpClient, RequestError
+from core.api_errors import classify_http_error, classify_connection_error
 
 
 DEFAULT_ANALYSIS_MODEL = 'gemini-3.8-flash'
 
 
 class EcommerceAnalysisError(Exception):
-    def __init__(self, message, status_code=None, body_excerpt=''):
+    def __init__(self, message, status_code=None, body_excerpt='', *, category=None,
+                 retryable=None, switchable=None):
         self.message = str(message)
         self.status_code = status_code
         self.body_excerpt = str(body_excerpt)[:500]
+        classification = (classify_connection_error(message) if status_code is None else
+                          classify_http_error(status_code, body_excerpt or self.message))
+        accepted = status_code is not None and 200 <= status_code < 300
+        self.category = category or classification['category']
+        self.user_message = self.message if category is not None else classification['message']
+        self.retryable = not accepted and (classification['retryable'] if retryable is None else retryable)
+        self.switchable = not accepted and (classification['switchable'] if switchable is None else switchable)
         super().__init__(self.message)
 
 
-def _read_sse(response, redact, on_content, on_reasoning):
+def is_gemini_native(base_url):
+    try:
+        parts = urlsplit(str(base_url or '').strip())
+        return (parts.hostname == 'generativelanguage.googleapis.com'
+                or '/v1beta' in parts.path.lower())
+    except ValueError:
+        return False
+
+
+def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
     content_parts, reasoning_parts = [], []
     # SSE is UTF-8 even when the server omits charset in Content-Type.
     response.encoding = 'utf-8'
@@ -43,8 +61,38 @@ def _read_sse(response, redact, on_content, on_reasoning):
         if not isinstance(frame, dict):
             raise EcommerceAnalysisError('AI 流式响应帧格式错误：期望 JSON 对象')
         if frame.get('error'):
+            error = frame['error']
+            code = error.get('code') if isinstance(error, dict) else None
+            if isinstance(code, str) and code.isdecimal():
+                code = int(code)
+            if type(code) is int and 400 <= code < 600:
+                classification = classify_http_error(code, redact(data))
+            else:
+                classification = classify_http_error(400, redact(data))
+                if classification['category'] != 'content_policy':
+                    classification = classify_http_error(500, redact(data))
             raise EcommerceAnalysisError(
-                f'AI 分析返回错误：{redact(data)[:500]}', body_excerpt=redact(data))
+                classification['message'], response.status_code, redact(data),
+                category=classification['category'])
+        if gemini:
+            candidates = frame.get('candidates') or []
+            if not isinstance(candidates, list):
+                raise EcommerceAnalysisError('AI 流式响应 candidates 格式错误：期望数组')
+            candidate = candidates[0] if candidates else {}
+            content = candidate.get('content', {}) if isinstance(candidate, dict) else {}
+            parts = content.get('parts', []) if isinstance(content, dict) else []
+            if not isinstance(parts, list):
+                raise EcommerceAnalysisError('AI 流式响应 parts 格式错误：期望数组')
+            for part in parts:
+                value = part.get('text') if isinstance(part, dict) else None
+                if value is None:
+                    continue
+                if not isinstance(value, str):
+                    raise EcommerceAnalysisError('AI 流式响应 text 格式错误：期望字符串')
+                content_parts.append(value)
+                if on_content is not None:
+                    on_content(value)
+            continue
         choices = frame.get('choices')
         if not choices:
             # The final usage-only event has choices=[].
@@ -100,30 +148,49 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
         payload['temperature'] = 0.7
     if thinking and (request_model.lower().startswith('claude-') or 'thinking' in request_model.lower()):
         payload['thinking'] = {'type': 'enabled', 'budget_tokens': 1024}
+    gemini = is_gemini_native(base_url)
+    url = base_url.strip().rstrip('/') + '/chat/completions'
+    headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
+    if gemini:
+        url = base_url.strip().rstrip('/') + f'/models/{request_model}:streamGenerateContent?alt=sse'
+        headers['x-goog-api-key'] = api_key
+        payload = {
+            'systemInstruction': {'parts': [{'text': system_prompt}]},
+            'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
+            'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'},
+        }
     try:
         with client.request(
-            'POST', base_url.strip().rstrip('/') + '/chat/completions',
+            'POST', url,
             check_status=False, stream=True,
-            headers={'Content-Type': 'application/json', 'Accept': 'text/event-stream'},
+            headers=headers,
             json=payload,
         ) as response:
             status_code = response.status_code
             if not 200 <= status_code < 300:
                 excerpt = client.redact(response.text)[:500]
+                classification = classify_http_error(status_code, client.redact(response.text))
                 raise EcommerceAnalysisError(
-                    f'模型 {client.redact(request_model)} HTTP {status_code}: {excerpt}', status_code, excerpt)
-            return _read_sse(response, client.redact, on_content, on_reasoning)
+                    classification['message'], status_code, excerpt, **{
+                        name: classification[name] for name in ('category', 'retryable', 'switchable')})
+            return _read_sse(response, client.redact, on_content, on_reasoning, gemini=gemini)
     except EcommerceAnalysisError as error:
         message = error.message
         if client.redact(request_model) not in message:
             message = f'模型 {client.redact(request_model)}：{message}'
         response_status = error.status_code if error.status_code is not None else status_code
-        raise EcommerceAnalysisError(message, response_status, client.redact(error.body_excerpt)) from None
+        raise EcommerceAnalysisError(message, response_status, client.redact(error.body_excerpt),
+                                     category=error.category, retryable=error.retryable,
+                                     switchable=error.switchable) from None
     except (RequestError, requests.RequestException) as error:
+        response_status = status_code if status_code is not None else getattr(error, 'status_code', None)
+        classification = (classify_connection_error(error) if response_status is None or 200 <= response_status < 300
+                          else classify_http_error(response_status, client.redact(getattr(error, 'body', ''))))
         raise EcommerceAnalysisError(
-            f'模型 {client.redact(request_model)} AI 分析连接或读取失败：{client.redact(error)}',
-            status_code if status_code is not None else getattr(error, 'status_code', None),
+            f'模型 {client.redact(request_model)}：{classification["message"]}',
+            response_status,
             client.redact(getattr(error, 'body', '')),
+            **{name: classification[name] for name in ('category', 'retryable', 'switchable')},
         ) from None
     finally:
         client.close()

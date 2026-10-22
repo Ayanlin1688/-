@@ -42,6 +42,9 @@ class EcommerceManagerTests(unittest.TestCase):
         network = patch('requests.sessions.Session.request', side_effect=AssertionError('禁止真实联网'))
         network.start()
         self.addCleanup(network.stop)
+        self.retry_wait = patch.object(EcommerceImageManager, '_wait_analysis_retry')
+        self.wait_mock = self.retry_wait.start()
+        self.addCleanup(self.retry_wait.stop)
         self.analysis = Mock(side_effect=fake_analysis)
         self.image = Mock(side_effect=fake_image)
         self.logs, self.groups, self.items = [], [], []
@@ -121,7 +124,7 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(self.manifest(group_id)['items'][0]['delivery'], 'url')
         self.assertFalse(self.manager._can_switch(EcommerceImageError('read failed', 200)))
         self.assertFalse(self.manager._can_switch(EcommerceImageError('redirect response', 201)))
-        self.assertTrue(self.manager._can_switch(EcommerceImageError('rejected', 400)))
+        self.assertFalse(self.manager._can_switch(EcommerceImageError('rejected', 400)))
         self.assertTrue(self.manager._can_switch(EcommerceImageError('connection failed')))
 
     def test_distinct_chat_and_image_lines_thinking_and_redaction(self):
@@ -202,7 +205,7 @@ class EcommerceManagerTests(unittest.TestCase):
         manager = self.build_pool_manager(image_model='current-image')
         self.assertEqual(manager._image_candidates('saved-image'), ['saved-image', 'current-image'])
 
-    def test_analysis_retries_once_after_http_failure_and_logs_model_switch(self):
+    def test_analysis_retries_same_model_after_http_failure(self):
         analysis_models = []
 
         def fail_once(*args, **kwargs):
@@ -216,8 +219,77 @@ class EcommerceManagerTests(unittest.TestCase):
             'enabled': True, 'models': [{'name': 'fallback-analysis', 'enabled': True}]})
         group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
         self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
-        self.assertEqual(analysis_models, ['chosen-analysis', 'fallback-analysis'])
-        self.assertTrue(any('切换 fallback-analysis' in message for message, _level in self.logs))
+        self.assertEqual(analysis_models, ['chosen-analysis', 'chosen-analysis'])
+        self.wait_mock.assert_called_once_with(2, None)
+
+    def test_analysis_503_retries_twice_then_succeeds(self):
+        error = EcommerceAnalysisError('upstream_error', 503)
+        self.analysis.side_effect = [error, error, fake_analysis([], [], [], [], [], 1, 0)]
+        group_id = self.start(carousel_count=1, detail_count=0)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertEqual(self.analysis.call_count, 3)
+        self.assertEqual([call.args[0] for call in self.wait_mock.call_args_list], [2, 4])
+        self.assertEqual(len({call.args[2] for call in self.analysis.call_args_list}), 1)
+
+    def test_analysis_exhausts_same_model_retries_before_switch(self):
+        manager = self.make_manager(analysis_model='primary', analysis_model_candidates=['fallback'])
+        error = EcommerceAnalysisError('upstream_error', 503)
+        self.analysis.side_effect = [error, error, error, fake_analysis([], [], [], [], [], 1, 0)]
+        group_id = manager.start_group(['douyin'], '商品', '信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertEqual([call.args[2] for call in self.analysis.call_args_list],
+                         ['primary', 'primary', 'primary', 'fallback'])
+        self.assertTrue(any('切换 fallback' in message for message, _ in self.logs))
+
+    def test_analysis_policy_and_auth_never_retry_or_switch(self):
+        for status, body in ((400, 'upstream_text_reply nudity'), (422, 'desnudez'),
+                             (401, 'invalid key'), (403, 'forbidden')):
+            with self.subTest(status=status):
+                self.analysis.reset_mock()
+                self.wait_mock.reset_mock()
+                self.analysis.side_effect = EcommerceAnalysisError('raw error', status, body)
+                manager = self.make_manager(analysis_model_candidates=['fallback'])
+                with self.assertRaises(EcommerceAnalysisError):
+                    manager.start_group(['douyin'], '商品', '信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+                self.assertEqual(self.analysis.call_count, 1)
+                self.wait_mock.assert_not_called()
+                self.image.assert_not_called()
+
+    def test_analysis_cancel_interrupts_retry_wait(self):
+        self.retry_wait.stop()
+        event = Mock()
+        event.is_set.return_value = False
+        event.wait.return_value = True
+        self.analysis.side_effect = EcommerceAnalysisError('upstream_error', 503)
+        group_id = self.start(cancel_event=event)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'cancelled')
+        self.assertEqual(self.analysis.call_count, 1)
+        event.wait.assert_called_once_with(0.1)
+        self.image.assert_not_called()
+        self.assertEqual(self.manifest(group_id)['totals']['skipped'], 3)
+
+    def test_analysis_retry_wait_checks_cancel_every_tenth_second(self):
+        self.retry_wait.stop()
+        event = Mock()
+        event.wait.return_value = False
+        EcommerceImageManager._wait_analysis_retry(2, event)
+        self.assertEqual(event.wait.call_count, 20)
+        self.assertTrue(all(call.args == (0.1,) for call in event.wait.call_args_list))
+
+    def test_analysis_final_summary_is_chinese_and_has_no_json(self):
+        manager = self.make_manager(analysis_model='primary', analysis_model_candidates=['fallback'])
+        self.analysis.side_effect = EcommerceAnalysisError(
+            'raw', 503, '{"error":{"message":"Upstream service temporarily unavailable","type":"upstream_error"}}')
+        with self.assertRaises(EcommerceAnalysisError) as caught:
+            manager.start_group(['douyin'], '商品', '信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        message = caught.exception.message
+        self.assertIn('已重试 4 次', message)
+        self.assertIn('primary、fallback', message)
+        self.assertIn('上游服务暂时不可用', message)
+        self.assertNotIn('{', message)
+        self.assertNotIn('upstream_error', message)
+        self.assertEqual(message.count('AI 分析失败：'), 1)
+        self.assertEqual(self.analysis.call_count, 6)
 
     def test_analysis_stream_failure_after_http_200_never_switches(self):
         self.analysis.side_effect = EcommerceAnalysisError('流式中断', 200)
@@ -244,7 +316,7 @@ class EcommerceManagerTests(unittest.TestCase):
             'enabled': True, 'models': [{'name': 'fallback-analysis', 'enabled': True}]})
         group_id = manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
         self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
-        self.assertEqual(analysis_models, ['chosen-analysis', 'fallback-analysis'])
+        self.assertEqual(analysis_models, ['chosen-analysis', 'chosen-analysis'])
 
     def test_image_retries_503_and_persists_the_model_that_succeeded(self):
         self.image.side_effect = [EcommerceImageError('HTTP 503: unavailable', 503), fake_image]
@@ -524,7 +596,7 @@ class EcommerceManagerTests(unittest.TestCase):
         error = caught.exception
         self.assertEqual(error.status_code, 503)
         self.assertNotIn(TEST_KEY, str(error) + error.body_excerpt)
-        self.assertIn('[REDACTED]', str(error))
+        self.assertIn('[REDACTED]', error.body_excerpt)
         group = self.store.list_groups()[0]
         self.assertEqual(group['status'], 'failed')
         self.assertNotIn(TEST_KEY, group['error'])
@@ -592,12 +664,21 @@ class EcommerceManagerTests(unittest.TestCase):
         cancel = threading.Event()
         cancel.set()
         group_id = self.start(cancel_event=cancel)
+        self.analysis.assert_not_called()
         self.image.assert_not_called()
         self.assertEqual(self.store.get_group(group_id)['status'], 'cancelled')
         self.assertEqual(self.manifest(group_id)['totals']['skipped'], 3)
         self.assertEqual({i['status'] for i in self.store.list_items(group_id)}, {'skipped'})
         self.manager.resume_group(group_id)
         self.image.assert_not_called()  # skipped tasks require an explicit regeneration.
+
+    def test_switch_decision_uses_full_classification_before_excerpt_truncation(self):
+        for status, suffix, switchable in ((404, 'model_not_found', True),
+                                           (400, 'upstream_text_reply', False)):
+            with self.subTest(status=status):
+                error = EcommerceImageError('请求失败', status, 'x' * 600 + suffix)
+                self.assertEqual(len(error.body_excerpt), 500)
+                self.assertEqual(self.manager._can_switch(error), switchable)
 
     def test_cancel_during_first_request_skips_tasks_not_started(self):
         cancel = threading.Event()

@@ -33,7 +33,9 @@ class ProbeFixture(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.endswith('/models'):
-            self._send(self.model_status, {'data': self.models})
+            type(self).requests.append(('GET', self.path, dict(self.headers), None))
+            field = 'models' if '/v1beta/' in self.path else 'data'
+            self._send(self.model_status, {field: self.models})
         else:
             self._send(404, {'error': {'message': 'not found'}})
 
@@ -41,7 +43,15 @@ class ProbeFixture(BaseHTTPRequestHandler):
         type(self).upload_calls += 1
         length = int(self.headers.get('Content-Length', '0'))
         body = self.rfile.read(length)
-        if self.path.endswith('/chat/completions'):
+        type(self).requests.append(('POST', self.path, dict(self.headers), json.loads(body) if body.startswith(b'{') else None))
+        if self.path.endswith(':generateContent'):
+            model = self.path.split('/models/', 1)[1].split(':')[0]
+            type(self).chat_calls.append(model)
+            status = type(self).chat_statuses.get(model, 200)
+            payload = ({'candidates': [{'content': {'parts': [{'text': '好的'}]}}]}
+                       if status == 200 else {'error': {'code': status, 'message': 'service unavailable'}})
+            self._send(status, payload)
+        elif self.path.endswith('/chat/completions'):
             payload = json.loads(body)
             type(self).chat_calls.append(payload['model'])
             status = type(self).chat_statuses.get(payload['model'], 200)
@@ -68,6 +78,7 @@ class LineProbeTests(unittest.TestCase):
         cls.thread.join(timeout=2)
 
     def setUp(self):
+        ProbeFixture.requests = []
         ProbeFixture.models = [
             {'id': 'video-v3'}, {'id': 'gemini-3.8-flash'}, {'id': 'gpt-image-2'},
             {'id': 'claude-haiku-4-5-pack'},
@@ -111,7 +122,7 @@ class LineProbeTests(unittest.TestCase):
         result = probe_line(self.base, 'fixture-api-key', 'chat', models=[
             {'id': 'claude-haiku-4-5', 'kind': 'chat'}])
         self.assertFalse(result['ok'])
-        self.assertIn('并发繁忙', result['message'])
+        self.assertIn('上游限流', result['message'])
         self.assertEqual(ProbeFixture.chat_calls, ['claude-haiku-4-5'])
 
     def test_chat_auth_failure_does_not_try_another_model(self):
@@ -152,9 +163,51 @@ class LineProbeTests(unittest.TestCase):
             result = probe_line(self.base, 'fixture-api-key', 'chat', models=[
                 {'id': 'claude-haiku-4-5', 'kind': 'chat'}])
         self.assertFalse(result['ok'])
-        self.assertIn('模型响应超时', result['message'])
+        self.assertIn('连接中转站超时', result['message'])
         self.assertNotIn('fixture-api-key', result['message'])
         self.assertEqual(calls, 2)
+
+    def test_gemini_model_list_and_generate_content_contract(self):
+        ProbeFixture.models = [{'name': 'models/gemini-flash', 'displayName': 'Gemini Flash'}]
+        base = self.base.replace('/v1', '/v1beta')
+        result = probe_line(base, 'fixture-api-key', 'chat')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['model'], 'gemini-flash')
+        self.assertEqual(result['counts'], {'video': 0, 'chat': 1, 'image': 0})
+        self.assertEqual([call[1] for call in ProbeFixture.requests],
+                         ['/v1beta/models', '/v1beta/models/gemini-flash:generateContent'])
+        for _, _, headers, _ in ProbeFixture.requests:
+            self.assertEqual(headers['Authorization'], 'Bearer fixture-api-key')
+            self.assertEqual(headers['x-goog-api-key'], 'fixture-api-key')
+        self.assertEqual(ProbeFixture.requests[-1][3], {
+            'contents': [{'role': 'user', 'parts': [{'text': '只回复两个字：好的'}]}]})
+
+    def test_gemini_http_auth_failure_is_visible_and_final(self):
+        ProbeFixture.models = [{'name': 'models/gemini-flash'}]
+        ProbeFixture.chat_statuses = {'gemini-flash': 401}
+        result = probe_line(self.base.replace('/v1', '/v1beta'), 'fixture-api-key', 'chat')
+        self.assertFalse(result['ok'])
+        self.assertIn('密钥无效', result['message'])
+        self.assertEqual(ProbeFixture.chat_calls, ['gemini-flash'])
+
+    def test_ssl_failure_at_model_list_and_chat_is_one_chinese_message(self):
+        from core.line_probe import HttpClient
+        original = HttpClient.request
+        for at_models in (True, False):
+            with self.subTest(at_models=at_models):
+                calls = []
+                def fail_ssl(client, method, url, **kwargs):
+                    calls.append(url)
+                    if not at_models and url.endswith('/models'):
+                        return original(client, method, url, **kwargs)
+                    raise RequestError('HTTPSConnectionPool Max retries SSLError UNEXPECTED_EOF fixture-api-key')
+                with patch.object(HttpClient, 'request', fail_ssl):
+                    result = probe_line(self.base, 'fixture-api-key', 'chat')
+                self.assertFalse(result['ok'])
+                self.assertIn('SSL 连接被中断', result['message'])
+                self.assertNotIn('HTTPSConnectionPool', result['message'])
+                self.assertNotIn('fixture-api-key', result['message'])
+                self.assertEqual(len(calls), 1 if at_models else 2)
 
     def test_upload_token_misplaced_default_url_and_missing_token_warning(self):
         misplaced = probe_upload({'upload_url': 'vup_fixture-token'})

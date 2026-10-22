@@ -492,6 +492,22 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(len(server.calls), 1)
 
+    def test_multilingual_policy_rejection_is_chinese_and_never_switchable(self):
+        from core.ecommerce.manager import EcommerceImageManager
+        for status, body in ((400, '{"error":{"type":"invalid_request_error","code":"upstream_text_reply","message":"desnudez erótico size response_format unsupported"}}'),
+                             (422, 'safety nudity'), (401, 'invalid credential'), (403, 'forbidden')):
+            with self.subTest(status=status):
+                with LocalImageServer(body, status=status) as server:
+                    with self.assertRaises(EcommerceImageError) as caught:
+                        self.generate(server, ratio='9:16', tier='4K')
+                error = caught.exception
+                self.assertEqual(len(server.calls), 1)
+                self.assertFalse(error.retry_safe)
+                self.assertFalse(EcommerceImageManager._can_switch(error))
+                self.assertNotIn('{', error.message)
+                self.assertIn('安全审核拒绝' if status in (400, 422) else '密钥无效', error.message)
+                self.assertEqual(error.body_excerpt, body[:500])
+
     def test_empty_reference_list_uses_generations_and_wrapper(self):
         with LocalImageServer() as server:
             result = self.generate(server, reference_paths=[])
@@ -782,7 +798,7 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertNotIn(FIXTURE_KEY, str(error))
         self.assertNotIn(FIXTURE_KEY, error.body_excerpt)
         self.assertEqual(error.body_excerpt, 'x' * 495 + '[REDA')
-        self.assertEqual(str(error), 'HTTP 500: ' + error.body_excerpt)
+        self.assertEqual(str(error), '上游服务暂时不可用，请稍后重试或更换模型')
         self.assertEqual(len(error.body_excerpt), 500)
 
     def test_fallback_warnings_redact_server_error_credentials(self):

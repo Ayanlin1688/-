@@ -10,3 +10,10 @@ The user authorizes incremental work on `main` in this project and an automatic 
 - Never commit config.json, API keys, tokens, environment files, generated videos, execution logs, screenshots, or local real-material diagnostic artifacts. Keep .gitignore protections and secret checks intact. Credentials belong in the local config or Git Credential Manager, never in code/remote URLs/chat.
 - If authentication/network blocks a push, retain the local commits, complete independent authorized work, and report the actual blocker. Do not claim remote sync succeeded.
 - Keep the existing PyQt5 + QFluentWidgets stack; do not mix Qt bindings. Tests use isolated configuration and local HTTP fixtures unless the user explicitly requests a live paid generation.
+
+## 兼容性基线
+
+- 所有 UI 与底层改动同时兼容 Windows 10 专业版（1909/22H2）与 Windows 11，禁止使用 Win11 独占 API。
+- 100%/125%/150%/175% 缩放下布局与字体不得重叠。
+- 网络、SSL、代理、字体、文件路径的改动必须有失败兜底与 offscreen 测试覆盖。
+- 面向用户的报错使用中文分类短句，外文原文与原始堆栈仅写入已脱敏的日志或诊断信息。

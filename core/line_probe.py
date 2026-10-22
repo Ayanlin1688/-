@@ -1,6 +1,11 @@
 """Offline-testable connection probes for configured API capabilities."""
 from urllib.parse import urlsplit
 
+import requests
+
+from .api_errors import classify_http_error, classify_connection_error
+from .ecommerce.analysis import is_gemini_native
+
 from .http_client import HttpClient, RequestError
 from .image_uploader import DEFAULT_UPLOAD_URL, ImageUploader
 from .model_catalog import classify_model
@@ -43,6 +48,9 @@ def _response_models(payload):
     if not isinstance(payload, dict):
         return []
     rows = payload.get('data')
+    if rows is None and isinstance(payload.get('models'), list):
+        rows = [dict(row, id=row['name'].rsplit('/', 1)[-1])
+                for row in payload['models'] if isinstance(row, dict) and isinstance(row.get('name'), str)]
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict) and isinstance(row.get('id'), str)]
@@ -83,14 +91,6 @@ def _snapshot_chat_models(models):
     return candidates
 
 
-def _message_from_response(client, response):
-    try:
-        text = client.redact(response.text).strip()
-    except Exception:
-        text = ''
-    return text[:600] or '上游未提供错误详情'
-
-
 def _result(ok, level, message, counts, **extra):
     result = dict(ok=bool(ok), level=level, message=message, counts=dict(counts or {}))
     result.update(extra)
@@ -108,26 +108,22 @@ def probe_line(base_url, api_key, capability, *, models=None):
         return _result(False, 'error', '未填写 API Base URL', counts)
 
     client = HttpClient(key, timeout=(10, 30), log=lambda *_: None)
+    gemini = is_gemini_native(base)
+    headers = {'x-goog-api-key': key} if gemini else {}
+    status = None
+    model = None
     try:
-        try:
-            response = client.request('GET', base + '/models', check_status=False, timeout=(10, 30))
-        except RequestError as error:
-            message = client.redact(error)
-            if 'timed out' in message.casefold() or 'timeout' in message.casefold():
-                message = '模型列表请求超时'
-            return _result(False, 'error', message, counts, status_code=error.status_code)
+        response = client.request('GET', base + '/models', check_status=False,
+                                  timeout=(10, 30), headers=headers)
         try:
             status = response.status_code
-            if status in (401, 403):
-                return _result(False, 'error', '密钥无效或无权访问模型列表', counts, status_code=status)
             if not 200 <= status < 300:
-                return _result(False, 'error', 'HTTP {status}：{message}'.format(
-                    status=status, message=_message_from_response(client, response)),
-                               counts, status_code=status)
+                message = classify_http_error(status, client.redact(response.text))['message']
+                return _result(False, 'error', message, counts, status_code=status)
             try:
                 payload = client.json(response)
-            except RequestError as error:
-                return _result(False, 'error', client.redact(error), counts, status_code=status)
+            except RequestError:
+                return _result(False, 'error', '模型列表响应格式无效，请检查中转站地址', counts, status_code=status)
         finally:
             response.close()
 
@@ -157,42 +153,48 @@ def probe_line(base_url, api_key, capability, *, models=None):
         if not candidates:
             return _result(False, 'error', '模型列表可达，但没有可用的文本模型', counts, status_code=status)
 
-        last_status = None
         last_message = ''
         for model in candidates:
+            status = None
+            url = base + '/chat/completions'
+            payload = {'model': model, 'stream': False, 'max_tokens': 8,
+                       'messages': [{'role': 'user', 'content': _CHAT_PROMPT}]}
+            if gemini:
+                url = base + f'/models/{model}:generateContent'
+                payload = {'contents': [{'role': 'user', 'parts': [{'text': _CHAT_PROMPT}]}]}
+            response = client.request('POST', url, check_status=False, timeout=60,
+                                      headers=headers, json=payload)
             try:
-                response = client.request(
-                    'POST', base + '/chat/completions', check_status=False, timeout=60,
-                    json={'model': model, 'stream': False, 'max_tokens': 8,
-                          'messages': [{'role': 'user', 'content': _CHAT_PROMPT}]})
-            except RequestError as error:
-                last_status = error.status_code
-                last_message = client.redact(error)
-                if 'timed out' in last_message.casefold() or 'timeout' in last_message.casefold():
-                    last_message = '模型响应超时，建议更换模型'
-                    return _result(False, 'error', last_message, counts, status_code=last_status, model=model)
-                if last_status is None:
-                    continue
-                return _result(False, 'error', last_message, counts, status_code=last_status, model=model)
-            try:
-                last_status = response.status_code
-                if last_status in (401, 403):
-                    return _result(False, 'error', '密钥无效或无权调用文本模型', counts,
-                                   status_code=last_status, model=model)
-                if last_status == 429:
-                    return _result(False, 'error', '该模型并发繁忙', counts, status_code=last_status, model=model)
-                if last_status in (404, 503):
-                    last_message = _message_from_response(client, response)
-                    continue
-                if not 200 <= last_status < 300:
-                    last_message = f'HTTP {last_status}：{_message_from_response(client, response)}'
-                    return _result(False, 'error', last_message, counts, status_code=last_status, model=model)
+                status = response.status_code
+                if not 200 <= status < 300:
+                    last_message = classify_http_error(status, client.redact(response.text))['message']
+                    if status in (404, 503):
+                        continue
+                    return _result(False, 'error', last_message, counts, status_code=status, model=model)
+                if gemini:
+                    try:
+                        payload = client.json(response)
+                    except RequestError:
+                        return _result(False, 'error', '文本模型响应格式无效', counts, status_code=status, model=model)
+                    if not isinstance(payload, dict):
+                        return _result(False, 'error', '文本模型响应格式无效', counts, status_code=status, model=model)
+                    if payload.get('error'):
+                        error = payload['error']
+                        code = error.get('code', 500) if isinstance(error, dict) else 500
+                        message = classify_http_error(code, client.redact(response.text))['message']
+                        return _result(False, 'error', message, counts, status_code=status, model=model)
+                    if not payload.get('candidates'):
+                        return _result(False, 'error', '文本模型未返回有效内容', counts, status_code=status, model=model)
                 return _result(True, 'success', f'文本调用成功，命中模型 {model}', counts,
-                               status_code=last_status, model=model)
+                               status_code=status, model=model)
             finally:
                 response.close()
-        message = last_message or '候选文本模型均不可用'
-        return _result(False, 'error', message, counts, status_code=last_status, model=candidates[-1])
+        return _result(False, 'error', last_message or '候选文本模型均不可用', counts,
+                       status_code=status, model=candidates[-1])
+    except (RequestError, requests.RequestException) as error:
+        message = classify_connection_error(error)['message']
+        return _result(False, 'error', message, counts,
+                       status_code=getattr(error, 'status_code', None) or status, model=model)
     finally:
         client.close()
 

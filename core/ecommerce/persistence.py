@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+from weakref import WeakSet
 
 
 GROUP_STATUSES = ('analyzing', 'generating', 'succeeded', 'partial', 'failed', 'cancelled')
@@ -47,6 +48,9 @@ _TABLES = {
 
 
 class EcommerceImageStore:
+    _startup_lock = threading.RLock()
+    _live_stores = WeakSet()
+
     def __init__(self, path=None):
         if path is None:
             from core.config_manager import default_config_path
@@ -81,6 +85,52 @@ class EcommerceImageStore:
                     conn.close()
             except (OSError, sqlite3.Error):
                 pass
+        # UI rebuilds can open a second store while a manager is still running.
+        # Only the first live store for this database performs startup recovery.
+        self._database_key = str(self.path.resolve()).casefold()
+        with self._startup_lock:
+            if not any(store._database_key == self._database_key for store in self._live_stores):
+                self.reconcile_interrupted()
+            self._live_stores.add(self)
+
+    def reconcile_interrupted(self, reason='上次运行未正常结束（程序中断）'):
+        """Atomically settle unfinished work left by an earlier process."""
+        result = {'groups': 0, 'items': 0}
+        with self.lock:
+            if not self.persistence_available:
+                return result
+            try:
+                conn = self._open()
+                try:
+                    with conn:
+                        # Acquire the write lock before selecting the recovery set.
+                        conn.execute('BEGIN IMMEDIATE')
+                        groups = conn.execute(
+                            "SELECT group_id FROM product_image_groups WHERE status IN ('analyzing','generating')"
+                        ).fetchall()
+                        now = time.time()
+                        for (group_id,) in groups:
+                            changed = conn.execute(
+                                "UPDATE product_image_items SET status='skipped',error=?,updated_at=? "
+                                "WHERE group_id=? AND status IN ('pending','running')", (reason, now, group_id))
+                            result['items'] += changed.rowcount
+                            totals = dict.fromkeys(ITEM_STATUSES, 0)
+                            totals.update(dict(conn.execute(
+                                'SELECT status,COUNT(*) FROM product_image_items WHERE group_id=? GROUP BY status',
+                                (group_id,)).fetchall()))
+                            totals['total'] = sum(totals.values())
+                            conn.execute(
+                                "UPDATE product_image_groups SET status='failed',error=?,updated_at=?,totals=? "
+                                'WHERE group_id=?', (reason, now, json.dumps(totals), group_id))
+                        result['groups'] = len(groups)
+                    for table in _TABLES:
+                        self._load_table(conn, table)
+                finally:
+                    conn.close()
+            except (OSError, sqlite3.Error) as error:
+                self._disable(error)
+                return {'groups': 0, 'items': 0}
+        return result
 
     def _open(self):
         conn = sqlite3.connect(str(self.path), timeout=15)
@@ -250,3 +300,5 @@ class EcommerceImageStore:
 
     def close(self):
         """No connection is retained between operations."""
+        with self._startup_lock:
+            self._live_stores.discard(self)

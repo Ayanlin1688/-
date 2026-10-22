@@ -98,12 +98,54 @@ class EcommercePersistenceTests(unittest.TestCase):
             self.assertEqual([i['title'] for i in items], [f'{worker}:{i}' for i in range(1, 21)])
 
     def test_reopen_persists_records(self):
-        self.group()
-        self.store.upsert_item(self.item(reference_paths=['产品.png'], warnings=['测试']))
+        self.group(status='succeeded')
+        self.store.upsert_item(self.item(status='succeeded', reference_paths=['产品.png'], warnings=['测试']))
         self.store.close()
         reopened = EcommerceImageStore(self.path)
         self.assertEqual(reopened.get_group('g'), self.store.get_group('g'))
         self.assertEqual(reopened.list_items('g'), self.store.list_items('g'))
+
+    def test_startup_reconciles_interrupted_groups_and_items_atomically(self):
+        for status in ('analyzing', 'generating'):
+            self.group(status, status=status)
+            self.store.upsert_items_many([
+                dict(group_id=status, kind='carousel', seq=i, status=item_status)
+                for i, item_status in enumerate(('running', 'pending', 'succeeded', 'failed'), 1)])
+        self.group('finished', status='succeeded')
+        self.store.close()
+        reopened = EcommerceImageStore(self.path)
+        self.addCleanup(reopened.close)
+        for group_id in ('analyzing', 'generating'):
+            group = reopened.get_group(group_id)
+            self.assertEqual(group['status'], 'failed')
+            self.assertEqual(group['error'], '上次运行未正常结束（程序中断）')
+            self.assertEqual(group['totals'], dict(pending=0, running=0, succeeded=1, failed=1, skipped=2, total=4))
+            items = reopened.list_items(group_id)
+            self.assertEqual([item['status'] for item in items], ['skipped', 'skipped', 'succeeded', 'failed'])
+            self.assertTrue(all(item['error'] == group['error'] for item in items[:2]))
+        self.assertEqual(reopened.get_group('finished')['status'], 'succeeded')
+        self.assertEqual(reopened.reconcile_interrupted(), {'groups': 0, 'items': 0})
+        reopened.close()
+        again = EcommerceImageStore(self.path)
+        self.assertEqual(again.get_group('generating'), reopened.get_group('generating'))
+        again.close()
+
+    def test_second_live_store_does_not_reconcile_current_work(self):
+        self.group(status='generating')
+        self.store.upsert_item(self.item(status='running'))
+        other = EcommerceImageStore(self.path)
+        self.addCleanup(other.close)
+        self.assertEqual(other.get_group('g')['status'], 'generating')
+        self.assertEqual(other.list_items('g')[0]['status'], 'running')
+
+    def test_explicit_reconcile_returns_counts_and_readonly_store_skips(self):
+        self.group()
+        self.store.upsert_item(self.item())
+        self.assertEqual(self.store.reconcile_interrupted('测试中断'), {'groups': 1, 'items': 1})
+        self.assertEqual(self.store.get_group('g')['error'], '测试中断')
+        self.store.persistence_available = False
+        with patch.object(self.store, '_open', side_effect=AssertionError('must not write')):
+            self.assertEqual(self.store.reconcile_interrupted(), {'groups': 0, 'items': 0})
 
     def test_real_history_store_can_share_database_in_both_creation_orders(self):
         for ecommerce_first in (True, False):
