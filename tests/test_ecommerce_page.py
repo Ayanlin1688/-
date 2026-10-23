@@ -28,6 +28,7 @@ from core.ecommerce.persistence import EcommerceImageStore
 from core.ecommerce.platforms import get_platform
 from core.i18n import set_language
 from tests.test_ecommerce_manager import TEST_KEY, fake_analysis, fake_image as manager_fake_image
+from tests.test_task_manager import wait_until
 from ui import materials
 from ui.tokens import px
 from ui.components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
@@ -112,6 +113,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
             card.resize(280, 760)
             card.show()
             self.app.processEvents()
+            wait_until(lambda: not card.thumbnail._resize_timer.isActive())
 
             initial = card.thumbnail.size()
             self.assertGreater(initial.width(), 0)
@@ -140,6 +142,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
             old_size = card.thumbnail.size()
             card.resize(420, 760)
             self.app.processEvents()
+            wait_until(lambda: not card.thumbnail._resize_timer.isActive())
             self.assertGreater(card.thumbnail.width(), old_size.width())
             self.assertFalse(card.thumbnail.pixmap().isNull())
 
@@ -156,6 +159,8 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
                     for entry in (card, failed):
                         entry.resize(round(280 * scale), round(760 * scale))
                     self.app.processEvents()
+                    wait_until(lambda: all(not entry.thumbnail._resize_timer.isActive()
+                                           for entry in (card, failed)))
                     self.assertEqual(card.thumbnail.size(), failed.thumbnail.size())
                     self.assertAlmostEqual(card.thumbnail.width() / card.thumbnail.height(),
                                            4 / 5, delta=0.04)

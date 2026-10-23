@@ -17,6 +17,7 @@ from ui.components import custom_widgets
 from ui.pages.settings_page import (
     CustomSettingCard, JsonComboBoxSettingCard, SettingsPage, StudioSwitchSettingCard,
 )
+from ui.pages.ecommerce_page import EcommercePage
 from ui.scaling import apply_interface_scale
 from tests.qt_scale_support import flush_layout, reset_interface_scaling
 from tests.test_interface_scaling import FakeScreen
@@ -148,6 +149,58 @@ class SettingsCardLayoutTests(unittest.TestCase):
         flush_layout(self.app, self.root)
         self.assertFalse(card._heading.isHidden())
         self.assertGreater(card._heading.width(), 0)
+
+
+class EcommerceModelGridLayoutTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_model_rows_share_column_geometry_at_supported_scales(self):
+        reset_interface_scaling(self.app)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('requests.sessions.Session.request', side_effect=AssertionError('禁止真实联网')) as network:
+            config = ConfigManager(Path(directory) / 'config.json')
+            page = EcommercePage(config)
+            try:
+                page.show()
+                for scale in ('1.0', '1.25', '1.5', '1.75'):
+                    apply_interface_scale(self.app, FakeScreen(), scale)
+                    for width in (1000, 1400, 1820):
+                        with self.subTest(scale=scale, width=width):
+                            page.resize(width, 1000)
+                            flush_layout(self.app, page)
+                            for first, second in (
+                                    (page.analysis_model_picker, page.image_model_picker),
+                                    (page.analysis_line_combo, page.image_line_combo),
+                                    (page.analysis_line_label, page.image_line_label),
+                                    (page.analysis_status_dot, page.image_status_dot),
+                                    (page.sync_analysis_models_button, page.sync_image_models_button)):
+                                self.assertEqual(first.x(), second.x())
+                                self.assertEqual(first.width(), second.width())
+                            for row in ((page.analysis_model_picker, page.analysis_line_combo,
+                                         page.analysis_line_label, page.analysis_status_dot,
+                                         page.sync_analysis_models_button),
+                                        (page.image_model_picker, page.image_line_combo,
+                                         page.image_line_label, page.image_status_dot,
+                                         page.sync_image_models_button)):
+                                for left, right in zip(row, row[1:]):
+                                    self.assertLess(left.geometry().right(), right.geometry().left())
+                                self.assertLessEqual(row[-1].geometry().right(), row[-1].parentWidget().width())
+                            for widget in (page.analysis_model_picker, page.analysis_line_combo,
+                                           page.analysis_line_label, page.analysis_status_dot,
+                                           page.sync_analysis_models_button, page.image_model_picker,
+                                           page.image_line_combo, page.image_line_label,
+                                           page.image_status_dot, page.sync_image_models_button):
+                                mapped = widget.mapTo(page.body_scroll.viewport(), widget.rect().topLeft())
+                                self.assertGreaterEqual(mapped.x(), 0)
+                                self.assertLessEqual(mapped.x() + widget.width(), page.body_scroll.viewport().width())
+                network.assert_not_called()
+            finally:
+                page.close()
+                page.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+                reset_interface_scaling(self.app)
 
 
 class SettingsResultBarTests(unittest.TestCase):

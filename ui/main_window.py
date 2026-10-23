@@ -6,9 +6,10 @@ import sys
 import os
 import threading
 import time
+import math
 
 from PyQt5.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath
-from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRectF, QEvent, QPointF, QSizeF
+from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRect, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -45,6 +46,9 @@ class MainWindow(FluentWindow):
         super().__init__()
         self._dpi_window_handle = None
         self._dpi_screen = None
+        self._geometry_ready = False
+        self._restoring_geometry = False
+        self._restore_maximized = False
         # 自绘圆角窗口：无边框 + 透明外圈，在 Win10 上也能获得一致的 12px 圆角与高光描边。
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._window_margin = 8
@@ -90,6 +94,7 @@ class MainWindow(FluentWindow):
         self._closing = False
         self._responsive_resize = CoalescedCall(self, self._apply_responsive_window, 40)
         self._material_repaint = CoalescedCall(self, self._repaint_material, 32)
+        self._geometry_save = CoalescedCall(self, self._save_window_geometry, 500)
         self._move_resize_dispatcher = QAbstractEventDispatcher.instance(self.thread())
         if self._move_resize_dispatcher is not None:
             self._move_resize_dispatcher.aboutToBlock.connect(self._recover_drag_on_idle)
@@ -116,6 +121,7 @@ class MainWindow(FluentWindow):
         self.settings_page.api_credentials_changed.connect(self.ecommerce_page.refresh_line_routes)
         self.settings_page.api_credentials_changed.connect(self.ecommerce_page.refresh_model_pickers)
         self.settings_page.base_url.textChanged.connect(self.ecommerce_page.refresh_effective_lines)
+        self.settings_page.api_key.textChanged.connect(self.ecommerce_page.refresh_effective_lines)
         self.ecommerce_page.line_changed.connect(self.settings_page._refresh_routing_options)
         self.settings_page.detection_changed.connect(self.workspace_page.scan_sources)
         self.settings_page.appearance_changed.connect(self.apply_appearance)
@@ -123,10 +129,105 @@ class MainWindow(FluentWindow):
         self.workspace_page.params_card.values_changed.connect(self._workspace_generation_changed)
         QTimer.singleShot(0, self.model_catalog.start)
         QTimer.singleShot(0, self._sync_window_frame)
-        QTimer.singleShot(80, self.apply_appearance)
         QTimer.singleShot(5000, self._check_updates)
         set_notify(self._uncaught_exception)
         self._announce_license()
+        # Apply the saved scale before choosing the first visible geometry.
+        self.apply_appearance()
+        self._restore_window_geometry()
+
+    @staticmethod
+    def _bounded_geometry(rect, available, minimum):
+        """将窗口约束在 Qt 提供的可用工作区内，兼容负坐标多屏。"""
+        width = min(available.width(), max(minimum.width(), rect.width()))
+        height = min(available.height(), max(minimum.height(), rect.height()))
+        x = max(available.left(), min(rect.x(), available.right() - width + 1))
+        y = max(available.top(), min(rect.y(), available.bottom() - height + 1))
+        return QRect(x, y, width, height)
+
+    def _restore_window_geometry(self):
+        """首帧前恢复正常窗口位置；副屏已拔除时回到主屏中央。"""
+        app = QApplication.instance()
+        screens = app.screens()
+        primary = app.primaryScreen()
+        if primary is None:
+            return
+        available = primary.availableGeometry()
+        saved = self.config_manager.config.get('appearance', {}).get('window_geometry')
+        self._restoring_geometry = True
+        try:
+            rect = None
+            if isinstance(saved, dict):
+                try:
+                    values = [saved[key] for key in ('x', 'y', 'w', 'h')]
+                    if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+                        raise ValueError('invalid geometry')
+                    candidate = QRect(*values)
+                    if not candidate.isValid():
+                        raise ValueError('invalid geometry')
+                    candidate.setWidth(max(960, candidate.width()))
+                    candidate.setHeight(max(600, candidate.height()))
+                    matches = [(screen, candidate.intersected(screen.availableGeometry())) for screen in screens]
+                    matches = [(screen, intersection) for screen, intersection in matches
+                               if intersection.width() >= 120 and intersection.height() >= 80]
+                    if matches:
+                        screen, _intersection = max(matches, key=lambda pair: pair[1].width() * pair[1].height())
+                        available = screen.availableGeometry()
+                        rect = self._bounded_geometry(candidate, available, self.minimumSize())
+                        self._restore_maximized = saved.get('maximized') == 1
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+            if rect is None:
+                rect = QRect(0, 0, min(1400, available.width()), min(900, available.height()))
+                rect.moveCenter(available.center())
+                self._restore_maximized = False
+            # A very small remote-desktop work area takes priority over the usual minimum.
+            self.setMinimumSize(min(960, available.width()), min(600, available.height()))
+            self.setGeometry(rect)
+        finally:
+            self._restoring_geometry = False
+            self._geometry_ready = True
+
+    def _save_window_geometry(self):
+        """仅保存正常几何与最大化标记，不记录最小化时的坐标。"""
+        if not self._geometry_ready or self._restoring_geometry or self.isMinimized():
+            return
+        try:
+            maximized = self.isMaximized()
+            rect = self.normalGeometry() if maximized else self.geometry()
+            if not rect.isValid():
+                rect = self.geometry()
+            value = dict(x=int(rect.x()), y=int(rect.y()), w=int(rect.width()), h=int(rect.height()),
+                         maximized=int(maximized))
+            if self.config_manager.config.get('appearance', {}).get('window_geometry') != value:
+                self.config_manager.update(('appearance', 'window_geometry'), value)
+        except Exception:
+            # Geometry persistence must never prevent a normal or forced shutdown.
+            pass
+
+    def _schedule_geometry_save(self):
+        save = getattr(self, '_geometry_save', None)
+        if (save is not None and self._geometry_ready and not self._restoring_geometry
+                and self.isVisible() and not getattr(self, '_closing', False)):
+            save.timer.start()
+
+    def on_interface_scale_committed(self, old_scale, new_scale):
+        """在冻结更新期间围绕窗口中心调整大小，再约束到当前屏幕。"""
+        self._sync_nav_pane(self.navigationInterface.panel.isCollapsed())
+        if (not self.isVisible() or self.isMaximized() or self.isFullScreen()
+                or not all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+                           for value in (old_scale, new_scale)) or old_scale == new_scale):
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        rect = self.geometry()
+        ratio = new_scale / old_scale
+        scaled = QRect(0, 0, round(rect.width() * ratio), round(rect.height() * ratio))
+        scaled.moveCenter(rect.center())
+        self.setMinimumSize(min(960, available.width()), min(600, available.height()))
+        self.setGeometry(self._bounded_geometry(scaled, available, self.minimumSize()))
 
     def _uncaught_exception(self, exc_type, exc, path):
         """未捕获异常：写入口志；主线程内同时提示 UI（子线程只落盘）。"""
@@ -510,6 +611,11 @@ class MainWindow(FluentWindow):
         """按折叠/展开状态同步导航尺寸：折叠 64px 固定栏；展开释放宽度并还原内边距。"""
         from . import tokens as design
         panel = self.navigationInterface.panel
+        nav_height = self.navigationInterface.height()
+        if nav_height > 0 and panel.height() != nav_height:
+            # InterfaceScaler restores captured min/max sizes; the navigation
+            # panel is parent-sized by QFluentWidgets and must track its rail.
+            panel.setFixedHeight(nav_height)
         try:
             if collapsed:
                 panel.setFixedWidth(design.NAV_COLLAPSED_WIDTH)
@@ -780,6 +886,11 @@ class MainWindow(FluentWindow):
         responsive = getattr(self, '_responsive_resize', None)
         if responsive is not None:
             responsive.schedule()
+        self._schedule_geometry_save()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._schedule_geometry_save()
 
     def _apply_responsive_window(self):
         """Keep the full navigation reachable without stealing narrow content width."""
@@ -797,6 +908,9 @@ class MainWindow(FluentWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self._restore_maximized:
+            self._restore_maximized = False
+            self.showMaximized()
         self._connect_screen_signals()
         if hasattr(self, '_material_repaint'):
             self._apply_blur_setting()
@@ -865,6 +979,7 @@ class MainWindow(FluentWindow):
         if event.type() == QEvent.WindowStateChange:
             QTimer.singleShot(0, self._sync_window_frame)
             QTimer.singleShot(0, self._sync_window_state_controls)
+            self._schedule_geometry_save()
         if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange, QEvent.Show):
             # 激活/恢复/显示后补一次重绘：修复“后台期间绘制节流”造成的屏幕残留空白。
             QTimer.singleShot(120, self._integrity_repaint)
@@ -1262,6 +1377,8 @@ class MainWindow(FluentWindow):
             pass
 
     def closeEvent(self, event):
+        self._save_window_geometry()
+        self._geometry_save.timer.stop()
         # Images already submitted may be billable: wait for their result/timeout.
         # Keep this guard separate from the existing workspace shutdown sequence.
         if self.ecommerce_page.busy:
@@ -1311,6 +1428,7 @@ class MainWindow(FluentWindow):
             self._close_timer.stop()
             self.close()
         elif time.monotonic() >= getattr(self, '_close_deadline', float('inf')):
+            self._save_window_geometry()
             self._close_timer.stop()
             self.workspace_page.append_log('后台任务超过安全退出时限，强制退出应用', 'error')
             self.workspace_page.task_manager.force_stop()

@@ -87,7 +87,12 @@ class InterfaceFactorsTests(unittest.TestCase):
 
     def test_manual_out_of_range_values_are_clamped(self):
         self.assertEqual(interface_factors(FakeScreen(), '-2')['z'], 1)
-        self.assertEqual(interface_factors(FakeScreen(), '10')['z'], 1.6)
+        self.assertEqual(interface_factors(FakeScreen(), '10')['z'], 1.75)
+
+    def test_manual_175_percent_is_available_without_changing_auto(self):
+        self.assertIn('1.75', SCALE_CHOICES)
+        self.assertEqual(interface_factors(FakeScreen(), '1.75')['z'], 1.75)
+        self.assertEqual(interface_factors(FakeScreen(96, 3840, 2160))['z'], 1.6)
 
 
 class InterfaceApplicationTests(unittest.TestCase):
@@ -128,6 +133,29 @@ class InterfaceApplicationTests(unittest.TestCase):
     def test_application_font_is_scaled_in_points(self):
         apply_interface_scale(self.app, FakeScreen(192), '1.6')
         self.assertAlmostEqual(self.app.font().pointSizeF(), self.base_font.pointSizeF() * 1.6)
+
+    def test_visible_windows_remain_frozen_until_scale_hook_and_layout_commit(self):
+        observed = []
+        self.root.on_interface_scale_committed = lambda old, new: observed.append(
+            (old, new, self.root.updatesEnabled()))
+        apply_interface_scale(self.app, FakeScreen(), '1.25')
+        self.assertEqual(observed, [(1.0, 1.25, False)])
+        self.assertTrue(self.root.updatesEnabled())
+
+    def test_window_updates_are_restored_if_widget_refresh_raises(self):
+        scaler = self.app._interface_scaler
+        with patch.object(scaler, '_refresh_widget', side_effect=RuntimeError('fixture')):
+            with self.assertRaisesRegex(RuntimeError, 'fixture'):
+                scaler.apply(1.25)
+        self.assertTrue(self.root.updatesEnabled())
+        self.assertFalse(scaler.applying)
+
+    def test_window_updates_are_restored_if_commit_hook_raises(self):
+        self.root.on_interface_scale_committed = lambda *_args: (_ for _ in ()).throw(RuntimeError('hook'))
+        with self.assertRaisesRegex(RuntimeError, 'hook'):
+            apply_interface_scale(self.app, FakeScreen(), '1.25')
+        self.assertTrue(self.root.updatesEnabled())
+        del self.root.on_interface_scale_committed
 
     def test_style_tokens_layout_controls_and_icons_scale_together(self):
         apply_interface_scale(self.app, FakeScreen(), '1.6')
@@ -376,6 +404,14 @@ class InterfaceWindowTests(unittest.TestCase):
         self.assertEqual(ConfigManager(self.path).load_config()['appearance']['ui_scale'], '1.25')
         self.assertEqual(self.window.navigationInterface.panel.minimumWidth(), 80)
 
+    def test_api_key_edit_resets_ecommerce_model_test_status(self):
+        ecommerce = self.window.ecommerce_page
+        ecommerce.analysis_status_dot.set_color('#67c23a')
+        ecommerce.analysis_status_dot.setToolTip('模型测试通过：文本调用成功')
+        self.window.settings_page.api_key.setText('offline-fixture-key')
+        self.assertEqual(ecommerce.analysis_status_dot._color.name(), '#92929b')
+        self.assertEqual(ecommerce.analysis_status_dot.toolTip(), '未测试')
+
     def test_screen_switch_and_dpi_signal_recompute_without_restart(self):
         screen = FakeScreen(96, 3840, 2160)
         self.window._on_screen_changed(screen)
@@ -409,6 +445,10 @@ class InterfaceWindowTests(unittest.TestCase):
         self.assertIn('font-size:28.8px', self.window.settings_page.appearance_group.titleLabel.styleSheet())
 
     def test_expanded_navigation_fits_full_brand_across_pages_and_live_zoom(self):
+        # This test exercises the expanded rail on a genuinely wide workspace.
+        screen = patch.object(self.window, 'screen', return_value=FakeScreen(96, 3840, 2160, 2080))
+        screen.start()
+        self.addCleanup(screen.stop)
         self.window.resize(2200, 1000)
         panel = self.window.navigationInterface.panel
         panel.expandAni.stop()

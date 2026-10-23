@@ -176,16 +176,22 @@ class WrapLayout(QLayout):
         for row in rows:
             widths = [self._item_width(item, width) for item in row]
             remaining = max(0, width - sum(widths) - spacing * (len(row) - 1))
-            flexible = list(range(len(row))) if self.card_width else [index for index, item in enumerate(row)
+            flexible = [index for index, item in enumerate(row)
                          if item.expandingDirections() & Qt.Horizontal or
                          (item.widget() is not None and item.widget().sizePolicy().horizontalPolicy() == QSizePolicy.Ignored)]
-            if self.card_width:
-                widths = [(width - spacing * (len(row) - 1)) // len(row)] * len(row)
-                remaining = width - sum(widths) - spacing * (len(row) - 1)
+            if self.card_width is not None:
+                column_space = max(0, width - spacing * (columns - 1))
+                column_width, remainder = divmod(column_space, columns)
+                widths = [column_width + int(index < remainder) for index in range(len(row))]
+                # Keep unused cells empty in the final row, using the same column grid.
+                flexible = []
             if flexible:
                 for offset, index in enumerate(flexible):
                     widths[index] += remaining // len(flexible) + int(offset < remaining % len(flexible))
-            heights = [item.heightForWidth(item_width) if item.hasHeightForWidth() else item.sizeHint().height()
+            # QWidgetItem can retain a stale height-for-width cache while an
+            # ancestor is hidden. Query the widget directly so hiding a nested
+            # hint also shrinks cards on pages which are not currently shown.
+            heights = [self._item_height(item, item_width)
                        for item, item_width in zip(row, widths)]
             height = max([0] + heights)
             if self.card_width:
@@ -197,6 +203,14 @@ class WrapLayout(QLayout):
                 left += item_width + spacing
             top += height + spacing
         return top - rect.y() - (spacing if rows else 0) + margins.bottom()
+
+    @staticmethod
+    def _item_height(item, width):
+        if not item.hasHeightForWidth():
+            return item.sizeHint().height()
+        widget = item.widget()
+        height = widget.heightForWidth(width) if widget is not None else item.heightForWidth(width)
+        return max(item.minimumSize().height(), min(item.maximumSize().height(), height))
 
     @staticmethod
     def _item_width(item, available):

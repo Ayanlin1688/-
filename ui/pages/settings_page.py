@@ -1748,7 +1748,7 @@ class SettingsPage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
         self.ui_scale = ComboBox()
-        for value, text in zip(SCALE_CHOICES, (tr('自动'), '100%', '110%', '125%', '130%', '140%', '150%', '160%')):
+        for value, text in zip(SCALE_CHOICES, (tr('自动'), '100%', '110%', '125%', '130%', '140%', '150%', '160%', '175%')):
             self.ui_scale.addItem(text, userData=value)
         saved = str(self.config_manager.config.get('appearance', {}).get('ui_scale', 'auto'))
         self.ui_scale.setCurrentIndex(SCALE_CHOICES.index(saved) if saved in SCALE_CHOICES else 0)

@@ -1,12 +1,13 @@
 """Incremental, width-aware presentation of the current ecommerce image group."""
 from pathlib import Path
+from collections import OrderedDict
 import json
 import re
 
-from PyQt5.QtCore import Qt, QRectF, QSignalBlocker, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PyQt5.QtCore import Qt, QRectF, QSignalBlocker, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
-from qfluentwidgets import CardWidget, CheckBox, PushButton, StrongBodyLabel
+from qfluentwidgets import CaptionLabel, CardWidget, CheckBox, PushButton, StrongBodyLabel, SwitchButton
 
 from core.api_errors import classify_connection_error, classify_http_error
 from core.i18n import tr
@@ -15,6 +16,38 @@ from ..file_actions import open_local
 from ..responsive import WrapLayout
 from ..theme import style_controls
 from ..tokens import px
+
+
+_THUMBNAIL_CACHE = OrderedDict()
+_THUMBNAIL_CACHE_LIMIT = 24
+
+
+def _load_thumbnail_image(value):
+    """Cache bounded display images, invalidating regenerated files by mtime."""
+    if not value:
+        return QImage()
+    try:
+        path = Path(value).resolve()
+        key = (str(path), path.stat().st_mtime_ns)
+        image = _THUMBNAIL_CACHE.get(key)
+        if image is not None:
+            _THUMBNAIL_CACHE.move_to_end(key)
+            return image
+        image = QImage.fromData(path.read_bytes())
+        if image.isNull():
+            return image
+        if max(image.width(), image.height()) > 1600:
+            image = image.scaled(1600, 1600, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # A same-name regeneration should replace its old resident image too.
+        for previous in tuple(_THUMBNAIL_CACHE):
+            if previous[0] == key[0]:
+                del _THUMBNAIL_CACHE[previous]
+        _THUMBNAIL_CACHE[key] = image
+        while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_LIMIT:
+            _THUMBNAIL_CACHE.popitem(last=False)
+        return image
+    except (OSError, ValueError, TypeError):
+        return QImage()
 
 
 def _status_text(status):
@@ -26,12 +59,47 @@ def _status_text(status):
 
 class _Thumbnail(QLabel):
     clicked = pyqtSignal()
+    render_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._adaptive = True
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(100)
+        self._resize_timer.timeout.connect(self.render_requested)
+        self.apply_adaptive(True)
+
+    def apply_adaptive(self, adaptive):
+        self._adaptive = bool(adaptive)
+        policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        policy.setHeightForWidth(self._adaptive)
+        self.setSizePolicy(policy)
+        if self._adaptive:
+            self.setMinimumHeight(px(180))
+            self.setMaximumHeight(px(360))
+        else:
+            self.setFixedHeight(px(260))
 
     def hasHeightForWidth(self):
-        return True
+        return self._adaptive
 
     def heightForWidth(self, width):
-        return min(px(360), max(px(180), round(width * 5 / 4)))
+        return (min(px(360), max(px(180), round(width * 5 / 4)))
+                if self._adaptive else px(260))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_timer.start()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._resize_timer.stop()
+        self.render_requested.emit()
+
+    def closeEvent(self, event):
+        self._resize_timer.stop()
+        super().closeEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
@@ -44,12 +112,13 @@ class EcommerceResultCard(CardWidget):
     selection_changed = pyqtSignal()
     log_message = pyqtSignal(str, str)
 
-    def __init__(self, record, parent=None):
+    def __init__(self, record, parent=None, *, adaptive=True):
         super().__init__(parent)
         self.record = {}
         self._busy = False
         self._has_image = False
         self._feedback_positive = False
+        self._adaptive = bool(adaptive)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(px(14), px(14), px(14), px(14))
@@ -65,10 +134,9 @@ class EcommerceResultCard(CardWidget):
         self.thumbnail = _Thumbnail()
         self.thumbnail.setAlignment(Qt.AlignCenter)
         self.thumbnail.setTextFormat(Qt.PlainText)
-        thumbnail_policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        thumbnail_policy.setHeightForWidth(True)
-        self.thumbnail.setSizePolicy(thumbnail_policy)
+        self.thumbnail.apply_adaptive(self._adaptive)
         self.thumbnail.clicked.connect(self._open_image)
+        self.thumbnail.render_requested.connect(self._render_thumbnail)
         layout.addWidget(self.thumbnail)
         self.size_label = self._label()
         self.error_label = self._label()
@@ -133,19 +201,13 @@ class EcommerceResultCard(CardWidget):
         self.updateGeometry()
 
     def _render_thumbnail(self):
+        self.thumbnail._resize_timer.stop()
         self._has_image = False
         self.thumbnail.clear()
         status = self.record.get('status', 'pending')
         if status == 'succeeded':
             path = self.record.get('file_path')
-            image = QPixmap()
-            try:
-                if path and Path(path).is_file():
-                    # Regeneration replaces the same filename; bypass Qt's file
-                    # cache so rapid replacements always show the latest image.
-                    image.loadFromData(Path(path).read_bytes())
-            except (OSError, ValueError):
-                pass
+            image = _load_thumbnail_image(path)
             if not image.isNull():
                 ratio = self.devicePixelRatioF()
                 width, height = max(1, self.thumbnail.width()), max(1, self.thumbnail.height())
@@ -158,13 +220,21 @@ class EcommerceResultCard(CardWidget):
                 clip = QPainterPath()
                 clip.addRoundedRect(QRectF(0, 0, width, height), px(8), px(8))
                 painter.setClipPath(clip)
+                painter.fillRect(QRectF(0, 0, width, height), QColor(materials.palette()['bg2']))
                 physical_width, physical_height = round(width * ratio), round(height * ratio)
                 scaled = image.scaled(physical_width, physical_height,
-                                      Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                source = QRectF((scaled.width() - physical_width) / 2,
-                                (scaled.height() - physical_height) / 2,
-                                physical_width, physical_height)
-                painter.drawPixmap(QRectF(0, 0, width, height), scaled, source)
+                                      Qt.KeepAspectRatioByExpanding if self._adaptive else Qt.KeepAspectRatio,
+                                      Qt.SmoothTransformation)
+                if self._adaptive:
+                    source = QRectF((scaled.width() - physical_width) / 2,
+                                    (scaled.height() - physical_height) / 2,
+                                    physical_width, physical_height)
+                    painter.drawImage(QRectF(0, 0, width, height), scaled, source)
+                else:
+                    rendered_width, rendered_height = scaled.width() / ratio, scaled.height() / ratio
+                    target = QRectF((width - rendered_width) / 2, (height - rendered_height) / 2,
+                                    rendered_width, rendered_height)
+                    painter.drawImage(target, scaled, QRectF(scaled.rect()))
                 painter.end()
                 self.thumbnail.setPixmap(canvas)
                 self._has_image = True
@@ -222,9 +292,21 @@ class EcommerceResultCard(CardWidget):
             return message, safe
         return safe, safe
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def apply_adaptive(self, adaptive, *, update_geometry=True):
+        self._adaptive = bool(adaptive)
+        self.thumbnail.apply_adaptive(self._adaptive)
         self._render_thumbnail()
+        if update_geometry:
+            self.updateGeometry()
+
+    def refresh_interface_scale(self):
+        self.thumbnail.apply_adaptive(self._adaptive)
+        self.thumbnail._resize_timer.start()
+        self.updateGeometry()
+
+    def closeEvent(self, event):
+        self.thumbnail._resize_timer.stop()
+        super().closeEvent(event)
 
     def _open_image(self):
         if self._has_image:
@@ -275,8 +357,11 @@ class EcommerceResultPanel(QWidget):
     regenerate_selected_requested = pyqtSignal(list)
     log_message = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, config_manager=None):
         super().__init__(parent)
+        self.config_manager = config_manager
+        config = getattr(config_manager, 'config', {})
+        self._adaptive = bool(config.get('ecommerce', {}).get('thumbnail_adaptive', True))
         self.cards = {}
         self._busy = False
         layout = QVBoxLayout(self)
@@ -292,7 +377,15 @@ class EcommerceResultPanel(QWidget):
             lambda: self.regenerate_selected_requested.emit(self.selected_keys()))
         self.select_all_checkbox = CheckBox(tr('全选失败'))
         self.select_all_checkbox.toggled.connect(self._select_all_failed)
+        self.adaptive_label = CaptionLabel(tr('图片自适应'))
+        self.adaptive_switch = SwitchButton()
+        self.adaptive_switch.setOnText('')
+        self.adaptive_switch.setOffText('')
+        self.adaptive_switch.setChecked(self._adaptive)
+        self.adaptive_switch.checkedChanged.connect(self.set_adaptive)
         actions = WrapLayout(spacing=px(12))
+        actions.addWidget(self.adaptive_label)
+        actions.addWidget(self.adaptive_switch)
         actions.addWidget(self.select_all_checkbox)
         actions.addWidget(self.regenerate_selected_button)
         actions.addWidget(self.regenerate_failed_button)
@@ -311,7 +404,7 @@ class EcommerceResultPanel(QWidget):
         if item_id in self.cards:
             self.cards[item_id].update_record(record)
         else:
-            card = EcommerceResultCard(record, self)
+            card = EcommerceResultCard(record, self, adaptive=self._adaptive)
             card.regenerate_requested.connect(self.regenerate_requested)
             card.selection_changed.connect(self._refresh_selection)
             card.log_message.connect(self.log_message)
@@ -328,6 +421,7 @@ class EcommerceResultPanel(QWidget):
 
     def clear(self):
         for card in self.cards.values():
+            card.thumbnail._resize_timer.stop()
             card.select_checkbox.setChecked(False)
         while self.grid.count():
             item = self.grid.takeAt(0)
@@ -336,6 +430,24 @@ class EcommerceResultPanel(QWidget):
                 item.widget().deleteLater()
         self.cards.clear()
         self._refresh_selection()
+        self.grid.invalidate()
+        self.updateGeometry()
+
+    def set_adaptive(self, adaptive):
+        adaptive = bool(adaptive)
+        changed = adaptive != self._adaptive
+        self._adaptive = adaptive
+        blocker = QSignalBlocker(self.adaptive_switch)
+        self.adaptive_switch.setChecked(adaptive)
+        del blocker
+        if changed and self.config_manager is not None:
+            self.config_manager.update(('ecommerce', 'thumbnail_adaptive'), adaptive)
+        self.grid.setEnabled(False)
+        try:
+            for card in self.cards.values():
+                card.apply_adaptive(adaptive, update_geometry=False)
+        finally:
+            self.grid.setEnabled(True)
         self.grid.invalidate()
         self.updateGeometry()
 

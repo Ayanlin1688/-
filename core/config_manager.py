@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_detail_count": 4,
         "language": "zh",
         "max_concurrency": 5,
+        "thumbnail_adaptive": True,
     },
     "workspace": {
         "model": "video-v3",
@@ -88,7 +89,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "poll_interval": 5,
     },
-    "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False, "ui_scale": "auto"},
+    "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False,
+                   "ui_scale": "auto", "window_geometry": None},
     "diagnostics": {"debug_mode": False},
     "updates": {"manifest_url": "", "check_on_start": True},
     "sync": {"repo_root": ""},

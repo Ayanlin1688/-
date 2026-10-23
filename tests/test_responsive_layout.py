@@ -398,6 +398,26 @@ class CoalescedLayoutTests(unittest.TestCase):
         parent.deleteLater()
         QTest.qWait(10)
 
+    def test_card_grid_keeps_incomplete_last_row_on_the_same_columns(self):
+        parent = QWidget()
+        self.addCleanup(parent.deleteLater)
+        layout = WrapLayout(parent, card_width=200, max_columns=4)
+        cards = [QWidget() for _ in range(5)]
+        for card in cards:
+            card.setMinimumHeight(60)
+            layout.addWidget(card)
+        parent.resize(1003, 400)
+        parent.show()
+        self.addCleanup(parent.close)
+        self.app.processEvents()
+        layout.setGeometry(parent.rect())
+        self.assertEqual(layout.columns, 4)
+        self.assertEqual(cards[0].width(), cards[-1].width())
+        self.assertEqual(cards[0].x(), cards[-1].x())
+        self.assertGreater(cards[-1].y(), cards[0].y())
+        self.assertLessEqual(max(card.width() for card in cards) - min(card.width() for card in cards), 1)
+        self.assertLess(cards[-1].geometry().right(), parent.width() // 2)
+
     def test_pending_callback_does_not_retain_its_owner(self):
         class Receiver:
             def refresh(self):

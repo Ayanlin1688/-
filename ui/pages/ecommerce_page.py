@@ -1,11 +1,12 @@
 """Ecommerce form and queued Qt presentation of the existing Python pipeline."""
 from pathlib import Path
+from copy import deepcopy
 import threading
 from urllib.parse import urlsplit
 
-from PyQt5.QtCore import Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
-from PyQt5.QtWidgets import QFileDialog, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFileDialog, QGridLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
@@ -17,8 +18,10 @@ from core.ecommerce.platforms import (
 )
 from core.ecommerce.image_client import TIER_SHORT_EDGE
 from core.ecommerce.manager import EcommerceImageManager
+from core.api_errors import classify_connection_error
 from core.i18n import tr
 from core.line_routing import resolve_line
+from core.line_probe import probe_line
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
@@ -31,6 +34,7 @@ from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
 from ..theme import style_controls, style_page
 from ..tokens import px
+from ..widgets.status_dot import Dot
 
 
 # Parentless QThreads survive even if a containing widget is deleted externally.
@@ -98,6 +102,34 @@ class EcommerceWorker(QThread):
             self.manager_factory = None
 
 
+class EcommerceModelProbeWorker(QThread):
+    """仅在用户点击后，使用独立线程测试已选模型与线路快照。"""
+    result = pyqtSignal(str, int, object)
+
+    def __init__(self, config, capability, models, preferred_model, revision):
+        super().__init__()
+        self.config = config
+        self.capability = capability
+        self.models = models
+        self.preferred_model = preferred_model
+        self.revision = revision
+
+    def run(self):
+        line = resolve_line(self.config, self.capability)
+        key = str(line.get('api_key') or '').strip()
+        try:
+            if not str(line.get('base_url') or '').strip() or not key:
+                result = dict(ok=False, message=tr('未配置该能力线路'))
+            else:
+                result = probe_line(
+                    line['base_url'], key, self.capability, models=self.models,
+                    preferred_model=self.preferred_model)
+            result = redact_structure(result, lambda value: redact_text(value, (key,)))
+        except Exception as error:
+            result = dict(ok=False, message=tr(classify_connection_error(error)['message']))
+        self.result.emit(self.capability, self.revision, result)
+
+
 class EcommercePage(QWidget):
     idle = pyqtSignal()
     history_records_changed = pyqtSignal()
@@ -120,6 +152,10 @@ class EcommercePage(QWidget):
         self.product_image_paths = []
         self.style_image_paths = []
         self._form_cards = []
+        self._model_probe_workers = {}
+        self._model_probe_revisions = {'chat': 0, 'image': 0}
+        self._model_probe_fingerprints = {}
+        self._probe_closing = False
         defaults = config_manager.config.get('ecommerce', {})
 
         root = scrollable_body(self)
@@ -225,7 +261,11 @@ class EcommercePage(QWidget):
         references.addLayout(style)
 
         models = self._card(root, tr('模型设置'))
-        analysis_row = WrapLayout(spacing=px(10))
+        self.model_grid = QGridLayout()
+        self.model_grid.setContentsMargins(0, 0, 0, 0)
+        self.model_grid.setHorizontalSpacing(px(10))
+        self.model_grid.setVerticalSpacing(px(8))
+        self.model_grid.setColumnStretch(0, 1)
         self.analysis_model_picker = ModelPickComboBox()
         self.analysis_model_picker.setObjectName('ecommerceAnalysisModel')
         self.analysis_model_picker.setMinimumWidth(px(260))
@@ -236,16 +276,12 @@ class EcommercePage(QWidget):
         self.analysis_line_combo = ComboBox()
         self.analysis_line_combo.setObjectName('ecommerceAnalysisLine')
         self.analysis_line_combo.setMinimumWidth(px(200))
+        self.analysis_line_combo.setMaximumWidth(px(200))
         self.sync_analysis_models_button = TransparentToolButton(FIF.SYNC)
         self.sync_analysis_models_button.setObjectName('syncAnalysisModels')
         self.sync_analysis_models_button.setToolTip(tr('同步模型'))
-        analysis_row.addLayout(self._field(tr('AI 分析模型'), self.analysis_model_picker))
-        analysis_row.addWidget(self.analysis_line_combo)
-        analysis_row.addWidget(self.analysis_line_label)
-        analysis_row.addWidget(self.sync_analysis_models_button)
-        models.addLayout(analysis_row)
-
-        image_row = WrapLayout(spacing=px(10))
+        self.analysis_status_dot = Dot(size=8, color='#92929b')
+        self.analysis_status_dot.setObjectName('analysisStatusDot')
         self.image_model_picker = ModelPickComboBox()
         self.image_model_picker.setObjectName('ecommerceImageModel')
         self.image_model_picker.setMinimumWidth(px(260))
@@ -256,27 +292,39 @@ class EcommercePage(QWidget):
         self.image_line_combo = ComboBox()
         self.image_line_combo.setObjectName('ecommerceImageLine')
         self.image_line_combo.setMinimumWidth(px(200))
+        self.image_line_combo.setMaximumWidth(px(200))
         self.sync_image_models_button = TransparentToolButton(FIF.SYNC)
         self.sync_image_models_button.setObjectName('syncImageModels')
         self.sync_image_models_button.setToolTip(tr('同步模型'))
-        image_row.addLayout(self._field(tr('图片模型'), self.image_model_picker))
-        image_row.addWidget(self.image_line_combo)
-        image_row.addWidget(self.image_line_label)
-        image_row.addWidget(self.sync_image_models_button)
-        models.addLayout(image_row)
+        self.image_status_dot = Dot(size=8, color='#92929b')
+        self.image_status_dot.setObjectName('imageStatusDot')
+        for row, title, picker, combo, label, dot, button in (
+                (0, tr('AI 分析模型'), self.analysis_model_picker, self.analysis_line_combo,
+                 self.analysis_line_label, self.analysis_status_dot, self.sync_analysis_models_button),
+                (2, tr('图片模型'), self.image_model_picker, self.image_line_combo,
+                 self.image_line_label, self.image_status_dot, self.sync_image_models_button)):
+            self.model_grid.addWidget(CaptionLabel(title), row, 0)
+            self.model_grid.addWidget(CaptionLabel(tr('线路')), row, 1)
+            self.model_grid.addWidget(picker, row + 1, 0)
+            self.model_grid.addWidget(combo, row + 1, 1, Qt.AlignLeft | Qt.AlignVCenter)
+            self.model_grid.addWidget(label, row + 1, 2)
+            self.model_grid.addWidget(dot, row + 1, 3, Qt.AlignCenter)
+            self.model_grid.addWidget(button, row + 1, 4)
+            # These status dots own useful hover details, unlike passive dots.
+            dot.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+            dot.setToolTip(tr('未测试'))
 
-        thinking_row = WrapLayout(spacing=px(10))
         self.thinking_switch = SwitchButton()
         self.thinking_switch.setObjectName('ecommerceThinking')
         self.thinking_switch.setChecked(bool(defaults.get('thinking', False)))
         self.thinking_switch.setToolTip(tr(
             '开启后，DeepSeek 官方线路的 deepseek-chat 自动切换为 deepseek-v4-pro；'
             'Claude 思考模型加 thinking 参数；其他模型不受影响'))
-        thinking_row.addWidget(CaptionLabel(tr('深度思考')))
-        thinking_row.addWidget(self.thinking_switch)
-        models.addLayout(thinking_row)
-        self.sync_analysis_models_button.clicked.connect(lambda: self._sync_catalog('chat'))
-        self.sync_image_models_button.clicked.connect(lambda: self._sync_catalog('image'))
+        self.model_grid.addWidget(CaptionLabel(tr('深度思考')), 4, 0)
+        self.model_grid.addWidget(self.thinking_switch, 4, 1, Qt.AlignLeft | Qt.AlignVCenter)
+        models.addLayout(self.model_grid)
+        self.sync_analysis_models_button.clicked.connect(lambda: self._test_selected_model('chat'))
+        self.sync_image_models_button.clicked.connect(lambda: self._test_selected_model('image'))
         self.analysis_model_picker.currentTextChanged.connect(
             lambda _text: self._persist_model('analysis_model', self.analysis_model_picker.value()))
         self.image_model_picker.currentTextChanged.connect(
@@ -320,7 +368,7 @@ class EcommercePage(QWidget):
         self.log_box.setMinimumHeight(px(160))
         self.log_box.document().setMaximumBlockCount(1000)
         progress.addWidget(self.log_box)
-        self.result_panel = EcommerceResultPanel(self)
+        self.result_panel = EcommerceResultPanel(self, config_manager=config_manager)
         self.result_panel.regenerate_requested.connect(lambda key: self._run_regenerate([key]))
         self.result_panel.regenerate_failed_requested.connect(self._run_regenerate)
         self.result_panel.regenerate_selected_requested.connect(self._run_regenerate)
@@ -341,6 +389,7 @@ class EcommercePage(QWidget):
         self._refresh_colors()
         self._refresh_conflicts()
         self._refresh_history()
+        self.body_scroll.viewport().installEventFilter(self)
 
     @property
     def busy(self):
@@ -383,6 +432,8 @@ class EcommercePage(QWidget):
         if kind:
             value = normalize_model_id(value, catalog_snapshot(self.config_manager, kind).keys())
         self.config_manager.update(('ecommerce', key), value)
+        if kind:
+            self._refresh_model_probe_identity(kind)
 
     def model_overrides(self):
         values = {
@@ -417,6 +468,40 @@ class EcommercePage(QWidget):
             label.setToolTip(tr('{capability}线路：{host}').format(
                 capability=tr('AI 分析') if capability == 'chat' else tr('图片生成'), host=host))
             label.setStyleSheet('color: %s;' % (colors['text1'] if configured else colors['warning']))
+            self._refresh_model_probe_identity(capability)
+        self._fit_model_columns()
+
+    def _fit_model_columns(self):
+        """宽窗保留完整模型宽度，窄窗按同一列预算收缩，避免横向滚动。"""
+        if not self.isVisible():
+            return
+        outer = self.body_content.layout().contentsMargins()
+        inner = self.analysis_model_picker.parentWidget().layout().contentsMargins()
+        available = (self.body_scroll.viewport().width() - outer.left() - outer.right()
+                     - inner.left() - inner.right())
+        spacing = max(0, self.model_grid.horizontalSpacing()) * 4
+        reserved = sum(max(first.minimumSizeHint().width(), second.minimumSizeHint().width(),
+                           first.minimumWidth(), second.minimumWidth())
+                       for first, second in ((self.analysis_line_label, self.image_line_label),
+                                             (self.analysis_status_dot, self.image_status_dot),
+                                             (self.sync_analysis_models_button,
+                                              self.sync_image_models_button)))
+        combo_width = min(px(200), max(px(120), available - spacing - reserved - px(260)))
+        picker_width = min(px(260), max(px(140), available - spacing - reserved - combo_width))
+        for picker in (self.analysis_model_picker, self.image_model_picker):
+            picker.setMinimumWidth(picker_width)
+        for combo in (self.analysis_line_combo, self.image_line_combo):
+            combo.setMinimumWidth(combo_width)
+            combo.setMaximumWidth(px(200))
+
+    def refresh_interface_scale(self):
+        self._fit_model_columns()
+
+    def eventFilter(self, watched, event):
+        if (watched is self.body_scroll.viewport()
+                and event.type() == QEvent.Resize):
+            self._fit_model_columns()
+        return super().eventFilter(watched, event)
 
     def _refresh_line_routes(self, *_args):
         stations = [station for station in self.config_manager.config.get('stations', [])
@@ -452,6 +537,73 @@ class EcommercePage(QWidget):
         controller = getattr(self.config_manager, 'model_catalog_controller', None)
         if controller is not None:
             controller.refresh()
+
+    def _model_probe_controls(self, capability):
+        if capability == 'chat':
+            return (self.analysis_model_picker, self.analysis_status_dot,
+                    self.sync_analysis_models_button)
+        return self.image_model_picker, self.image_status_dot, self.sync_image_models_button
+
+    def _model_probe_fingerprint(self, capability):
+        picker, _dot, _button = self._model_probe_controls(capability)
+        line = resolve_line(self.config_manager.config, capability)
+        return (picker.value(), line.get('source'), line.get('base_url'), line.get('api_key'))
+
+    def _refresh_model_probe_identity(self, capability):
+        identity = self._model_probe_fingerprint(capability)
+        if self._model_probe_fingerprints.get(capability) != identity:
+            self._model_probe_fingerprints[capability] = identity
+            self._model_probe_revisions[capability] += 1
+            _picker, dot, _button = self._model_probe_controls(capability)
+            dot.set_color('#92929b')
+            dot.setToolTip(tr('未测试'))
+
+    def _test_selected_model(self, capability):
+        if self.busy or self._probe_closing or capability in self._model_probe_workers:
+            return
+        picker, dot, button = self._model_probe_controls(capability)
+        self._refresh_model_probe_identity(capability)
+        dot.set_color('#92929b')
+        dot.setToolTip(tr('未测试'))
+        button.setEnabled(False)
+        revision = self._model_probe_revisions[capability]
+        snapshot = catalog_snapshot(self.config_manager, capability)
+        # All mutable UI/configuration state is snapshotted before entering QThread.
+        model_rows = [dict(record, id=model_id) if isinstance(record, dict)
+                      else {'id': model_id} for model_id, record in snapshot.items()]
+        worker = EcommerceModelProbeWorker(
+            deepcopy(self.config_manager.config), capability, model_rows, picker.value(), revision)
+        self._model_probe_workers[capability] = worker
+        _LIVE_WORKERS.add(worker)
+        worker.result.connect(self._on_model_probe_result, Qt.QueuedConnection)
+        worker.finished.connect(self._model_probe_thread_stopped, Qt.QueuedConnection)
+        worker.finished.connect(lambda: _LIVE_WORKERS.discard(worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    @pyqtSlot(str, int, object)
+    def _on_model_probe_result(self, capability, revision, result):
+        self._refresh_model_probe_identity(capability)
+        if self._probe_closing or revision != self._model_probe_revisions[capability]:
+            return
+        _picker, dot, _button = self._model_probe_controls(capability)
+        ok = bool(result.get('ok'))
+        message = self._clean(result.get('message') or tr('模型测试失败，请检查线路与模型'))
+        dot.set_color('#67c23a' if ok else '#f56c6c')
+        dot.setToolTip(tr('模型测试通过：{message}').format(message=message) if ok else message)
+        if not ok:
+            title = tr('文本模型测试失败') if capability == 'chat' else tr('图片模型测试失败')
+            InfoBar.error(tr('电商图'), title + ' · ' + message, parent=self, duration=5000)
+        self._sync_catalog(capability)
+
+    @pyqtSlot()
+    def _model_probe_thread_stopped(self):
+        worker = self.sender()
+        capability = worker.capability
+        if self._model_probe_workers.get(capability) is worker:
+            self._model_probe_workers.pop(capability, None)
+            _picker, _dot, button = self._model_probe_controls(capability)
+            button.setEnabled(not self.busy and not self._probe_closing)
 
     def selected_platforms(self):
         return [key for key, checkbox in self.platform_checkboxes.items() if checkbox.isChecked()]
@@ -869,6 +1021,9 @@ class EcommercePage(QWidget):
         self.cancel_event = threading.Event()
         for card in self._form_cards:
             card.setEnabled(True)
+        for capability in ('chat', 'image'):
+            _picker, _dot, button = self._model_probe_controls(capability)
+            button.setEnabled(capability not in self._model_probe_workers)
         self.cancel_button.setEnabled(False)
         self.result_panel.set_busy(False)
         self.history_panel.set_busy(False)
@@ -883,6 +1038,11 @@ class EcommercePage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._fit_model_columns()
+        self._probe_closing = False
+        for capability in ('chat', 'image'):
+            _picker, _dot, button = self._model_probe_controls(capability)
+            button.setEnabled(not self.busy and capability not in self._model_probe_workers)
         self._refresh_history()
 
     def closeEvent(self, event):
@@ -891,4 +1051,5 @@ class EcommercePage(QWidget):
             self.cancel_generation()
             event.ignore()
             return
+        self._probe_closing = True
         super().closeEvent(event)

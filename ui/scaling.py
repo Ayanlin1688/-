@@ -11,7 +11,7 @@ from qfluentwidgets import CardWidget, ImageLabel
 
 from . import tokens
 
-SCALE_CHOICES = ('auto', '1.0', '1.1', '1.25', '1.3', '1.4', '1.5', '1.6')
+SCALE_CHOICES = ('auto', '1.0', '1.1', '1.25', '1.3', '1.4', '1.5', '1.6', '1.75')
 
 
 def screen_factors(screen) -> dict[str, float | int]:
@@ -46,7 +46,7 @@ def interface_factors(screen, ui_scale='auto'):
             return interface_factors(screen, 'auto')
         if not math.isfinite(extra):
             return interface_factors(screen, 'auto')
-        extra = _clamp(extra, 1.0, 1.6)
+        extra = _clamp(extra, 1.0, 1.75)
     extra = _clamp(extra, 1.0, 2.0)
     return dict(factors, dpi=dpi, z=extra, total=dpi * extra)
 
@@ -241,7 +241,12 @@ class InterfaceScaler(QObject):
         self.timer.stop()
         self.pending.clear()
         self.applying = True
+        old_scale = self.scale
+        roots = [root for root in self.app.topLevelWidgets() if _scalable(root)]
+        frozen = [(root, root.updatesEnabled()) for root in roots if root.isVisible()]
         try:
+            for root, _enabled in frozen:
+                root.setUpdatesEnabled(False)
             widgets = [widget for widget in self.app.allWidgets() if _scalable(widget)]
             for widget in widgets:
                 if _alive(widget) and widget not in self.widgets:
@@ -264,8 +269,21 @@ class InterfaceScaler(QObject):
                 refresh = getattr(widget, 'refresh_interface_scale', None)
                 if _alive(widget) and callable(refresh):
                     refresh()
+            for root in roots:
+                committed = getattr(root, 'on_interface_scale_committed', None)
+                if _alive(root) and callable(committed):
+                    committed(old_scale, scale)
+            for layout in layouts:
+                if _alive(layout):
+                    layout.invalidate()
+                    layout.activate()
         finally:
             self.applying = False
+            for root, enabled in frozen:
+                if _alive(root):
+                    root.setUpdatesEnabled(enabled)
+                    if enabled:
+                        root.update()
 
     def dispose(self):
         if self.disposed:
