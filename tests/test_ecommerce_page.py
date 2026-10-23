@@ -401,6 +401,20 @@ class EcommercePageTests(unittest.TestCase):
                 self.assertEqual(label.toolTip(), raw)
                 self.assertEqual(store.list_items(group['group_id'])[0]['error'], raw)
 
+    def test_group_error_is_logged_once_per_worker_run(self):
+        record = dict(group_id='dedup-group', status='failed', updated_at=10,
+                      totals={'succeeded': 0, 'failed': 1, 'skipped': 0},
+                      error='同一组错误')
+        self.page._on_group(record)
+        self.page._on_group(dict(record))
+        self.page._on_result('dedup-group', '同一组错误')
+        self.page._thread_stopped()
+        self.assertEqual(sum(message == '同一组错误' for message, _level in self.page._logs), 1)
+
+        self.page._clear_results()
+        self.page._on_group(dict(record, updated_at=11))
+        self.assertEqual(sum(message == '同一组错误' for message, _level in self.page._logs), 2)
+
     def test_history_refreshes_on_page_entry_and_limits_to_fifty(self):
         self.assertFalse(self.page.history_panel.empty_label.isHidden())
         store = self.config.ecommerce_store()
@@ -1293,8 +1307,10 @@ class EcommercePageTests(unittest.TestCase):
 
     def test_model_picker_values_and_thinking_persist_and_empty_overrides_are_omitted(self):
         records = {
-            'chat-choice': {'id': 'chat-choice', 'kind': 'chat', 'available': True},
-            'image-choice': {'id': 'image-choice', 'kind': 'image', 'available': True},
+            'chat-choice': {'id': 'chat-choice', 'kind': 'chat', 'available': True,
+                            'display_name': 'Chat Choice'},
+            'image-choice': {'id': 'image-choice', 'kind': 'image', 'available': True,
+                             'display_name': 'Image Choice'},
         }
         with patch('ui.pages.ecommerce_page.catalog_snapshot', return_value=records):
             self.page.refresh_model_pickers()

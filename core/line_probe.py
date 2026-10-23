@@ -8,7 +8,7 @@ from .ecommerce.analysis import is_gemini_native
 
 from .http_client import HttpClient, RequestError
 from .image_uploader import DEFAULT_UPLOAD_URL, ImageUploader
-from .model_catalog import classify_model
+from .model_catalog import classify_model, normalize_model_id
 
 
 _CHAT_MODEL_ORDER = (
@@ -97,7 +97,7 @@ def _result(ok, level, message, counts, **extra):
     return result
 
 
-def probe_line(base_url, api_key, capability, *, models=None):
+def probe_line(base_url, api_key, capability, *, models=None, preferred_model=None):
     """Check a model-list route and, for chat, one small completion request."""
     if capability not in {'video', 'chat', 'image'}:
         raise ValueError('不支持的线路能力')
@@ -133,7 +133,28 @@ def probe_line(base_url, api_key, capability, *, models=None):
             ok = counts['video'] >= 1
             message = ('模型列表可达，发现视频模型' if ok else '模型列表可达，但未发现视频模型')
             return _result(ok, 'success' if ok else 'error', message, counts, status_code=status)
+        preferred = normalize_model_id(preferred_model) if preferred_model is not None else ''
         if capability == 'image':
+            if preferred:
+                wanted = preferred
+                available_ids = set()
+                for row in rows:
+                    if not isinstance(row, dict) or not row.get('id'):
+                        continue
+                    row_id = normalize_model_id(row.get('id'))
+                    kind = row.get('kind')
+                    if kind != 'image':
+                        kind = classify_model(row_id, row.get('supported_endpoint_types', ()))
+                    if kind == 'image':
+                        available_ids.add(row_id)
+                if wanted in available_ids:
+                    return _result(
+                        True, 'success',
+                        f'模型列表可达，图片模型 {wanted} 可用（未实际出图，不产生费用）',
+                        counts, status_code=status, model=wanted)
+                return _result(
+                    False, 'error', '模型列表中未找到该图片模型，请同步模型或更换',
+                    counts, status_code=status, model=wanted)
             ok = counts['image'] >= 1
             message = ('模型列表可达，未实际出图' if ok else '模型列表可达，但未发现图片模型；未实际出图')
             return _result(ok, 'success' if ok else 'error', message, counts, status_code=status)
@@ -142,7 +163,9 @@ def probe_line(base_url, api_key, capability, *, models=None):
             hostname = (urlsplit(base).hostname or '').lower()
         except ValueError:
             hostname = ''
-        if 'deepseek.com' in hostname:
+        if preferred:
+            candidates = [preferred]
+        elif 'deepseek.com' in hostname:
             candidates = ['deepseek-flash']
         else:
             available = _snapshot_chat_models(models) if models is not None else []

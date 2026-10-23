@@ -16,6 +16,7 @@ from PyQt5.QtGui import QImage, QImageWriter
 from core.ecommerce.platforms import RATIOS
 from core.http_client import HttpClient, RequestError
 from core.api_errors import classify_http_error, classify_connection_error
+from core.model_catalog import normalize_model_id
 
 
 DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst'
@@ -351,6 +352,7 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
     a connection failure from a failed read after a potentially billed response.
     Neither case is retried here.
     """
+    model = normalize_model_id(model)
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError('图片提示词必须为非空字符串')
     if reference_paths is None:
@@ -436,5 +438,6 @@ def generate_text_to_image(base_url, api_key, model, prompt, ratio, tier, *,
 
 def generate_image_edit(base_url, api_key, model, prompt, ratio, tier,
                         reference_paths, *, timeout=(15, 180)):
+    model = normalize_model_id(model)
     return generate_image(base_url, api_key, model, prompt, ratio, tier,
                           reference_paths=reference_paths, timeout=timeout)

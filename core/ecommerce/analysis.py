@@ -10,6 +10,7 @@ import requests
 
 from core.http_client import HttpClient, RequestError
 from core.api_errors import classify_http_error, classify_connection_error
+from core.model_catalog import normalize_model_id
 
 
 DEFAULT_ANALYSIS_MODEL = 'gemini-3.8-flash'
@@ -124,6 +125,7 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
 
 
 def _request_model(base_url, model, thinking):
+    model = normalize_model_id(model)
     host = (urlsplit(str(base_url or '').strip()).hostname or '').lower()
     if thinking and 'deepseek.com' in host and model in {'deepseek-chat', 'deepseek-flash'}:
         logging.getLogger('storyboard').info('%s 已切换为 deepseek-v4-pro', model)

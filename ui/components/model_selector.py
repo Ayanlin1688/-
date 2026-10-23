@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, QSignalBlocker, QSize
 from PyQt5.QtWidgets import QAction, QSizePolicy
 from qfluentwidgets import ComboBox, EditableComboBox
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
-from core.model_catalog import builtin_models, classify_model, resolve_model_id
+from core.model_catalog import builtin_models, classify_model, normalize_model_id, resolve_model_id
 from core.i18n import tr
 
 
@@ -176,7 +176,6 @@ class ModelPickComboBox(EditableComboBox):
         self._rendered_value = ''
         self._rendering_value = False
         self.textChanged.connect(self._edited_value_changed)
-        self.currentIndexChanged.connect(self._selected_value_changed)
 
     def sizeHint(self):
         return QSize(260, 33)
@@ -187,14 +186,67 @@ class ModelPickComboBox(EditableComboBox):
     def _createComboMenu(self):
         return _ModelPickMenu(self)
 
+    @staticmethod
+    def _model_id(value):
+        value = normalize_model_id(value)
+        return '' if value.startswith('__separator__:') else value
+
     def value(self):
         text = self.text().strip()
         if self._rendered_value and text == self._rendered_value:
-            return self._full_value.strip()
-        return text
+            return self._model_id(self._full_value)
+        index = self.findText(text)
+        if index >= 0:
+            data = self.itemData(index)
+            if data is not None and str(data).startswith('__separator__:'):
+                return self._model_id(self._full_value)
+            if data is not None:
+                return self._model_id(data)
+        return self._model_id(text)
+
+    def _onComboTextChanged(self, text):
+        """Keep EditableComboBox's signal contract in terms of wire IDs."""
+        text = str(text or '')
+        if self._rendering_value:
+            self.currentTextChanged.emit(self._full_value.strip())
+            return
+        index = self.findText(text)
+        if index >= 0:
+            data = self.itemData(index)
+            if data is not None and str(data).startswith('__separator__:'):
+                self._currentIndex = -1
+                self.currentTextChanged.emit(self._full_value.strip())
+                return
+            if data is not None and not str(data).startswith('__separator__:'):
+                value = self._model_id(data)
+                self._full_value = value
+                self._rendered_value = ''
+                self._currentIndex = index
+                self.setToolTip(value)
+                self.currentTextChanged.emit(value)
+                self.currentIndexChanged.emit(index)
+                return
+        value = self._model_id(text)
+        self._full_value = value
+        self._rendered_value = ''
+        self._currentIndex = -1
+        self.setToolTip(value)
+        self.currentTextChanged.emit(value)
+
+    def _onItemClicked(self, index):
+        """Emit activation with the wire ID instead of the rendered label."""
+        data = self.itemData(index)
+        if data is not None and str(data).startswith('__separator__:'):
+            return
+        if index != self.currentIndex():
+            self.setCurrentIndex(index)
+        value = self._model_id(data if data is not None else self.itemText(index))
+        self.set_value(value)
+        self.activated.emit(index)
+        self.textActivated.emit(value)
 
     def set_value(self, text):
-        value = str(text or '').strip()
+        value = self._model_id(text)
         index = self.findData(value)
         if index >= 0 and str(self.itemData(index) or '').startswith('__separator__:'):
             index = -1
@@ -206,18 +258,20 @@ class ModelPickComboBox(EditableComboBox):
         self._render_value()
 
     def _edited_value_changed(self, text):
-        if self._rendering_value:
+        # A persistence callback may already have rendered the canonical ID
+        # while the earlier label's textChanged signal is still being delivered.
+        if self._rendering_value or str(text or '') != self.text():
             return
-        self._full_value = str(text or '').strip()
+        index = self.findText(str(text or ''))
+        data = self.itemData(index) if index >= 0 else None
+        if data is not None and str(data).startswith('__separator__:'):
+            return
+        if data is not None and not str(data).startswith('__separator__:'):
+            self._full_value = self._model_id(data)
+        else:
+            self._full_value = self._model_id(text)
         self._rendered_value = ''
         self.setToolTip(self._full_value)
-
-    def _selected_value_changed(self, index):
-        if self._rendering_value or index < 0:
-            return
-        value = self.itemData(index)
-        if value and not str(value).startswith('__separator__:'):
-            self.set_value(value)
 
     def _render_value(self):
         value = self._full_value
@@ -252,8 +306,10 @@ class ModelPickComboBox(EditableComboBox):
 
     def set_models(self, records, selected=None, kind='chat'):
         self._kind = kind
-        selected = self.value() if selected is None else str(selected or '').strip()
         records = records if isinstance(records, dict) else {}
+        selected = normalize_model_id(
+            self.value() if selected is None else selected,
+            records.keys())
         grouped = {provider: [] for provider in _PROVIDER_ORDER}
         for model_id, record in records.items():
             if not isinstance(record, dict):

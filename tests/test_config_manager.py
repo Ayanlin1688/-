@@ -96,6 +96,60 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(loaded['defaults']['duration'], 4)
             self.assertEqual(loaded['defaults']['model'], 'video-v1')
 
+    def test_r12_model_id_cleanup_normalizes_and_deduplicates_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'config.json'
+            path.write_text(json.dumps({
+                'ecommerce': {
+                    'analysis_model': 'deepseek-v4-pro · DeepSeek-V4-Pro',
+                    'image_model': 'Nano Banana 2.1 · Nano Banana 2.1',
+                },
+                'chat_model_pool': {
+                    'models': [
+                        {'name': 'deepseek-v4-pro · DeepSeek-V4-Pro', 'enabled': False, 'status': '旧'},
+                        {'name': 'deepseek-v4-pro', 'enabled': True, 'status': '新'},
+                    ],
+                },
+                'image_model_pool': {
+                    'models': [
+                        {'name': 'gpt-image-2.5-sunburst · Image', 'enabled': True},
+                        {'name': 'gpt-image-2.5-sunburst · Image', 'enabled': False},
+                    ],
+                },
+                'model_pool': {
+                    'models': [
+                        {'name': 'video-v3 · Video v3', 'enabled': False, 'priority': 9},
+                        {'name': 'video-v3', 'enabled': True, 'priority': 1},
+                        {'name': 'tenant model · custom label', 'enabled': True},
+                    ],
+                },
+                'defaults': {'model': 'video-v3 · Video v3'},
+                'prompt_detection': {'fallback_model': 'gemini-4-argon · Gemini 4 Argon'},
+            }, ensure_ascii=False), encoding='utf-8')
+
+            loaded = ConfigManager(path).load_config()
+            self.assertEqual(loaded['ecommerce']['analysis_model'], 'deepseek-v4-pro')
+            self.assertEqual(loaded['ecommerce']['image_model'], 'Nano Banana 2.1')
+            self.assertEqual(loaded['defaults']['model'], 'video-v3')
+            self.assertEqual(loaded['prompt_detection']['fallback_model'], 'gemini-4-argon')
+            self.assertEqual(loaded['chat_model_pool']['models'], [
+                {'name': 'deepseek-v4-pro', 'enabled': True, 'status': '旧'},
+            ])
+            self.assertEqual(loaded['image_model_pool']['models'], [
+                {'name': 'gpt-image-2.5-sunburst', 'enabled': True},
+            ])
+            self.assertEqual(loaded['model_pool']['models'], [
+                {'name': 'video-v3', 'enabled': True, 'priority': 9},
+                {'name': 'tenant model · custom label', 'enabled': True},
+            ])
+            self.assertTrue(loaded['migrations']['r12_model_id_cleanup'])
+
+            # The flag is persisted, so a second load is a no-op migration.
+            with patch('core.config_manager._normalize_config_model_ids') as cleanup:
+                second = ConfigManager(path).load_config()
+            cleanup.assert_not_called()
+            self.assertEqual(second, loaded)
+
 class DataDirectoryTests(unittest.TestCase):
     def test_default_path_uses_appdata_and_env_override(self):
         with tempfile.TemporaryDirectory() as temp:

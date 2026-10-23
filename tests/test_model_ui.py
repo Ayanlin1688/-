@@ -130,6 +130,83 @@ class ModelUiTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(combo.text(), 'jt-image-2.5-sunburst')
 
+    def test_model_pick_signals_and_value_always_use_wire_ids(self):
+        from ui.components.model_selector import ModelPickComboBox
+
+        combo = ModelPickComboBox()
+        self.addCleanup(combo.deleteLater)
+        combo.set_models({
+            'gpt-x': dict(id='gpt-x', kind='chat', available=True, display_name='GPT X'),
+            'deepseek-v4-pro': dict(id='deepseek-v4-pro', kind='chat', available=True,
+                                    display_name='DeepSeek-V4-Pro'),
+        }, 'gpt-x', kind='chat')
+        emitted = []
+        activated = []
+        combo.currentTextChanged.connect(emitted.append)
+        combo.textActivated.connect(activated.append)
+        combo.setCurrentIndex(combo.findData('deepseek-v4-pro'))
+        self.assertEqual(combo.value(), 'deepseek-v4-pro')
+        self.assertTrue(emitted)
+        self.assertTrue(all(' · ' not in value for value in emitted))
+        combo._onItemClicked(combo.findData('gpt-x'))
+        self.assertEqual(activated[-1], 'gpt-x')
+        self.assertNotIn(' · ', activated[-1])
+
+        combo.setText('my-custom-id')
+        self.assertEqual(combo.value(), 'my-custom-id')
+        combo.setText('gpt-x · GPT X')
+        self.assertEqual(combo.value(), 'gpt-x')
+
+        separator = next(index for index in range(combo.count())
+                         if str(combo.itemData(index) or '').startswith('__separator__:'))
+        combo.setCurrentIndex(separator)
+        self.assertNotIn('__separator__:', combo.value())
+        combo.set_value(combo.itemData(separator))
+        self.assertEqual(combo.value(), '')
+        combo.setText('__separator__:OTHER')
+        self.assertEqual(combo.value(), '')
+        self.assertFalse(any('__separator__:' in value for value in emitted))
+
+    def test_model_pick_menu_selection_immediately_renders_an_elided_wire_id(self):
+        from PyQt5.QtCore import Qt
+        from ui.components.model_selector import ModelPickComboBox
+
+        model_id = 'custom-model-with-a-very-long-wire-identifier'
+        combo = ModelPickComboBox()
+        self.addCleanup(combo.deleteLater)
+        combo.resize(160, 33)
+        combo.set_models({
+            model_id: dict(id=model_id, kind='chat', available=True,
+                           display_name='Long Model Display Name'),
+        }, '', kind='chat')
+        combo._onItemClicked(combo.findData(model_id))
+        self.assertEqual(combo.value(), model_id)
+        self.assertEqual(combo.text(), combo.fontMetrics().elidedText(
+            model_id, Qt.ElideRight, max(30, combo.width() - 42)))
+        self.assertEqual(combo.toolTip(), model_id)
+
+    def test_pool_selection_persists_the_id_during_synchronous_elided_rendering(self):
+        from ui.pages.settings_page import SettingsPage
+
+        model_id = 'chat-model-with-a-very-long-wire-identifier'
+        records = builtin_models()
+        records[model_id] = dict(id=model_id, kind='chat', available=True,
+                                 display_name='Long Chat Display Name')
+        self.config.config['chat_model_pool']['models'] = [
+            dict(name='deepseek-chat', enabled=True, status='健康')]
+        with patch('ui.pages.settings_page.catalog_snapshot', return_value=records):
+            page = SettingsPage(self.config, lambda *_: None)
+            self.addCleanup(page.deleteLater)
+            page.stop_timers()
+            _, check, combo, state = page.pool_rows['chat'][0]
+            combo.resize(160, 33)
+            combo.setCurrentIndex(combo.findData(model_id))
+            self.assertEqual(combo.value(), model_id)
+            self.assertEqual(self.config.config['chat_model_pool']['models'][0]['name'], model_id)
+            page.refresh_pool_state()
+            self.assertTrue(check.isEnabled())
+            self.assertEqual(state.text(), '健康')
+
     def test_pool_category_is_centered_and_chat_image_rows_do_not_overlap(self):
         from ui.pages.settings_page import SettingsPage
 

@@ -149,6 +149,30 @@ class LineProbeTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(ProbeFixture.chat_calls, ['deepseek-flash'])
 
+    def test_preferred_model_overrides_deepseek_default_probe_model(self):
+        original = urlsplit
+        def fake_split(value):
+            parsed = original(value)
+            if value == self.base:
+                return SimpleNamespace(hostname='api.deepseek.com')
+            return parsed
+        with patch('core.line_probe.urlsplit', side_effect=fake_split):
+            result = probe_line(self.base, 'fixture-api-key', 'chat',
+                                preferred_model='deepseek-v4-pro')
+        self.assertTrue(result['ok'])
+        self.assertEqual(ProbeFixture.chat_calls, ['deepseek-v4-pro'])
+
+    def test_preferred_image_model_is_validated_without_image_request(self):
+        result = probe_line(self.base, 'fixture-api-key', 'image',
+                            preferred_model='gpt-image-2')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['model'], 'gpt-image-2')
+        self.assertEqual(ProbeFixture.upload_calls, 0)
+        missing = probe_line(self.base, 'fixture-api-key', 'image',
+                             preferred_model='missing-image')
+        self.assertFalse(missing['ok'])
+        self.assertIn('未找到该图片模型', missing['message'])
+
     def test_timeout_is_reported_without_secret(self):
         from core.line_probe import HttpClient
         original_request = HttpClient.request

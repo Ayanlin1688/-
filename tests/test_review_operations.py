@@ -184,7 +184,11 @@ class OperationsReviewTests(unittest.TestCase):
             prompts.mkdir()
             (prompts / '1.txt').write_text('A car under daylight.', encoding='utf-8')
             manager = ConfigManager(root / 'config.json')
-            manager.config['migrations'] = {'r6_unattended_defaults': True, 'history_to_sqlite': True}
+            manager.config['migrations'] = {
+                'r6_unattended_defaults': True,
+                'r12_model_id_cleanup': True,
+                'history_to_sqlite': True,
+            }
             manager.config['paths'].update(prompts=str(prompts), output=str(root / 'output'))
             manager.config['api'].update(base_url=server.base, api_key='local-fixture-only')
             manager.config['workspace']['poll_interval'] = 0.01

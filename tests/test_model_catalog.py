@@ -281,6 +281,20 @@ class ModelCatalogTests(unittest.TestCase):
         self.config_path = Path(self.temp.name) / 'config.json'
         self.logs = []
 
+    def test_normalize_model_id_strips_display_labels_without_damaging_custom_ids(self):
+        cases = (
+            ('deepseek-v4-pro · DeepSeek-V4-Pro', None, 'deepseek-v4-pro'),
+            ('Nano Banana 2.1 · Nano Banana 2.1', None, 'Nano Banana 2.1'),
+            ('gemini-4-argon · Gemini 4 Argon', None, 'gemini-4-argon'),
+            ('gpt-5.6-sol', None, 'gpt-5.6-sol'),
+            ('tenant model · Friendly name', None, 'tenant model · Friendly name'),
+            ('tenant model · Friendly name', {'tenant model'}, 'tenant model'),
+            ('display · wire', {'display · wire'}, 'display · wire'),
+        )
+        for value, known_ids, expected in cases:
+            with self.subTest(value=value, known_ids=known_ids):
+                self.assertEqual(self.module.normalize_model_id(value, known_ids), expected)
+
     def catalog(self, base='http://127.0.0.1:9', key='fixture-key'):
         return self.module.ModelCatalog(self.config_path, base, key, log=lambda *args: self.logs.append(args))
 

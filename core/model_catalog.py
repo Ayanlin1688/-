@@ -103,6 +103,33 @@ def resolve_model_id(model, catalog):
     return replacements[0] if len(replacements) == 1 else model
 
 
+def normalize_model_id(value, known_ids=None):
+    """将模型选择器显示的“ID · 显示名”安全归一化为模型 ID。
+
+    只有明确可识别的标签头部才会被截取；含空格的自定义模型 ID 在
+    无 catalog 佐证时保持原样，避免误删合法的 provider-specific ID。
+    """
+    text = str('' if value is None else value).strip()
+    if ' · ' not in text:
+        return text
+    head, _tail = text.split(' · ', 1)
+    head = head.strip()
+    if known_ids is not None:
+        try:
+            known = {str(item) for item in known_ids}
+        except TypeError:
+            known = set()
+        if head in known:
+            return head
+        if text in known:
+            return text
+    if head.casefold() == _tail.strip().casefold():
+        return head
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', head):
+        return head
+    return text
+
+
 def _catalog_record(model, catalog):
     if catalog is None:
         return None
@@ -462,4 +489,5 @@ def _valid_record(record):
     return isinstance(record['audio'], bool) and isinstance(record['seed'], bool) and isinstance(record['max_images'], int) and not isinstance(record['max_images'], bool)
 
 
-__all__ = ['ModelCatalog', 'builtin_models', 'options_for', 'family_for', 'classify_model']
+__all__ = ['ModelCatalog', 'builtin_models', 'options_for', 'family_for', 'classify_model',
+           'normalize_model_id']

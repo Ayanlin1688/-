@@ -24,6 +24,7 @@ from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
+from core.model_catalog import normalize_model_id
 from ..components.reference_thumbnail import ReferenceGrid, ReferenceThumbnail
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
@@ -113,6 +114,7 @@ class EcommercePage(QWidget):
         self._items = {}
         self.item_labels = {}
         self._logs = []
+        self._logged_group_errors = {}
         self._close_when_idle = False
         self._manager_overrides = {}
         self.product_image_paths = []
@@ -377,12 +379,19 @@ class EcommercePage(QWidget):
                 return
 
     def _persist_model(self, key, value):
+        kind = 'chat' if key == 'analysis_model' else 'image' if key == 'image_model' else None
+        if kind:
+            value = normalize_model_id(value, catalog_snapshot(self.config_manager, kind).keys())
         self.config_manager.update(('ecommerce', key), value)
 
     def model_overrides(self):
         values = {
-            'analysis_model': self.analysis_model_picker.value().strip(),
-            'image_model': self.image_model_picker.value().strip(),
+            'analysis_model': normalize_model_id(
+                self.analysis_model_picker.value(),
+                catalog_snapshot(self.config_manager, 'chat').keys()),
+            'image_model': normalize_model_id(
+                self.image_model_picker.value(),
+                catalog_snapshot(self.config_manager, 'image').keys()),
         }
         return {key: value for key, value in values.items() if value}
 
@@ -591,6 +600,7 @@ class EcommercePage(QWidget):
 
     def _clear_results(self):
         self._group, self._items = None, {}
+        self._logged_group_errors.clear()
         for label in self.item_labels.values():
             self.items_layout.removeWidget(label)
             label.deleteLater()
@@ -723,6 +733,9 @@ class EcommercePage(QWidget):
         self._launch_worker(dict(group_id=group['group_id'], item_keys=keys), operation='regenerate')
 
     def _launch_worker(self, arguments, *, operation='start'):
+        # Each worker run is a new reporting window, including regeneration of
+        # an existing group.  Do not suppress an identical error from the new run.
+        self._logged_group_errors.clear()
         worker = EcommerceWorker(self._make_manager, arguments, self.cancel_event, self._secrets,
                                  operation=operation)
         self._worker = worker
@@ -764,8 +777,11 @@ class EcommercePage(QWidget):
             self.open_output_button.setEnabled(bool(self._group.get('output_dir')))
             for item in self.config_manager.ecommerce_store().list_items(self._group['group_id']):
                 self._on_item(item)
-        if self._group.get('error'):
-            self._append_log(self._group['error'], 'error')
+        error = self._group.get('error')
+        group_id = self._group.get('group_id')
+        if error and self._logged_group_errors.get(group_id) != error:
+            self._logged_group_errors[group_id] = error
+            self._append_log(error, 'error')
         self._refresh_history()
 
     @pyqtSlot(object)
@@ -836,7 +852,10 @@ class EcommercePage(QWidget):
         self._refresh_history()
         if error:
             self.stage_label.setText(tr('失败'))
-            self._append_log(error, 'error')
+            group_id = group_id or (self._group or {}).get('group_id')
+            if self._logged_group_errors.get(group_id) != error:
+                self._logged_group_errors[group_id] = error
+                self._append_log(error, 'error')
             self._notice(error)
         elif self._group:
             self._append_log(self.stage_label.text() + ' · ' + self.summary_label.text(), 'info')

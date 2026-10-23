@@ -25,7 +25,7 @@ from core.i18n import tr
 from core.api_errors import classify_connection_error, classify_http_error
 from core.line_routing import normalize_base_url, resolve_line
 from core.line_probe import probe_line, probe_upload, looks_like_upload_token, valid_http_url
-from core.model_catalog import classify_model
+from core.model_catalog import classify_model, normalize_model_id
 from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, ModelPickComboBox, catalog_snapshot, usable
 from datetime import datetime
@@ -2066,9 +2066,11 @@ class SettingsPage(QWidget):
     def _model_pool_config_key(self, kind):
         return {'video': 'model_pool', 'chat': 'chat_model_pool', 'image': 'image_model_pool'}[kind]
 
-    @staticmethod
-    def _pool_model_value(combo, kind):
-        return combo.currentText() if kind == 'video' else combo.value()
+    def _pool_model_value(self, combo, kind):
+        value = combo.currentText() if kind == 'video' else combo.value()
+        known_ids = None if kind == 'video' else catalog_snapshot(
+            self.config_manager, kind).keys()
+        return normalize_model_id(value, known_ids)
 
     def _add_model_row(self, name, enabled, status, persist=True, kind='video'):
         row = make_card()
@@ -2115,20 +2117,40 @@ class SettingsPage(QWidget):
 
     def _persist_models(self, *_args, kind='video'):
         config_key = self._model_pool_config_key(kind)
-        previous = {model['name']: model for model in self._value((config_key, 'models'))}
+        previous = {}
+        for model in self._value((config_key, 'models')):
+            if not isinstance(model, dict):
+                continue
+            name = normalize_model_id(model.get('name'))
+            if not name:
+                continue
+            if name not in previous:
+                previous[name] = dict(model, name=name)
+            else:
+                previous[name]['enabled'] = bool(previous[name].get('enabled')) or bool(model.get('enabled'))
         catalog = catalog_snapshot(self.config_manager, kind) if kind != 'video' else None
+        merged = {}
         models = []
         for _, check, combo, _ in self.pool_rows[kind]:
             name = self._pool_model_value(combo, kind)
             if not name:
                 continue
+            displayed = combo.text().strip() if hasattr(combo, 'text') else combo.currentText().strip()
+            if kind != 'video' and displayed != name:
+                blocker = QSignalBlocker(combo)
+                combo.set_value(name)
+                del blocker
             enabled = check.isChecked()
             if kind != 'video':
                 record = catalog.get(name)
                 enabled = enabled and bool(record and record.get('available', True)
                                            and record.get('kind') == kind)
+            if name in merged:
+                merged[name]['enabled'] = bool(merged[name].get('enabled')) or enabled
+                continue
             models.append(dict(previous.get(name, {'status': '健康'}), name=name,
                                enabled=enabled))
+            merged[name] = models[-1]
         self.config_manager.update((config_key, 'models'), models)
         self.refresh_pool_state()
 

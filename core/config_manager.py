@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from .history_store import HistoryStore
 from .ecommerce.persistence import EcommerceImageStore
+from .model_catalog import normalize_model_id
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -197,6 +198,70 @@ def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def _normalize_model_pool(pool: Any) -> bool:
+    """Normalize and merge model-pool entries in place.
+
+    The first entry for a model remains authoritative for metadata.  Duplicate
+    entries only contribute their enabled state, which is merged with a
+    logical OR so migration never silently disables a model.
+    """
+    if not isinstance(pool, dict) or not isinstance(pool.get('models'), list):
+        return False
+    models = pool['models']
+    changed = False
+    normalized: list[Any] = []
+    indexes: dict[str, int] = {}
+    for entry in models:
+        if not isinstance(entry, dict) or 'name' not in entry:
+            normalized.append(entry)
+            continue
+        original = entry.get('name')
+        name = normalize_model_id(original)
+        if name != original:
+            entry['name'] = name
+            changed = True
+        key = str(name)
+        previous_index = indexes.get(key)
+        if previous_index is None:
+            indexes[key] = len(normalized)
+            normalized.append(entry)
+            continue
+        previous = normalized[previous_index]
+        previous_enabled = bool(previous.get('enabled', False))
+        duplicate_enabled = bool(entry.get('enabled', False))
+        if previous_enabled or duplicate_enabled:
+            if previous.get('enabled') is not True:
+                previous['enabled'] = True
+                changed = True
+        changed = True
+    if normalized != models:
+        pool['models'] = normalized
+        changed = True
+    return changed
+
+
+def _normalize_config_model_ids(config: dict[str, Any]) -> bool:
+    """Apply the one-time r12 model-ID cleanup to an in-memory config."""
+    changed = False
+    for section, key in (
+        ('ecommerce', 'analysis_model'),
+        ('ecommerce', 'image_model'),
+        ('defaults', 'model'),
+        ('prompt_detection', 'fallback_model'),
+    ):
+        target = config.get(section)
+        if not isinstance(target, dict) or key not in target:
+            continue
+        original = target.get(key)
+        normalized = normalize_model_id(original)
+        if normalized != original:
+            target[key] = normalized
+            changed = True
+    for key in ('model_pool', 'chat_model_pool', 'image_model_pool'):
+        changed = _normalize_model_pool(config.get(key)) or changed
+    return changed
+
+
 class ConfigManager:
     """Owns the in-memory configuration and its JSON representation."""
 
@@ -254,6 +319,17 @@ class ConfigManager:
                         self.save_config()
                     except Exception:
                         pass
+            # 一次性迁移：统一模型 ID 的持久化格式，并合并池中重复条目。
+            # 标志位随配置一同落盘；写入失败时保留内存结果，下次启动会安全重试。
+            migrations = self.config.get('migrations')
+            if not isinstance(migrations, dict) or not migrations.get('r12_model_id_cleanup'):
+                _normalize_config_model_ids(self.config)
+                self.config['migrations'] = dict(migrations or {}, r12_model_id_cleanup=True)
+                try:
+                    # 即使模型值没有变化也要持久化标志，确保迁移只执行一次。
+                    self.save_config()
+                except Exception:
+                    pass
             # 历史记录迁移：config.json 大数组 → SQLite 历史库（终结写放大）。
             migrations = self.config.get('migrations')
             if not isinstance(migrations, dict) or not migrations.get('history_to_sqlite'):
