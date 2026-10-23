@@ -102,9 +102,10 @@ class SettingsCardLayoutTests(unittest.TestCase):
     def test_fractional_interface_scales_keep_labels_inside_cards(self):
         cards = self.cards()
         self.root.show()
-        for factor in ('1.0', '1.25', '1.5'):
+        for factor in (1.0, 1.25, 1.5, 1.75):
             with self.subTest(scale=factor):
-                apply_interface_scale(self.app, FakeScreen(), factor)
+                apply_interface_scale(self.app, FakeScreen(), '1.0')
+                self.app._interface_scaler.apply(factor)
                 self.root.resize(900, 700)
                 flush_layout(self.app, self.root)
                 for card in cards:
@@ -176,12 +177,13 @@ class SettingsResultBarTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_result_tones_wrap_complete_messages_inside_window(self):
-        message = ('AI分析（文本）API：fixture response with a long diagnostic explanation ' * 4
-                   + '\n模型分类：视频 13 / 文本 26 / 图片 11（不含隐藏套餐）'
-                   + '\n文本实际命中模型：claude-haiku-4-5')
+        message = 'AI分析（文本）API：成功 · 文本调用成功（视频 0 / 文本 27 / 图片 0）'
+        details = ('AI分析（文本）API：文本调用成功\n'
+                   '原始诊断：fixture response with a long diagnostic explanation ' * 4
+                   + '\n模型：claude-haiku-4-5')
         for tone, duration in (('success', 5000), ('warning', 7000), ('error', 9000)):
             with self.subTest(tone=tone):
-                bar = self.page._notice(message, level=tone)
+                bar = self.page._notice(message, level=tone, tooltip=details)
                 wait_until(lambda: bar.property('slideAni').state() == QAbstractAnimation.Stopped)
                 self.assertIs(bar.parentWidget(), self.root)
                 self.assertEqual(bar.duration, duration)
@@ -189,6 +191,8 @@ class SettingsResultBarTests(unittest.TestCase):
                 self.assertTrue(bar.contentLabel.wordWrap())
                 self.assertFalse(bar.titleLabel.wordWrap())
                 self.assertEqual(bar.contentLabel.text(), message)
+                self.assertEqual(bar.contentLabel.toolTip(), details)
+                self.assertEqual(bar.titleLabel.toolTip(), details)
                 self.assertGreaterEqual(bar.x(), 16)
                 self.assertLessEqual(bar.geometry().right(), self.root.width() - 16)
                 label = bar.contentLabel
@@ -197,9 +201,10 @@ class SettingsResultBarTests(unittest.TestCase):
                 bar.close()
                 QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-    def test_result_bar_tracks_window_resize_and_preserves_all_details(self):
-        message = 'fixture line details\n' + 'model-not-found ' * 30
-        bar = self.page._show_result_infobar('测试连接', message, 'error')
+    def test_result_bar_tracks_window_resize_while_details_stay_in_tooltip(self):
+        message = '视频 API：失败 · 与中转站的 SSL 连接被中断'
+        details = 'HTTPSConnectionPool(host=probe.invalid): SSLError: ' + 'model-not-found ' * 30
+        bar = self.page._show_result_infobar('测试连接', message, 'error', tooltip=details)
         wait_until(lambda: bar.property('slideAni').state() == QAbstractAnimation.Stopped)
         self.root.resize(600, 800)
         flush_layout(self.app, self.root)
@@ -207,6 +212,8 @@ class SettingsResultBarTests(unittest.TestCase):
         self.assertGreaterEqual(bar.x(), 16)
         self.assertLessEqual(bar.geometry().right(), self.root.width() - 16)
         self.assertEqual(bar.contentLabel.text(), message)
+        self.assertEqual(bar.contentLabel.toolTip(), details)
+        self.assertEqual(bar.titleLabel.toolTip(), details)
 
     def test_model_pool_host_occupies_the_card_without_a_heading_column(self):
         self.page._switch_page('pool', highlight=True)

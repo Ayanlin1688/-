@@ -1,11 +1,14 @@
 """Incremental, width-aware presentation of the current ecommerce image group."""
 from pathlib import Path
+import json
+import re
 
 from PyQt5.QtCore import Qt, QRectF, QSignalBlocker, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import CardWidget, CheckBox, PushButton, StrongBodyLabel
 
+from core.api_errors import classify_connection_error, classify_http_error
 from core.i18n import tr
 from .. import materials
 from ..file_actions import open_local
@@ -23,6 +26,12 @@ def _status_text(status):
 
 class _Thumbnail(QLabel):
     clicked = pyqtSignal()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return min(px(360), max(px(180), round(width * 5 / 4)))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
@@ -56,8 +65,9 @@ class EcommerceResultCard(CardWidget):
         self.thumbnail = _Thumbnail()
         self.thumbnail.setAlignment(Qt.AlignCenter)
         self.thumbnail.setTextFormat(Qt.PlainText)
-        self.thumbnail.setFixedHeight(px(180))
-        self.thumbnail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        thumbnail_policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        thumbnail_policy.setHeightForWidth(True)
+        self.thumbnail.setSizePolicy(thumbnail_policy)
         self.thumbnail.clicked.connect(self._open_image)
         layout.addWidget(self.thumbnail)
         self.size_label = self._label()
@@ -95,7 +105,9 @@ class EcommerceResultCard(CardWidget):
         if not failed:
             self.select_checkbox.setChecked(False)
         self.size_label.setText(str(record.get('size') or ''))
-        self.error_label.setText(str(record.get('error') or ''))
+        error_text, error_tooltip = self._display_error(record.get('error') or '', record)
+        self.error_label.setText(error_text)
+        self.error_label.setToolTip(error_tooltip)
         self.error_label.setVisible(bool(self.error_label.text()))
         references = list(record.get('reference_paths') or [])
         warnings = [warning for warning in self.record['warnings']
@@ -136,7 +148,7 @@ class EcommerceResultCard(CardWidget):
                 pass
             if not image.isNull():
                 ratio = self.devicePixelRatioF()
-                width, height = px(220), px(180)
+                width, height = max(1, self.thumbnail.width()), max(1, self.thumbnail.height())
                 canvas = QPixmap(round(width * ratio), round(height * ratio))
                 canvas.setDevicePixelRatio(ratio)
                 canvas.fill(Qt.transparent)
@@ -146,12 +158,13 @@ class EcommerceResultCard(CardWidget):
                 clip = QPainterPath()
                 clip.addRoundedRect(QRectF(0, 0, width, height), px(8), px(8))
                 painter.setClipPath(clip)
-                scaled = image.scaled(round(width * ratio), round(height * ratio),
-                                      Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                target_width, target_height = scaled.width() / ratio, scaled.height() / ratio
-                painter.drawPixmap(QRectF((width - target_width) / 2, (height - target_height) / 2,
-                                          target_width, target_height), scaled,
-                                   QRectF(scaled.rect()))
+                physical_width, physical_height = round(width * ratio), round(height * ratio)
+                scaled = image.scaled(physical_width, physical_height,
+                                      Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                source = QRectF((scaled.width() - physical_width) / 2,
+                                (scaled.height() - physical_height) / 2,
+                                physical_width, physical_height)
+                painter.drawPixmap(QRectF(0, 0, width, height), scaled, source)
                 painter.end()
                 self.thumbnail.setPixmap(canvas)
                 self._has_image = True
@@ -160,6 +173,58 @@ class EcommerceResultCard(CardWidget):
         else:
             self.thumbnail.setText(_status_text(status))
         self.thumbnail.setCursor(Qt.PointingHandCursor if self._has_image else Qt.ArrowCursor)
+
+    @staticmethod
+    def _display_error(value, record):
+        raw = str(value or '')
+        safe = re.sub(r'(?i)\b(?:sk-[\w-]+|vup_[\w-]+)', '[REDACTED]', raw)
+        safe = re.sub(r'(?i)(bearer\s+)\S+', r'\1[REDACTED]', safe)
+        safe = re.sub(r'(?i)((?:api[_ -]?key|token|authorization)\s*[=:]\s*)\S+',
+                      r'\1[REDACTED]', safe)
+        lowered = raw.casefold()
+        if not raw:
+            return '', ''
+        if any(marker in lowered for marker in (
+                'httpsconnectionpool', 'connectionpool', 'proxyerror', 'connectionerror',
+                'sslerror', 'unexpected_eof', 'ssl_c_syscall', 'handshake', 'max retries',
+                'readtimeout', 'connecttimeout', 'timed out', 'timeout')):
+            return tr(classify_connection_error(raw)['message']), safe
+
+        status = record.get('status_code') if isinstance(record, dict) else None
+        if isinstance(status, str) and status.isdecimal():
+            status = int(status)
+        if not isinstance(status, int) or isinstance(status, bool):
+            status = None
+        if status is None:
+            match = re.search(r'\bHTTP\s*(\d{3})\b', raw, flags=re.IGNORECASE)
+            status = int(match.group(1)) if match else None
+        embedded_error = re.search(r'\{\s*"error"\s*:', raw)
+        payload_text = raw[embedded_error.start():] if embedded_error else raw.lstrip()
+        if status is None and payload_text.startswith(('{', '[')):
+            try:
+                payload, _end = json.JSONDecoder().raw_decode(payload_text)
+                error = payload.get('error', payload) if isinstance(payload, dict) else {}
+                candidate = error.get('code') if isinstance(error, dict) else None
+                if isinstance(candidate, str) and candidate.isdecimal():
+                    candidate = int(candidate)
+                status = candidate if isinstance(candidate, int) and not isinstance(candidate, bool) else None
+            except (TypeError, ValueError):
+                status = None
+            if status is None:
+                status = 400
+        if status is not None:
+            classified = classify_http_error(status, raw, kind='image')
+            if classified['category'] == 'http':
+                message = tr('HTTP {code}：{message}').format(
+                    code=status, message=tr('请求失败，请检查线路与参数'))
+            else:
+                message = tr(classified['message'])
+            return message, safe
+        return safe, safe
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render_thumbnail()
 
     def _open_image(self):
         if self._has_image:

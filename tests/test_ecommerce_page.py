@@ -3,10 +3,12 @@ import base64
 import json
 import os
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import time
 import unittest
+import zlib
 from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -18,6 +20,7 @@ from PyQt5.QtWidgets import QApplication, QLabel
 from qfluentwidgets import ComboBox
 
 from core.config_manager import ConfigManager
+from core.i18n import tr
 from core.ecommerce.manager import EcommerceImageManager
 from core.ecommerce.platforms import domestic, overseas, LANGUAGE_TEXT, RATIOS, MAX_PLATFORMS
 from core.ecommerce.image_client import TIER_SHORT_EDGE
@@ -27,12 +30,24 @@ from core.i18n import set_language
 from tests.test_ecommerce_manager import TEST_KEY, fake_analysis, fake_image as manager_fake_image
 from ui import materials
 from ui.tokens import px
-from ui.components.ecommerce_result_panel import EcommerceResultCard
+from ui.components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ui.pages.ecommerce_page import EcommercePage, EcommerceWorker, _LIVE_WORKERS
 
 
 # The networking fixture only checks PNG magic; Qt thumbnails need valid CRCs.
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==')
+
+
+def solid_png(width, height, rgb):
+    def chunk(name, payload):
+        return (struct.pack('!I', len(payload)) + name + payload +
+                struct.pack('!I', zlib.crc32(name + payload) & 0xFFFFFFFF))
+
+    scanline = b'\x00' + bytes(rgb) * width
+    raw = scanline * height
+    header = struct.pack('!IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) +
+            chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
 
 
 def fake_image(*args, **kwargs):
@@ -77,6 +92,134 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
                 self.assertEqual(card.warning_label.isHidden(), not bool(expected_text))
                 self.assertEqual(card._feedback_positive, feedback_positive)
                 self.assertIn(colors[color], card.warning_label.styleSheet())
+                card.deleteLater()
+                self.app.processEvents()
+
+    def test_thumbnail_uses_responsive_four_to_five_cover_and_shared_placeholder_size(self):
+        from tests.qt_scale_support import reset_interface_scaling
+        from tests.test_interface_scaling import FakeScreen
+        from ui.scaling import apply_interface_scale
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
+        image_path = Path(__file__).with_name('_result_thumbnail_fixture.png')
+        card = failed = None
+        try:
+            image_path.write_bytes(solid_png(1024, 1820, (42, 157, 102)))
+
+            base = dict(item_id='portrait-item', kind='carousel', seq=1,
+                        file_path=str(image_path), status='succeeded')
+            card = EcommerceResultCard(base)
+            card.resize(280, 760)
+            card.show()
+            self.app.processEvents()
+
+            initial = card.thumbnail.size()
+            self.assertGreater(initial.width(), 0)
+            self.assertAlmostEqual(initial.width() / initial.height(), 4 / 5, delta=0.04)
+            pixmap = card.thumbnail.pixmap()
+            self.assertIsNotNone(pixmap)
+            self.assertAlmostEqual((pixmap.width() / pixmap.devicePixelRatioF()) /
+                                   (pixmap.height() / pixmap.devicePixelRatioF()),
+                                   4 / 5, delta=0.04)
+
+            # Ignore the rounded edge and sample the image canvas for uncovered pixels.
+            rendered = pixmap.toImage()
+            dpr = pixmap.devicePixelRatioF()
+            left, top = round(5 * dpr), round(5 * dpr)
+            right = rendered.width() - left
+            bottom = rendered.height() - top
+            covered = 0
+            total = 0
+            for y in range(top, bottom, max(1, round(8 * dpr))):
+                for x in range(left, right, max(1, round(8 * dpr))):
+                    total += 1
+                    if rendered.pixelColor(x, y).alpha() > 240:
+                        covered += 1
+            self.assertGreaterEqual(covered / max(total, 1), 0.99)
+
+            old_size = card.thumbnail.size()
+            card.resize(420, 760)
+            self.app.processEvents()
+            self.assertGreater(card.thumbnail.width(), old_size.width())
+            self.assertFalse(card.thumbnail.pixmap().isNull())
+
+            failed = EcommerceResultCard(dict(base, item_id='failed-item', status='failed',
+                                              error='失败'))
+            failed.resize(420, 760)
+            failed.show()
+            self.app.processEvents()
+            self.assertEqual(card.thumbnail.size(), failed.thumbnail.size())
+            for scale in (1.0, 1.25, 1.5, 1.75):
+                with self.subTest(scale=scale):
+                    apply_interface_scale(self.app, FakeScreen(), '1.0')
+                    self.app._interface_scaler.apply(scale)
+                    for entry in (card, failed):
+                        entry.resize(round(280 * scale), round(760 * scale))
+                    self.app.processEvents()
+                    self.assertEqual(card.thumbnail.size(), failed.thumbnail.size())
+                    self.assertAlmostEqual(card.thumbnail.width() / card.thumbnail.height(),
+                                           4 / 5, delta=0.04)
+                    pixmap = card.thumbnail.pixmap()
+                    self.assertAlmostEqual(pixmap.width() / pixmap.devicePixelRatioF(),
+                                           card.thumbnail.width(), delta=1)
+                    rendered = pixmap.toImage()
+                    # The vertical centre crosses both sides of a portrait cover.
+                    for x in (round(rendered.width() * part) for part in (0.02, 0.5, 0.98)):
+                        self.assertGreater(rendered.pixelColor(x, rendered.height() // 2).alpha(), 240)
+        finally:
+            if failed is not None:
+                failed.deleteLater()
+            if card is not None:
+                card.deleteLater()
+            self.app.processEvents()
+            image_path.unlink(missing_ok=True)
+
+    def test_multi_card_panel_keeps_failed_action_clear_after_initial_layout_and_resize(self):
+        panel = EcommerceResultPanel()
+        panel.resize(980, 1800)
+        for index in range(6):
+            panel.update_item(dict(
+                item_id=f'failed-{index}', kind='carousel', seq=index + 1,
+                status='failed', error='生成失败', warnings=[],
+            ))
+        panel.show()
+        try:
+            for width in (980, 620, 1080, 760):
+                panel.resize(width, 1800)
+                self.app.processEvents()
+                QTest.qWait(20)
+
+                button_rect = panel.regenerate_failed_button.geometry()
+                self.assertTrue(panel.regenerate_failed_button.isEnabled())
+                self.assertEqual(len(panel.cards), 6)
+                for card in panel.ordered_cards():
+                    self.assertGreaterEqual(card.geometry().top(), button_rect.bottom())
+                    self.assertFalse(card.geometry().intersects(button_rect))
+                    expected_height = min(
+                        px(360), max(px(180), round(card.thumbnail.width() * 5 / 4)))
+                    self.assertEqual(card.thumbnail.height(), expected_height)
+        finally:
+            panel.close()
+            panel.deleteLater()
+            self.app.processEvents()
+
+    def test_legacy_error_details_are_summarized_with_original_in_tooltip(self):
+        records = (
+            ('{"error":{"type":"invalid_request_error","message":"Unknown parameter"}}',
+             'HTTP 400'),
+            ('AI 分析失败：{"error":{"code":503,"message":"Service unavailable"}}（旧诊断）',
+             '上游服务暂时不可用'),
+            ("HTTPSConnectionPool(host='api.example.test', port=443): SSLError: UNEXPECTED_EOF_WHILE_READING",
+             'SSL'),
+        )
+        for raw_error, expected_fragment in records:
+            with self.subTest(error=expected_fragment):
+                card = EcommerceResultCard(dict(item_id='legacy-error', kind='carousel', seq=1,
+                                                status='failed', error=raw_error))
+                self.assertIn(expected_fragment, card.error_label.text())
+                self.assertNotIn('HTTPSConnectionPool', card.error_label.text())
+                self.assertNotIn('{"error"', card.error_label.text())
+                self.assertEqual(card.error_label.toolTip(), raw_error)
                 card.deleteLater()
                 self.app.processEvents()
 
@@ -224,6 +367,39 @@ class EcommercePageTests(unittest.TestCase):
         self.assertTrue(all(row.resume_button.isEnabled() for row in rows[:-1]))
         self.assertFalse(rows[-1].resume_button.isEnabled())
         self.factory.assert_not_called()
+
+    def test_interrupted_history_group_shows_reconciliation_reason(self):
+        group, _items = self.seed_history('interrupted-history', 'failed', states=('failed',))
+        group['error'] = '上次运行未正常结束（程序中断）'
+        self.config.ecommerce_store().upsert_group(group)
+
+        self.page._refresh_history()
+
+        status = self.page.history_panel.rows[group['group_id']].status_label.text()
+        self.assertEqual(status, tr('上次运行未正常结束（程序中断）'))
+        self.assertNotEqual(status, tr('AI分析中'))
+
+    def test_history_item_progress_summarizes_raw_errors_and_preserves_diagnostics(self):
+        cases = (
+            ('{"error":{"code":503,"message":"service unavailable","type":"upstream_error"}}',
+             '上游服务暂时不可用'),
+            ('HTTPSConnectionPool(host=probe.invalid): SSLError: UNEXPECTED_EOF',
+             '与中转站的 SSL 连接被中断'),
+            ('上次运行未正常结束（程序中断）', '上次运行未正常结束（程序中断）'),
+        )
+        for index, (raw, expected) in enumerate(cases):
+            with self.subTest(error=raw):
+                group, items = self.seed_history(f'raw-error-{index}', 'failed', states=('failed',))
+                items[0]['error'] = raw
+                store = self.config.ecommerce_store()
+                store.upsert_items_many(items)
+                self.page._on_group(group)
+                label = self.page.item_labels[('carousel', 1)]
+                self.assertIn(expected, label.text())
+                self.assertNotIn('HTTPSConnectionPool', label.text())
+                self.assertNotIn('{"error"', label.text())
+                self.assertEqual(label.toolTip(), raw)
+                self.assertEqual(store.list_items(group['group_id'])[0]['error'], raw)
 
     def test_history_refreshes_on_page_entry_and_limits_to_fifty(self):
         self.assertFalse(self.page.history_panel.empty_label.isHidden())

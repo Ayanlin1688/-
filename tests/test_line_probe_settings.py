@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -11,10 +12,39 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QAbstractButton, QCheckBox
 
 from core.config_manager import ConfigManager
+from core.i18n import current_language, set_language, tr
 from core.line_routing import resolve_line
 from ui.main_window import MainWindow
 from ui.pages.settings_page import SettingsPage
 from test_task_manager import wait_until
+
+
+class ProbeFormattingTests(unittest.TestCase):
+    def test_multiline_details_stay_on_one_capability_line_in_both_languages(self):
+        original_language = current_language()
+        self.addCleanup(set_language, original_language)
+        formatter = SimpleNamespace(
+            _friendly_probe_detail=lambda result: result['message'],
+            _dedupe_probe_lines=SettingsPage._dedupe_probe_lines,
+        )
+        for language in ('zh-CN', 'en-US'):
+            with self.subTest(language=language):
+                set_language(language)
+                title = tr('视频 API')
+                result = dict(ok=True, message='fixture first\nfixture first\nfixture second')
+                line = SettingsPage._format_probe_line(formatter, title, result, 'video')
+                self.assertEqual(line, f"{title}：{tr('成功')} · fixture first；fixture second")
+
+    def test_duplicate_raw_details_and_capability_lines_are_deduplicated_in_both_languages(self):
+        original_language = current_language()
+        self.addCleanup(set_language, original_language)
+        raw = 'HTTPSConnectionPool(host=probe.invalid): SSLError: handshake failed'
+        for language in ('zh-CN', 'en-US'):
+            with self.subTest(language=language):
+                set_language(language)
+                header = f"{tr('视频 API')}：{tr('失败')} · {raw}"
+                self.assertEqual(SettingsPage._dedupe_probe_lines(
+                    '\n'.join((header, raw, header, raw))), header)
 
 
 class LineProbeSettingsTests(unittest.TestCase):
@@ -59,6 +89,121 @@ class LineProbeSettingsTests(unittest.TestCase):
                 self.settings.routing_test_buttons[capability].click()
                 wait_until(lambda: not self.settings.jobs.busy)
         self.assertEqual(resolutions, ['video', 'chat', 'image'])
+
+    def test_route_probe_keeps_one_compact_line_and_full_details_in_tooltip(self):
+        result = dict(
+            ok=True, level='success', message='发现视频模型',
+            status_code=200, counts={'video': 13, 'chat': 27, 'image': 11},
+            model='claude-haiku-4-5')
+        button = self.settings.routing_test_buttons['video']
+        with patch('ui.pages.settings_page.probe_line', return_value=result), \
+                patch.object(self.settings, '_notice') as notice:
+            self.settings._test_routing_line('video', button)
+            wait_until(lambda: not self.settings.jobs.busy)
+
+        visible = notice.call_args.args[0]
+        self.assertEqual(len(visible.splitlines()), 1)
+        self.assertIn('视频 API：成功', visible)
+        self.assertIn('视频 13 / 文本 27 / 图片 11', visible)
+        self.assertNotIn('模型分类', visible)
+        self.assertNotIn('不含隐藏套餐', visible)
+        self.assertIn('发现视频模型', notice.call_args.kwargs['tooltip'])
+        self.assertIn('claude-haiku-4-5', notice.call_args.kwargs['tooltip'])
+
+    def test_successful_http_status_is_not_formatted_as_an_error(self):
+        self.assertEqual(self.settings._friendly_probe_detail(dict(
+            ok=True, status_code=200, message='文本调用成功')), '文本调用成功')
+
+    def test_legacy_timeout_errors_are_shown_as_chinese(self):
+        for raw in ('ReadTimeout: timed out', 'ConnectTimeout: connection timed out'):
+            with self.subTest(raw=raw):
+                message = self.settings._friendly_probe_detail(dict(ok=False, message=raw))
+                self.assertEqual(message, '连接中转站超时，请检查网络或代理后重试')
+                self.assertNotIn('Timeout', message)
+
+    def test_station_probe_summary_deduplicates_details_and_hides_ssl_stack(self):
+        self.settings._open_station_editor(None)
+        self.settings.station_base.setText('https://station.invalid')
+        self.settings.station_key.setText('fixture-station-key')
+        self.settings.station_upload.setText('')
+        self.settings.station_caps['video'].setChecked(True)
+        self.settings.station_caps['llm'].setChecked(True)
+        self.settings.station_caps['image'].setChecked(False)
+        button = next(button for button in self.settings.station_editor_host.findChildren(QAbstractButton)
+                      if button.text() == '测试')
+        raw_error = ('HTTPSConnectionPool(host=station.invalid): SSLError: handshake failed\n'
+                     'HTTPSConnectionPool(host=station.invalid): SSLError: handshake failed')
+        results = {
+            'video': dict(ok=False, level='error', message=raw_error,
+                          counts={'video': 3, 'chat': 2, 'image': 1}),
+            'llm': dict(ok=True, level='success', message='文本调用成功',
+                        counts={'video': 0, 'chat': 7, 'image': 0}, model='fixture-chat-model'),
+        }
+        log_entries = []
+        self.settings.log_callback = lambda *args: log_entries.append(args)
+        with patch('ui.pages.settings_page.probe_line', side_effect=[results['video'], results['llm']]), \
+                patch.object(self.settings, '_notice') as notice:
+            self.settings._test_station_fields(
+                self.settings.station_base, self.settings.station_key,
+                self.settings.station_upload, self.settings.station_upload_key,
+                self.settings.station_caps, button)
+            wait_until(lambda: not self.settings.jobs.busy)
+
+        visible = notice.call_args.args[0]
+        lines = visible.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith('视频 API：失败 ·'))
+        self.assertIn('视频 3 / 文本 2 / 图片 1', lines[0])
+        self.assertTrue(lines[1].startswith('AI分析（文本）API：成功 ·'))
+        self.assertIn('文本 7', lines[1])
+        self.assertIn('fixture-chat-model', lines[1])
+        self.assertNotIn('HTTPSConnectionPool', visible)
+        self.assertNotIn('SSLError', visible)
+        self.assertNotIn('模型分类', visible)
+        self.assertNotIn('文本实际命中模型', visible)
+        self.assertNotIn('不含隐藏套餐', visible)
+        tooltip = notice.call_args.kwargs['tooltip']
+        self.assertIn('HTTPSConnectionPool', tooltip)
+        self.assertEqual(tooltip.count('HTTPSConnectionPool'), 1)
+        self.assertIn('fixture-chat-model', tooltip)
+        self.assertTrue(any('HTTPSConnectionPool' in entry[0] for entry in log_entries))
+
+    def test_full_connection_probe_has_at_most_four_compact_capability_lines(self):
+        ssl_stack = 'HTTPSConnectionPool(host=probe.invalid): SSLError: UNEXPECTED_EOF'
+        probe_results = {
+            'video': dict(ok=True, level='success', message='发现视频模型',
+                          counts={'video': 13, 'chat': 27, 'image': 11}),
+            'chat': dict(ok=False, level='error', message=ssl_stack, counts={'video': 0, 'chat': 1, 'image': 0}),
+            'image': dict(ok=True, level='success', message='模型列表可达，未实际出图',
+                          counts={'video': 0, 'chat': 0, 'image': 4}),
+        }
+        log_entries = []
+        self.settings.log_callback = lambda *args: log_entries.append(args)
+        with patch('ui.pages.settings_page.probe_line', side_effect=lambda _base, _key, cap, **_kw:
+                   probe_results[cap]), \
+                patch('ui.pages.settings_page.probe_upload', return_value=dict(
+                    ok=True, level='warning', message='未配置上传 Token，跳过；不影响视频/文本/图片调用')), \
+                patch.object(self.settings, '_notice') as notice:
+            self.settings.test_connection()
+            wait_until(lambda: not self.settings.jobs.busy)
+
+        visible = notice.call_args.args[0]
+        lines = visible.splitlines()
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(lines[0].startswith('视频 API：成功 ·'))
+        self.assertIn('视频 13 / 文本 27 / 图片 11', lines[0])
+        self.assertTrue(lines[1].startswith('AI分析（文本）API：失败 ·'))
+        self.assertTrue(lines[2].startswith('图片 API：成功 ·'))
+        self.assertTrue(lines[3].startswith('上传 API：跳过 ·'))
+        self.assertNotIn('HTTPSConnectionPool', visible)
+        self.assertNotIn('SSLError', visible)
+        self.assertNotIn('模型分类', visible)
+        self.assertNotIn('文本实际命中模型', visible)
+        self.assertNotIn('不含隐藏套餐', visible)
+        tooltip = notice.call_args.kwargs['tooltip']
+        self.assertIn(ssl_stack, tooltip)
+        self.assertIn('视频 13 / 文本 27 / 图片 11', tooltip)
+        self.assertTrue(any(ssl_stack in entry[0] for entry in log_entries))
 
     def test_station_test_only_probes_checked_capabilities_and_keeps_llm_key(self):
         self.settings._open_station_editor(None)
@@ -176,6 +321,7 @@ class LineProbeSettingsTests(unittest.TestCase):
         message = notice.call_args.args[0]
         self.assertIn('AI分析（文本）API：成功', message)
         self.assertIn('上传 URL 未配置或格式无效', message)
+        self.assertTrue(message.splitlines()[-1].startswith('上传 API：跳过 ·'))
         self.assertEqual(notice.call_args.kwargs['level'], 'warning')
         self.assertTrue(button.isEnabled())
 

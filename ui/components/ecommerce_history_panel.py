@@ -52,7 +52,14 @@ class EcommerceHistoryRow(QWidget):
         self.group = dict(group)
         self.name_label.setText(group.get('product_name') or group['group_id'][:8])
         self.platform_label.setText(' / '.join(p.get('name', '') for p in group.get('platforms', [])))
-        self.status_label.setText(self.panel.stage_text(group['status']))
+        interrupted_reason = '上次运行未正常结束（程序中断）'
+        interrupted = tr(interrupted_reason)
+        status = group.get('status')
+        error = str(group.get('error') or '')
+        if error == interrupted_reason and status in ('failed', 'analyzing', 'generating'):
+            self.status_label.setText(interrupted)
+        else:
+            self.status_label.setText(self.panel.stage_text(status))
         try:
             created = datetime.fromtimestamp(group['created_at']).strftime('%Y-%m-%d %H:%M')
         except (ValueError, OSError, OverflowError, TypeError):

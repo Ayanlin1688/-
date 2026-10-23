@@ -1,6 +1,6 @@
 """Explicit teardown and layout settling for shared-QApplication tests."""
 from PyQt5 import sip
-from PyQt5.QtCore import QCoreApplication, QEvent, QEventLoop
+from PyQt5.QtCore import QCoreApplication, QElapsedTimer, QEvent, QEventLoop
 from PyQt5.QtWidgets import QLayout
 
 from ui import tokens
@@ -18,7 +18,11 @@ def reset_interface_scaling(app):
 
 def flush_layout(app, root):
     previous = None
-    for _iteration in range(12):
+    deadline = QElapsedTimer()
+    deadline.start()
+    # processEvents may return immediately; wait for the idle predicate instead
+    # of exhausting a fixed number of turns before delayed layout events run.
+    while deadline.elapsed() < 5000:
         app.processEvents(QEventLoop.AllEvents, 50)
         scaler = getattr(app, '_interface_scaler', None)
         if scaler is not None and scaler.pending:

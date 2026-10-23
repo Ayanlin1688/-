@@ -6,15 +6,80 @@ import tempfile
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PyQt5.QtCore import Qt, QPoint, QPointF, QMimeData
-from PyQt5.QtGui import QImage, QColor, QDragEnterEvent, QDropEvent
+from PyQt5.QtCore import Qt, QPoint, QPointF, QMimeData, QRect
+from PyQt5.QtGui import QImage, QColor, QDragEnterEvent, QDropEvent, QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QStyle, QStyleOptionButton, QWidget
 from core.config_manager import ConfigManager
 from core.matcher import StoryboardMatcher
 from ui.main_window import MainWindow
 from test_task_manager import wait_until
 from tests.qt_scale_support import reset_interface_scaling
+from tests.test_interface_scaling import FakeScreen
+from ui.scaling import apply_interface_scale
+
+
+class WorkspaceDirectoryBarGeometryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        reset_interface_scaling(self.app)
+        self.addCleanup(reset_interface_scaling, self.app)
+        from ui.widgets.workspace_directory_bar import WorkspaceDirectoryBar
+        self.root = QWidget()
+        row = QHBoxLayout(self.root)
+        self.bar = WorkspaceDirectoryBar(self.root)
+        row.addWidget(self.bar)
+        self.root.resize(900, 64)
+        self.root.show()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self.root.close()
+        self.root.deleteLater()
+        self.app.processEvents()
+
+    def test_match_button_icon_and_text_do_not_overlap_at_supported_scales(self):
+        try:
+            for label, scale in (('100%', 1.0), ('125%', 1.25),
+                                 ('150%', 1.5), ('175%', 1.75)):
+                with self.subTest(scale=label):
+                    apply_interface_scale(self.app, FakeScreen(), '1.0')
+                    # The offscreen platform cannot change OS DPI; apply the
+                    # requested scale directly to exercise the same layout path.
+                    self.app._interface_scaler.apply(scale)
+                    button = self.bar.match_button
+                    button_option = QStyleOptionButton()
+                    button.initStyleOption(button_option)
+                    content = button.style().subElementRect(
+                        QStyle.SE_PushButtonContents, button_option, button)
+                    metrics = button.fontMetrics()
+                    text_width = metrics.horizontalAdvance(button.text())
+                    self.assertGreaterEqual(content.width(), text_width)
+
+                    text_rect = QRect(
+                        content.x() + (content.width() - text_width) // 2,
+                        content.y() + (content.height() - metrics.height()) // 2,
+                        text_width,
+                        metrics.height(),
+                    )
+                    icon_rects = []
+                    draw_icon = button._drawIcon
+                    button._drawIcon = lambda icon, painter, rect, state=0: icon_rects.append(rect.toRect())
+                    try:
+                        button.render(QPixmap(button.size()))
+                    finally:
+                        button._drawIcon = draw_icon
+                    self.assertTrue(icon_rects, f'{label}: button did not lay out its icon')
+                    icon_rect = icon_rects[-1]
+                    self.assertFalse(
+                        icon_rect.intersects(text_rect),
+                        f'{label}: icon {icon_rect.getRect()} overlaps text {text_rect.getRect()}',
+                    )
+        finally:
+            apply_interface_scale(self.app, FakeScreen(), '1.0')
 
 
 class WorkspaceDashboardTests(unittest.TestCase):

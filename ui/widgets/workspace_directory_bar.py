@@ -1,7 +1,7 @@
 """Compact workspace directory strip; the detailed cards remain in the tool dialog."""
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
-from qfluentwidgets import IconWidget, PushButton, FluentIcon as FIF
+from qfluentwidgets import IconWidget, TransparentPushButton, FluentIcon as FIF
 from core.i18n import tr
 from .workspace_surface import ElidedLabel, WorkspaceCard, label
 from .status_dot import Dot
@@ -67,7 +67,7 @@ class WorkspaceDirectoryBar(QWidget):
         match_row.addWidget(self.match_dot)
         self.match_status = label(f"{tr('已匹配')} 0/0", 12, '#22C55E', True)
         match_row.addWidget(self.match_status)
-        self.match_button = PushButton(FIF.SEARCH, tr('匹配详情'))
+        self.match_button = TransparentPushButton(FIF.SEARCH, tr('匹配详情'))
         self.match_button.setMinimumSize(118, 32)
         self.match_button.setToolTip(tr('查看每个提示词绑定的参考图'))
         self.match_button.clicked.connect(self.match_requested)
@@ -89,15 +89,6 @@ class WorkspaceDirectoryBar(QWidget):
                 tone = map_text_color('#9ca3af')
                 name = tone.name() if isinstance(tone, QColor) else str(tone)
                 field.path.setTextColor(QColor(name), QColor(name))
-            if light:
-                button_style = ('QPushButton {background:transparent; border:0; color:#3E6FD1; font-size:12px; padding:2px 6px;}'
-                                ' QPushButton:hover {color:#2A55AE; background:rgba(15,26,52,0.06); border-radius:6px;}'
-                                ' QPushButton:disabled {color:rgba(15,26,52,0.35);}')
-            else:
-                button_style = ('QPushButton {background:transparent; border:0; color:#8AB4F8; font-size:12px; padding:2px 6px;}'
-                                ' QPushButton:hover {color:#BFD2FF; background:rgba(255,255,255,0.06); border-radius:6px;}'
-                                ' QPushButton:disabled {color:#55555f;}')
-            self.match_button.setStyleSheet(button_style)
         except RuntimeError:
             pass
 

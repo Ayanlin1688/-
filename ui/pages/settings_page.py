@@ -22,6 +22,7 @@ from core.repository_sync import RepositorySync, repository_secrets, default_rep
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
 from core.i18n import tr
+from core.api_errors import classify_connection_error, classify_http_error
 from core.line_routing import normalize_base_url, resolve_line
 from core.line_probe import probe_line, probe_upload, looks_like_upload_token, valid_http_url
 from core.model_catalog import classify_model
@@ -29,7 +30,9 @@ from ..components.model_options import apply_model_options
 from ..components.model_selector import ModelComboBox, ModelPickComboBox, catalog_snapshot, usable
 from datetime import datetime
 import copy
+import json
 import math
+import re
 import sys
 import time
 from urllib.parse import urlsplit
@@ -1145,16 +1148,13 @@ class SettingsPage(QWidget):
         def done(result):
             button.setEnabled(True)
             button.setText(tr('测试'))
-            counts = result.get('counts') or {}
-            count_text = tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
-                video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
-            suffix = f"\n{count_text}"
-            if result.get('model'):
-                suffix += '\n' + tr('文本实际命中模型：{model}').format(model=result['model'])
-            detail = self._redact_probe_error(result.get('message', ''))
-            message = f"{tr('成功') if result.get('ok') else tr('失败')} · {detail}{suffix}"
-            self.log_callback(f"{tr('测试')} {capability}: {message}", 'success' if result.get('ok') else 'error')
-            self._notice(message, bool(result.get('ok')))
+            title = {'video': tr('视频 API'), 'chat': tr('AI分析（文本）API'),
+                     'image': tr('图片 API')}[capability]
+            message = self._format_probe_line(title, result, capability)
+            raw_message = self._format_probe_detail(title, result) + self._raw_probe_metadata(result)
+            tone = 'success' if result.get('ok') else 'error'
+            self.log_callback(f"{tr('测试')} {capability}: {raw_message}", tone)
+            self._notice(message, bool(result.get('ok')), tooltip=raw_message)
 
         def failed(message):
             done(dict(ok=False, message=self._redact_probe_error(message), counts={}))
@@ -1295,6 +1295,115 @@ class SettingsPage(QWidget):
                 text = text.replace(str(secret), '[REDACTED]')
         return tr(text)
 
+    @staticmethod
+    def _dedupe_probe_lines(text):
+        lines = []
+        seen = set()
+        statuses = '|'.join(re.escape(tr(status)) for status in ('成功', '失败', '跳过'))
+        for line in str(text or '').splitlines():
+            line = line.strip()
+            if line and line not in seen:
+                seen.add(line)
+                match = re.match(r'^.+?：(?:' + statuses + r') · (.*)$', line)
+                if match:
+                    lines.append(line)
+                    detail = match.group(1).strip()
+                    if detail:
+                        seen.add(detail)
+                    continue
+                lines.append(line)
+        return '\n'.join(lines)
+
+    def _friendly_probe_detail(self, result):
+        raw = self._redact_probe_error(result.get('message') or tr('测试未完成'))
+        lowered = raw.casefold()
+        if any(marker in lowered for marker in (
+                'httpsconnectionpool', 'connectionpool', 'proxyerror', 'connectionerror',
+                'sslerror', 'unexpected_eof', 'ssl_c_syscall', 'handshake', 'max retries',
+                'readtimeout', 'connecttimeout', 'timed out', 'timeout')):
+            return tr(classify_connection_error(raw)['message'])
+
+        status = result.get('status_code')
+        if isinstance(status, str) and status.isdecimal():
+            status = int(status)
+        if not isinstance(status, int) or isinstance(status, bool):
+            status = None
+        if status is None:
+            match = re.search(r'\bHTTP\s*(\d{3})\b', raw, flags=re.IGNORECASE)
+            status = int(match.group(1)) if match else None
+        if status is None and raw.lstrip().startswith(('{', '[')):
+            try:
+                payload = json.loads(raw)
+                error = payload.get('error', payload) if isinstance(payload, dict) else {}
+                candidate = error.get('code') if isinstance(error, dict) else None
+                if isinstance(candidate, str) and candidate.isdecimal():
+                    candidate = int(candidate)
+                status = candidate if isinstance(candidate, int) and not isinstance(candidate, bool) else None
+            except (TypeError, ValueError):
+                status = None
+            if status is None:
+                status = 400
+        if isinstance(status, int) and 200 <= status < 300:
+            if result.get('ok'):
+                return raw
+            if raw.lstrip().startswith(('{', '[')):
+                return tr('请求失败，请检查线路与参数')
+            return raw
+        if status is not None:
+            try:
+                classified = classify_http_error(status, raw)
+                if classified['category'] == 'http':
+                    return tr('HTTP {code}：{message}').format(
+                        code=status, message=tr('请求失败，请检查线路与参数'))
+                return tr(classified['message'])
+            except (TypeError, ValueError):
+                pass
+        if raw.lstrip().startswith(('{', '[')):
+            return tr('请求失败，请检查线路与参数')
+        return raw
+
+    def _format_probe_line(self, title, result, capability):
+        if result.get('level') == 'warning':
+            status = tr('跳过')
+        else:
+            status = tr('成功') if result.get('ok') else tr('失败')
+        detail = '；'.join(self._dedupe_probe_lines(self._friendly_probe_detail(result)).splitlines())
+        suffix = ''
+        if capability in ('video', 'chat', 'image'):
+            counts = result.get('counts') or {}
+            count_text = tr('视频 {video} / 文本 {chat} / 图片 {image}').format(
+                video=counts.get('video', 0), chat=counts.get('chat', 0),
+                image=counts.get('image', 0))
+            if result.get('ok') and capability == 'chat' and result.get('model'):
+                detail = tr('文本调用成功')
+                suffix = tr('命中 {model}；{counts}').format(
+                    model=result['model'], counts=count_text)
+            elif counts:
+                suffix = count_text
+        if suffix:
+            detail += f'（{suffix}）'
+        return f'{title}：{status} · {detail}'
+
+    def _format_probe_detail(self, title, result):
+        if result.get('level') == 'warning':
+            status = tr('跳过')
+        else:
+            status = tr('成功') if result.get('ok') else tr('失败')
+        detail = self._redact_probe_error(result.get('message') or tr('测试未完成'))
+        return f'{title}：{status} · {detail}'
+
+    @staticmethod
+    def _raw_probe_metadata(result):
+        lines = []
+        counts = result.get('counts') or {}
+        if counts:
+            lines.append(tr('视频 {video} / 文本 {chat} / 图片 {image}').format(
+                video=counts.get('video', 0), chat=counts.get('chat', 0),
+                image=counts.get('image', 0)))
+        if result.get('model'):
+            lines.append(tr('文本实际命中模型：{model}').format(model=result['model']))
+        return '\n' + '\n'.join(lines) if lines else ''
+
     def _repair_upload_fields(self, url_field, token_field, *, notify=True, log_invalid=True):
         raw_url, token, changed, overwritten = self._correct_upload_pair(
             url_field.text(), token_field.text())
@@ -1352,29 +1461,28 @@ class SettingsPage(QWidget):
             titles = {'video': tr('视频 API'), 'llm': tr('AI分析（文本）API'),
                       'image': tr('图片 API')}
             messages = []
+            raw_details = []
             all_ok = True
             for key, _capability in selected:
                 result = results.get(key, {})
                 ok = bool(result.get('ok'))
                 all_ok = all_ok and ok
-                line = f"{titles[key]}：{tr('成功') if ok else tr('失败')} · " \
-                       f"{self._redact_probe_error(result.get('message', ''))}"
-                counts = result.get('counts') or {}
-                if counts:
-                    line += '\n' + tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
-                        video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
-                if result.get('model'):
-                    line += '\n' + tr('文本实际命中模型：{model}').format(model=result['model'])
-                messages.append(line)
-                self.log_callback(line, 'success' if ok else 'error')
+                capability = {'video': 'video', 'llm': 'chat', 'image': 'image'}[key]
+                messages.append(self._format_probe_line(titles[key], result, capability))
+                raw = self._format_probe_detail(titles[key], result) + self._raw_probe_metadata(result)
+                raw_details.append(raw)
+                self.log_callback(raw, 'success' if ok else 'error')
             level = 'error' if not all_ok else 'success'
             if not upload_valid:
                 warning = tr('上传 URL 未配置或格式无效，本次仅测试所选 API 线路')
-                messages.append(warning)
+                messages.append(self._format_probe_line(tr('上传 API'), dict(
+                    ok=True, level='warning', message=warning), 'upload'))
+                raw_details.append(warning)
                 self.log_callback(warning, 'warning')
                 if all_ok:
                     level = 'warning'
-            self._notice('\n'.join(messages), all_ok, level=level)
+            self._notice('\n'.join(messages), all_ok, level=level,
+                         tooltip=self._dedupe_probe_lines('\n'.join(raw_details)))
 
         def failed(message):
             finish({key: dict(ok=False, message=self._redact_probe_error(message))
@@ -2205,26 +2313,25 @@ class SettingsPage(QWidget):
             self.test_button.setToolTip(tr('分别检查视频、文本和图片 API；上传 Token 未配置时跳过上传测试'))
             self.last_connection_result = result
             messages = []
+            raw_details = []
             for name, title in (('video', tr('视频 API')), ('chat', tr('AI分析（文本）API')),
                                 ('image', tr('图片 API')), ('upload', tr('上传 API'))):
                 item = result.get(name, {})
+                capability = name if name in ('video', 'chat', 'image') else 'upload'
+                message = self._format_probe_line(title, item, capability)
+                raw = self._format_probe_detail(title, item) + self._raw_probe_metadata(item)
                 if item.get('level') == 'warning':
-                    status, level = tr('跳过'), 'warning'
-                elif item.get('ok'):
-                    status, level = tr('成功'), 'success'
+                    level = 'warning'
                 else:
-                    status, level = tr('失败'), 'error'
-                detail = self._redact_probe_error(item.get('message', tr('测试未完成')))
-                message = f"{title}：{status} · {detail}"
-                if name in ('video', 'chat', 'image'):
-                    counts = item.get('counts') or {}
-                    message += '\n' + tr('模型分类：视频 {video} / 文本 {chat} / 图片 {image}（不含隐藏套餐）').format(
-                        video=counts.get('video', 0), chat=counts.get('chat', 0), image=counts.get('image', 0))
-                    if item.get('model'):
-                        message += '\n' + tr('文本实际命中模型：{model}').format(model=item['model'])
-                self.log_callback(message, level)
+                    level = 'success' if item.get('ok') else 'error'
+                self.log_callback(raw, level)
                 messages.append(message)
-            self._notice('\n'.join(messages), bool(result.get('ok')))
+                raw_details.append(raw)
+            self._notice('\n'.join(messages), bool(result.get('ok')),
+                         level='warning' if any(item.get('level') == 'warning'
+                                                for item in result.values() if isinstance(item, dict))
+                         and result.get('ok') else None,
+                         tooltip=self._dedupe_probe_lines('\n'.join(raw_details)))
 
         def failed(message):
             clean = self._redact_probe_error(message)
@@ -2239,17 +2346,20 @@ class SettingsPage(QWidget):
         except Exception as error:
             failed(error)
 
-    def _notice(self, message, success=True, level=None):
+    def _notice(self, message, success=True, level=None, tooltip=None):
         tone = level or ('success' if success else 'error')
         self.log_callback(message, tone)
-        return self._show_result_infobar(tr('测试连接'), message, tone)
+        return self._show_result_infobar(tr('测试连接'), message, tone, tooltip=tooltip)
 
-    def _show_result_infobar(self, title, message, tone):
+    def _show_result_infobar(self, title, message, tone, tooltip=None):
         icon = {'success': InfoBarIcon.SUCCESS, 'warning': InfoBarIcon.WARNING,
                 'error': InfoBarIcon.ERROR}.get(tone, InfoBarIcon.ERROR)
         duration = {'success': 5000, 'warning': 7000, 'error': 9000}.get(tone, 9000)
         bar = _ResultInfoBar(icon, title, self._redact_probe_error(message), orient=Qt.Vertical,
                              parent=self.window(), duration=duration, position=InfoBarPosition.TOP)
+        full_detail = self._redact_probe_error(tooltip if tooltip is not None else message)
+        bar.titleLabel.setToolTip(full_detail)
+        bar.contentLabel.setToolTip(full_detail)
         bar.show()
         return bar
 

@@ -21,7 +21,7 @@ from core.i18n import tr
 from core.line_routing import resolve_line
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
-from ..components.ecommerce_result_panel import EcommerceResultPanel
+from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from ..components.reference_thumbnail import ReferenceGrid, ReferenceThumbnail
@@ -790,9 +790,11 @@ class EcommercePage(QWidget):
         if record.get('size'):
             parts.append(record['size'])
         parts.extend(record.get('warnings', []))
-        if record.get('error'):
-            parts.append(record['error'])
+        error_text, error_tooltip = EcommerceResultCard._display_error(record.get('error'), record)
+        if error_text:
+            parts.append(error_text)
         self.item_labels[key].setText(' · '.join(parts))
+        self.item_labels[key].setToolTip(error_tooltip)
         self.result_panel.update_item(record)
         card = self.result_panel.cards.get(record.get('item_id'))
         if card is not None and record.get('model'):
