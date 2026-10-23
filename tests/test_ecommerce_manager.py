@@ -927,7 +927,8 @@ class EcommerceConfigTests(unittest.TestCase):
     def test_old_configuration_merges_all_defaults_and_preserves_existing_values(self):
         expected = dict(analysis_model='gemini-3.8-flash', image_model='gpt-image-2.5-sunburst',
                         default_tier='1K', default_carousel_ratio='1:1', default_detail_ratio='3:4',
-                        default_carousel_count=3, default_detail_count=4, language='zh', max_concurrency=5)
+                        default_carousel_count=3, default_detail_count=4, language='zh', max_concurrency=5,
+                        thumbnail_adaptive=True)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'config.json'
             old = dict(api={'base_url': 'offline-fixture', 'api_key': ''},

@@ -23,7 +23,17 @@ class VisualMotionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.config = ConfigManager(Path(self.temp.name) / 'config.json')
         self.window = MainWindow(self.config, network_time=False)
-        self.window.show(); QTest.qWait(100)
+        # Startup geometry now respects the screen work area.  The offscreen
+        # plugin exposes only 800x600, where the workspace queue is below the
+        # viewport and correctly suspends its animations.  These tests exercise
+        # visible animations, so give their fixture an explicit desktop size.
+        self.window.resize(1400, 900)
+        self.window.show()
+        # Let the startup scan finish before a test installs its synthetic rows.
+        # Otherwise its queued empty result may delete those rows mid-assertion.
+        wait_until(lambda: self.window.workspace_page._scan_version > 0
+                   and not self.window._background_busy()
+                   and not self.window.workspace_page.queue_panel.visibleRegion().isEmpty())
 
     def tearDown(self):
         self.window.close(); wait_until(lambda: not self.window._background_busy())

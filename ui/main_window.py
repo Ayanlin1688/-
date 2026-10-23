@@ -139,10 +139,13 @@ class MainWindow(FluentWindow):
     @staticmethod
     def _bounded_geometry(rect, available, minimum):
         """将窗口约束在 Qt 提供的可用工作区内，兼容负坐标多屏。"""
-        width = min(available.width(), max(minimum.width(), rect.width()))
-        height = min(available.height(), max(minimum.height(), rect.height()))
-        x = max(available.left(), min(rect.x(), available.right() - width + 1))
-        y = max(available.top(), min(rect.y(), available.bottom() - height + 1))
+        width = max(minimum.width(), min(available.width(), rect.width()))
+        height = max(minimum.height(), min(available.height(), rect.height()))
+        # 小于最低布局尺寸的远程桌面仍须保留最小尺寸，并将溢出均分到两侧。
+        x = (available.x() + (available.width() - width) // 2 if width > available.width()
+             else max(available.left(), min(rect.x(), available.right() - width + 1)))
+        y = (available.y() + (available.height() - height) // 2 if height > available.height()
+             else max(available.top(), min(rect.y(), available.bottom() - height + 1)))
         return QRect(x, y, width, height)
 
     def _restore_window_geometry(self):
@@ -181,9 +184,7 @@ class MainWindow(FluentWindow):
                 rect = QRect(0, 0, min(1400, available.width()), min(900, available.height()))
                 rect.moveCenter(available.center())
                 self._restore_maximized = False
-            # A very small remote-desktop work area takes priority over the usual minimum.
-            self.setMinimumSize(min(960, available.width()), min(600, available.height()))
-            self.setGeometry(rect)
+            self.setGeometry(self._bounded_geometry(rect, available, self.minimumSize()))
         finally:
             self._restoring_geometry = False
             self._geometry_ready = True
@@ -226,7 +227,6 @@ class MainWindow(FluentWindow):
         ratio = new_scale / old_scale
         scaled = QRect(0, 0, round(rect.width() * ratio), round(rect.height() * ratio))
         scaled.moveCenter(rect.center())
-        self.setMinimumSize(min(960, available.width()), min(600, available.height()))
         self.setGeometry(self._bounded_geometry(scaled, available, self.minimumSize()))
 
     def _uncaught_exception(self, exc_type, exc, path):

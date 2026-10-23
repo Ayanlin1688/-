@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PyQt5.QtCore import QPoint, QRect
+from PyQt5.QtCore import QPoint, QRect, QSize
 from PyQt5.QtWidgets import QApplication
 
 from core.config_manager import ConfigManager
@@ -26,6 +26,11 @@ class WindowGeometryTests(unittest.TestCase):
     def setUp(self):
         reset_interface_scaling(self.app)
         self.addCleanup(reset_interface_scaling, self.app)
+        # offscreen 的默认 800×600 屏幕不足最低布局尺寸；正常放置用明确工作区。
+        self.available = QRect(0, 0, 1920, 1040)
+        work_area = patch('PyQt5.QtGui.QScreen.availableGeometry', return_value=self.available)
+        work_area.start()
+        self.addCleanup(work_area.stop)
         if sys.platform == 'win32':
             native = patch('qframelesswindow.windows.win32gui.SetWindowPos')
             native.start()
@@ -80,6 +85,20 @@ class WindowGeometryTests(unittest.TestCase):
                 window = self.create_window(dict(x=available.left(), y=available.top(), w=width, h=height, maximized=0))
                 self.assertEqual(window.width(), min(960, available.width()))
                 self.assertEqual(window.height(), min(600, available.height()))
+
+    def test_tiny_work_area_preserves_minimum_size_and_centers_overflow(self):
+        available = QRect(-800, 40, 800, 500)
+        with patch('PyQt5.QtGui.QScreen.availableGeometry', return_value=available):
+            window = self.create_window()
+            self.assertEqual(window.minimumSize(), QSize(960, 600))
+            self.assertEqual(window.size(), QSize(960, 600))
+            self.assertLessEqual((window.geometry().center() - available.center()).manhattanLength(), 2)
+            window.show()
+            self.app.processEvents()
+            window.on_interface_scale_committed(1.0, 1.75)
+            self.assertEqual(window.minimumSize(), QSize(960, 600))
+            self.assertEqual(window.size(), QSize(960, 600))
+            self.assertLessEqual((window.geometry().center() - available.center()).manhattanLength(), 2)
 
     def test_invalid_saved_geometry_has_a_safe_centered_fallback(self):
         for saved in (dict(x='bad', y=0, w=1000, h=650), dict(x=0), []):
