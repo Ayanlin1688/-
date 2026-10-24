@@ -6,12 +6,13 @@ import threading
 from urllib.parse import urlsplit
 
 from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
-    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget,
+    QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
+    QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
-    CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
+    CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
     SwitchButton, TextEdit, TitleLabel, TransparentToolButton, FluentIcon as FIF,
 )
@@ -40,7 +41,7 @@ from ..components.platform_preview_dialog import PlatformPreviewDialog
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from .ecommerce_batch_page import EcommerceBatchPage
 from ..file_actions import open_local
-from ..responsive import WrapLayout, scrollable_body
+from ..responsive import WrapLayout
 from ..theme import style_controls, style_page
 from ..tokens import px
 from ..widgets.status_dot import Dot
@@ -208,6 +209,8 @@ class EcommercePage(QWidget):
         self._lightbox = None
         self._platform_selection_order = []
         self._picker_buttons = []
+        self._single_cards = []
+        self._single_card_titles = []
         defaults = config_manager.config.get('ecommerce', {})
 
         shell = QVBoxLayout(self)
@@ -235,19 +238,11 @@ class EcommercePage(QWidget):
         task_layout.addWidget(self.task_list, 1)
         self.stack.addWidget(self.task_view)
 
-        # 视图 1：单个制作（原有表单）
+        # 视图 1：固定页头 + 两个独立滚动区；窄窗只改变列方向。
         self.single_view = QWidget()
         self.single_view.setObjectName('ecommerceSingleView')
         self.stack.addWidget(self.single_view)
-        root = scrollable_body(self.single_view)
-        self.body_scroll = self.single_view.body_scroll
-        self.body_content = self.single_view.body_content
-        root.setContentsMargins(px(26), px(16), px(26), px(20))
-        root.setSpacing(px(16))
-        root.addWidget(TitleLabel(tr('电商图制作')))
-        hint = CaptionLabel(tr('选择平台与产品资料 · AI分析 → 图片生成 → 完成后打开输出目录'))
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        root, result_root = self._setup_single_columns()
 
         # 视图 2：批量制作（共享默认 + 30 行表格 + 草稿持久化）
         self.batch_page = EcommerceBatchPage(self.config_manager, self)
@@ -269,7 +264,9 @@ class EcommercePage(QWidget):
             'QWidget#ecommerceTaskView, QWidget#ecommerceSingleView,'
             ' QWidget#ecommerceBatchView {background: transparent;}')
 
-        platform_layout = self._card(root, tr('选择平台（最多 {count} 个）').format(count=MAX_PLATFORMS))
+        self._upload_card(root)
+        platform_layout = self._card(root, tr('电商平台*'))
+        self.platform_card = platform_layout.parentWidget()
         self.platform_checkboxes = {}
         self.platform_groups = {}
         for label, records in ((tr('国内'), domestic()), (tr('海外'), overseas())):
@@ -293,6 +290,7 @@ class EcommercePage(QWidget):
         platform_layout.addWidget(self.ratio_conflict)
 
         product_layout = self._card(root, tr('产品资料'))
+        self.product_card = product_layout.parentWidget()
         self.product_name = LineEdit()
         self.product_name.setPlaceholderText(tr('产品名称（必填）'))
         self.product_info = PlainTextEdit()
@@ -302,6 +300,7 @@ class EcommercePage(QWidget):
         product_layout.addWidget(self.product_info)
 
         options = self._card(root, tr('图片配置'))
+        self.options_card = options.parentWidget()
         row = WrapLayout(spacing=px(16))
         self.language = ComboBox()
         for key, value in LANGUAGE_TEXT.items():
@@ -333,9 +332,8 @@ class EcommercePage(QWidget):
             counts.addLayout(self._field(title, widget))
         options.addLayout(counts)
 
-        self._upload_card(root)
-
         models = self._card(root, tr('模型设置'))
+        self.models_card = models.parentWidget()
         self.model_grid = QGridLayout()
         self.model_grid.setContentsMargins(0, 0, 0, 0)
         self.model_grid.setHorizontalSpacing(px(10))
@@ -430,16 +428,23 @@ class EcommercePage(QWidget):
         self.refresh_effective_lines()
         self.refresh_model_pickers()
 
-        actions = WrapLayout()
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(12)
         self.start_button = PrimaryPushButton(tr('开始生成'))
         self.cancel_button = PushButton(tr('取消'))
         self.cancel_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_generation)
         self.cancel_button.clicked.connect(self.cancel_generation)
-        actions.addWidget(self.start_button)
+        for button in (self.start_button, self.cancel_button):
+            button.setFixedHeight(40)
+        actions.addStretch(1)
         actions.addWidget(self.cancel_button)
+        actions.addWidget(self.start_button)
         root.addLayout(actions)
-        progress = self._card(root, tr('生成进度'), form=False)
+        root.addStretch(1)
+        progress = self._card(result_root, tr('生成进度'), form=False)
+        self.progress_card = progress.parentWidget()
         self.stage_label = self._text_label(tr('等待开始'))
         self.summary_label = self._text_label()
         progress.addWidget(self.stage_label)
@@ -462,15 +467,17 @@ class EcommercePage(QWidget):
         self.result_panel.log_message.connect(self._append_log)
         self.result_panel.preview_requested.connect(self._open_image_lightbox)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
-        root.addWidget(self.result_panel)
-        root.addStretch(1)
+        result_root.addWidget(self.result_panel)
+        result_root.addStretch(1)
         style_controls(self)
         style_page(self)
         materials.register_theme_callback(self._refresh_colors)
         self._refresh_colors()
         self._refresh_conflicts()
+        self._sync_result_columns()
         self._schedule_history_refresh()
         self.body_scroll.viewport().installEventFilter(self)
+        self.single_view.installEventFilter(self)
 
     # —— 视图切换（QStackedWidget：任务列表 / 单个制作 / 批量制作） ——
     TASK_VIEW, SINGLE_VIEW, BATCH_VIEW = 0, 1, 2
@@ -484,7 +491,9 @@ class EcommercePage(QWidget):
 
     def show_single_creation(self):
         self.stack.setCurrentIndex(self.SINGLE_VIEW)
+        self._fit_single_columns()
         self._fit_model_columns()
+        self._sync_result_columns()
         QTimer.singleShot(0, self._fit_model_columns)
 
     def _show_batch_view(self):
@@ -563,16 +572,127 @@ class EcommercePage(QWidget):
     def busy(self):
         return self._worker is not None
 
+    def _setup_single_columns(self):
+        shell = QVBoxLayout(self.single_view)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        self.single_header = QWidget()
+        self.single_header.setObjectName('ecommerceSingleHeader')
+        self.single_header.setMinimumHeight(76)
+        header = QHBoxLayout(self.single_header)
+        header.setContentsMargins(48, 12, 48, 12)
+        header.setSpacing(24)
+        heading = QVBoxLayout()
+        heading.setSpacing(4)
+        self.single_title_label = TitleLabel(tr('电商图制作'))
+        self.single_subtitle_label = CaptionLabel(
+            tr('上传产品图，AI 自动生成电商轮播图与详情图'))
+        self.single_subtitle_label.setWordWrap(True)
+        self.single_subtitle_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        heading.addWidget(self.single_title_label)
+        heading.addWidget(self.single_subtitle_label)
+        header.addLayout(heading, 1)
+        self.history_tasks_button = PushButton(tr('历史任务'))
+        self.history_tasks_button.setObjectName('ecommerceHistoryTasksButton')
+        self.batch_creation_button = PushButton(tr('批量制作'))
+        self.batch_creation_button.setObjectName('ecommerceBatchCreationButton')
+        self.history_tasks_button.clicked.connect(lambda: self.show_task_list())
+        self.batch_creation_button.clicked.connect(lambda: self._show_batch_view())
+        navigation = QHBoxLayout()
+        navigation.setSpacing(12)
+        for button in (self.history_tasks_button, self.batch_creation_button):
+            button.setFixedHeight(36)
+            navigation.addWidget(button)
+        header.addLayout(navigation)
+        shell.addWidget(self.single_header)
+
+        self.single_columns_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.single_columns_layout.setContentsMargins(48, 0, 48, 24)
+        self.single_columns_layout.setSpacing(24)
+        shell.addLayout(self.single_columns_layout, 1)
+        columns = []
+        for name in ('ecommerceFormScroll', 'ecommerceResultScroll'):
+            area = QScrollArea()
+            area.setObjectName(name)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setWidgetResizable(True)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            area.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            content = QWidget()
+            content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            layout = QVBoxLayout(content)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(16)
+            # 控件的内容最小宽度不能反向撑大整个页面。
+            layout.setSizeConstraint(QLayout.SetNoConstraint)
+            area.setWidget(content)
+            self.single_columns_layout.addWidget(area, 1)
+            columns.append((area, content, layout))
+        self.body_scroll, self.body_content, form_root = columns[0]
+        self.result_scroll, self.result_content, result_root = columns[1]
+
+        self.right_header_host = QWidget()
+        self.right_header_host.setObjectName('ecommerceRightHeaderHost')
+        self.right_header_host.setFixedHeight(0)
+        result_root.addWidget(self.right_header_host)
+        self.empty_state = self._single_card('ecommerceEmptyState')
+        self.empty_state.setMinimumHeight(420)
+        empty = QVBoxLayout(self.empty_state)
+        empty.setContentsMargins(28, 28, 28, 28)
+        empty.setSpacing(16)
+        empty.addStretch(1)
+        self.empty_icon = QLabel()
+        self.empty_icon.setFixedSize(40, 40)
+        empty.addWidget(self.empty_icon, 0, Qt.AlignHCenter)
+        self.empty_title_label = QLabel(tr('填写完左侧信息后点击「开始制作」'))
+        self.empty_subtitle_label = QLabel(tr('AI 将自动分析产品并生成图片'))
+        for label in (self.empty_title_label, self.empty_subtitle_label):
+            label.setTextFormat(Qt.PlainText)
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignCenter)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            empty.addWidget(label)
+        empty.addStretch(2)
+        result_root.addWidget(self.empty_state)
+        return form_root, result_root
+
+    def _single_card(self, name):
+        # 普通 QFrame 保持不透明直显，不挂载卡片入场/透明度动效。
+        card = QFrame()
+        card.setObjectName(name)
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        self._single_cards.append(card)
+        return card
+
     def _card(self, root, title, form=True):
-        card = CardWidget(self)
+        card = self._single_card('ecommerceSingleCard' + str(len(self._single_cards)))
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(px(18), px(16), px(18), px(16))
-        layout.setSpacing(px(12))
-        layout.addWidget(StrongBodyLabel(tr(title)))
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(16)
+        label = StrongBodyLabel(title)
+        self._single_card_titles.append(label)
+        layout.addWidget(label)
         root.addWidget(card)
         if form:
             self._form_cards.append(card)
         return layout
+
+    def _fit_single_columns(self):
+        if not hasattr(self, 'single_columns_layout'):
+            return
+        wide = self.single_view.width() >= px(1240)
+        direction = QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom
+        if self.single_columns_layout.direction() != direction:
+            self.single_columns_layout.setDirection(direction)
+        self.single_columns_layout.setSpacing(px(24 if wide else 16))
+
+    def _sync_result_columns(self):
+        """右栏只由当前任务/结果状态决定，校验失败不改变空态。"""
+        has_results = bool(self.result_panel.cards)
+        active = self.busy or self._group is not None or has_results
+        self.empty_state.setVisible(not active)
+        self.progress_card.setVisible(active)
+        self.result_panel.setVisible(has_results or self._group is not None)
 
     @staticmethod
     def _field(title, widget):
@@ -605,37 +725,43 @@ class EcommercePage(QWidget):
 
     # —— 上传区（参考软件同款：产品图 6 格 + 风格图 1 格 + 两个选择器） ——
     def _upload_card(self, root):
-        card = CardWidget(self)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(px(18), px(16), px(18), px(16))
-        layout.setSpacing(px(10))
-        self._form_cards.append(card)
-
-        layout.addLayout(self._upload_header(
+        self.product_upload_card = self._single_card('ecommerceProductUploadCard')
+        product = QVBoxLayout(self.product_upload_card)
+        product.setContentsMargins(20, 18, 20, 18)
+        product.setSpacing(16)
+        product.addLayout(self._upload_header(
             tr('产品图'), target='product', required=True,
             hint=tr('上传产品白底图，最多 6 张')))
         self.product_grid = ImageUploadGrid('product', 6, self)
         self.product_grid.changed.connect(self._on_product_images_changed)
         self.product_grid.preview_requested.connect(self._preview_product_image)
         self.product_grid.add_requested.connect(self._choose_products)
-        layout.addWidget(self.product_grid)
-
-        layout.addSpacing(px(8))
-        layout.addLayout(self._upload_header(
+        product.addWidget(self.product_grid)
+        root.addWidget(self.product_upload_card)
+        self.style_upload_card = self._single_card('ecommerceStyleUploadCard')
+        style = QVBoxLayout(self.style_upload_card)
+        style.setContentsMargins(20, 18, 20, 18)
+        style.setSpacing(16)
+        style.addLayout(self._upload_header(
             tr('风格参考图'), target='style', optional=True,
             hint=tr('可选，上传参考图来指定风格')))
         self.style_grid = ImageUploadGrid('style', 1, self)
         self.style_grid.changed.connect(self._on_style_images_changed)
         self.style_grid.preview_requested.connect(self._preview_style_image)
         self.style_grid.add_requested.connect(self._choose_style)
-        layout.addWidget(self.style_grid)
-        root.addWidget(card)
-        return card
+        style.addWidget(self.style_grid)
+        root.addWidget(self.style_upload_card)
+        self._form_cards.extend((self.product_upload_card, self.style_upload_card))
+        self._refresh_references()
 
     def _upload_header(self, title, *, target, required=False, optional=False, hint=''):
+        layout = QVBoxLayout()
+        layout.setSpacing(4)
         header = QHBoxLayout()
-        header.setSpacing(px(8))
-        header.addWidget(StrongBodyLabel(title))
+        header.setSpacing(8)
+        label = StrongBodyLabel(title)
+        self._single_card_titles.append(label)
+        header.addWidget(label)
         if required:
             star = QLabel('*')
             star.setStyleSheet('color: %s;' % materials.ERROR)
@@ -646,7 +772,7 @@ class EcommercePage(QWidget):
             header.addWidget(badge)
         hint_label = CaptionLabel(hint)
         hint_label.setWordWrap(True)
-        header.addWidget(hint_label)
+        hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         header.addStretch(1)
         used = self._picker_button(tr('已用图片'), tr('从已完成任务选择图片'))
         gallery = self._picker_button(tr('画廊选图'), tr('从本地画廊目录选择图片'))
@@ -658,11 +784,13 @@ class EcommercePage(QWidget):
         gallery.setObjectName('galleryButton_' + target)
         header.addWidget(used)
         header.addWidget(gallery)
-        return header
+        layout.addLayout(header)
+        layout.addWidget(hint_label)
+        return layout
 
     def _picker_button(self, text, tooltip):
         button = PushButton(text)
-        button.setFixedHeight(px(24))
+        button.setFixedHeight(28)
         button.setToolTip(tooltip)
         button.setCursor(Qt.PointingHandCursor)
         self._picker_buttons.append(button)
@@ -670,20 +798,17 @@ class EcommercePage(QWidget):
 
     def _refresh_picker_button_styles(self):
         colors = materials.palette()
-        accent = QColor(colors['accent'])
-        hover = accent.darker(112).name()
-        disabled = QColor(colors['text3']).name()
         for button in self._picker_buttons:
             try:
                 button.setStyleSheet(
-                    'QPushButton {background: %s; color: %s; border: 0;'
-                    ' border-radius: %dpx; padding: 2px %dpx;'
-                    ' font-size: %dpx; font-weight: 500;}'
+                    'QPushButton {background: transparent; color: %s; border: 1px solid %s;'
+                    ' border-radius: 6px; padding: 2px 8px;'
+                    ' font-size: 12px; font-weight: 500;}'
                     ' QPushButton:hover {background: %s;}'
-                    ' QPushButton:disabled {background: %s; color: %s;}'
-                    % (accent.name(), materials.ECOMMERCE['white'], px(6),
-                       px(8), px(12), hover, materials.rgba(colors['border']),
-                       disabled))
+                    ' QPushButton:disabled {color: %s; border-color: %s;}'
+                    % (materials.ecommerce_color('single_button_text'), colors['accent'],
+                       materials.ecommerce_color('single_button_hover'),
+                       colors['text3'], materials.rgba(colors['border'])))
             except RuntimeError:
                 continue
 
@@ -810,8 +935,8 @@ class EcommercePage(QWidget):
         viewport = self.body_scroll.viewport().width()
         # 模型卡居中限宽：列宽预算最多按 980px 卡宽计算，宽窗不把控件拉满整行；
         # 同时扣掉卡片自身左右内边距，避免窄窗下卡片最小宽度撑出横向滚动。
-        card_width = min(px(980), max(px(320), viewport - outer.left() - outer.right()))
-        available = max(px(120), card_width - px(36) - inner.left() - inner.right())
+        card_width = min(px(980), max(0, viewport - outer.left() - outer.right()))
+        available = max(px(120), card_width - px(40) - inner.left() - inner.right())
         spacing = max(0, self.model_grid.horizontalSpacing()) * 4
         reserved = sum(max(first.minimumSizeHint().width(), second.minimumSizeHint().width(),
                            first.minimumWidth(), second.minimumWidth())
@@ -836,7 +961,9 @@ class EcommercePage(QWidget):
             label.setMaximumWidth(px(96))
 
     def refresh_interface_scale(self):
+        self._fit_single_columns()
         self._fit_model_columns()
+        self._refresh_empty_icon()
         for attribute in ('product_grid', 'style_grid'):
             grid = getattr(self, attribute, None)
             if grid is not None:
@@ -851,6 +978,8 @@ class EcommercePage(QWidget):
             pass
 
     def eventFilter(self, watched, event):
+        if watched is self.single_view and event.type() == QEvent.Resize:
+            self._fit_single_columns()
         if (watched is self.body_scroll.viewport()
                 and event.type() == QEvent.Resize):
             self._fit_model_columns()
@@ -1069,6 +1198,7 @@ class EcommercePage(QWidget):
 
     def _refresh_colors(self):
         colors = materials.palette()
+        self._refresh_single_styles()
         self.background_conflict.setStyleSheet('color: %s;' % colors['error'])
         self.ratio_conflict.setStyleSheet('color: %s;' % colors['warning'])
         for label in (self.stage_label, self.summary_label, *self.item_labels.values()):
@@ -1086,6 +1216,60 @@ class EcommercePage(QWidget):
         self.log_box.clear()
         for message, level in self._logs:
             self._insert_log(message, level)
+
+    def _refresh_empty_icon(self):
+        # 安装版 QFluentWidgets 未必带灯泡枚举，使用 Qt 自绘保持跨版本一致。
+        size = px(40)
+        dpr = self.empty_icon.devicePixelRatioF()
+        pixmap = QPixmap(round(size * dpr), round(size * dpr))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.scale(size / 40, size / 40)
+        painter.setPen(QPen(QColor(materials.ecommerce_color('single_empty_icon')),
+                            2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        bulb = QPainterPath()
+        bulb.moveTo(15, 28)
+        bulb.cubicTo(15, 24, 9, 22, 9, 15)
+        bulb.cubicTo(9, 1, 31, 1, 31, 15)
+        bulb.cubicTo(31, 22, 25, 24, 25, 28)
+        bulb.closeSubpath()
+        painter.drawPath(bulb)
+        painter.drawLine(16, 32, 24, 32)
+        painter.drawLine(18, 36, 22, 36)
+        painter.end()
+        self.empty_icon.setPixmap(pixmap)
+
+    def _refresh_single_styles(self):
+        # 样式保留 100% 基线，由 InterfaceScaler 统一缩放，避免叠乘。
+        for card in self._single_cards:
+            card.setStyleSheet(
+                'QFrame#%s {background: %s; border: 1px solid %s; border-radius: 12px;}'
+                % (card.objectName(), materials.ecommerce_color('single_card'),
+                   materials.ecommerce_color('single_card_border')))
+        self.single_title_label.setStyleSheet(
+            'font-size: 20px; font-weight: 700; color: %s;' % materials.palette()['text1'])
+        self.single_subtitle_label.setStyleSheet(
+            'font-size: 12px; color: %s;' % materials.palette()['text2'])
+        for label in self._single_card_titles:
+            label.setStyleSheet('font-size: 13px; font-weight: 600; color: %s;'
+                               % materials.palette()['text1'])
+        for button in (self.history_tasks_button, self.batch_creation_button):
+            button.setStyleSheet(
+                'QPushButton#%s {background: transparent; color: %s; border: 1px solid %s;'
+                ' border-radius: 8px; padding: 0 16px; font-size: 13px;}'
+                ' QPushButton#%s:hover {background: %s;}'
+                % (button.objectName(), materials.ecommerce_color('single_button_text'),
+                   materials.ecommerce_color('single_button_border'), button.objectName(),
+                   materials.ecommerce_color('single_button_hover')))
+        self.start_button.setStyleSheet('border-radius: 8px;')
+        self.cancel_button.setStyleSheet('border-radius: 8px;')
+        self.empty_title_label.setStyleSheet('font-size: 14px; color: %s;'
+                                            % materials.ecommerce_color('single_empty_text'))
+        self.empty_subtitle_label.setStyleSheet('font-size: 12px; color: %s;'
+                                               % materials.ecommerce_color('single_empty_secondary'))
+        self._refresh_empty_icon()
 
     def _clean(self, value):
         current_key = self.config_manager.config.get('api', {}).get('api_key', '')
@@ -1180,7 +1364,7 @@ class EcommercePage(QWidget):
         self._clear_results()
         self._logs.clear()
         self.log_box.clear()
-        self.stage_label.setText(tr('AI分析中'))
+        self.stage_label.setText(tr('等待开始'))
         self._append_log(tr('AI 分析需要含文本模型权限的密钥；图片按所选配置生成。'), 'info')
         self._launch_worker(arguments)
 
@@ -1195,6 +1379,7 @@ class EcommercePage(QWidget):
         self.summary_label.clear()
         self.open_output_button.setEnabled(False)
         self.stage_label.setText(tr('等待开始'))
+        self._sync_result_columns()
 
     def _schedule_history_refresh(self):
         """合并逐图进度；隐藏页只记脏状态，进入页面后再读取历史。"""
@@ -1418,6 +1603,7 @@ class EcommercePage(QWidget):
         self.task_list.set_busy(True)
         self.batch_page.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self._sync_result_columns()
         worker.start()
 
     def cancel_generation(self):
@@ -1450,6 +1636,7 @@ class EcommercePage(QWidget):
             self._schedule_history_refresh()
             if status in ('succeeded', 'partial', 'failed', 'cancelled'):
                 self._flush_history_refresh()
+        self._sync_result_columns()
 
     @pyqtSlot(object)
     def _on_item(self, record):
@@ -1484,6 +1671,7 @@ class EcommercePage(QWidget):
             card.status_label.setText('{} · {}'.format(
                 card.status_label.text(), tr('模型：{model}').format(model=record['model'])))
         self._schedule_history_refresh()
+        self._sync_result_columns()
 
     def _refresh_results(self, group_id=None, *, refresh_history=True):
         group_id = group_id or (self._group or {}).get('group_id')
@@ -1558,6 +1746,7 @@ class EcommercePage(QWidget):
         except RuntimeError:
             pass
         self._refresh_conflicts()
+        self._sync_result_columns()
         self._schedule_history_refresh()
         self._flush_history_refresh()
         self.idle.emit()
@@ -1570,6 +1759,14 @@ class EcommercePage(QWidget):
 
     def retranslate_ui(self):
         """语言切换：重翻本页静态控件与子组件/动态状态（幂等，异常兜底）。"""
+        for label, source in (
+                (self.single_title_label, '电商图制作'),
+                (self.single_subtitle_label, '上传产品图，AI 自动生成电商轮播图与详情图'),
+                (self.history_tasks_button, '历史任务'),
+                (self.batch_creation_button, '批量制作'),
+                (self.empty_title_label, '填写完左侧信息后点击「开始制作」'),
+                (self.empty_subtitle_label, 'AI 将自动分析产品并生成图片')):
+            label.setText(tr(source))
         try:
             self.task_list.retranslate_ui()
         except Exception:
@@ -1629,6 +1826,7 @@ class EcommercePage(QWidget):
             self._history_first_show = False
             self.task_list.setUpdatesEnabled(False)
         self._fit_model_columns()
+        self._fit_single_columns()
         self._probe_closing = False
         self._probe_autostart = True
         for capability in ('chat', 'image'):

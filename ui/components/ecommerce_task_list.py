@@ -238,7 +238,7 @@ def _display_description(group):
     for item in manifest.get('items') or ():
         if not isinstance(item, dict) or item.get('status') != 'succeeded':
             continue
-        description = re.sub(r'\s+', ' ', str(item.get('desc') or '')).strip()
+        description = re.sub(r'\s+', ' ', str(item.get('desc') or item.get('title') or '')).strip()
         if re.search(r'[\u4e00-\u9fff]', description):
             return clipped(description, 140)
     carousel, detail = _group_output_counts(group)

@@ -10,11 +10,14 @@ EN_ECOMMERCE = {
     '上一张（←）': 'Previous (←)',
     '上一页': 'Previous page',
     '上传产品白底图，最多 6 张': 'Upload product photos on white background, up to 6',
+    '上传产品图，AI 自动生成电商轮播图与详情图':
+        'Upload product photos to create ecommerce carousel and detail images with AI',
     '下一张（→）': 'Next (→)',
     '下一页': 'Next page',
     '产品信息（必填）': 'Product details (required)',
     '产品名称（建议填写，用作任务标签）': 'Product name (recommended, used as task label)',
     '产品图': 'Product photos',
+    '产品图*': 'Product photos*',
     '仅供图片效果预览，界面布局模拟自各平台公开商品页，与相关平台无隶属关系，仅用于图片效果自查':
         'For image preview only. Layout simulates publicly available product pages; '
         'not affiliated with any platform. For self-checking image results only.',
@@ -46,6 +49,8 @@ EN_ECOMMERCE = {
     '图片链接下载失败：返回内容为空': 'Image link download failed: empty response',
     '图片预览': 'Image preview',
     '图片预览打开失败': 'Failed to open image preview',
+    '填写完左侧信息后点击「开始制作」':
+        'Complete the form on the left, then click "Start creation"',
     '复制行': 'Copy row',
     '复制选中（0）': 'Copy selected (0)',
     '复制选中（{count}）': 'Copy selected ({count})',
@@ -54,6 +59,7 @@ EN_ECOMMERCE = {
     '已复制 1 行': '1 row copied',
     '已复制 {count} 行': '{count} row(s) copied',
     '已清空 {count} 行': '{count} row(s) cleared',
+    '已提交提示词型任务': 'Prompt-based task submitted',
     '已用图片': 'Used images',
     '已选 {selected} / {total}': 'Selected {selected} / {total}',
     '平台预览': 'Platform preview',
@@ -86,6 +92,8 @@ EN_ECOMMERCE = {
         'Drag images into the image cell, or press Ctrl+V in the image cell / '
         'name / details box to paste a screenshot',
     '搜索': 'Search',
+    '提示词型产品信息 · 轮播 {carousel} 张 / 详情 {detail} 张':
+        'Prompt-based product details · {carousel} carousel / {detail} detail images',
     '新增 1 行': 'Add 1 row',
     '新增 5 行': 'Add 5 rows',
     '无法预览该图片': 'Cannot preview this image',
@@ -112,6 +120,7 @@ EN_ECOMMERCE = {
     '电商图任务': 'Ecommerce Image Tasks',
     '电商图批量制作': 'Ecommerce Image Batch Creation',
     '电商平台': 'Ecommerce platforms',
+    '电商平台*': 'Ecommerce platforms*',
     '画廊目录不可用，请换一个目录': 'Gallery folder is unavailable; choose another',
     '画廊选图': 'Gallery',
     '确认删除任务「{name}」？': 'Delete task "{name}"?',
@@ -120,6 +129,7 @@ EN_ECOMMERCE = {
     '立即购买': 'Buy now',
     '第 {current} / {total} 页': 'Page {current} / {total}',
     '管理': 'Manage',
+    '缺失': 'Missing',
     '粘贴的图片保存失败，请重试': 'Failed to save pasted image; try again',
     '继续添加 {count}/{max}': 'Add more {count}/{max}',
     '草稿保存失败，已保留内存中的内容':
@@ -153,6 +163,7 @@ EN_ECOMMERCE = {
     '风格参考图（可选，整批共用）': 'Style reference (optional, shared by the batch)',
     '风格图最多 1 张，已使用第一张': 'Only 1 style reference is allowed; the first was used',
     '（未填写产品信息）': '(No product details)',
+    'AI 将自动分析产品并生成图片': 'AI will analyze the product and generate images',
     'https://example.com/product.png\nD:\\图片\\产品白底图.jpg':
         'https://example.com/product.png\nD:\\images\\product-white.png',
 }

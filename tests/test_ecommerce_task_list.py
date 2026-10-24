@@ -730,6 +730,18 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
                 self.assertEqual(label.textFormat(), Qt.PlainText)
                 self.assertEqual(label.font().family(), materials.ui_font_family())
 
+    def test_prompt_like_description_falls_back_to_real_manifest_title(self):
+        raw = '[SYSTEM ROLE & PRODUCT GROUND TRUTH SPECIFICATION] You are a product specialist'
+        group = self.make_group(thumbs=[], config={'product_info': raw}, manifest={
+            'items': [dict(status='failed', title='失败项不可展示'),
+                      dict(status='succeeded', title='耐热陶瓷茶杯，展示材质与日常使用场景。')]
+        })
+        self.panel.update_groups([group])
+        label = self.panel.cards['g1'].desc_label
+        self.assertEqual(label.text(), '耐热陶瓷茶杯，展示材质与日常使用场景。')
+        self.assertEqual(label.toolTip(), raw[:300])
+        self.assertEqual(label.textFormat(), Qt.PlainText)
+
     def test_prompt_like_summary_and_description_limits(self):
         groups = [
             self.make_group('counts', thumbs=[], config=dict(

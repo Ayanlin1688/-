@@ -453,6 +453,15 @@ MONITOR = {
 # 公开商品页，固定使用浅色页面 token（不随应用主题反转）。组件一律经
 # ecommerce_color() 取用，避免在组件里散落颜色字面量。
 ECOMMERCE_UI = {
+    # 单个制作页：浅色参考布局与深色主题共用语义键。
+    'single_card': ('#FFFFFF', '#181C28'),
+    'single_card_border': ('#E9EDF5', '#303545'),
+    'single_button_border': ('#E5E8EF', '#41485B'),
+    'single_button_text': ('#1677FF', '#8DBBFF'),
+    'single_button_hover': ('#F0F6FF', '#25364F'),
+    'single_empty_icon': ('#94A3B8', '#9BAAC3'),
+    'single_empty_text': ('#7F8A9C', '#BBC4D4'),
+    'single_empty_secondary': ('#98A1B2', '#A6AFC0'),
     'thumb_bg': ('#EEF1F7', '#1B1E2B'),
     'chip_bg': ('#F1F3F8', '#202330'),
     'index_bg': ('#F1F3F8', '#202330'),

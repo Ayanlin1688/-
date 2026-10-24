@@ -1412,11 +1412,13 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(panel.ordered_cards(), cards, '刷新结果应就地更新已有卡片')
         self.page.show_single_creation()
         self.page.show()
-        for width, multiple in ((480, False), (1200, True)):
+        self.assertTrue(self.page.result_scroll.widget().isAncestorOf(panel))
+        for width, multiple in ((480, False), (1800, True)):
             self.page.resize(width, 800)
             QTest.qWait(30)
             self.assertEqual(panel.grid.columns > 1, multiple)
             self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+            self.assertEqual(self.page.result_scroll.horizontalScrollBar().maximum(), 0)
         self.assertNotIn(TEST_KEY, self.ui_text())
 
     def test_thumbnail_refresh_reads_replaced_file_without_using_old_pixmap_cache(self):
@@ -1905,12 +1907,15 @@ class EcommercePageTests(unittest.TestCase):
     def test_responsive_form_fits_narrow_and_wide_viewports(self):
         self.page.show_single_creation()
         self.page.show()
-        for width in (480, 1100):
+        for width in (480, 1000, 1440, 1800):
             self.page.resize(width, 800)
             QTest.qWait(20)
             self.assertLessEqual(self.page.body_content.width(), self.page.body_scroll.viewport().width())
             self.assertGreater(self.page.body_scroll.verticalScrollBar().maximum(), 0)
             self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+            self.assertLessEqual(self.page.result_scroll.widget().width(),
+                                 self.page.result_scroll.viewport().width())
+            self.assertEqual(self.page.result_scroll.horizontalScrollBar().maximum(), 0)
 
     def test_main_window_close_waits_for_ecommerce_thread(self):
         from ui.main_window import MainWindow
