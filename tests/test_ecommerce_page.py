@@ -350,6 +350,29 @@ class EcommercePageTests(unittest.TestCase):
         store.upsert_items_many(items)
         return store.get_group(group_id), store.list_items(group_id)
 
+    # —— 任务列表（段2：参考软件「电商图任务」页） ——
+    def history_cards(self):
+        return list(self.page.task_list.cards.values())
+
+    def history_card(self, group_id):
+        card = self.page.task_list.card_for(group_id)
+        self.assertIsNotNone(card, '任务列表中找不到该任务卡：%s' % group_id)
+        return card
+
+    def test_default_view_is_task_list_and_switches(self):
+        page = self.page
+        self.assertEqual(page.stack.count(), 3)
+        self.assertEqual(page.current_view_index(), page.TASK_VIEW)
+        page.task_list.new_create_button.click()
+        self.assertEqual(page.current_view_index(), page.SINGLE_VIEW)
+        self.assertEqual(page.product_name.text(), '')
+        page.show_task_list()
+        self.assertEqual(page.current_view_index(), page.TASK_VIEW)
+        page.task_list.batch_create_button.click()
+        self.assertEqual(page.current_view_index(), page.BATCH_VIEW)
+        self.assertIn('批量制作', page.batch_title_label.text())
+        self.assertEqual(page.task_list.manage_mode, False)
+
     def test_history_lists_latest_groups_names_platforms_stages_times_and_totals(self):
         from datetime import datetime
         records = []
@@ -358,19 +381,47 @@ class EcommercePageTests(unittest.TestCase):
                                              name='' if index == 3 else f'商品{index}',
                                              states=('succeeded',) if status == 'succeeded' else ('failed',))
             records.append(group)
-        self.page.history_panel.refresh_button.click()
-        rows = list(self.page.history_panel.rows.values())
-        self.assertEqual([row.group['group_id'] for row in rows], [r['group_id'] for r in records[::-1]])
-        self.assertEqual([row.status_label.text() for row in rows], ['AI分析中', '失败', '部分成功', '已完成'])
-        self.assertEqual(rows[0].name_label.text(), records[-1]['group_id'][:8])
-        self.assertEqual(rows[1].name_label.text(), '商品2')
-        self.assertEqual(rows[0].platform_label.text(), get_platform('douyin')['name'])
-        self.assertEqual(rows[0].time_label.text(), datetime.fromtimestamp(993).strftime('%Y-%m-%d %H:%M'))
-        self.assertEqual(rows[-1].summary_label.text(), '成功 1 / 失败 0 / 跳过 0 / 总数 1')
-        self.assertIn(materials.palette()['error'], rows[1].status_label.styleSheet())
-        self.assertIn(materials.palette()['warning'], rows[2].status_label.styleSheet())
-        self.assertTrue(all(row.resume_button.isEnabled() for row in rows[:-1]))
-        self.assertFalse(rows[-1].resume_button.isEnabled())
+        self.page.task_list.refresh_button.click()
+        groups = self.page.task_list.groups()
+        self.assertEqual([group['group_id'] for group in groups],
+                         [group['group_id'] for group in records[::-1]])
+        cards = self.history_cards()
+        self.assertEqual([card.status_badge.text() for card in cards],
+                         ['AI分析中', '失败', '部分成功', '已完成'])
+        self.assertEqual(cards[0].name_label.text(), records[-1]['group_id'][:8])
+        self.assertEqual(cards[1].name_label.text(), '商品2')
+        self.assertEqual([chip.text() for chip in cards[0].platform_chips],
+                         [get_platform('douyin')['name']])
+        self.assertEqual(cards[0].time_label.text(),
+                         datetime.fromtimestamp(993).strftime('%Y-%m-%d %H:%M'))
+        self.assertIn('轮播图 1 张', cards[-1].counts_label.text())
+        self.assertIn(materials.palette()['error'], cards[1].status_badge.styleSheet())
+        self.assertIn(materials.palette()['warning'], cards[2].status_badge.styleSheet())
+        self.assertTrue(all(card.resume_action.isEnabled() for card in cards[:-1]))
+        self.assertFalse(cards[-1].resume_action.isEnabled())
+        self.assertEqual([thumbs for thumbs in cards[0].thumbs], [])
+        self.assertEqual(cards[1].thumb_count, 0)
+        self.factory.assert_not_called()
+
+    def test_history_tabs_and_counts_filter_groups(self):
+        self.seed_history('done-task', 'succeeded', updated=1003, states=('succeeded',))
+        self.seed_history('running-task', 'generating', updated=1002, states=('running',))
+        self.seed_history('failed-task', 'failed', updated=1001, states=('failed',))
+        self.page._refresh_history()
+        ledger = self.page.task_list
+        expected = {'all': 3, 'generating': 1, 'done': 1, 'issue': 1}
+        for key, count in expected.items():
+            self.assertEqual(ledger.tab_buttons[key].count_label.text(), str(count), key)
+        self.assertEqual(ledger.tab_buttons['all'].name_label.text(), '全部')
+        ledger.set_tab('done')
+        self.assertEqual([card.group_id for card in self.history_cards()], ['done-task'])
+        ledger.set_tab('issue')
+        self.assertEqual([card.group_id for card in self.history_cards()], ['failed-task'])
+        ledger.set_tab('generating')
+        self.assertEqual([card.group_id for card in self.history_cards()], ['running-task'])
+        ledger.set_tab('all')
+        self.assertEqual(len(self.history_cards()), 3)
+        self.assertEqual(ledger.current_tab, 'all')
         self.factory.assert_not_called()
 
     def test_interrupted_history_group_shows_reconciliation_reason(self):
@@ -380,7 +431,7 @@ class EcommercePageTests(unittest.TestCase):
 
         self.page._refresh_history()
 
-        status = self.page.history_panel.rows[group['group_id']].status_label.text()
+        status = self.history_card(group['group_id']).status_badge.text()
         self.assertEqual(status, tr('上次运行未正常结束（程序中断）'))
         self.assertNotEqual(status, tr('AI分析中'))
 
@@ -421,25 +472,27 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(sum(message == '同一组错误' for message, _level in self.page._logs), 2)
 
     def test_history_refreshes_on_page_entry_and_limits_to_fifty(self):
-        self.assertFalse(self.page.history_panel.empty_label.isHidden())
+        self.assertFalse(self.page.task_list.empty_label.isHidden())
         store = self.config.ecommerce_store()
         for index in range(52):
             store.upsert_group(dict(group_id=f'group-{index:02d}', status='succeeded', updated_at=index))
         self.page.show()
-        self.assertEqual(len(self.page.history_panel.rows), 50)
-        self.assertEqual(next(iter(self.page.history_panel.rows)), 'group-51')
-        self.assertNotIn('group-00', self.page.history_panel.rows)
-        self.assertTrue(self.page.history_panel.empty_label.isHidden())
+        groups = self.page.task_list.groups()
+        self.assertEqual(len(groups), 50)
+        self.assertEqual(groups[0]['group_id'], 'group-51')
+        self.assertNotIn('group-00', [group['group_id'] for group in groups])
+        self.assertEqual(len(self.page.task_list.cards), self.page.task_list.page_size)
+        self.assertTrue(self.page.task_list.empty_label.isHidden())
         self.factory.assert_not_called()
 
     def test_history_view_switches_groups_without_factory_and_allows_regeneration(self):
         first, _ = self.seed_history('first-history', states=('succeeded', 'failed'))
         second, _ = self.seed_history('second-history', 'succeeded', states=('succeeded',))
         self.page._refresh_history()
-        rows = self.page.history_panel.rows
-        rows[first['group_id']].view_button.click()
+        self.history_card(first['group_id']).view_button.click()
+        self.assertEqual(self.page.current_view_index(), self.page.SINGLE_VIEW)
         self.assertEqual(len(self.page.result_panel.cards), 2)
-        rows[second['group_id']].view_button.click()
+        self.history_card(second['group_id']).view_button.click()
         self.assertEqual(self.page._group['group_id'], second['group_id'])
         self.assertEqual(len(self.page.result_panel.cards), 1)
         self.assertEqual(len(self.page.item_labels), 1)
@@ -458,17 +511,20 @@ class EcommercePageTests(unittest.TestCase):
         # A fresh store has no session cache; recovery must use persisted prompts.
         self.config._ecommerce_store = EcommerceImageStore(self.config.ecommerce_store().path)
         self.page._refresh_history()
-        self.run_regenerate_to_idle(self.page.history_panel.rows[group['group_id']].resume_button.click)
+        self.run_regenerate_to_idle(
+            self.history_card(group['group_id']).resume_action.trigger)
         prompts = sorted(call.args[3] for call in self.image.call_args_list)
         self.assertEqual(prompts, [f'Saved product carousel {i}' for i in range(2, 6)])
         self.analysis.assert_not_called()
         self.assertEqual(Path(items[0]['file_path']).read_bytes(), PNG)
         self.assertEqual(self.page.stage_label.text(), '已完成')
-        row = self.page.history_panel.rows[group['group_id']]
-        self.assertEqual(row.status_label.text(), '已完成')
-        self.assertEqual(row.summary_label.text(), '成功 5 / 失败 0 / 跳过 0 / 总数 5')
-        self.assertFalse(row.resume_button.isEnabled())
-        self.assertTrue(all(card.record['status'] == 'succeeded' for card in self.page.result_panel.ordered_cards()))
+        card = self.history_card(group['group_id'])
+        self.assertEqual(card.status_badge.text(), '已完成')
+        self.assertIn('轮播图 5 张', card.counts_label.text())
+        self.assertFalse(card.resume_action.isEnabled())
+        self.assertEqual(card.thumb_count, 3)
+        self.assertTrue(all(card.record['status'] == 'succeeded'
+                            for card in self.page.result_panel.ordered_cards()))
         self.assertNotEqual(self.factory_threads[0], self.app.thread())
         self.assertNotIn(TEST_KEY, self.ui_text())
 
@@ -508,23 +564,25 @@ class EcommercePageTests(unittest.TestCase):
         self.image.side_effect = blocking_image
         self.page._run_resume(group['group_id'])
         self.wait_until(entered.is_set)
-        row = self.page.history_panel.rows[group['group_id']]
-        self.assertEqual(row.status_label.text(), '图片生成中')
-        self.assertFalse(row.view_button.isEnabled())
-        self.assertFalse(row.resume_button.isEnabled())
-        self.assertFalse(row.delete_button.isEnabled())
+        self.assertEqual(self.page.current_view_index(), self.page.SINGLE_VIEW)
+        card = self.history_card(group['group_id'])
+        self.assertEqual(card.status_badge.text(), '图片生成中')
+        self.assertFalse(card.view_button.isEnabled())
+        self.assertFalse(card.resume_action.isEnabled())
+        self.assertFalse(card.delete_button.isEnabled())
         self.assertTrue(all(not c.isEnabled() for c in self.page._form_cards))
         self.assertTrue(self.page.cancel_button.isEnabled())
         self.assertEqual(self.page._worker.operation, 'resume')
         self.page._view_history_group('missing')  # Busy navigation is ignored.
-        self.page._delete_history_group(group['group_id'])
+        self.page._delete_history_groups([group['group_id']])
         self.page.cancel_button.click()
         release.set()
         self.wait_until(lambda: not self.page.busy)
         self.assertEqual(self.image.call_count, 1)
-        self.assertEqual(row.status_label.text(), '部分成功')
-        self.assertEqual(row.summary_label.text(), '成功 1 / 失败 0 / 跳过 2 / 总数 3')
-        self.assertTrue(row.view_button.isEnabled())
+        card = self.history_card(group['group_id'])
+        self.assertEqual(card.status_badge.text(), '部分成功')
+        self.assertIn('轮播图 3 张', card.counts_label.text())
+        self.assertTrue(card.view_button.isEnabled())
         self.assertTrue(all(t == self.app.thread() for t in callback_threads))
         self.assertNotEqual(self.factory_threads[0], self.app.thread())
         self.analysis.assert_not_called()
@@ -534,7 +592,7 @@ class EcommercePageTests(unittest.TestCase):
         self.page.cancel_event.set()
         self.run_regenerate_to_idle(lambda: self.page._run_resume(group['group_id']))
         self.assertEqual(self.page.stage_label.text(), '已取消')
-        self.assertFalse(self.page.history_panel.rows[group['group_id']].resume_button.isEnabled())
+        self.assertFalse(self.history_card(group['group_id']).resume_action.isEnabled())
         self.image.assert_not_called()
         self.analysis.assert_not_called()
 
@@ -561,24 +619,15 @@ class EcommercePageTests(unittest.TestCase):
         self.page._refresh_history()
         self.page._view_history_group(group['group_id'])
         for accept in (False, True):
-            observations = []
-
-            def choose():
-                dialog = QApplication.activeModalWidget()
-                observations.append('\n'.join(label.text() for label in dialog.findChildren(QLabel)))
-                name = 'confirmDeleteRecord' if accept else 'keepRecord'
-                from qfluentwidgets import PushButton
-                dialog.findChild(PushButton, name).click()
-
-            QTimer.singleShot(0, choose)
-            self.page.history_panel.rows[group['group_id']].delete_button.click()
-            self.assertIn('仅删除记录，不删除已生成文件', observations[0])
-            self.assertNotIn(TEST_KEY, observations[0])
+            with patch.object(self.page.task_list, 'confirm_delete',
+                              return_value=accept) as confirm:
+                self.history_card(group['group_id']).delete_button.click()
+            confirm.assert_called_once_with(1)
             store = self.config.ecommerce_store()
             if accept:
                 self.assertIsNone(store.get_group(group['group_id']))
                 self.assertEqual(store.list_items(group['group_id']), [])
-                self.assertNotIn(group['group_id'], self.page.history_panel.rows)
+                self.assertIsNone(self.page.task_list.card_for(group['group_id']))
                 self.assertFalse(self.page.result_panel.cards)
             else:
                 self.assertIsNotNone(store.get_group(group['group_id']))
@@ -587,13 +636,79 @@ class EcommercePageTests(unittest.TestCase):
             self.assertTrue(manifest.is_file())
         self.factory.assert_not_called()
 
+    def test_history_delete_confirm_dialog_uses_reference_copy(self):
+        from ui.components.studio_dialog import safe_delete_dialog
+        ledger = self.page.task_list
+        dialog, confirm_button, cancel_button = ledger._build_delete_dialog(1, '茶杯')
+        try:
+            self.assertEqual(dialog.delete_message_labels[0].text(),
+                             tr('确认删除任务「{name}」？').format(name='茶杯'))
+            self.assertEqual(dialog.delete_message_labels[1].text(),
+                             tr('此操作不可恢复，生成完成的图片不受影响'))
+            self.assertEqual(confirm_button.text(), tr('删除'))
+            self.assertEqual(cancel_button.text(), tr('取消'))
+        finally:
+            safe_delete_dialog(dialog)
+        dialog, _confirm, _cancel = ledger._build_delete_dialog(3)
+        try:
+            self.assertEqual(dialog.delete_message_labels[0].text(),
+                             tr('确认删除选中的 {count} 个任务？').format(count=3))
+        finally:
+            safe_delete_dialog(dialog)
+
+    def test_manage_mode_bulk_delete_removes_records_only(self):
+        first, first_items = self.seed_history('bulk-1', 'succeeded', updated=1001,
+                                               states=('succeeded',))
+        second, second_items = self.seed_history('bulk-2', 'succeeded', updated=1000,
+                                                 states=('succeeded',))
+        self.page._refresh_history()
+        ledger = self.page.task_list
+        ledger.set_manage_mode(True)
+        self.assertTrue(ledger.manage_mode)
+        self.assertTrue(ledger.bottom_bar.isVisible() or not ledger.isVisible())
+        ledger.cards['bulk-1'].checkbox.setChecked(True)
+        ledger.cards['bulk-2'].checkbox.setChecked(True)
+        self.assertEqual(set(ledger.selected_ids()), {'bulk-1', 'bulk-2'})
+        self.assertEqual(ledger.delete_selected_button.text(),
+                         tr('删除 {count} 个').format(count=2))
+        with patch.object(ledger, 'confirm_delete', return_value=True) as confirm:
+            ledger.delete_selected_button.click()
+        confirm.assert_called_once_with(2)
+        store = self.config.ecommerce_store()
+        self.assertIsNone(store.get_group('bulk-1'))
+        self.assertIsNone(store.get_group('bulk-2'))
+        self.assertTrue(Path(first_items[0]['file_path']).read_bytes() == PNG)
+        self.assertIsNone(ledger.card_for('bulk-1'))
+        self.assertEqual(ledger.selected_ids(), [])
+        ledger.set_manage_mode(False)
+        self.assertFalse(ledger.bottom_bar.isVisible())
+
+    def test_platform_preview_opens_with_group_manifest(self):
+        group, items = self.seed_history('preview-group', 'succeeded',
+                                         states=('succeeded', 'succeeded'))
+        self.page._refresh_history()
+        fake = Mock()
+        fake.exec_.return_value = 0
+        with patch('ui.pages.ecommerce_page.PlatformPreviewDialog',
+                   return_value=fake) as dialog_class:
+            self.history_card('preview-group').preview_button.click()
+        dialog_class.assert_called_once()
+        payload = dialog_class.call_args.args[1]
+        self.assertEqual(payload['group_id'], 'preview-group')
+        self.assertTrue(payload['manifest']['items'])
+        self.assertTrue(all(item.get('file') for item in payload['manifest']['items']))
+        fake.exec_.assert_called_once()
+        self.assertNotIn(TEST_KEY, str(payload))
+
     def test_history_folder_opens_existing_directory_and_reports_missing_directory(self):
         group, _ = self.seed_history()
         self.page._refresh_history()
         with patch('ui.pages.ecommerce_page.open_local') as opener:
-            self.page.history_panel.rows[group['group_id']].open_button.click()
-            opener.assert_called_once_with(group['output_dir'], self.page._append_log, folder=True)
-            self.config.ecommerce_store().upsert_group(dict(group, output_dir=str(self.root / 'absent')))
+            self.history_card(group['group_id']).open_action.trigger()
+            opener.assert_called_once_with(group['output_dir'], self.page._append_log,
+                                           folder=True)
+            self.config.ecommerce_store().upsert_group(
+                dict(group, output_dir=str(self.root / 'absent')))
             opener.reset_mock()
             self.page._open_history_folder(group['group_id'])
             opener.assert_not_called()
@@ -605,12 +720,13 @@ class EcommercePageTests(unittest.TestCase):
         self.config._ecommerce_store = EcommerceImageStore(corrupt)
         self.page._refresh_history()
         self.assertFalse(self.config.ecommerce_store().persistence_available)
-        self.assertEqual(self.page.history_panel.notice_label.text(), '数据库不可用，仅展示本次会话结果')
+        self.assertEqual(self.page.task_list.notice_label.text(),
+                         '数据库不可用，仅展示本次会话结果')
         self.fill_valid()
         group_id, _ = self.run_to_idle()
         self.assertEqual(self.page.stage_label.text(), '已完成')
-        row = self.page.history_panel.rows[group_id]
-        row.view_button.click()
+        card = self.history_card(group_id)
+        card.view_button.click()
         self.assertEqual(len(self.page.result_panel.cards), 3)
         self.assertEqual(self.factory.call_count, 1)
         self.assertNotIn(TEST_KEY, self.ui_text())
@@ -619,9 +735,9 @@ class EcommercePageTests(unittest.TestCase):
         self.seed_history('older-group', 'succeeded', states=('succeeded',))
         self.fill_valid()
         group_id, _ = self.run_to_idle()
-        self.assertEqual(next(iter(self.page.history_panel.rows)), group_id)
-        self.assertEqual(self.page.history_panel.rows[group_id].status_label.text(), '已完成')
-        self.assertEqual(len(self.page.history_panel.rows), 2)
+        self.assertEqual(self.page.task_list.groups()[0]['group_id'], group_id)
+        self.assertEqual(self.history_card(group_id).status_badge.text(), '已完成')
+        self.assertEqual(len(self.page.task_list.groups()), 2)
 
     def test_form_uses_all_platforms_and_catalog_options_and_config_defaults(self):
         page = self.page
@@ -1041,6 +1157,7 @@ class EcommercePageTests(unittest.TestCase):
             self.assertTrue(opener.call_args.kwargs['folder'])
         self.page._refresh_results()
         self.assertEqual(panel.ordered_cards(), cards, '刷新结果应就地更新已有卡片')
+        self.page.show_single_creation()
         self.page.show()
         for width, multiple in ((480, False), (1200, True)):
             self.page.resize(width, 800)
@@ -1533,6 +1650,7 @@ class EcommercePageTests(unittest.TestCase):
         worker.deleteLater()
 
     def test_responsive_form_fits_narrow_and_wide_viewports(self):
+        self.page.show_single_creation()
         self.page.show()
         for width in (480, 1100):
             self.page.resize(width, 800)

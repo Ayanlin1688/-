@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
-    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
+    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
@@ -27,7 +27,7 @@ from core.line_probe import probe_line
 from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
-from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
+from ..components.ecommerce_task_list import EcommerceTaskList, RESUMABLE_STATUSES
 from ..components.image_lightbox import ImageLightbox
 from ..components.image_pickers import (
     GalleryPickerDialog, UsedImagePickerDialog,
@@ -35,6 +35,7 @@ from ..components.image_pickers import (
 from ..components.image_upload_grid import ImageUploadGrid
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from core.model_catalog import normalize_model_id
+from ..components.platform_preview_dialog import PlatformPreviewDialog
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
@@ -167,13 +168,68 @@ class EcommercePage(QWidget):
         self._picker_buttons = []
         defaults = config_manager.config.get('ecommerce', {})
 
-        root = scrollable_body(self)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        self.stack = QStackedWidget(self)
+        self.stack.setObjectName('ecommerceStack')
+        shell.addWidget(self.stack)
+
+        # 视图 0：任务列表（参考软件「电商图任务」页，进入电商图默认页）
+        self.task_view = QWidget()
+        self.task_view.setObjectName('ecommerceTaskView')
+        task_layout = QVBoxLayout(self.task_view)
+        task_layout.setContentsMargins(px(26), px(16), px(26), px(20))
+        task_layout.setSpacing(px(12))
+        self.task_list = EcommerceTaskList(_stage_text, self.task_view)
+        self.task_list.refresh_requested.connect(self._refresh_history)
+        self.task_list.view_requested.connect(self._view_history_group)
+        self.task_list.resume_requested.connect(self._run_resume)
+        self.task_list.open_requested.connect(self._open_history_folder)
+        self.task_list.delete_requested.connect(self._delete_history_groups)
+        self.task_list.batch_create_requested.connect(self._show_batch_view)
+        self.task_list.new_create_requested.connect(self._start_new_creation)
+        self.task_list.preview_requested.connect(self._show_platform_preview)
+        task_layout.addWidget(self.task_list, 1)
+        self.stack.addWidget(self.task_view)
+
+        # 视图 1：单个制作（原有表单）
+        self.single_view = QWidget()
+        self.single_view.setObjectName('ecommerceSingleView')
+        self.stack.addWidget(self.single_view)
+        root = scrollable_body(self.single_view)
+        self.body_scroll = self.single_view.body_scroll
+        self.body_content = self.single_view.body_content
         root.setContentsMargins(px(26), px(16), px(26), px(20))
         root.setSpacing(px(16))
         root.addWidget(TitleLabel(tr('电商图制作')))
         hint = CaptionLabel(tr('选择平台与产品资料 · AI分析 → 图片生成 → 完成后打开输出目录'))
         hint.setWordWrap(True)
         root.addWidget(hint)
+
+        # 视图 2：批量制作（段3 接入完整表单，本段先占位并可切换）
+        self.batch_view = QWidget()
+        self.batch_view.setObjectName('ecommerceBatchView')
+        batch_layout = QVBoxLayout(self.batch_view)
+        batch_layout.setContentsMargins(px(26), px(16), px(26), px(20))
+        batch_layout.setSpacing(px(12))
+        self.batch_title_label = TitleLabel(tr('电商图批量制作'))
+        batch_layout.addWidget(self.batch_title_label)
+        self.batch_hint_label = CaptionLabel(tr(
+            '每行一个商品，提交后在历史任务中各自显示为独立任务组'))
+        self.batch_hint_label.setWordWrap(True)
+        batch_layout.addWidget(self.batch_hint_label)
+        self.batch_placeholder_label = CaptionLabel(tr('批量制作页将在下一段接入'))
+        batch_layout.addWidget(self.batch_placeholder_label)
+        batch_layout.addStretch(1)
+        self.stack.addWidget(self.batch_view)
+        self.stack.setCurrentIndex(0)
+        for view in (self.task_view, self.single_view, self.batch_view):
+            view.setAutoFillBackground(False)
+        self.stack.setStyleSheet(
+            'QStackedWidget#ecommerceStack {background: transparent;}'
+            'QWidget#ecommerceTaskView, QWidget#ecommerceSingleView,'
+            ' QWidget#ecommerceBatchView {background: transparent;}')
 
         platform_layout = self._card(root, tr('选择平台（最多 {count} 个）').format(count=MAX_PLATFORMS))
         self.platform_checkboxes = {}
@@ -357,13 +413,6 @@ class EcommercePage(QWidget):
         self.result_panel.preview_requested.connect(self._open_image_lightbox)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
         root.addWidget(self.result_panel)
-        self.history_panel = EcommerceHistoryPanel(_stage_text, self)
-        self.history_panel.refresh_requested.connect(self._refresh_history)
-        self.history_panel.view_requested.connect(self._view_history_group)
-        self.history_panel.resume_requested.connect(self._run_resume)
-        self.history_panel.open_requested.connect(self._open_history_folder)
-        self.history_panel.delete_requested.connect(self._delete_history_group)
-        root.addWidget(self.history_panel)
         root.addStretch(1)
         style_controls(self)
         style_page(self)
@@ -372,6 +421,60 @@ class EcommercePage(QWidget):
         self._refresh_conflicts()
         self._refresh_history()
         self.body_scroll.viewport().installEventFilter(self)
+
+    # —— 视图切换（QStackedWidget：任务列表 / 单个制作 / 批量制作） ——
+    TASK_VIEW, SINGLE_VIEW, BATCH_VIEW = 0, 1, 2
+
+    def current_view_index(self):
+        return self.stack.currentIndex()
+
+    def show_task_list(self):
+        self.stack.setCurrentIndex(self.TASK_VIEW)
+        self._refresh_history()
+
+    def show_single_creation(self):
+        self.stack.setCurrentIndex(self.SINGLE_VIEW)
+
+    def _show_batch_view(self):
+        self.stack.setCurrentIndex(self.BATCH_VIEW)
+
+    def _start_new_creation(self):
+        """「+ 新建制作」：切到单个制作视图并清空当前制作内容。"""
+        self.show_single_creation()
+        self.task_list.set_manage_mode(False)
+        self.product_name.clear()
+        self.product_info.clear()
+        self.product_image_paths = []
+        self.style_image_paths = []
+        self._refresh_references()
+        self._clear_results()
+        self.product_name.setFocus()
+
+    def _show_platform_preview(self, group_id):
+        store = self.config_manager.ecommerce_store()
+        group = store.get_group(group_id)
+        if not group:
+            self._notice(tr('当前生成组不存在'))
+            self._refresh_history()
+            return
+        try:
+            manifest = group.get('manifest')
+            if not (isinstance(manifest, dict) and manifest.get('items')):
+                items = store.list_items(group_id)
+                manifest = dict(manifest or {}, items=[
+                    dict(kind=item.get('kind'), seq=item.get('seq'),
+                         title=item.get('title'), file=item.get('file_path'),
+                         status=item.get('status'), size=item.get('size'),
+                         model=item.get('model'), error=item.get('error'))
+                    for item in items])
+                group = dict(group, manifest=manifest)
+            dialog = PlatformPreviewDialog(self, redact_structure(group, self._clean))
+            try:
+                dialog.exec_()
+            finally:
+                safe_delete_dialog(dialog)
+        except Exception:
+            self._notice(tr('平台预览打开失败'))
 
     @property
     def busy(self):
@@ -644,6 +747,10 @@ class EcommercePage(QWidget):
             grid = getattr(self, attribute, None)
             if grid is not None:
                 grid.refresh_interface_scale()
+        try:
+            self.task_list.refresh_interface_scale()
+        except RuntimeError:
+            pass
 
     def eventFilter(self, watched, event):
         if (watched is self.body_scroll.viewport()
@@ -833,7 +940,7 @@ class EcommercePage(QWidget):
         self.style_grid.refresh_colors()
         self._refresh_picker_button_styles()
         self.result_panel.refresh_colors()
-        self.history_panel.refresh_colors()
+        self.task_list.refresh_colors()
         if self._lightbox is not None:
             try:
                 self._lightbox._apply_theme()
@@ -953,14 +1060,53 @@ class EcommercePage(QWidget):
         self.stage_label.setText(tr('等待开始'))
 
     def _refresh_history(self):
+        """刷新任务列表：把页面可展示的字段 enrich 到 group 字典后交给列表组件。"""
         store = self.config_manager.ecommerce_store()
         groups = store.list_groups(limit=50)
         for group in groups:
-            if group['status'] in ('analyzing', 'generating'):
-                counts = store.item_counts(group['group_id'])
-                group['totals'] = dict(counts, total=sum(counts.values()))
-        self.history_panel.update_groups(redact_structure(groups, self._clean), store.persistence_available)
+            self._enrich_history_group(store, group)
+        self.task_list.update_groups(redact_structure(groups, self._clean),
+                                     store.persistence_available)
         self.history_records_changed.emit()
+
+    def _enrich_history_group(self, store, group):
+        group_id = group.get('group_id', '')
+        manifest = group.get('manifest')
+        items = []
+        if isinstance(manifest, dict) and isinstance(manifest.get('items'), list):
+            items = [item for item in manifest['items'] if isinstance(item, dict)]
+        else:
+            try:
+                items = store.list_items(group_id)
+            except Exception:  # noqa: BLE001 - 历史列表不应因数据库异常崩溃
+                items = []
+        if group.get('status') in ('analyzing', 'generating'):
+            try:
+                counts = store.item_counts(group_id)
+                group['totals'] = dict(counts, total=sum(counts.values()))
+            except Exception:  # noqa: BLE001
+                pass
+        thumbs = []
+        ordered = sorted(
+            items, key=lambda item: (0 if item.get('kind') == 'carousel' else 1,
+                                    item.get('seq') if isinstance(item.get('seq'), int) else 0))
+        for item in ordered:
+            if item.get('status') != 'succeeded':
+                continue
+            path = item.get('file') or item.get('file_path') or ''
+            if not path:
+                continue
+            try:
+                if Path(path).is_file():
+                    thumbs.append(str(path))
+            except (OSError, ValueError):
+                continue
+            if len(thumbs) >= 3:
+                break
+        group['thumbs'] = thumbs
+        config = group.get('config') if isinstance(group.get('config'), dict) else {}
+        group['image_model'] = (config.get('image_model')
+                                or (manifest or {}).get('image_model') or '')
 
     def _view_history_group(self, group_id):
         if self.busy:
@@ -969,6 +1115,7 @@ class EcommercePage(QWidget):
             self._notice(tr('当前生成组不存在'))
             self._refresh_history()
             return
+        self.show_single_creation()
         self._clear_results()
         self._refresh_results(group_id)
 
@@ -1006,36 +1153,19 @@ class EcommercePage(QWidget):
         else:
             self._notice(tr('当前生成组不存在'))
 
-    def _confirm_delete(self, group):
-        dialog = StudioDialog(self, tr('删除记录'))
-        dialog.resize(px(440), px(220))
-        dialog.body_layout.addWidget(self._text_label(
-            self._clean(group.get('product_name') or group['group_id'][:8])))
-        dialog.body_layout.addWidget(self._text_label(tr('仅删除记录，不删除已生成文件')))
-        actions = WrapLayout()
-        yes, no = PrimaryPushButton(tr('是')), PushButton(tr('否'))
-        yes.setObjectName('confirmDeleteRecord')
-        no.setObjectName('keepRecord')
-        yes.clicked.connect(dialog.accept)
-        no.clicked.connect(dialog.reject)
-        actions.addWidget(yes)
-        actions.addWidget(no)
-        dialog.body_layout.addLayout(actions)
-        style_controls(dialog)
-        try:
-            return dialog.exec_() == dialog.Accepted
-        finally:
-            safe_delete_dialog(dialog)
-
-    def _delete_history_group(self, group_id):
+    def _delete_history_groups(self, group_ids):
+        """任务列表确认后批量删除记录（只删记录，不删已生成文件）。"""
         if self.busy:
             return
         store = self.config_manager.ecommerce_store()
-        group = store.get_group(group_id)
-        if group and self._confirm_delete(group) and not self.busy:
-            store.delete_group(group_id)
-            if self._group and self._group['group_id'] == group_id:
-                self._clear_results()
+        removed_current = False
+        for group_id in list(group_ids or ()):
+            group_id = str(group_id)
+            if store.get_group(group_id) and store.delete_group(group_id):
+                if self._group and self._group['group_id'] == group_id:
+                    removed_current = True
+        if removed_current:
+            self._clear_results()
         self._refresh_history()
 
     def _run_regenerate(self, item_keys=None):
@@ -1094,7 +1224,7 @@ class EcommercePage(QWidget):
             card.setEnabled(False)
         self.start_button.setEnabled(False)
         self.result_panel.set_busy(True)
-        self.history_panel.set_busy(True)
+        self.task_list.set_busy(True)
         self.cancel_button.setEnabled(True)
         worker.start()
 
@@ -1216,7 +1346,7 @@ class EcommercePage(QWidget):
             button.setEnabled(capability not in self._model_probe_workers)
         self.cancel_button.setEnabled(False)
         self.result_panel.set_busy(False)
-        self.history_panel.set_busy(False)
+        self.task_list.set_busy(False)
         self._refresh_conflicts()
         self.idle.emit()
         if self._close_when_idle:
@@ -1249,3 +1379,4 @@ class EcommercePage(QWidget):
             self._lightbox = None
         self._probe_closing = True
         super().closeEvent(event)
+

@@ -426,3 +426,29 @@ MONITOR = {
     'state_wait': ('#B7791F', '#EFC078'),
     'state_idle': ('#5D6570', '#A9B1C1'),
 }
+
+# 电商图任务列表 / 平台预览专用色（浅色, 深色）双色对。
+# 任务列表沿用主题玻璃质感，只补少量中性底色；平台预览要模拟真实平台的
+# 公开商品页，固定使用浅色页面 token（不随应用主题反转）。组件一律经
+# ecommerce_color() 取用，避免在组件里散落颜色字面量。
+ECOMMERCE_UI = {
+    'thumb_bg': ('#EEF1F7', '#1B1E2B'),
+    'chip_bg': ('#F1F3F8', '#202330'),
+    'index_bg': ('#F1F3F8', '#202330'),
+    'tag_bg': ('#EAF2FF', '#17233D'),
+    'preview_page': '#F5F5F7',
+    'preview_card': '#FFFFFF',
+    'preview_text': '#1F2329',
+    'preview_muted': '#8A8F99',
+    'preview_line': '#E8EAF0',
+    'preview_input': '#F2F3F5',
+    'preview_white': '#FFFFFF',
+}
+
+
+def ecommerce_color(key):
+    """取电商图组件专用色；双色对按当前主题（浅/深）选择。"""
+    value = ECOMMERCE_UI[key]
+    if isinstance(value, tuple):
+        return value[0] if LIGHT_MODE else value[1]
+    return value
