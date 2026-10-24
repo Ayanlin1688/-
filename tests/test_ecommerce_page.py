@@ -645,8 +645,8 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(page.carousel_ratio.currentText(), defaults['default_carousel_ratio'])
         self.assertEqual(page.detail_ratio.currentText(), defaults['default_detail_ratio'])
         self.assertEqual(page.tier.currentText(), defaults['default_tier'])
-        self.assertEqual((page.carousel_count.minimum(), page.carousel_count.maximum()), (1, 12))
-        self.assertEqual((page.detail_count.minimum(), page.detail_count.maximum()), (0, 12))
+        self.assertEqual((page.carousel_count.minimum(), page.carousel_count.maximum()), (1, 6))
+        self.assertEqual((page.detail_count.minimum(), page.detail_count.maximum()), (1, 15))
 
     def test_sixth_platform_cannot_be_checked(self):
         keys = list(self.page.platform_checkboxes)
@@ -674,10 +674,36 @@ class EcommercePageTests(unittest.TestCase):
         other = next(p for p in records if p['bgRule'] != 'white' and
                      p['defaultCarouselRatio'] != base['defaultCarouselRatio'])
         self.page.platform_checkboxes[other['id']].setChecked(True)
+        # 勾选第二个平台后仍以最先选中的平台为准自动套用比例。
+        applied = get_platform('douyin')
+        self.page.carousel_ratio.setCurrentText(other['defaultCarouselRatio'])
         self.assertTrue(self.page.ratio_conflict.text())
         self.assertIn(materials.palette()['warning'], self.page.ratio_conflict.styleSheet())
         self.assertTrue(self.page.start_button.isEnabled())
         self.assertEqual(self.page._arguments()['carousel_ratio'], self.page.carousel_ratio.currentText())
+        del applied
+
+    def test_platform_check_applies_first_selected_platform_defaults(self):
+        page = self.page
+        record = get_platform('taobao')
+        page.platform_checkboxes['taobao'].setChecked(True)
+        self.assertEqual(page.carousel_count.value(), record['defaultCarouselCount'])
+        self.assertEqual(page.detail_count.value(), record['defaultDetailCount'])
+        self.assertEqual(page.carousel_ratio.currentText(), record['defaultCarouselRatio'])
+        self.assertEqual(page.detail_ratio.currentText(), record['defaultDetailRatio'])
+        others = [item for item in domestic() + overseas()
+                  if item['id'] != 'taobao'
+                  and (item['defaultCarouselRatio'] != record['defaultCarouselRatio']
+                       or item['defaultCarouselCount'] != record['defaultCarouselCount'])]
+        second = others[0]
+        page.platform_checkboxes[second['id']].setChecked(True)
+        self.assertEqual(page.carousel_count.value(), record['defaultCarouselCount'])
+        self.assertEqual(page.carousel_ratio.currentText(), record['defaultCarouselRatio'])
+        page.platform_checkboxes['taobao'].setChecked(False)
+        self.assertEqual(page.carousel_count.value(), second['defaultCarouselCount'])
+        self.assertEqual(page.carousel_ratio.currentText(), second['defaultCarouselRatio'])
+        page.platform_checkboxes[second['id']].setChecked(False)
+        self.assertEqual(page._platform_selection_order, [])
 
     def test_no_platform_blocks_before_worker_creation(self):
         self.assert_blocked()
@@ -709,12 +735,17 @@ class EcommercePageTests(unittest.TestCase):
             self.assertIn('文本模型', self.notices.call_args.args[1])
             self.config.config['api'][key] = original
 
-    def test_zero_total_blocks_before_worker_creation(self):
+    def test_output_count_ranges_match_reference_and_clamp(self):
+        page = self.page
+        page.carousel_count.setValue(0)
+        page.detail_count.setValue(0)
+        self.assertEqual((page.carousel_count.value(), page.detail_count.value()), (1, 1))
+        page.carousel_count.setValue(99)
+        page.detail_count.setValue(99)
+        self.assertEqual((page.carousel_count.value(), page.detail_count.value()), (6, 15))
         self.fill_valid()
-        self.page.carousel_count.setMinimum(0)
-        self.page.carousel_count.setValue(0)
-        self.page.detail_count.setValue(0)
-        self.assert_blocked()
+        arguments = page._arguments()
+        self.assertEqual((arguments['carousel_count'], arguments['detail_count']), (2, 1))
 
     def test_too_many_reference_images_block_before_worker_creation(self):
         self.fill_valid()
@@ -762,60 +793,57 @@ class EcommercePageTests(unittest.TestCase):
         self.assertNotIn(TEST_KEY, self.ui_text())
         self.assertNotIn(self.last_worker, _LIVE_WORKERS)
 
-    def test_reference_choosers_preserve_order_remove_clear_and_replace(self):
+    def test_upload_grid_preserves_order_remove_clear_and_replace(self):
         paths = [str(self.root / name) for name in ('产品一.png', '产品二.jpg')]
         self.page._refresh_references()
-        self.assertEqual(self.page.product_count_label.text(), '产品图 0/6')
-        self.assertEqual(self.page.product_list.count(), 0)
-        self.assertEqual(self.page.style_preview.count(), 0)
-        self.assertEqual(self.page.style_label.text(), '未选择风格图')
+        self.assertEqual(self.page.product_grid.count(), 0)
+        self.assertIsNotNone(self.page.product_grid.add_tile())
+        self.assertEqual(self.page.style_grid.count(), 0)
+        self.assertIsNotNone(self.page.style_grid.add_tile())
         with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames', return_value=(paths, '')):
-            self.page.add_products_button.click()
+            self.page.product_grid.add_tile().clicked.emit()
         self.assertEqual(self.page.product_image_paths, paths)
-        self.assertEqual(self.page.product_list.item(0).text(), '产品一.png')
-        self.assertEqual(self.page.product_count_label.text(), '产品图 2/6')
-        self.assertEqual([self.page.product_list.item(i).widget.path
-                          for i in range(self.page.product_list.count())], paths)
-        self.page.product_list.setCurrentRow(0)
-        self.assertTrue(self.page.product_list.item(0).widget.selected)
-        self.assertFalse(self.page.product_list.item(1).widget.selected)
-        self.page.remove_product_button.click()
+        self.assertEqual(self.page.product_grid.count(), 2)
+        self.assertEqual(self.page.product_grid.tile_at(0).path, paths[0])
+        self.assertEqual(self.page.product_grid.tile_at(1).path, paths[1])
+        self.assertEqual(self.page.product_grid.add_tile().text_label.text(), '继续添加 2/6')
+        self.page.product_grid.tile_at(0).remove_button.clicked.emit()
         self.assertEqual(self.page.product_image_paths, paths[1:])
-        self.assertEqual(self.page.product_count_label.text(), '产品图 1/6')
-        self.assertEqual(self.page.product_list.count(), 1)
-        self.assertEqual(self.page.product_list.item(0).widget.path, paths[1])
-        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[0], '')):
-            self.page.choose_style_button.click()
-        self.assertEqual(self.page.style_preview.count(), 1)
-        self.assertEqual(self.page.style_preview.item(0).widget.path, paths[0])
-        self.assertEqual(self.page.style_label.text(), '产品一.png')
-        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[1], '')):
-            self.page.choose_style_button.click()
-        self.assertEqual(self.page.style_image_paths, paths[1:])
-        self.assertEqual(self.page.style_preview.count(), 1)
-        self.assertEqual(self.page.style_preview.item(0).widget.path, paths[1])
-        self.assertEqual(self.page.style_label.text(), '产品二.jpg')
-        self.page.clear_products_button.click()
-        self.assertEqual(self.page.product_count_label.text(), '产品图 0/6')
-        self.assertEqual(self.page.product_list.count(), 0)
-        self.page.clear_style_button.click()
+        self.assertEqual(self.page.product_grid.count(), 1)
+        self.assertEqual(self.page.product_grid.tile_at(0).path, paths[1])
+        self.page._clear_products()
         self.assertEqual(self.page.product_image_paths, [])
+        self.assertEqual(self.page.product_grid.count(), 0)
+
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[0], '')):
+            self.page.style_grid.add_tile().clicked.emit()
+        self.assertEqual(self.page.style_image_paths, [paths[0]])
+        self.assertEqual(self.page.style_grid.count(), 1)
+        self.assertEqual(self.page.style_grid.tile_at(0).path, paths[0])
+        self.assertIsNone(self.page.style_grid.add_tile())
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[1], '')):
+            self.page._choose_style()
+        self.assertEqual(self.page.style_image_paths, [paths[1]])
+        self.assertEqual(self.page.style_grid.count(), 1)
+        self.assertEqual(self.page.style_grid.tile_at(0).path, paths[1])
+        self.page._clear_style()
         self.assertEqual(self.page.style_image_paths, [])
-        self.assertEqual(self.page.style_preview.count(), 0)
-        self.assertEqual(self.page.style_label.text(), '未选择风格图')
+        self.assertEqual(self.page.style_grid.count(), 0)
+        self.assertIsNotNone(self.page.style_grid.add_tile())
 
     def test_thumbnail_close_button_removes_its_product_and_missing_style_is_safe(self):
         paths = [str(self.root / name) for name in ('first.png', 'missing.png', 'third.png')]
         self.page.product_image_paths = paths.copy()
         self.page._refresh_references()
-        self.page.product_list.item(1).widget.close_button.click()
+        self.page.product_grid.tile_at(1).remove_button.clicked.emit()
         self.assertEqual(self.page.product_image_paths, [paths[0], paths[2]])
-        self.assertEqual([self.page.product_list.item(i).widget.path
-                          for i in range(self.page.product_list.count())], [paths[0], paths[2]])
+        self.assertEqual([self.page.product_grid.tile_at(i).path
+                          for i in range(self.page.product_grid.count())], [paths[0], paths[2]])
         self.page.style_image_paths = [str(self.root / 'absent-style.png')]
         self.page._refresh_references()
-        self.assertEqual(self.page.style_preview.item(0).widget.preview.text(), '无法预览')
-        self.assertEqual(self.page.style_preview.item(0).toolTip(), str(self.root / 'absent-style.png'))
+        style_tile = self.page.style_grid.tile_at(0)
+        self.assertEqual(style_tile.path, str(self.root / 'absent-style.png'))
+        self.assertTrue(style_tile._pixmap.isNull())
 
     def test_arguments_preserve_product_order_and_submit_style_last(self):
         self.fill_valid()
@@ -831,9 +859,11 @@ class EcommercePageTests(unittest.TestCase):
     def test_product_picker_rejects_seventh_image_without_changing_order(self):
         paths = [str(self.root / f'{i}.png') for i in range(6)]
         self.page.product_image_paths = paths.copy()
+        self.page._refresh_references()
+        self.assertIsNone(self.page.product_grid.add_tile())
         with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames',
                    return_value=([str(self.root / 'extra.png')], '')):
-            self.page.add_products_button.click()
+            self.page._choose_products()
         self.assertEqual(self.page.product_image_paths, paths)
         self.notices.assert_called_once()
 
@@ -945,6 +975,44 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.stage_label.text(), '已完成')
         self.assertTrue((Path(first_output) / 'manifest.json').is_file())
 
+    def test_used_and_gallery_picker_buttons_merge_into_upload_grid(self):
+        product = str(self.root / 'picked.png')
+        style = str(self.root / 'style-picked.png')
+
+        class _FakeDialog:
+            Accepted = 1
+
+            def __init__(self, *args, **kwargs):
+                self.result_paths = []
+
+            def exec_(self):
+                return self.Accepted
+
+            def deleteLater(self):
+                pass
+
+        dialog = _FakeDialog()
+        dialog.result_paths = [product]
+        with patch('ui.pages.ecommerce_page.UsedImagePickerDialog', return_value=dialog):
+            self.page._pick_used_images('product')
+        self.assertEqual(self.page.product_image_paths, [product])
+        self.assertEqual(self.page.product_grid.count(), 1)
+        dialog.result_paths = [style]
+        with patch('ui.pages.ecommerce_page.GalleryPickerDialog', return_value=dialog):
+            self.page._pick_gallery_images('style')
+        self.assertEqual(self.page.style_image_paths, [style])
+        self.assertEqual(self.page.style_grid.count(), 1)
+
+    def test_product_thumbnail_click_opens_lightbox_via_page(self):
+        paths = [str(self.root / f'thumb{index}.png') for index in range(2)]
+        self.page.product_image_paths = list(paths)
+        self.page._refresh_references()
+        with patch('ui.pages.ecommerce_page.ImageLightbox.show_images') as show:
+            self.page.product_grid.tile_at(1).clicked.emit(1)
+        show.assert_called_once()
+        self.assertEqual(show.call_args.args[1], paths)
+        self.assertEqual(show.call_args.args[2], 1)
+
     def test_result_cards_show_ordered_thumbnails_sizes_and_open_actions(self):
         self.fill_valid()
         self.run_to_idle()
@@ -961,10 +1029,13 @@ class EcommercePageTests(unittest.TestCase):
             self.assertTrue(card.folder_button.isEnabled())
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
         first = cards[0]
-        with patch('ui.components.ecommerce_result_panel.open_local') as opener:
+        succeeded_paths = [str(card.record['file_path']) for card in cards]
+        with patch('ui.pages.ecommerce_page.ImageLightbox.show_images') as lightbox, \
+                patch('ui.components.ecommerce_result_panel.open_local') as opener:
             QTest.mouseClick(first.thumbnail, Qt.LeftButton)
-            self.assertEqual(opener.call_args.args[0], first.record['file_path'])
-            self.assertFalse(opener.call_args.kwargs['folder'])
+            lightbox.assert_called_once()
+            self.assertEqual(lightbox.call_args.args[1], succeeded_paths)
+            self.assertEqual(lightbox.call_args.args[2], 0)
             first.folder_button.click()
             self.assertEqual(opener.call_args.args[0], str(Path(first.record['file_path']).parent))
             self.assertTrue(opener.call_args.kwargs['folder'])

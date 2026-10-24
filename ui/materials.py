@@ -377,6 +377,42 @@ class SurfaceShadow(QGraphicsEffect):
         painter.drawPixmap(offset, pixmap)
 
 
+# 电商图上传区 / 灯箱 / 任务列表的固定配色。参考软件为浅色设计，这里做
+# 主题无关的语义色集中登记；主题相关的底色/文字仍从 palette() 取。
+# 测试护栏：ui/ 其余文件不得再散落十六进制颜色字面量。
+ECOMMERCE = {
+    'white': '#FFFFFF',
+    'danger': '#EF4444',            # 删除按钮 / 错误红
+    'danger_hover': '#DC2626',
+    'badge_bg': (0, 0, 0, 191),     # 图片序号底 #000000bf
+    'badge_text': '#FFFFFF',
+    'mask': (0, 0, 0, 217),         # 灯箱遮罩 #000000d9
+    'nav_bg': (15, 23, 42, 184),    # 灯箱左右箭头底 #0f172ab8
+    'nav_hover': (59, 130, 246, 230),
+    'close_bg': (239, 68, 68, 179),
+    'close_hover': '#DC2626',
+    'lightbox_light_header': '#F5F5F7',
+    'lightbox_light_body': '#F9FAFB',
+    'lightbox_dark_header': '#1E1E2E',
+    'lightbox_dark_body': '#14141A',
+    'upload_tint': (0, 122, 255, 10),   # hover 背景 #007aff0a
+    'upload_border_hover': (0, 122, 255, 255),
+    'brand_blue': '#007AFF',            # 参考软件的强调蓝（平台预览/灯箱 tab）
+    'brand_blue_soft': (0, 122, 255, 26),
+    'chip_bg': (255, 255, 255, 20),
+    'success': '#22C55E',
+    'warning': '#F59E0B',
+}
+
+
+def rgba(rgb, alpha=None):
+    """(r, g, b[, a]) → Qt 样式表可用的 rgba 字符串。"""
+    red, green, blue = rgb[:3]
+    if alpha is None:
+        alpha = rgb[3] if len(rgb) > 3 else 255
+    return 'rgba(%d,%d,%d,%s)' % (red, green, blue, alpha)
+
+
 # 任务监看带 / 状态胶囊配色（浅色, 深色）双色对：颜色单一来源集中于此，
 # 组件只引用键名（测试护栏：ui/ 其余文件的颜色字面量需保持收敛）。
 MONITOR = {

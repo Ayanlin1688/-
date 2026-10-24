@@ -6,7 +6,9 @@ from urllib.parse import urlsplit
 
 from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
-from PyQt5.QtWidgets import QFileDialog, QGridLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
+)
 from qfluentwidgets import (
     CardWidget, CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
@@ -14,7 +16,7 @@ from qfluentwidgets import (
 )
 
 from core.ecommerce.platforms import (
-    domestic, overseas, LANGUAGE_TEXT, RATIOS, MAX_PLATFORMS, detect_conflicts,
+    domestic, overseas, LANGUAGE_TEXT, RATIOS, MAX_PLATFORMS, detect_conflicts, get_platform,
 )
 from core.ecommerce.image_client import TIER_SHORT_EDGE
 from core.ecommerce.manager import EcommerceImageManager
@@ -26,9 +28,13 @@ from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ..components.ecommerce_history_panel import EcommerceHistoryPanel, RESUMABLE_STATUSES
+from ..components.image_lightbox import ImageLightbox
+from ..components.image_pickers import (
+    GalleryPickerDialog, UsedImagePickerDialog,
+)
+from ..components.image_upload_grid import ImageUploadGrid
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from core.model_catalog import normalize_model_id
-from ..components.reference_thumbnail import ReferenceGrid, ReferenceThumbnail
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
@@ -156,6 +162,9 @@ class EcommercePage(QWidget):
         self._model_probe_revisions = {'chat': 0, 'image': 0}
         self._model_probe_fingerprints = {}
         self._probe_closing = False
+        self._lightbox = None
+        self._platform_selection_order = []
+        self._picker_buttons = []
         defaults = config_manager.config.get('ecommerce', {})
 
         root = scrollable_body(self)
@@ -211,12 +220,15 @@ class EcommercePage(QWidget):
         row.addLayout(self._field(tr('分辨率档位'), self.tier))
         options.addLayout(row)
         counts = WrapLayout(spacing=px(16))
+        # 参考软件范围：轮播图 1-6 张、详情图 1-15 张。
         self.carousel_count = SpinBox()
-        self.carousel_count.setRange(1, 12)
-        self.carousel_count.setValue(defaults.get('default_carousel_count', 3))
+        self.carousel_count.setRange(1, 6)
+        self.carousel_count.setValue(
+            self._clamp_count(defaults.get('default_carousel_count', 3), 1, 6))
         self.detail_count = SpinBox()
-        self.detail_count.setRange(0, 12)
-        self.detail_count.setValue(defaults.get('default_detail_count', 4))
+        self.detail_count.setRange(1, 15)
+        self.detail_count.setValue(
+            self._clamp_count(defaults.get('default_detail_count', 4), 1, 15))
         self.carousel_ratio, self.detail_ratio = ComboBox(), ComboBox()
         for combo, key in ((self.carousel_ratio, 'default_carousel_ratio'),
                            (self.detail_ratio, 'default_detail_ratio')):
@@ -227,38 +239,7 @@ class EcommercePage(QWidget):
             counts.addLayout(self._field(title, widget))
         options.addLayout(counts)
 
-        references = self._card(root, tr('参考图片（可选）'))
-        reference_hint = CaptionLabel(tr('产品图最多 6 张，风格图最多 1 张；按产品图在前、风格图最后提交。'))
-        reference_hint.setWordWrap(True)
-        references.addWidget(reference_hint)
-        self.product_count_label = CaptionLabel()
-        references.addWidget(self.product_count_label)
-        self.product_list = ReferenceGrid()
-        self.product_list.setMinimumHeight(px(112))
-        references.addWidget(self.product_list)
-        products = WrapLayout()
-        self.add_products_button = PushButton(tr('添加产品图'))
-        self.remove_product_button = PushButton(tr('移除所选产品图'))
-        self.clear_products_button = PushButton(tr('清空产品图'))
-        self.add_products_button.clicked.connect(self._choose_products)
-        self.remove_product_button.clicked.connect(self._remove_product)
-        self.clear_products_button.clicked.connect(self._clear_products)
-        for button in (self.add_products_button, self.remove_product_button, self.clear_products_button):
-            products.addWidget(button)
-        references.addLayout(products)
-        self.style_label = self._text_label(tr('未选择风格图'))
-        references.addWidget(self.style_label)
-        self.style_preview = ReferenceGrid()
-        self.style_preview.setMinimumHeight(px(144))
-        references.addWidget(self.style_preview)
-        style = WrapLayout()
-        self.choose_style_button = PushButton(tr('选择 / 替换风格图'))
-        self.clear_style_button = PushButton(tr('清除风格图'))
-        self.choose_style_button.clicked.connect(self._choose_style)
-        self.clear_style_button.clicked.connect(self._clear_style)
-        style.addWidget(self.choose_style_button)
-        style.addWidget(self.clear_style_button)
-        references.addLayout(style)
+        self._upload_card(root)
 
         models = self._card(root, tr('模型设置'))
         self.model_grid = QGridLayout()
@@ -373,6 +354,7 @@ class EcommercePage(QWidget):
         self.result_panel.regenerate_failed_requested.connect(self._run_regenerate)
         self.result_panel.regenerate_selected_requested.connect(self._run_regenerate)
         self.result_panel.log_message.connect(self._append_log)
+        self.result_panel.preview_requested.connect(self._open_image_lightbox)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
         root.addWidget(self.result_panel)
         self.history_panel = EcommerceHistoryPanel(_stage_text, self)
@@ -426,6 +408,168 @@ class EcommercePage(QWidget):
             if combo.itemData(index) == value:
                 combo.setCurrentIndex(index)
                 return
+
+    @staticmethod
+    def _clamp_count(value, low, high):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = low
+        return max(low, min(high, number))
+
+    # —— 上传区（参考软件同款：产品图 6 格 + 风格图 1 格 + 两个选择器） ——
+    def _upload_card(self, root):
+        card = CardWidget(self)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(px(18), px(16), px(18), px(16))
+        layout.setSpacing(px(10))
+        self._form_cards.append(card)
+
+        layout.addLayout(self._upload_header(
+            tr('产品图'), target='product', required=True,
+            hint=tr('上传产品白底图，最多 6 张')))
+        self.product_grid = ImageUploadGrid('product', 6, self)
+        self.product_grid.changed.connect(self._on_product_images_changed)
+        self.product_grid.preview_requested.connect(self._preview_product_image)
+        self.product_grid.add_requested.connect(self._choose_products)
+        layout.addWidget(self.product_grid)
+
+        layout.addSpacing(px(8))
+        layout.addLayout(self._upload_header(
+            tr('风格参考图'), target='style', optional=True,
+            hint=tr('可选，上传参考图来指定风格')))
+        self.style_grid = ImageUploadGrid('style', 1, self)
+        self.style_grid.changed.connect(self._on_style_images_changed)
+        self.style_grid.preview_requested.connect(self._preview_style_image)
+        self.style_grid.add_requested.connect(self._choose_style)
+        layout.addWidget(self.style_grid)
+        root.addWidget(card)
+        return card
+
+    def _upload_header(self, title, *, target, required=False, optional=False, hint=''):
+        header = QHBoxLayout()
+        header.setSpacing(px(8))
+        header.addWidget(StrongBodyLabel(title))
+        if required:
+            star = QLabel('*')
+            star.setStyleSheet('color: %s;' % materials.ERROR)
+            header.addWidget(star)
+        if optional:
+            badge = CaptionLabel(tr('可选'))
+            badge.setStyleSheet('color: %s;' % materials.palette()['text2'])
+            header.addWidget(badge)
+        hint_label = CaptionLabel(hint)
+        hint_label.setWordWrap(True)
+        header.addWidget(hint_label)
+        header.addStretch(1)
+        used = self._picker_button(tr('已用图片'), tr('从已完成任务选择图片'))
+        gallery = self._picker_button(tr('画廊选图'), tr('从本地画廊目录选择图片'))
+        used.clicked.connect(
+            lambda _checked=False, target=target: self._pick_used_images(target))
+        gallery.clicked.connect(
+            lambda _checked=False, target=target: self._pick_gallery_images(target))
+        used.setObjectName('usedImagesButton_' + target)
+        gallery.setObjectName('galleryButton_' + target)
+        header.addWidget(used)
+        header.addWidget(gallery)
+        return header
+
+    def _picker_button(self, text, tooltip):
+        button = PushButton(text)
+        button.setFixedHeight(px(24))
+        button.setToolTip(tooltip)
+        button.setCursor(Qt.PointingHandCursor)
+        self._picker_buttons.append(button)
+        return button
+
+    def _refresh_picker_button_styles(self):
+        colors = materials.palette()
+        accent = QColor(colors['accent'])
+        hover = accent.darker(112).name()
+        disabled = QColor(colors['text3']).name()
+        for button in self._picker_buttons:
+            try:
+                button.setStyleSheet(
+                    'QPushButton {background: %s; color: %s; border: 0;'
+                    ' border-radius: %dpx; padding: 2px %dpx;'
+                    ' font-size: %dpx; font-weight: 500;}'
+                    ' QPushButton:hover {background: %s;}'
+                    ' QPushButton:disabled {background: %s; color: %s;}'
+                    % (accent.name(), materials.ECOMMERCE['white'], px(6),
+                       px(8), px(12), hover, materials.rgba(colors['border']),
+                       disabled))
+            except RuntimeError:
+                continue
+
+    def _on_product_images_changed(self, paths):
+        self.product_image_paths = [str(path) for path in (paths or [])][:6]
+
+    def _on_style_images_changed(self, paths):
+        self.style_image_paths = [str(path) for path in (paths or [])][:1]
+
+    def _pick_used_images(self, target):
+        try:
+            dialog = UsedImagePickerDialog(
+                self, self.config_manager.ecommerce_store(),
+                max_count=6 if target == 'product' else 1)
+            if dialog.exec_() == dialog.Accepted:
+                self._merge_images(target, dialog.result_paths)
+        finally:
+            safe_delete_dialog(dialog)
+
+    def _pick_gallery_images(self, target):
+        try:
+            dialog = GalleryPickerDialog(
+                self, self.config_manager, max_count=6 if target == 'product' else 1)
+            if dialog.exec_() == dialog.Accepted:
+                self._merge_images(target, dialog.result_paths)
+        finally:
+            safe_delete_dialog(dialog)
+
+    def _merge_images(self, target, paths):
+        paths = [str(path) for path in (paths or []) if str(path or '').strip()]
+        if not paths:
+            return
+        if target == 'product':
+            merged = list(dict.fromkeys(self.product_image_paths + paths))
+            if len(merged) > 6:
+                self._notice(tr('产品图最多 6 张，请移除后再添加'))
+                merged = merged[:6]
+            self.product_image_paths = merged
+        else:
+            if len(paths) > 1:
+                self._notice(tr('风格图最多 1 张，已使用第一张'))
+            self.style_image_paths = [paths[0]]
+        self._refresh_references()
+
+    def _preview_product_image(self, index):
+        self._open_image_lightbox(self.product_image_paths, index)
+
+    def _preview_style_image(self, index):
+        self._open_image_lightbox(self.style_image_paths, index)
+
+    def _open_image_lightbox(self, paths, index=0):
+        paths = [str(path) for path in (paths or []) if str(path or '').strip()]
+        if not paths:
+            return None
+        if self._lightbox is not None:
+            try:
+                self._lightbox.close()
+            except RuntimeError:
+                pass
+            self._lightbox = None
+        try:
+            dialog = ImageLightbox.show_images(self, paths, index)
+        except Exception:
+            self._notice(tr('图片预览打开失败'))
+            return None
+        if dialog is not None:
+            self._lightbox = dialog
+            dialog.closed.connect(self._on_lightbox_closed)
+        return dialog
+
+    def _on_lightbox_closed(self):
+        self._lightbox = None
 
     def _persist_model(self, key, value):
         kind = 'chat' if key == 'analysis_model' else 'image' if key == 'image_model' else None
@@ -496,6 +640,10 @@ class EcommercePage(QWidget):
 
     def refresh_interface_scale(self):
         self._fit_model_columns()
+        for attribute in ('product_grid', 'style_grid'):
+            grid = getattr(self, attribute, None)
+            if grid is not None:
+                grid.refresh_interface_scale()
 
     def eventFilter(self, watched, event):
         if (watched is self.body_scroll.viewport()
@@ -613,13 +761,59 @@ class EcommercePage(QWidget):
         method(tr('电商图'), self._clean(message), parent=self, duration=5000)
 
     def _platform_changed(self, key, checked):
-        if checked and len(self.selected_platforms()) > MAX_PLATFORMS:
-            checkbox = self.platform_checkboxes[key]
-            checkbox.blockSignals(True)
-            checkbox.setChecked(False)
-            checkbox.blockSignals(False)
-            self._notice(tr('最多选择 {count} 个平台').format(count=MAX_PLATFORMS), warning=True)
+        if checked:
+            if key not in self._platform_selection_order:
+                self._platform_selection_order.append(key)
+            if len(self.selected_platforms()) > MAX_PLATFORMS:
+                checkbox = self.platform_checkboxes[key]
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+                try:
+                    self._platform_selection_order.remove(key)
+                except ValueError:
+                    pass
+                self._notice(tr('最多选择 {count} 个平台').format(count=MAX_PLATFORMS),
+                             warning=True)
+                self._refresh_conflicts()
+                return
+        else:
+            try:
+                self._platform_selection_order.remove(key)
+            except ValueError:
+                pass
         self._refresh_conflicts()
+        # 参考软件行为：已选平台数组变化且表单空闲时，套用第一个选中平台的默认值。
+        self._apply_first_platform_defaults()
+
+    def _apply_first_platform_defaults(self):
+        """勾选平台后自动套用第一个选中平台的轮播图 / 详情图比例与张数。
+
+        与参考软件一致：仅在表单空闲（未生成中）且已选平台非空时套用；
+        取用户选中顺序中的第一个平台，而不是目录顺序。
+        """
+        if self.busy:
+            return
+        selected = self.selected_platforms()
+        if not selected:
+            return
+        first = next((key for key in self._platform_selection_order if key in selected),
+                     selected[0])
+        try:
+            record = get_platform(first)
+        except (KeyError, TypeError):
+            return
+        try:
+            if record.get('defaultCarouselRatio') in RATIOS:
+                self.carousel_ratio.setCurrentText(record['defaultCarouselRatio'])
+            if record.get('defaultDetailRatio') in RATIOS:
+                self.detail_ratio.setCurrentText(record['defaultDetailRatio'])
+            self.carousel_count.setValue(
+                self._clamp_count(record.get('defaultCarouselCount'), 1, 6))
+            self.detail_count.setValue(
+                self._clamp_count(record.get('defaultDetailCount'), 1, 15))
+        except (RuntimeError, TypeError, ValueError):
+            pass
 
     def _refresh_conflicts(self):
         conflicts = detect_conflicts(self.selected_platforms())
@@ -633,10 +827,18 @@ class EcommercePage(QWidget):
         colors = materials.palette()
         self.background_conflict.setStyleSheet('color: %s;' % colors['error'])
         self.ratio_conflict.setStyleSheet('color: %s;' % colors['warning'])
-        for label in (self.stage_label, self.summary_label, self.style_label, *self.item_labels.values()):
+        for label in (self.stage_label, self.summary_label, *self.item_labels.values()):
             label.setStyleSheet('color: %s;' % colors['text1'])
+        self.product_grid.refresh_colors()
+        self.style_grid.refresh_colors()
+        self._refresh_picker_button_styles()
         self.result_panel.refresh_colors()
         self.history_panel.refresh_colors()
+        if self._lightbox is not None:
+            try:
+                self._lightbox._apply_theme()
+            except RuntimeError:
+                self._lightbox = None
         self.log_box.clear()
         for message, level in self._logs:
             self._insert_log(message, level)
@@ -648,21 +850,17 @@ class EcommercePage(QWidget):
     def _choose_products(self):
         paths, _ = QFileDialog.getOpenFileNames(self, tr('选择产品图'), '', _image_filter())
         paths = [str(Path(path).resolve()) for path in paths]
+        if not paths:
+            return
         merged = list(dict.fromkeys(self.product_image_paths + paths))
         if len(merged) > 6:
             self._notice(tr('产品图最多 6 张，请移除后再添加'))
-            return
+            merged = merged[:6]
         self.product_image_paths = merged
         self._refresh_references()
 
-    def _remove_product(self):
-        index = self.product_list.currentRow()
-        if 0 <= index < len(self.product_image_paths):
-            self.product_image_paths.pop(index)
-        self._refresh_references()
-
     def _clear_products(self):
-        self.product_image_paths.clear()
+        self.product_image_paths = []
         self._refresh_references()
 
     def _choose_style(self):
@@ -672,24 +870,16 @@ class EcommercePage(QWidget):
             self._refresh_references()
 
     def _clear_style(self):
-        self.style_image_paths.clear()
+        self.style_image_paths = []
         self._refresh_references()
 
     def _refresh_references(self):
-        self.product_list.clear()
-        self.product_count_label.setText(tr('产品图 {count}/6').format(count=len(self.product_image_paths)))
-        for path in self.product_image_paths:
-            thumbnail = ReferenceThumbnail(path, size=84, selectable=True, parent=self.product_list)
-            thumbnail.removed.connect(lambda _checked=False, path=path: self._remove_product_path(path))
-            self.product_list.add_thumbnail(thumbnail)
-        self.style_preview.clear()
-        if self.style_image_paths:
-            thumbnail = ReferenceThumbnail(self.style_image_paths[0], size=112,
-                                           selectable=False, parent=self.style_preview)
-            thumbnail.removed.connect(self._clear_style)
-            self.style_preview.add_thumbnail(thumbnail)
-        self.style_label.setText(self._clean(Path(self.style_image_paths[0]).name)
-                                 if self.style_image_paths else tr('未选择风格图'))
+        self.product_image_paths = [str(path) for path in self.product_image_paths
+                                    if str(path or '').strip()][:6]
+        self.style_image_paths = [str(path) for path in self.style_image_paths
+                                  if str(path or '').strip()][:1]
+        self.product_grid.set_paths(self.product_image_paths, emit=False)
+        self.style_grid.set_paths(self.style_image_paths, emit=False)
 
     def _remove_product_path(self, path):
         try:
@@ -1051,5 +1241,11 @@ class EcommercePage(QWidget):
             self.cancel_generation()
             event.ignore()
             return
+        if self._lightbox is not None:
+            try:
+                self._lightbox.close()
+            except RuntimeError:
+                pass
+            self._lightbox = None
         self._probe_closing = True
         super().closeEvent(event)

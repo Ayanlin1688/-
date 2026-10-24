@@ -111,6 +111,7 @@ class EcommerceResultCard(CardWidget):
     regenerate_requested = pyqtSignal(object)
     selection_changed = pyqtSignal()
     log_message = pyqtSignal(str, str)
+    preview_requested = pyqtSignal(str)
 
     def __init__(self, record, parent=None, *, adaptive=True):
         super().__init__(parent)
@@ -135,7 +136,7 @@ class EcommerceResultCard(CardWidget):
         self.thumbnail.setAlignment(Qt.AlignCenter)
         self.thumbnail.setTextFormat(Qt.PlainText)
         self.thumbnail.apply_adaptive(self._adaptive)
-        self.thumbnail.clicked.connect(self._open_image)
+        self.thumbnail.clicked.connect(self._request_preview)
         self.thumbnail.render_requested.connect(self._render_thumbnail)
         layout.addWidget(self.thumbnail)
         self.size_label = self._label()
@@ -308,6 +309,11 @@ class EcommerceResultCard(CardWidget):
         self.thumbnail._resize_timer.stop()
         super().closeEvent(event)
 
+    def _request_preview(self):
+        """结果图点击进灯箱预览（需求：生成结果图也要能点开看大图）。"""
+        if self._has_image:
+            self.preview_requested.emit(self.record.get('item_id', ''))
+
     def _open_image(self):
         if self._has_image:
             open_local(self.record['file_path'], self.log_message.emit, folder=False)
@@ -356,6 +362,7 @@ class EcommerceResultPanel(QWidget):
     regenerate_failed_requested = pyqtSignal()
     regenerate_selected_requested = pyqtSignal(list)
     log_message = pyqtSignal(str, str)
+    preview_requested = pyqtSignal(object, int)
 
     def __init__(self, parent=None, *, config_manager=None):
         super().__init__(parent)
@@ -396,6 +403,17 @@ class EcommerceResultPanel(QWidget):
         self._refresh_selection()
         self.refresh_colors()
 
+    def _on_card_preview(self, item_id):
+        records = [card.record for card in self.ordered_cards()
+                   if card.record.get('status') == 'succeeded'
+                   and card.record.get('file_path')]
+        paths = [str(record['file_path']) for record in records]
+        if not paths:
+            return
+        index = next((position for position, record in enumerate(records)
+                      if record.get('item_id') == item_id), 0)
+        self.preview_requested.emit(paths, min(index, len(paths) - 1))
+
     def ordered_cards(self):
         return sorted(self.cards.values(), key=lambda card: (card.record['kind'], card.record['seq']))
 
@@ -408,6 +426,7 @@ class EcommerceResultPanel(QWidget):
             card.regenerate_requested.connect(self.regenerate_requested)
             card.selection_changed.connect(self._refresh_selection)
             card.log_message.connect(self.log_message)
+            card.preview_requested.connect(self._on_card_preview)
             self.cards[item_id] = card
             # Only the layout order changes when an item is first seen. Existing
             # cards retain their identity, pixmap and signal connections.
