@@ -1,4 +1,6 @@
-"""平台预览通用模板 offscreen 回归：国内桌面壳 / 海外手机壳 / 平台切换 / 占位。"""
+"""Offline coverage for the full-window preview, shells and image selection."""
+import gc
+import json
 import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -8,20 +10,27 @@ import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from PyQt5.QtWidgets import QApplication, QLabel
+from PyQt5.QtCore import QCoreApplication, QEvent, QMimeData, QPoint, QRect, Qt
+from PyQt5.QtTest import QSignalSpy, QTest
+from PyQt5.QtWidgets import QApplication, QLabel, QScrollArea, QWidget
 
 from core.ecommerce.platforms import get_platform
 from core.i18n import set_language, tr
-from tests.qt_scale_support import reset_interface_scaling
+from tests.qt_scale_support import flush_layout, reset_interface_scaling
+from tests.test_interface_scaling import FakeScreen
 from ui.components.platform_preview_dialog import (
     PlatformPreviewDialog, PreviewImage, _PhoneShell, _DesktopShell,
 )
-from ui.components.studio_dialog import StudioDialog
+from ui.components.preview_selection_panel import PREVIEW_IMAGE_MIME
+from ui.scaling import apply_interface_scale
+from ui.tokens import px
+from ui import materials
 
 
 DISCLAIMER = ('仅供图片效果预览，界面布局模拟自各平台公开商品页，'
-              '与相关平台无隶属关系，仅用于图片效果自查')
+              '与相关平台无隶属关系，不代表任何平台官方立场。')
 
 
 def solid_png(width, height, rgb):
@@ -43,11 +52,8 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
 
     def setUp(self):
         set_language('zh-CN')
-        self.addCleanup(set_language, 'zh-CN')
         reset_interface_scaling(self.app)
-        self.addCleanup(reset_interface_scaling, self.app)
         self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.images = []
         for index in range(4):
@@ -55,12 +61,27 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
             path.write_bytes(solid_png(64, 48, (30 * index, 120, 200)))
             self.images.append(str(path))
         self.dialogs = []
+        self.parents = []
+        self.network_patch = patch(
+            'requests.sessions.Session.request',
+            side_effect=AssertionError('预览测试禁止联网'))
+        self.network = self.network_patch.start()
 
     def tearDown(self):
         for dialog in self.dialogs:
             dialog.close()
             dialog.deleteLater()
+        for parent in self.parents:
+            parent.close()
+            parent.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.app.processEvents()
+        gc.collect()
+        self.network.assert_not_called()
+        self.network_patch.stop()
+        set_language('zh-CN')
+        reset_interface_scaling(self.app)
+        self.temp.cleanup()
 
     def make_group(self, platforms=None, **overrides):
         group = dict(
@@ -79,25 +100,54 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
         group.update(overrides)
         return group
 
-    def dialog(self, group=None, **kwargs):
-        dialog = PlatformPreviewDialog(None, self.make_group() if group is None else group,
+    def parent_window(self, width=1600, height=900):
+        parent = QWidget()
+        parent.setGeometry(60, 40, width, height)
+        parent.show()
+        flush_layout(self.app, parent)
+        self.parents.append(parent)
+        return parent
+
+    def dialog(self, group=None, *, parent=None, show=False, **kwargs):
+        dialog = PlatformPreviewDialog(parent, self.make_group() if group is None else group,
                                        **kwargs)
         self.dialogs.append(dialog)
+        if show:
+            dialog.show()
+            flush_layout(self.app, dialog)
         return dialog
+
+    def mobile_dialog(self, *, show=False, parent=None, **overrides):
+        return self.dialog(self.make_group(platforms=[get_platform('amazon')], **overrides),
+                           parent=parent, show=show)
 
     @staticmethod
     def label_texts(widget):
         return ' '.join(label.text() for label in widget.findChildren(QLabel)
                         if label.text())
 
+    @staticmethod
+    def rect_in(widget, parent):
+        return QRect(widget.mapTo(parent, QPoint()), widget.size())
+
+    def assert_no_horizontal_overflow(self, dialog):
+        for scroll in dialog.findChildren(QScrollArea):
+            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0,
+                             scroll.objectName())
+            if scroll.widget() is not None:
+                self.assertLessEqual(scroll.widget().width(), scroll.viewport().width(),
+                                     scroll.objectName())
+
 
 class PlatformPreviewShellTests(PlatformPreviewDialogTestBase):
-    def test_dialog_uses_studio_chrome_and_exact_disclaimer(self):
+    def test_dialog_uses_overlay_chrome_and_exact_disclaimer(self):
         dialog = self.dialog(self.make_group(platforms=[get_platform('taobao')]))
-        self.assertIsInstance(dialog, StudioDialog)
         self.assertEqual(dialog.disclaimer_label.text(), DISCLAIMER)
         self.assertEqual(dialog.disclaimer_label.text(), tr(DISCLAIMER))
-        self.assertIn('平台预览', dialog.header.title_label.text())
+        self.assertEqual(dialog.disclaimer_label.textFormat(), Qt.PlainText)
+        self.assertTrue(dialog.titleBar.isHidden())
+        self.assertEqual(dialog.titleBar.height(), 0)
+        self.assertIn(get_platform('taobao')['name'], dialog.platform_button.text())
 
     def test_domestic_platform_uses_desktop_shell_with_search_box(self):
         dialog = self.dialog(self.make_group(platforms=[get_platform('taobao')]))
@@ -124,31 +174,42 @@ class PlatformPreviewShellTests(PlatformPreviewDialogTestBase):
         shell = dialog.shell
         self.assertEqual(shell.status_bar.time_label.text(), '9:41')
         self.assertIsNotNone(shell.status_bar.icons)
-        self.assertEqual(shell.name_label.text(), get_platform('amazon')['name'])
+        self.assertEqual(shell.name_label.text(), 'Product Details')
+        self.assertIn(get_platform('amazon')['name'], dialog.platform_button.text())
         self.assertEqual(shell.dots.count, 2)
         self.assertEqual(shell.counter_label.text(), '1/2')
         self.assertTrue(shell.main_image.has_image)
         self.assertEqual(len(shell.detail_images), 1)
-        self.assertEqual(shell.cart_button.text(), tr('加入购物车'))
-        self.assertEqual(shell.buy_button.text(), tr('立即购买'))
+        self.assertEqual(shell.cart_button.text(), 'Add to Cart')
+        self.assertEqual(shell.buy_button.text(), 'Buy Now')
+        self.assertEqual(shell.sale_label.text(), 'SALE')
+        self.assertEqual(shell.sold_label.text(), '12.8K sold')
+        for text in ('Home', 'Chat', 'Save', 'Free Shipping', '30-day Returns', 'Fast Delivery'):
+            self.assertIn(text, self.label_texts(shell))
+        self.assertEqual(shell.width(), px(400))
+        self.assertEqual(shell.height(), px(730))
 
-    def test_platform_combo_switches_shell_and_theme(self):
+    def test_platform_menu_switches_shell_and_theme(self):
         dialog = self.dialog()
-        self.assertEqual(dialog.platform_combo.count(), 2)
-        self.assertEqual(dialog.platform_combo.currentText(),
-                         get_platform('taobao')['name'])
+        actions = dialog.platform_menu.actions()
+        self.assertEqual(len(actions), 2)
+        self.assertIn(get_platform('taobao')['name'], dialog.platform_button.text())
         self.assertEqual(dialog.shell_kind, 'desktop')
         taobao = get_platform('taobao')
         self.assertEqual(dialog.primary_color.name(), taobao['primaryColor'].lower())
         self.assertEqual(dialog.accent_color.name(), taobao['accentColor'].lower())
 
-        dialog.platform_combo.setCurrentIndex(1)
+        old_shell = dialog.shell
+        actions[1].trigger()
+        self.assertIsNot(dialog.shell, old_shell)
+        self.assertEqual(dialog.current_index, 1)
+        self.assertEqual(dialog.current_platform, get_platform('amazon'))
         self.assertEqual(dialog.shell_kind, 'mobile')
-        self.assertEqual(dialog.shell.name_label.text(), get_platform('amazon')['name'])
+        self.assertIn(get_platform('amazon')['name'], dialog.platform_button.text())
         amazon = get_platform('amazon')
         self.assertEqual(dialog.primary_color.name(), amazon['primaryColor'].lower())
 
-        dialog.platform_combo.setCurrentIndex(0)
+        actions[0].trigger()
         self.assertEqual(dialog.shell_kind, 'desktop')
         self.assertEqual(dialog.scroll.verticalScrollBar().value(), 0)
 
@@ -156,8 +217,10 @@ class PlatformPreviewShellTests(PlatformPreviewDialogTestBase):
         dialog = self.dialog()
         dialog.set_platform_index(1)
         self.assertTrue(dialog.is_mobile)
+        self.assertEqual(dialog.current_index, 1)
         dialog.set_platform_index(0)
         self.assertFalse(dialog.is_mobile)
+        self.assertEqual(dialog.current_index, 0)
 
     def test_carousel_switch_updates_main_image_and_dots(self):
         dialog = self.dialog(self.make_group(platforms=[get_platform('amazon')]))
@@ -181,6 +244,8 @@ class PlatformPreviewShellTests(PlatformPreviewDialogTestBase):
         dialog = self.dialog(group)
         self.assertEqual(dialog.carousel, [self.images[0], self.images[1]])
         self.assertEqual(dialog.detail, [self.images[2]])
+        self.assertEqual(dialog.selected_images('carousel'), dialog.carousel)
+        self.assertEqual(dialog.selected_images('detail'), dialog.detail)
 
 
 class PlatformPreviewPlaceholderTests(PlatformPreviewDialogTestBase):
@@ -191,7 +256,7 @@ class PlatformPreviewPlaceholderTests(PlatformPreviewDialogTestBase):
         dialog = self.dialog(group)
         self.assertEqual(dialog.shell_kind, 'desktop')
         self.assertIsNone(dialog.shell.main_image)
-        self.assertIn(tr('暂无预览图片'), self.label_texts(dialog))
+        self.assertIn(tr('暂无生成图片'), self.label_texts(dialog))
 
     def test_no_generated_images_overseas_shows_placeholder(self):
         group = dict(group_id='empty-overseas', product_name='空任务',
@@ -200,7 +265,8 @@ class PlatformPreviewPlaceholderTests(PlatformPreviewDialogTestBase):
         dialog = self.dialog(group)
         self.assertTrue(dialog.is_mobile)
         self.assertIsNone(dialog.shell.main_image)
-        self.assertIn(tr('暂无预览图片'), self.label_texts(dialog))
+        self.assertIn(tr('暂无生成图片'), self.label_texts(dialog))
+        self.assertTrue(dialog.shell.counter_label.isHidden())
 
     def test_thumbs_are_used_when_manifest_has_no_items(self):
         group = dict(group_id='thumb-group', product_name='图片任务',
@@ -213,10 +279,23 @@ class PlatformPreviewPlaceholderTests(PlatformPreviewDialogTestBase):
 
     def test_missing_group_fields_are_tolerated(self):
         dialog = self.dialog({})
-        self.assertEqual(dialog.platform_combo.count(), 1)
+        self.assertEqual(len(dialog.platform_menu.actions()), 1)
+        self.assertEqual(dialog.current_index, 0)
         self.assertEqual(dialog.shell_kind, 'desktop')
-        self.assertIn(tr('暂无预览图片'), self.label_texts(dialog))
+        self.assertIn(tr('暂无生成图片'), self.label_texts(dialog))
         self.assertEqual(dialog.disclaimer_label.text(), DISCLAIMER)
+
+    def test_null_manifest_items_use_thumbs_or_empty_placeholder(self):
+        for thumbs in ([], self.images[:2]):
+            with self.subTest(thumbs=thumbs):
+                dialog = self.mobile_dialog(manifest={'items': None}, thumbs=thumbs)
+                self.assertEqual(dialog.selected_images('carousel'), thumbs)
+                self.assertEqual(dialog.selected_count('detail'), 0)
+                if thumbs:
+                    self.assertEqual(dialog.shell.main_image.image_path, thumbs[0])
+                else:
+                    self.assertIsNone(dialog.shell.main_image)
+                    self.assertIn(tr('暂无生成图片'), self.label_texts(dialog))
 
     def test_broken_image_file_falls_back_to_placeholder(self):
         broken = self.root / 'broken.png'
@@ -248,7 +327,16 @@ class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
             dialog.retranslate_ui()
             self.assertEqual(dialog.disclaimer_label.text(), tr(DISCLAIMER))
             self.assertEqual(dialog.shell_kind, 'desktop')
-            self.assertEqual(dialog.platform_combo.count(), 2)
+            self.assertEqual(len(dialog.platform_menu.actions()), 2)
+            self.assertEqual(dialog.selection_panel.hint_label.text(),
+                             tr('点击勾选 · 拖拽排序'))
+            self.assertNotEqual(dialog.selection_panel.hint_label.text(),
+                                '点击勾选 · 拖拽排序')
+            self.assertEqual(dialog.selection_panel.clear_buttons['carousel'].text(),
+                             tr('取消全选'))
+            dialog.set_platform_index(1)
+            self.assertEqual(dialog.shell.name_label.text(), 'Product Details')
+            self.assertEqual(dialog.shell.cart_button.text(), 'Add to Cart')
         finally:
             set_language('zh-CN')
             dialog.retranslate_ui()
@@ -264,13 +352,286 @@ class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
         dialog = self.dialog(group)
         self.assertEqual(dialog.shell_kind, 'desktop')
         self.assertEqual(dialog.shell.name_label.text(), '未知平台')
-        self.assertEqual(dialog.platform_combo.count(), 1)
+        self.assertEqual(len(dialog.platform_menu.actions()), 1)
 
     def test_dialog_exposes_generated_image_counts(self):
         dialog = self.dialog()
         self.assertEqual(len(dialog.carousel), 2)
         self.assertEqual(len(dialog.detail), 1)
         self.assertEqual(len(dialog.shell.detail_images), 1)
+        self.assertEqual(dialog.selected_count('carousel'), 2)
+        self.assertEqual(dialog.selected_count('detail'), 1)
+
+
+class PlatformPreviewOverlayLayoutTests(PlatformPreviewDialogTestBase):
+    def test_overlay_matches_parent_geometry_without_default_title_bar(self):
+        parent = self.parent_window()
+        dialog = self.mobile_dialog(parent=parent, show=True)
+        expected = QRect(parent.mapToGlobal(QPoint()), parent.size())
+        self.assertEqual(dialog.geometry(), expected)
+        self.assertTrue(dialog.isModal())
+        self.assertTrue(dialog.windowFlags() & Qt.FramelessWindowHint)
+        self.assertTrue(dialog.titleBar.isHidden())
+        self.assertEqual(dialog.titleBar.height(), 0)
+        self.assertEqual(dialog.overlay_header.height(), px(48))
+        self.assertEqual(dialog.disclaimer_bar.height(), px(28))
+        self.assertEqual(dialog.selection_panel.width(), px(260))
+        self.assertEqual(dialog.selection_panel.columns, 3)
+        self.assert_no_horizontal_overflow(dialog)
+
+    def test_close_button_closes_overlay(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        self.assertTrue(dialog.isVisible())
+        QTest.mouseClick(dialog.close_button, Qt.LeftButton)
+        self.assertFalse(dialog.isVisible())
+
+    def test_phone_backgrounds_keep_status_dark_and_product_info_white(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        status = dialog.shell.status_bar.grab().toImage()
+        info = dialog.shell.product_label.parentWidget().grab().toImage()
+        self.assertEqual(status.pixelColor(status.width() // 2, status.height() // 2).name(),
+                         materials.ecommerce_color('preview_pill_bg').lower())
+        self.assertEqual(info.pixelColor(1, 1).name(),
+                         materials.ecommerce_color('preview_card').lower())
+
+    def test_escape_closes_overlay(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        QTest.keyClick(dialog, Qt.Key_Escape)
+        self.assertFalse(dialog.isVisible())
+
+    def test_header_sidebar_and_shell_fit_at_all_supported_scales(self):
+        for scale in (1.0, 1.25, 1.5, 1.75):
+            with self.subTest(scale=scale):
+                apply_interface_scale(self.app, FakeScreen(), scale)
+                parent = self.parent_window()
+                dialog = self.mobile_dialog(parent=parent, show=True)
+                flush_layout(self.app, dialog)
+                self.assertEqual(dialog.size(), parent.size())
+                self.assertEqual(dialog.overlay_header.height(), px(48))
+                self.assertEqual(dialog.disclaimer_bar.height(), px(28))
+                expected_width = px(232) if dialog.width() < px(1100) else px(260)
+                self.assertEqual(dialog.selection_panel.width(), expected_width)
+                self.assertEqual(dialog.shell.width(), px(400))
+                self.assertEqual(dialog.shell.height(), px(730))
+                header = self.rect_in(dialog.overlay_header, dialog)
+                disclaimer = self.rect_in(dialog.disclaimer_bar, dialog)
+                sidebar = self.rect_in(dialog.selection_panel, dialog)
+                center = self.rect_in(dialog.scroll, dialog)
+                self.assertLess(header.bottom(), disclaimer.top())
+                self.assertLess(disclaimer.bottom(), sidebar.top())
+                self.assertLess(center.right(), sidebar.left())
+                for rect in (header, disclaimer, sidebar, center):
+                    self.assertTrue(dialog.rect().contains(rect), rect)
+                pill = self.rect_in(dialog.platform_button, dialog.overlay_header)
+                close = self.rect_in(dialog.close_button, dialog.overlay_header)
+                self.assertLess(pill.right(), close.left())
+                self.assertTrue(dialog.overlay_header.rect().contains(pill))
+                self.assertTrue(dialog.overlay_header.rect().contains(close))
+                self.assert_no_horizontal_overflow(dialog)
+                dialog.close()
+                parent.close()
+
+    def test_narrow_window_uses_two_thumbnail_columns_without_horizontal_scroll(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(1000, 900), show=True)
+        panel = dialog.selection_panel
+        self.assertEqual(panel.width(), px(232))
+        self.assertEqual(panel.columns, 2)
+        self.assert_no_horizontal_overflow(dialog)
+        for tiles in panel.tiles.values():
+            for tile in tiles:
+                self.assertTrue(panel.scroll_area.widget().rect().contains(
+                    self.rect_in(tile, panel.scroll_area.widget())))
+
+    def test_short_window_scrolls_to_show_entire_phone_shell(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(1600, 620), show=True)
+        scroll = dialog.scroll
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+        self.app.processEvents()
+        shell_rect = self.rect_in(dialog.shell, scroll.viewport())
+        self.assertLessEqual(shell_rect.bottom(), scroll.viewport().height())
+        self.assert_no_horizontal_overflow(dialog)
+
+
+class PlatformPreviewSelectionTests(PlatformPreviewDialogTestBase):
+    @staticmethod
+    def drag_event(source, payload, *, mime_type=PREVIEW_IMAGE_MIME):
+        mime = QMimeData()
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode('utf-8')
+        mime.setData(mime_type, data)
+        event = Mock()
+        event.source.return_value = source
+        event.mimeData.return_value = mime
+        return event
+
+    def test_default_selection_groups_badges_and_hint_match_manifest(self):
+        dialog = self.mobile_dialog()
+        panel = dialog.selection_panel
+        self.assertEqual(dialog.selected_images('carousel'), self.images[:2])
+        self.assertEqual(dialog.selected_images('detail'), self.images[2:3])
+        self.assertEqual([tile.badge_label.text() for tile in panel.tiles['carousel']],
+                         [tr('轮{seq}').format(seq=1), tr('轮{seq}').format(seq=2)])
+        self.assertEqual([tile.badge_label.text() for tile in panel.tiles['detail']],
+                         [tr('详{seq}').format(seq=1)])
+        self.assertTrue(all(tile.checked for tiles in panel.tiles.values() for tile in tiles))
+        self.assertEqual(panel.title_labels['carousel'].text(), tr('轮播图'))
+        self.assertEqual(panel.title_labels['detail'].text(), tr('详情图'))
+        self.assertEqual(panel.hint_label.text(), tr('点击勾选 · 拖拽排序'))
+
+    def test_click_thumbnail_updates_selection_and_phone_main_image(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        QTest.mouseClick(dialog.selection_panel.tiles['carousel'][0], Qt.LeftButton)
+        self.assertEqual(dialog.selected_count('carousel'), 1)
+        self.assertEqual(dialog.selected_images('carousel'), [self.images[1]])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual(dialog.shell.counter_label.text(), '1/1')
+        QTest.mouseClick(dialog.selection_panel.tiles['carousel'][0], Qt.LeftButton)
+        self.assertEqual(dialog.selected_count('carousel'), 2)
+        self.assertEqual(dialog.selected_images('carousel'), self.images[:2])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[0])
+
+    def test_clear_carousel_selection_shows_placeholder_and_hides_page_counter(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        QTest.mouseClick(dialog.selection_panel.clear_buttons['carousel'], Qt.LeftButton)
+        self.assertEqual(dialog.selected_count('carousel'), 0)
+        self.assertEqual(dialog.selected_images('carousel'), [])
+        self.assertIsNone(dialog.shell.main_image)
+        self.assertTrue(dialog.shell.counter_label.isHidden())
+        self.assertIn(tr('请勾选轮播图'), self.label_texts(dialog.shell))
+        self.assertEqual(dialog.selected_count('detail'), 1)
+
+    def test_detail_selection_only_changes_detail_images(self):
+        dialog = self.mobile_dialog()
+        dialog.clear_selection('detail')
+        self.assertEqual(dialog.selected_images('detail'), [])
+        self.assertEqual(dialog.selected_count('detail'), 0)
+        self.assertEqual(dialog.selected_images('carousel'), self.images[:2])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[0])
+        self.assertFalse(any(isinstance(image, PreviewImage)
+                             for image in dialog.shell.detail_images))
+
+    def test_move_image_updates_selected_order_badges_and_phone_main_image(self):
+        dialog = self.mobile_dialog()
+        dialog.move_image('carousel', 0, 1)
+        self.assertEqual(dialog.selected_images('carousel'), [self.images[1], self.images[0]])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual([tile.seq for tile in dialog.selection_panel.tiles['carousel']], [2, 1])
+        dialog.shell.set_carousel_index(1)
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[0])
+        self.assertEqual(dialog.shell.counter_label.text(), '2/2')
+
+    def test_platform_switch_preserves_selection_and_sort_order(self):
+        dialog = self.dialog()
+        dialog.move_image('carousel', 0, 1)
+        dialog.toggle_image('carousel', 1)
+        dialog.clear_selection('detail')
+        dialog.set_platform_index(1)
+        self.assertTrue(dialog.is_mobile)
+        self.assertEqual(dialog.selected_images('carousel'), [self.images[1]])
+        self.assertEqual(dialog.selected_images('detail'), [])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        dialog.set_platform_index(0)
+        self.assertFalse(dialog.is_mobile)
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual(dialog.selected_count('carousel'), 1)
+
+    def test_refreshes_and_language_change_preserve_selection(self):
+        dialog = self.mobile_dialog()
+        dialog.move_image('carousel', 0, 1)
+        dialog.toggle_image('carousel', 1)
+        dialog.clear_selection('detail')
+        set_language('en-US')
+        dialog.retranslate_ui()
+        dialog.refresh_colors()
+        dialog.refresh_interface_scale()
+        self.assertEqual(dialog.selected_images('carousel'), [self.images[1]])
+        self.assertEqual(dialog.selected_images('detail'), [])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual(dialog.selection_panel.hint_label.text(), tr('点击勾选 · 拖拽排序'))
+
+    def test_empty_image_groups_show_group_placeholders(self):
+        dialog = self.mobile_dialog(manifest={'items': []}, thumbs=[])
+        for kind in ('carousel', 'detail'):
+            self.assertEqual(dialog.selected_count(kind), 0)
+            self.assertEqual(dialog.selection_panel.tiles[kind], [])
+            self.assertFalse(dialog.selection_panel.empty_labels[kind].isHidden())
+            self.assertEqual(dialog.selection_panel.empty_labels[kind].text(), tr('暂无生成图片'))
+
+    def test_click_phone_main_image_cycles_only_selected_carousel(self):
+        dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+        QTest.mouseClick(dialog.shell.main_image, Qt.LeftButton)
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual(dialog.shell.counter_label.text(), '2/2')
+        QTest.mouseClick(dialog.shell.main_image, Qt.LeftButton)
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[0])
+        dialog.toggle_image('carousel', 0)
+        QTest.mouseClick(dialog.shell.main_image, Qt.LeftButton)
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+        self.assertEqual(dialog.shell.counter_label.text(), '1/1')
+
+    def test_drop_same_group_moves_image_and_clears_insertion_line(self):
+        dialog = self.mobile_dialog()
+        panel = dialog.selection_panel
+        source, target = panel.tiles['carousel']
+        changed = QSignalSpy(panel.selection_changed)
+        event = self.drag_event(source, {'kind': 'carousel', 'index': 0})
+        target.dragEnterEvent(event)
+        self.assertTrue(target._insert_line)
+        target.dropEvent(event)
+        self.assertFalse(target._insert_line)
+        self.assertEqual(event.acceptProposedAction.call_count, 2)
+        event.ignore.assert_not_called()
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(dialog.selected_images('carousel'), [self.images[1], self.images[0]])
+        self.assertEqual(dialog.shell.main_image.image_path, self.images[1])
+
+    def test_drop_rejects_cross_group_foreign_panel_and_non_tile_sources(self):
+        dialog = self.mobile_dialog()
+        other = self.mobile_dialog()
+        panel = dialog.selection_panel
+        target = panel.tiles['carousel'][1]
+        changed = QSignalSpy(panel.selection_changed)
+        sources = (
+            panel.tiles['detail'][0],
+            other.selection_panel.tiles['carousel'][0],
+            QWidget(dialog),
+            None,
+        )
+        for source in sources:
+            with self.subTest(source=type(source).__name__):
+                event = self.drag_event(source, {'kind': 'carousel', 'index': 0})
+                target.dragEnterEvent(event)
+                target.dropEvent(event)
+                event.acceptProposedAction.assert_not_called()
+                self.assertEqual(event.ignore.call_count, 2)
+                self.assertFalse(target._insert_line)
+                self.assertEqual(dialog.selected_images('carousel'), self.images[:2])
+                self.assertEqual(len(changed), 0)
+
+    def test_drop_rejects_invalid_mime_and_stale_or_out_of_range_indices(self):
+        dialog = self.mobile_dialog()
+        panel = dialog.selection_panel
+        source, target = panel.tiles['carousel']
+        changed = QSignalSpy(panel.selection_changed)
+        invalid = (
+            ('text/plain', {'kind': 'carousel', 'index': 0}),
+            (PREVIEW_IMAGE_MIME, b'{broken json'),
+            (PREVIEW_IMAGE_MIME, {'kind': 'detail', 'index': 0}),
+            (PREVIEW_IMAGE_MIME, {'kind': 'carousel', 'index': -1}),
+            (PREVIEW_IMAGE_MIME, {'kind': 'carousel', 'index': 100}),
+            (PREVIEW_IMAGE_MIME, {'kind': 'carousel', 'index': True}),
+            (PREVIEW_IMAGE_MIME, {'kind': 'carousel', 'index': 1}),
+        )
+        for mime_type, payload in invalid:
+            with self.subTest(mime=mime_type, payload=payload):
+                event = self.drag_event(source, payload, mime_type=mime_type)
+                target.dragEnterEvent(event)
+                target.dropEvent(event)
+                event.acceptProposedAction.assert_not_called()
+                self.assertEqual(event.ignore.call_count, 2)
+                self.assertFalse(target._insert_line)
+                self.assertEqual(dialog.selected_images('carousel'), self.images[:2])
+                self.assertEqual(len(changed), 0)
 
 
 if __name__ == '__main__':

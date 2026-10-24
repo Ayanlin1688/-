@@ -1176,6 +1176,73 @@ class EcommercePageTests(unittest.TestCase):
         fake.exec_.assert_called_once()
         self.assertNotIn(TEST_KEY, str(payload))
 
+    def test_completion_platform_preview_button_constructs_current_group_dialog(self):
+        from tests.qt_scale_support import flush_layout
+        from ui.components.platform_preview_dialog import PlatformPreviewDialog
+
+        group, items = self.seed_history('completion-preview-current', 'succeeded',
+                                         states=('succeeded', 'succeeded'))
+        self.page._view_history_group(group['group_id'])
+        self.page.resize(1440, 900)
+        self.page.show()
+        flush_layout(self.app, self.page)
+        self.assertTrue(self.page.completion_preview_button.isVisible())
+        dialogs = []
+
+        def construct(parent, payload):
+            dialog = PlatformPreviewDialog(parent, payload)
+            dialogs.append(dialog)
+            return dialog
+
+        with patch('ui.pages.ecommerce_page.PlatformPreviewDialog',
+                   side_effect=construct) as constructor, \
+                patch.object(PlatformPreviewDialog, 'exec_', return_value=0) as execute:
+            self.page.completion_preview_button.click()
+        constructor.assert_called_once()
+        self.assertIs(constructor.call_args.args[0], self.page)
+        payload = constructor.call_args.args[1]
+        self.assertEqual(payload['group_id'], self.page._group['group_id'])
+        self.assertEqual(payload['group_id'], 'completion-preview-current')
+        self.assertEqual(dialogs[0].group['group_id'], payload['group_id'])
+        self.assertEqual(dialogs[0].selected_count('carousel'), len(items))
+        self.assertTrue(all(item.get('file') for item in payload['manifest']['items']))
+        execute.assert_called_once_with()
+        self.assertNotIn(TEST_KEY, str(payload))
+
+    def test_task_list_platform_preview_button_constructs_clicked_group_dialog(self):
+        from tests.qt_scale_support import flush_layout
+        from ui.components.platform_preview_dialog import PlatformPreviewDialog
+
+        current, _ = self.seed_history('different-current-group', 'succeeded',
+                                       states=('succeeded',), updated=1000)
+        target, items = self.seed_history('clicked-preview-group', 'succeeded',
+                                          states=('succeeded', 'succeeded'), updated=2000)
+        self.page._view_history_group(current['group_id'])
+        self.page.show_task_list()
+        self.page.resize(1440, 900)
+        self.page.show()
+        flush_layout(self.app, self.page)
+        dialogs = []
+
+        def construct(parent, payload):
+            dialog = PlatformPreviewDialog(parent, payload)
+            dialogs.append(dialog)
+            return dialog
+
+        with patch('ui.pages.ecommerce_page.PlatformPreviewDialog',
+                   side_effect=construct) as constructor, \
+                patch.object(PlatformPreviewDialog, 'exec_', return_value=0) as execute:
+            self.history_card(target['group_id']).preview_button.click()
+        constructor.assert_called_once()
+        self.assertIs(constructor.call_args.args[0], self.page)
+        payload = constructor.call_args.args[1]
+        self.assertEqual(payload['group_id'], target['group_id'])
+        self.assertNotEqual(payload['group_id'], self.page._group['group_id'])
+        self.assertEqual(dialogs[0].group['group_id'], target['group_id'])
+        self.assertEqual(dialogs[0].selected_count('carousel'), len(items))
+        execute.assert_called_once_with()
+        self.assertNotIn(TEST_KEY, str(payload))
+
     def test_history_folder_opens_existing_directory_and_reports_missing_directory(self):
         group, _ = self.seed_history()
         self.page._refresh_history()

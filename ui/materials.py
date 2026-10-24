@@ -490,6 +490,25 @@ ECOMMERCE_UI = {
     'preview_line': '#E8EAF0',
     'preview_input': '#F2F3F5',
     'preview_white': '#FFFFFF',
+    # 平台预览覆盖层固定模拟参考商品页，不随主应用明暗主题反转。
+    'preview_overlay_header': ('#18171A', '#18171A'),
+    'preview_overlay_border': ('#2A2B30', '#2A2B30'),
+    'preview_overlay_disclaimer': ('#19181B', '#19181B'),
+    'preview_overlay_text': ('#FFFFFF', '#FFFFFF'),
+    'preview_disclaimer_text': ('#C9CDD4', '#C9CDD4'),
+    'preview_close_bg': ('#E5484D', '#E5484D'),
+    'preview_close_hover': ('#F25B60', '#F25B60'),
+    'preview_sale': ('#FF2D60', '#FF2D60'),
+    'preview_canvas': ('#E7E7E7', '#E7E7E7'),
+    'preview_pill_bg': ('#0B0C11', '#0B0C11'),
+    'preview_sidebar_bg': ('#FFFFFF', '#FFFFFF'),
+    'preview_sidebar_text': ('#111827', '#111827'),
+    'preview_sidebar_border': ('#E5E8EF', '#E5E8EF'),
+    'preview_sidebar_button_text': ('#4B5563', '#4B5563'),
+    'preview_check_bg': ('#2F7CF6', '#2F7CF6'),
+    'preview_badge_bg': ('rgba(0,0,0,0.55)', 'rgba(0,0,0,0.55)'),
+    'preview_unchecked_bg': ('rgba(0,0,0,0.28)', 'rgba(0,0,0,0.28)'),
+    'preview_hint': ('#9CA3AF', '#9CA3AF'),
 }
 
 

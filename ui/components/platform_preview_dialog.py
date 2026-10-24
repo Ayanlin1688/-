@@ -1,25 +1,19 @@
-"""平台预览通用模板对话框。
-
-参考软件有 25 套平台定制页面；本仓库按段 2 约定只做两套通用模板：
-    海外平台 → 手机壳（9:41 状态栏 + 品牌顶栏 + 图区轮播 + 详情堆叠 + 底部操作条）
-    国内平台 → 桌面壳（平台名顶栏 + 搜索框 + 主图 + 详情堆叠）
-主题色取平台记录里的 primaryColor / accentColor；多平台时顶部下拉切换。
-底部免责文案为产品合规文案，一字不改。
-"""
+"""覆盖主窗口的离线平台预览；选择和排序只在当前预览会话内生效。"""
 from pathlib import Path
 
-from PyQt5.QtCore import QRectF, Qt
+from PyQt5.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QRegion
 from PyQt5.QtWidgets import (
-    QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QBoxLayout, QHBoxLayout, QLabel, QLayout, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
-from qfluentwidgets import ComboBox, LineEdit, PushButton
+from qfluentwidgets import Action, LineEdit, PushButton, RoundMenu
+from qframelesswindow import FramelessDialog
 
-from core.i18n import tr
+from core.i18n import register_retranslate, tr
 from .. import materials
-from ..theme import style_controls
 from ..tokens import px
-from .studio_dialog import StudioDialog
+from .preview_selection_panel import PreviewSelectionPanel
 
 _PREVIEW_CACHE = {}
 _PREVIEW_CACHE_LIMIT = 32
@@ -56,7 +50,10 @@ def _label(size=13, bold=False, wrap=False, text='', parent=None):
     widget.setTextFormat(Qt.PlainText)
     widget.setWordWrap(wrap)
     font = widget.font()
-    font.setPixelSize(px(size))
+    # InterfaceScaler captures unscaled construction values, including dialogs
+    # created after a scale change. Painting and dynamic geometry use px().
+    font.setFamily(materials.ui_font_family())
+    font.setPixelSize(size)
     font.setBold(bold)
     widget.setFont(font)
     if text:
@@ -116,7 +113,7 @@ def _product_name(group):
 
 def _disclaimer_text():
     return tr('仅供图片效果预览，界面布局模拟自各平台公开商品页，'
-              '与相关平台无隶属关系，仅用于图片效果自查')
+              '与相关平台无隶属关系，不代表任何平台官方立场。')
 
 
 def _round_mask(widget, radius):
@@ -135,20 +132,24 @@ def _round_mask(widget, radius):
 class PreviewImage(QWidget):
     """按 contain 绘制的真实图片；无图时由外壳换用占位标签。"""
 
+    clicked = pyqtSignal()
+
     def __init__(self, path='', height=220, parent=None, *, edge=0):
         super().__init__(parent)
         self.image_path = str(path) if path else ''
         self.has_image = False
         self._edge = int(edge)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setFixedHeight(px(int(height)))
-        self.setMinimumWidth(px(80))
+        self.setFixedHeight(int(height))
+        self.setMinimumWidth(0)
+        self.setCursor(Qt.PointingHandCursor)
         self.set_image(self.image_path)
 
     def set_image(self, path):
         self.image_path = str(path) if path else ''
         self._image = _load_image(self.image_path)
         self.has_image = not self._image.isNull()
+        self.setToolTip(self.image_path)
         self.update()
 
     def paintEvent(self, event):
@@ -172,8 +173,18 @@ class PreviewImage(QWidget):
                 target = QRectF((rect.width() - width) / 2,
                                 (rect.height() - height) / 2, width, height)
                 painter.drawImage(target, source, QRectF(source.rect()))
+            elif self.image_path:
+                painter.setPen(QColor(materials.ecommerce_color('preview_muted')))
+                painter.drawText(self.rect(), Qt.AlignCenter, tr('缺失'))
         finally:
             painter.end()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
 
 class PreviewPlaceholder(QLabel):
@@ -184,11 +195,11 @@ class PreviewPlaceholder(QLabel):
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
         self.setWordWrap(True)
-        self.setFixedHeight(px(int(height)))
-        self.setText(text if text is not None else tr('暂无预览图片'))
+        self.setFixedHeight(int(height))
+        self.setText(text if text is not None else tr('暂无生成图片'))
         self.setStyleSheet('color:%s; background:%s; border-radius:%dpx;'
                            % (materials.ecommerce_color('preview_muted'),
-                              materials.ecommerce_color('preview_input'), px(8)))
+                              materials.ecommerce_color('preview_input'), 8))
 
 
 class _CarouselDots(QWidget):
@@ -197,7 +208,7 @@ class _CarouselDots(QWidget):
         self.count = max(0, int(count))
         self.index = 0
         self.color = QColor(color or materials.palette()['accent'])
-        self.setFixedHeight(px(14))
+        self.setFixedHeight(14)
 
     def set_index(self, index):
         self.index = max(0, min(int(index), max(0, self.count - 1)))
@@ -231,7 +242,7 @@ class _SignalIcons(QWidget):
     def __init__(self, color, parent=None):
         super().__init__(parent)
         self.color = QColor(color)
-        self.setFixedSize(px(64), px(16))
+        self.setFixedSize(64, 16)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -274,17 +285,42 @@ class _SignalIcons(QWidget):
             painter.end()
 
 
+class _PlatformPill(QPushButton):
+    """用图形绘制菜单箭头，避免平台字体缺少三角形字形。"""
+
+    has_menu = False
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.has_menu:
+            painter = QPainter(self)
+            try:
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(materials.ecommerce_color('preview_overlay_text')))
+                x, y = self.width() - px(15), self.height() / 2
+                arrow = QPainterPath()
+                arrow.moveTo(x - px(3), y - px(2))
+                arrow.lineTo(x + px(3), y - px(2))
+                arrow.lineTo(x, y + px(2))
+                arrow.closeSubpath()
+                painter.drawPath(arrow)
+            finally:
+                painter.end()
+
+
 class _StatusBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(px(26))
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(26)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(px(14), 0, px(14), 0)
-        layout.setSpacing(px(6))
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(6)
         self.time_label = _label(11, bold=True, text='9:41')
         self.time_label.setStyleSheet(
-            'color:%s; background:transparent;' % materials.ecommerce_color('preview_text'))
-        self.icons = _SignalIcons(materials.ecommerce_color('preview_text'), self)
+            'color:%s; background:transparent;' % materials.ecommerce_color('preview_white'))
+        self.icons = _SignalIcons(materials.ecommerce_color('preview_white'), self)
         layout.addWidget(self.time_label)
         layout.addStretch(1)
         layout.addWidget(self.icons)
@@ -294,7 +330,7 @@ class _StatusBar(QWidget):
 # 两套外壳
 
 class _PhoneShell(QWidget):
-    """海外平台：375×812 手机壳的通用版。"""
+    """海外商品页；内部内容滚动，底部操作条留在手机壳内。"""
 
     kind = 'mobile'
 
@@ -302,179 +338,248 @@ class _PhoneShell(QWidget):
         super().__init__(parent)
         self.platform = dict(platform or {})
         self.product_name = product_name
-        self.carousel_paths = list(carousel)
-        self.detail_paths = list(detail)
+        self.carousel_paths, self.detail_paths = list(carousel), list(detail)
         self.primary = _platform_color(self.platform, 'primaryColor')
         self.accent = _platform_color(self.platform, 'accentColor')
         self.carousel_index = 0
-        self.setFixedWidth(px(360))
-        self.setFixedHeight(px(660))
+        self._available_width = None
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(730)
+        self.resize(400, 730)
         self.setObjectName('previewPhoneShell')
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet('#previewPhoneShell {background:%s; border-radius:%dpx;}'
-                           % (materials.ecommerce_color('preview_card'), px(20)))
+        self.setStyleSheet('#previewPhoneShell {background:%s; border-radius:20px;}'
+                          % materials.ecommerce_color('preview_card'))
         root = QVBoxLayout(self)
-        root.setContentsMargins(px(1), px(1), px(1), px(1))
+        root.setContentsMargins(1, 1, 1, 1)
         root.setSpacing(0)
 
         self.status_bar = _StatusBar(self)
+        self.status_bar.setObjectName('previewPhoneStatus')
+        self.status_bar.setStyleSheet('#previewPhoneStatus {background:%s;}'
+                                     % materials.ecommerce_color('preview_pill_bg'))
         root.addWidget(self.status_bar)
-
         self.nav_bar = QWidget(self)
         self.nav_bar.setObjectName('previewPhoneNav')
-        self.nav_bar.setFixedHeight(px(44))
+        self.nav_bar.setFixedHeight(44)
         self.nav_bar.setStyleSheet('#previewPhoneNav {background:%s;}'
-                                   % self.primary.name())
+                                  % materials.ecommerce_color('preview_pill_bg'))
         nav = QHBoxLayout(self.nav_bar)
-        nav.setContentsMargins(px(12), 0, px(12), 0)
-        nav.setSpacing(px(8))
-        self.back_label = _label(16, bold=True, text='\u2039')
-        self.name_label = _label(15, bold=True, text=_platform_name(self.platform))
-        for label in (self.back_label, self.name_label):
-            label.setStyleSheet(
-                'color:%s; background:transparent;'
-                % materials.ecommerce_color('preview_white'))
-        self.cart_label = _label(13, text='\u22ef')
-        self.cart_label.setStyleSheet(
-            'color:%s; background:transparent;'
-            % materials.ecommerce_color('preview_white'))
+        nav.setContentsMargins(14, 0, 14, 0)
+        nav.setSpacing(8)
+        self.back_label = _label(22, text='‹')
+        self.name_label = _label(14, bold=True, text=tr('Product Details'))
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.cart_label = _label(20, text='⋯')
+        for label in (self.back_label, self.name_label, self.cart_label):
+            label.setStyleSheet('color:%s; background:transparent;'
+                               % materials.ecommerce_color('preview_white'))
         nav.addWidget(self.back_label)
         nav.addWidget(self.name_label, 1)
         nav.addWidget(self.cart_label)
         root.addWidget(self.nav_bar)
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setStyleSheet('QScrollArea{background:transparent; border:0;}')
-        scroll.viewport().setStyleSheet('background:transparent;')
-        self.scroll = scroll
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName('previewPhoneScroll')
+        self.scroll.setMinimumWidth(0)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet('QScrollArea {background:transparent; border:0;}')
         content = QWidget()
+        content.setMinimumWidth(0)
+        content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         content.setObjectName('previewPhoneBody')
         content.setStyleSheet('#previewPhoneBody {background:%s;}'
-                              % materials.ecommerce_color('preview_card'))
+                             % materials.ecommerce_color('preview_card'))
         body = QVBoxLayout(content)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-
         self.image_area = QWidget(content)
         image_layout = QVBoxLayout(self.image_area)
         image_layout.setContentsMargins(0, 0, 0, 0)
         image_layout.setSpacing(0)
         if self.carousel_paths:
-            self.main_image = PreviewImage(self.carousel_paths[0], height=300, edge=0)
+            self.main_image = PreviewImage(self.carousel_paths[0], height=340)
+            self.main_image.clicked.connect(self._next_image)
             image_layout.addWidget(self.main_image)
         else:
             self.main_image = None
-            self.placeholder = PreviewPlaceholder(height=300,
-                                                  text=tr('暂无预览图片'))
+            self.placeholder = PreviewPlaceholder(height=340)
             image_layout.addWidget(self.placeholder)
-        self.dots = _CarouselDots(len(self.carousel_paths), self, self.accent)
+            self.selection_hint = _label(12, text=tr('请勾选轮播图'))
+            self.selection_hint.setAlignment(Qt.AlignCenter)
+            self.selection_hint.setStyleSheet('color:%s; background:transparent;'
+                                             % materials.ecommerce_color('preview_muted'))
+            image_layout.addWidget(self.selection_hint)
+        self.dots = _CarouselDots(len(self.carousel_paths), self.image_area,
+                                  materials.ecommerce_color('preview_sale'))
+        self.dots.setVisible(len(self.carousel_paths) > 1)
         image_layout.addWidget(self.dots)
-        meta = QWidget(content)
-        meta_layout = QHBoxLayout(meta)
-        meta_layout.setContentsMargins(px(14), px(4), px(14), 0)
-        self.counter_label = _label(11, text=self._counter_text())
-        self.counter_label.setStyleSheet(
-            'color:%s; background:transparent;'
-            % materials.ecommerce_color('preview_muted'))
-        meta_layout.addWidget(self.counter_label)
-        meta_layout.addStretch(1)
-        image_layout.addWidget(meta)
+        self.counter_label = _label(11, text=self._counter_text(), parent=self.image_area)
+        self.counter_label.setAlignment(Qt.AlignCenter)
+        self.counter_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.counter_label.setStyleSheet('color:%s; background:%s; border-radius:10px; padding:2px 7px;'
+                                        % (materials.ecommerce_color('preview_white'),
+                                           materials.ecommerce_color('preview_badge_bg')))
+        self.counter_label.setVisible(bool(self.carousel_paths))
+        self.image_area.installEventFilter(self)
         body.addWidget(self.image_area)
 
         info = QWidget(content)
+        info.setObjectName('previewPhoneInfo')
+        info.setAttribute(Qt.WA_StyledBackground, True)
+        info.setStyleSheet('#previewPhoneInfo {background:%s;}'
+                          % materials.ecommerce_color('preview_card'))
         info_layout = QVBoxLayout(info)
-        info_layout.setContentsMargins(px(14), px(8), px(14), px(12))
-        info_layout.setSpacing(px(6))
-        self.product_label = _label(15, bold=True, wrap=True, text=self.product_name)
-        self.product_label.setStyleSheet(
-            'color:%s; background:transparent;'
-            % materials.ecommerce_color('preview_text'))
-        self.price_label = _label(18, bold=True, text=self._price_text())
+        info_layout.setContentsMargins(16, 10, 16, 14)
+        info_layout.setSpacing(7)
+        self.sale_label = _label(10, bold=True, text=tr('SALE'))
+        self.sale_label.setAlignment(Qt.AlignCenter)
+        self.sale_label.setStyleSheet('color:%s; background:%s; border-radius:9px; padding:3px 6px;'
+                                     % (materials.ecommerce_color('preview_white'),
+                                        materials.ecommerce_color('preview_sale')))
+        prices = QHBoxLayout()
+        prices.setSpacing(8)
+        prices.addWidget(self.sale_label, 0, Qt.AlignVCenter)
+        self.price_label = _label(25, bold=True, text=self._price_text())
         self.price_label.setStyleSheet('color:%s; background:transparent;'
-                                       % self.accent.name())
-        self.ship_label = _label(11, text=tr('包邮 · 7 天无理由退换'))
-        self.ship_label.setStyleSheet(
-            'color:%s; background:transparent;'
-            % materials.ecommerce_color('preview_muted'))
+                                      % materials.ecommerce_color('preview_sale'))
+        self.old_price_label = _label(12, text='$29.98')
+        font = self.old_price_label.font()
+        font.setStrikeOut(True)
+        self.old_price_label.setFont(font)
+        self.old_price_label.setStyleSheet('color:%s; background:transparent;'
+                                          % materials.ecommerce_color('preview_muted'))
+        prices.addWidget(self.price_label)
+        prices.addWidget(self.old_price_label)
+        prices.addStretch(1)
+        info_layout.addLayout(prices)
+        self.sold_label = _label(11, text=tr('12.8K sold'))
+        self.sold_label.setStyleSheet('color:%s; background:transparent;'
+                                     % materials.ecommerce_color('preview_muted'))
+        info_layout.addWidget(self.sold_label)
+        self.product_label = _label(14, bold=True, wrap=True, text=self.product_name)
+        self.product_label.setMinimumWidth(0)
+        self.product_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.product_label.setStyleSheet('color:%s; background:transparent;'
+                                        % materials.ecommerce_color('preview_text'))
         info_layout.addWidget(self.product_label)
-        info_layout.addWidget(self.price_label)
-        info_layout.addWidget(self.ship_label)
+        services = QHBoxLayout()
+        services.setSpacing(6)
+        for text in (tr('Free Shipping'), tr('30-day Returns'), tr('Fast Delivery')):
+            badge = _label(9, text=text)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setMinimumWidth(0)
+            badge.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            badge.setStyleSheet('color:%s; background:%s; border-radius:9px; padding:4px 5px;'
+                               % (materials.ecommerce_color('preview_text'),
+                                  materials.ecommerce_color('preview_input')))
+            services.addWidget(badge, 1)
+        info_layout.addLayout(services)
         body.addWidget(info)
-
-        detail_title = _label(13, bold=True, text=tr('商品详情'))
-        detail_title.setStyleSheet(
-            'color:%s; background:%s; padding:%dpx %dpx;'
-            % (materials.ecommerce_color('preview_text'),
-               materials.ecommerce_color('preview_input'), px(8), px(14)))
-        body.addWidget(detail_title)
+        self.detail_title = _label(13, bold=True, text=tr('商品详情'))
+        self.detail_title.setStyleSheet('color:%s; background:%s; padding:8px 14px;'
+                                       % (materials.ecommerce_color('preview_text'),
+                                          materials.ecommerce_color('preview_input')))
+        body.addWidget(self.detail_title)
         self.detail_images = []
-        if self.detail_paths:
-            for path in self.detail_paths:
-                image = PreviewImage(path, height=240, edge=0)
-                self.detail_images.append(image)
-                body.addWidget(image)
-        else:
-            self.detail_placeholder = PreviewPlaceholder(height=160,
-                                                         text=tr('暂无预览图片'))
-            self.detail_images = [self.detail_placeholder]
+        for path in self.detail_paths:
+            image = PreviewImage(path, height=300)
+            self.detail_images.append(image)
+            body.addWidget(image)
+        if not self.detail_images:
+            self.detail_placeholder = PreviewPlaceholder(height=180)
+            self.detail_images.append(self.detail_placeholder)
             body.addWidget(self.detail_placeholder)
         body.addStretch(1)
-        scroll.setWidget(content)
-        root.addWidget(scroll, 1)
+        self.scroll.setWidget(content)
+        root.addWidget(self.scroll, 1)
 
-        self.action_bar = QWidget(self)
-        self.action_bar.setObjectName('previewPhoneActions')
-        self.action_bar.setFixedHeight(px(52))
-        self.action_bar.setStyleSheet(
-            '#previewPhoneActions {background:%s; border-top:1px solid %s;}'
-            % (materials.ecommerce_color('preview_card'),
-               materials.ecommerce_color('preview_line')))
-        actions = QHBoxLayout(self.action_bar)
-        actions.setContentsMargins(px(12), px(8), px(12), px(8))
-        actions.setSpacing(px(8))
-        self.cart_button = PushButton(tr('加入购物车'), self.action_bar)
-        self.buy_button = PushButton(tr('立即购买'), self.action_bar)
-        self.cart_button.setStyleSheet(
-            'QPushButton {border:1px solid %s; border-radius:%dpx; background:transparent;'
-            ' color:%s; font-size:%dpx; font-weight:600;}'
-            % (self.primary.name(), px(6), self.primary.name(), px(13)))
-        self.buy_button.setStyleSheet(
-            'QPushButton {border:0; border-radius:%dpx; background:%s; color:%s;'
-            ' font-size:%dpx; font-weight:600;}'
-            % (px(6), self.accent.name(), materials.ecommerce_color('preview_white'),
-               px(13)))
-        actions.addWidget(self.cart_button, 1)
-        actions.addWidget(self.buy_button, 1)
-        root.addWidget(self.action_bar)
-        _round_mask(self, px(20))
+        self.bottom_bar = QWidget(self)
+        self.bottom_bar.setFixedHeight(60)
+        self.bottom_bar.setStyleSheet('background:%s;'
+                                     % materials.ecommerce_color('preview_card'))
+        bottom = QHBoxLayout(self.bottom_bar)
+        bottom.setContentsMargins(10, 8, 10, 8)
+        bottom.setSpacing(6)
+        for symbol, text in (('⌂', tr('Home')), ('♧', tr('Chat')), ('♡', tr('Save'))):
+            label = _label(9, text=symbol + '\n' + text)
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            label.setStyleSheet('color:%s; background:transparent;'
+                               % materials.ecommerce_color('preview_text'))
+            bottom.addWidget(label, 1)
+        self.cart_button = QPushButton(tr('Add to Cart'), self.bottom_bar)
+        self.buy_button = QPushButton(tr('Buy Now'), self.bottom_bar)
+        for button, filled in ((self.cart_button, False), (self.buy_button, True)):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+            button.setStyleSheet('QPushButton {border:1px solid %s; border-radius:6px; '
+                                 'color:%s; background:%s; font-size:11px; font-weight:600;}'
+                                 % (materials.ecommerce_color('preview_sale'),
+                                    materials.ecommerce_color('preview_white' if filled else 'preview_sale'),
+                                    materials.ecommerce_color('preview_sale' if filled else 'preview_card')))
+            bottom.addWidget(button, 3)
+        root.addWidget(self.bottom_bar)
+
+    def sizeHint(self):
+        width = px(400)
+        if self._available_width is not None:
+            width = min(width, self._available_width)
+        return QSize(max(1, width), px(730))
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def fit_width(self, available):
+        self._available_width = max(1, available)
+        self.updateGeometry()
 
     def _counter_text(self):
-        return '%d/%d' % (self.carousel_index + 1, max(1, len(self.carousel_paths)))
+        return '%d/%d' % (self.carousel_index + 1, len(self.carousel_paths)) if self.carousel_paths else ''
 
     def _price_text(self):
-        return '¥ 199.00'
+        return '$19.99'
+
+    def _next_image(self):
+        self.set_carousel_index((self.carousel_index + 1) % max(1, len(self.carousel_paths)))
 
     def set_carousel_index(self, index):
         if not self.carousel_paths:
             return
-        self.carousel_index = max(0, min(index, len(self.carousel_paths) - 1))
-        if self.main_image is not None:
-            self.main_image.set_image(self.carousel_paths[self.carousel_index])
+        self.carousel_index = max(0, min(int(index), len(self.carousel_paths) - 1))
+        self.main_image.set_image(self.carousel_paths[self.carousel_index])
         self.dots.set_index(self.carousel_index)
         self.counter_label.setText(self._counter_text())
+        self._place_counter()
+
+    def _place_counter(self):
+        if self.carousel_paths:
+            self.counter_label.adjustSize()
+            self.counter_label.move(max(0, self.image_area.width() - self.counter_label.width() - px(12)),
+                                    max(0, self.main_image.height() - self.counter_label.height() - px(10)))
+            self.counter_label.raise_()
+
+    def eventFilter(self, watched, event):
+        if watched is self.image_area and event.type() == QEvent.Resize:
+            self._place_counter()
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        _round_mask(self, px(20))
+        self._place_counter()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing)
-            rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            path = QPainterPath()
-            path.addRoundedRect(rect, px(20), px(20))
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(QColor(materials.ecommerce_color('preview_line')), 1))
-            painter.drawRoundedRect(rect, px(20), px(20))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), px(20), px(20))
         finally:
             painter.end()
 
@@ -493,40 +598,43 @@ class _DesktopShell(QWidget):
         self.primary = _platform_color(self.platform, 'primaryColor')
         self.accent = _platform_color(self.platform, 'accentColor')
         self.carousel_index = 0
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setAttribute(Qt.WA_StyledBackground, True)
         root = QVBoxLayout(self)
-        root.setContentsMargins(px(1), px(1), px(1), px(1))
+        root.setContentsMargins(1, 1, 1, 1)
         root.setSpacing(0)
 
         self.nav_bar = QWidget(self)
         self.nav_bar.setObjectName('previewDesktopNav')
-        self.nav_bar.setFixedHeight(px(56))
+        self.nav_bar.setFixedHeight(56)
         self.nav_bar.setStyleSheet(
             '#previewDesktopNav {background:%s; border-bottom:2px solid %s;}'
             % (materials.ecommerce_color('preview_card'), self.primary.name()))
         nav = QHBoxLayout(self.nav_bar)
-        nav.setContentsMargins(px(18), 0, px(18), 0)
-        nav.setSpacing(px(14))
+        nav.setContentsMargins(18, 0, 18, 0)
+        nav.setSpacing(14)
         self.name_label = _label(19, bold=True, text=_platform_name(self.platform))
         self.name_label.setStyleSheet('color:%s; background:transparent;'
                                       % self.primary.name())
         self.search_edit = LineEdit(self.nav_bar)
         self.search_edit.setPlaceholderText(self.product_name)
         self.search_edit.setReadOnly(True)
-        self.search_edit.setMinimumHeight(px(32))
+        self.search_edit.setMinimumWidth(0)
+        self.search_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.search_edit.setMinimumHeight(32)
         self.search_edit.setStyleSheet(
             'LineEdit {border:2px solid %s; border-radius:%dpx; background:%s;'
             ' color:%s; padding:0 %dpx; font-size:%dpx;}'
-            % (self.primary.name(), px(8), materials.ecommerce_color('preview_input'),
-               materials.ecommerce_color('preview_text'), px(10), px(12)))
+            % (self.primary.name(), 8, materials.ecommerce_color('preview_input'),
+               materials.ecommerce_color('preview_text'), 10, 12))
         self.search_button = PushButton(tr('搜索'), self.nav_bar)
-        self.search_button.setMinimumHeight(px(32))
+        self.search_button.setMinimumHeight(32)
         self.search_button.setStyleSheet(
             'QPushButton {border:0; border-radius:%dpx; background:%s; color:%s;'
             ' padding:0 %dpx; font-size:%dpx; font-weight:600;}'
-            % (px(8), self.primary.name(), materials.ecommerce_color('preview_white'),
-               px(18), px(13)))
+            % (8, self.primary.name(), materials.ecommerce_color('preview_white'),
+               18, 13))
         nav.addWidget(self.name_label)
         nav.addWidget(self.search_edit, 1)
         nav.addWidget(self.search_button)
@@ -537,26 +645,28 @@ class _DesktopShell(QWidget):
         main.setStyleSheet('#previewDesktopMain {background:%s;}'
                            % materials.ecommerce_color('preview_card'))
         main_layout = QHBoxLayout(main)
-        main_layout.setContentsMargins(px(18), px(18), px(18), px(18))
-        main_layout.setSpacing(px(18))
+        self.main_layout = main_layout
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(18)
         gallery = QVBoxLayout()
         gallery.setContentsMargins(0, 0, 0, 0)
-        gallery.setSpacing(px(6))
+        gallery.setSpacing(6)
         if self.carousel_paths:
             self.main_image = PreviewImage(self.carousel_paths[0], height=320, edge=6)
+            self.main_image.clicked.connect(self._next_image)
             gallery.addWidget(self.main_image)
         else:
             self.main_image = None
-            self.placeholder = PreviewPlaceholder(height=320, text=tr('暂无预览图片'))
+            self.placeholder = PreviewPlaceholder(height=320, text=tr('暂无生成图片'))
             gallery.addWidget(self.placeholder)
         self.small_images = []
         for path in self.carousel_paths[:4]:
             small = PreviewImage(path, height=64, edge=4)
-            small.setFixedWidth(px(64))
+            small.setFixedWidth(64)
             self.small_images.append(small)
         thumbs = QHBoxLayout()
         thumbs.setContentsMargins(0, 0, 0, 0)
-        thumbs.setSpacing(px(6))
+        thumbs.setSpacing(6)
         for small in self.small_images:
             thumbs.addWidget(small)
         thumbs.addStretch(1)
@@ -564,7 +674,7 @@ class _DesktopShell(QWidget):
         main_layout.addLayout(gallery, 3)
         info = QVBoxLayout()
         info.setContentsMargins(0, 0, 0, 0)
-        info.setSpacing(px(8))
+        info.setSpacing(8)
         self.product_label = _label(17, bold=True, wrap=True, text=self.product_name)
         self.product_label.setStyleSheet(
             'color:%s; background:transparent;'
@@ -576,23 +686,25 @@ class _DesktopShell(QWidget):
         self.meta_label.setStyleSheet(
             'color:%s; background:transparent;'
             % materials.ecommerce_color('preview_muted'))
+        self.product_label.setMinimumWidth(0)
+        self.product_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info.addWidget(self.product_label)
         info.addWidget(self.price_label)
         info.addWidget(self.meta_label)
         for text, filled in ((tr('加入购物车'), False), (tr('立即购买'), True)):
             button = PushButton(text, main)
-            button.setMinimumHeight(px(34))
+            button.setMinimumHeight(34)
             if filled:
                 button.setStyleSheet(
                     'QPushButton {border:0; border-radius:%dpx; background:%s; color:%s;'
                     ' font-size:%dpx; font-weight:600;}'
-                    % (px(6), self.accent.name(),
-                       materials.ecommerce_color('preview_white'), px(13)))
+                    % (6, self.accent.name(),
+                       materials.ecommerce_color('preview_white'), 13))
             else:
                 button.setStyleSheet(
                     'QPushButton {border:2px solid %s; border-radius:%dpx;'
                     ' background:transparent; color:%s; font-size:%dpx; font-weight:600;}'
-                    % (self.primary.name(), px(6), self.primary.name(), px(13)))
+                    % (self.primary.name(), 6, self.primary.name(), 13))
             info.addWidget(button)
         info.addStretch(1)
         main_layout.addLayout(info, 2)
@@ -602,7 +714,7 @@ class _DesktopShell(QWidget):
         self.detail_title.setStyleSheet(
             'color:%s; background:%s; padding:%dpx %dpx; border-top:1px solid %s;'
             % (materials.ecommerce_color('preview_text'),
-               materials.ecommerce_color('preview_page'), px(10), px(18),
+               materials.ecommerce_color('preview_page'), 10, 18,
                materials.ecommerce_color('preview_line')))
         root.addWidget(self.detail_title)
         self.detail_images = []
@@ -613,7 +725,7 @@ class _DesktopShell(QWidget):
                 root.addWidget(image)
         else:
             self.detail_placeholder = PreviewPlaceholder(height=180,
-                                                         text=tr('暂无预览图片'))
+                                                         text=tr('暂无生成图片'))
             self.detail_images = [self.detail_placeholder]
             root.addWidget(self.detail_placeholder)
         root.addStretch(1)
@@ -631,91 +743,147 @@ class _DesktopShell(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.main_layout.setDirection(QBoxLayout.TopToBottom if self.width() < px(700)
+                                      else QBoxLayout.LeftToRight)
         _round_mask(self, px(12))
         self.update()
 
 
 # ---------------------------------------------------------------------------
+    def set_carousel_index(self, index):
+        if not self.carousel_paths:
+            return
+        self.carousel_index = max(0, min(int(index), len(self.carousel_paths) - 1))
+        self.main_image.set_image(self.carousel_paths[self.carousel_index])
+
+    def _next_image(self):
+        self.set_carousel_index((self.carousel_index + 1) % max(1, len(self.carousel_paths)))
+
+
 # 对话框
 
-class PlatformPreviewDialog(StudioDialog):
-    """平台效果预览：顶部下拉切换平台，正文按国内/海外切换桌面壳/手机壳。"""
+class PlatformPreviewDialog(FramelessDialog):
+    """全窗口预览。平台切换和受控刷新保留当前勾选及排序。"""
 
     def __init__(self, parent, group, stage_text=None):
-        super().__init__(parent, tr('平台预览'))
+        super().__init__(parent)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setWindowModality(Qt.WindowModal)
+        self.setModal(True)
+        self.titleBar.hide()
+        self.titleBar.setFixedHeight(0)
+        self.setResizeEnabled(False)
+        self.setObjectName('platformPreviewOverlay')
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.group = dict(group or {}) if isinstance(group, dict) else {}
         self.stage_text = stage_text if callable(stage_text) else None
         self.platforms = [platform for platform in (self.group.get('platforms') or ())
                           if isinstance(platform, dict)]
+        self._platform_index = 0
+        self._layout_ready = False
         self.shell = None
         self.shell_kind = ''
         self.carousel, self.detail = _group_images(self.group)
-        self.resize(px(760), px(720))
-        self.setMinimumSize(px(560), px(520))
+        self._cover_parent = parent.window() if parent is not None else None
+        self._cover_parent_geometry()
+        root = QVBoxLayout(self)
+        root.setSizeConstraint(QLayout.SetNoConstraint)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        self.overlay_header = QWidget(self)
+        self.overlay_header.setObjectName('previewOverlayHeader')
+        self.overlay_header.setFixedHeight(48)
+        header = QHBoxLayout(self.overlay_header)
+        header.setContentsMargins(20, 0, 20, 0)
+        header.setSpacing(12)
+        self.platform_button = _PlatformPill(self.overlay_header)
+        self.platform_button.setFixedHeight(32)
+        self.platform_button.setCursor(Qt.PointingHandCursor)
+        self.platform_menu = RoundMenu(parent=self)
+        self.platform_button.clicked.connect(self._show_platform_menu)
+        header.addWidget(self.platform_button)
+        header.addStretch(1)
+        self.header_separator = QWidget(self.overlay_header)
+        self.header_separator.setFixedSize(1, 20)
+        header.addWidget(self.header_separator)
+        self.close_button = QPushButton('×', self.overlay_header)
+        self.close_button.setFixedSize(32, 32)
+        self.close_button.setCursor(Qt.PointingHandCursor)
+        self.close_button.clicked.connect(self.close)
+        header.addWidget(self.close_button)
+        root.addWidget(self.overlay_header)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(px(10))
-        self.platform_label = _label(12, text=tr('电商平台'))
-        self.platform_label.setStyleSheet('color:%s; background:transparent;'
-                                          % materials.palette()['text2'])
-        self.platform_combo = ComboBox(self)
-        self.platform_combo.setMinimumWidth(px(180))
-        for platform in self.platforms:
-            self.platform_combo.addItem(_platform_name(platform) or tr('未选平台'))
-        if not self.platforms:
-            self.platform_combo.addItem(tr('未选平台'))
-        self.product_label = _label(13, bold=True, text=_product_name(self.group))
-        self.product_label.setStyleSheet('color:%s; background:transparent;'
-                                         % materials.palette()['text1'])
-        header.addWidget(self.platform_label)
-        header.addWidget(self.platform_combo)
-        header.addWidget(self.product_label, 1)
-        self.body_layout.addLayout(header)
+        self.disclaimer_bar = QWidget(self)
+        self.disclaimer_bar.setObjectName('previewDisclaimerBar')
+        self.disclaimer_bar.setFixedHeight(28)
+        disclaimer = QHBoxLayout(self.disclaimer_bar)
+        disclaimer.setContentsMargins(20, 0, 20, 0)
+        disclaimer.setSpacing(6)
+        self.disclaimer_icon = _label(12, text='ⓘ', parent=self.disclaimer_bar)
+        self.disclaimer_label = _label(11, wrap=True, parent=self.disclaimer_bar)
+        self.disclaimer_label.setMinimumWidth(0)
+        self.disclaimer_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        disclaimer.addWidget(self.disclaimer_icon)
+        disclaimer.addWidget(self.disclaimer_label, 1)
+        root.addWidget(self.disclaimer_bar)
 
-        self.scroll = QScrollArea(self)
+        self.canvas = QWidget(self)
+        self.canvas.setObjectName('previewCanvas')
+        body = QHBoxLayout(self.canvas)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self.scroll = QScrollArea(self.canvas)
+        self.scroll.setObjectName('previewShellScroll')
+        self.scroll.setMinimumWidth(0)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
-        self.scroll.setStyleSheet('QScrollArea{background:transparent; border:0;}')
-        self.scroll.viewport().setStyleSheet(
-            'background:%s; border-radius:%dpx;'
-            % (materials.ecommerce_color('preview_page'), px(10)))
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setObjectName('previewShellViewport')
+        self.scroll.viewport().installEventFilter(self)
         self.shell_host = QWidget()
         self.shell_host.setObjectName('previewShellHost')
-        self.shell_host.setStyleSheet('#previewShellHost {background:transparent;}')
+        self.shell_host.setMinimumWidth(0)
+        self.shell_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.shell_layout = QVBoxLayout(self.shell_host)
-        self.shell_layout.setContentsMargins(px(12), px(12), px(12), px(12))
-        self.shell_layout.setSpacing(px(12))
+        self.shell_layout.setContentsMargins(12, 12, 12, 12)
+        self.shell_layout.setSpacing(0)
         self.scroll.setWidget(self.shell_host)
-        self.body_layout.addWidget(self.scroll, 1)
+        body.addWidget(self.scroll, 1)
+        self.selection_panel = PreviewSelectionPanel(self._image_records('carousel'),
+                                                     self._image_records('detail'), self.canvas)
+        self.selection_panel.setFixedWidth(260)
+        self.selection_panel.selection_changed.connect(self._build_shell)
+        body.addWidget(self.selection_panel)
+        root.addWidget(self.canvas, 1)
+        self.retranslate_ui()
+        self.refresh_colors()
+        register_retranslate(self)
+        # Let InterfaceScaler capture the unscaled construction constraints
+        # before applying the responsive current-scale widths.
+        QTimer.singleShot(0, self._finish_layout)
 
-        self.disclaimer_label = QLabel(_disclaimer_text(), self)
-        self.disclaimer_label.setTextFormat(Qt.PlainText)
-        self.disclaimer_label.setWordWrap(True)
-        self.disclaimer_label.setAlignment(Qt.AlignCenter)
-        font = self.disclaimer_label.font()
-        font.setPixelSize(px(11))
-        self.disclaimer_label.setFont(font)
-        self.disclaimer_label.setStyleSheet(
-            'color:%s; background:transparent;' % materials.palette()['text3'])
-        self.body_layout.addWidget(self.disclaimer_label)
+    def _image_records(self, kind):
+        manifest = self.group.get('manifest')
+        items = (manifest.get('items') or ()) if isinstance(manifest, dict) else ()
+        records = [item for item in items if isinstance(item, dict)
+                   and item.get('kind') == kind and item.get('status') == 'succeeded'
+                   and item.get('file')]
+        records.sort(key=lambda item: item.get('seq') if type(item.get('seq')) is int else 0)
+        return records or (self.carousel if kind == 'carousel' else self.detail)
 
-        style_controls(self)
-        self._apply_header_styles()
-        self.platform_combo.currentIndexChanged.connect(self._platform_changed)
-        self._build_shell()
+    def _cover_parent_geometry(self):
+        if self._cover_parent is not None:
+            self.setGeometry(QRect(self._cover_parent.mapToGlobal(QPoint()), self._cover_parent.size()))
+        else:
+            self.resize(1600, 900)
 
-    # -- 平台 / 图片 ---------------------------------------------------
     @property
     def current_index(self):
-        return max(0, int(self.platform_combo.currentIndex()))
+        return self._platform_index
 
     @property
     def current_platform(self):
-        index = self.current_index
-        if 0 <= index < len(self.platforms):
-            return self.platforms[index]
-        return {}
+        return self.platforms[self.current_index] if self.platforms else {}
 
     @property
     def primary_color(self):
@@ -729,69 +897,143 @@ class PlatformPreviewDialog(StudioDialog):
     def is_mobile(self):
         return self.shell_kind == 'mobile'
 
-    def _apply_header_styles(self):
-        colors = materials.palette()
-        self.platform_label.setStyleSheet('color:%s; background:transparent;'
-                                          % colors['text2'])
-        self.product_label.setStyleSheet('color:%s; background:transparent;'
-                                         % colors['text1'])
-        self.disclaimer_label.setStyleSheet('color:%s; background:transparent;'
-                                            % colors['text3'])
+    def selected_images(self, kind):
+        return self.selection_panel.selected_images(kind)
+
+    def selected_count(self, kind):
+        return self.selection_panel.selected_count(kind)
+
+    def toggle_image(self, kind, index):
+        self.selection_panel.toggle_image(kind, index)
+
+    def clear_selection(self, kind):
+        self.selection_panel.clear_selection(kind)
+
+    def move_image(self, kind, from_index, to_index):
+        self.selection_panel.move_image(kind, from_index, to_index)
+
+    def set_platform_index(self, index):
+        if type(index) is not int or not 0 <= index < len(self.platforms):
+            return
+        if index != self._platform_index:
+            self._platform_index = index
+            self._update_platform_button()
+            self._build_shell()
+
+    def _update_platform_button(self):
+        name = _platform_name(self.current_platform) or tr('未选平台')
+        self.platform_button.has_menu = len(self.platforms) > 1
+        self.platform_button.setText('●  ' + name + ('     ' if self.platform_button.has_menu else ''))
+        self.platform_button.setToolTip(tr('切换预览平台'))
+        self.platform_button.setAccessibleName(name)
+
+    def _show_platform_menu(self):
+        if len(self.platforms) > 1:
+            self.platform_menu.exec(self.platform_button.mapToGlobal(QPoint(0, self.platform_button.height())))
 
     def _clear_shell(self):
-        if self.shell is not None:
-            self.shell_layout.removeWidget(self.shell)
-            self.shell.hide()
-            self.shell.deleteLater()
-            self.shell = None
         while self.shell_layout.count():
             item = self.shell_layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.hide()
-                widget.deleteLater()
+            if item.widget() is not None:
+                item.widget().hide()
+                item.widget().deleteLater()
+        self.shell = None
 
     def _build_shell(self):
         self._clear_shell()
-        platform = self.current_platform
-        product = _product_name(self.group)
-        if _platform_group(platform) == 'overseas':
-            shell = _PhoneShell(platform, product, self.carousel, self.detail,
+        shell_type = _PhoneShell if _platform_group(self.current_platform) == 'overseas' else _DesktopShell
+        self.shell = shell_type(self.current_platform, _product_name(self.group),
+                                self.selected_images('carousel'), self.selected_images('detail'),
                                 self.shell_host)
-            self.shell_kind = 'mobile'
-            self.shell_layout.addWidget(shell, 0, Qt.AlignHCenter)
-        else:
-            shell = _DesktopShell(platform, product, self.carousel, self.detail,
-                                  self.shell_host)
-            self.shell_kind = 'desktop'
-            self.shell_layout.addWidget(shell, 0)
+        self.shell_kind = self.shell.kind
+        self.shell_layout.addWidget(self.shell, 0, Qt.AlignHCenter if self.is_mobile else Qt.Alignment())
         self.shell_layout.addStretch(1)
-        self.shell = shell
         self.scroll.verticalScrollBar().setValue(0)
+        if self._layout_ready:
+            # Newly created shell constraints must be captured before fitting.
+            QTimer.singleShot(0, self._fit_shell_width)
 
-    def _platform_changed(self, _index):
+    def _finish_layout(self):
+        self._layout_ready = True
+        self._fit_columns()
+
+    def _fit_columns(self):
+        if not self._layout_ready:
+            return
+        compact = self.width() < px(1100)
+        self.selection_panel.setFixedWidth(px(232 if compact else 260))
+        self.selection_panel.set_columns(2 if compact else 3)
+        self._fit_shell_width()
+
+    def _fit_shell_width(self):
+        if self.shell is not None and self.is_mobile:
+            margins = self.shell_layout.contentsMargins()
+            self.shell.fit_width(max(1, self.scroll.viewport().width() - margins.left() - margins.right()))
+
+    def eventFilter(self, watched, event):
+        scroll = getattr(self, 'scroll', None)
+        if scroll is not None and watched is scroll.viewport() and event.type() == QEvent.Resize:
+            if self._layout_ready:
+                self._fit_shell_width()
+        return super().eventFilter(watched, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._cover_parent is not None:
+            self._cover_parent_geometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, '_layout_ready', False):
+            self._fit_columns()
+
+    def retranslate_ui(self):
+        self.setWindowTitle(tr('平台预览'))
+        self.disclaimer_label.setText(_disclaimer_text())
+        self.close_button.setToolTip(tr('关闭平台预览'))
+        self.close_button.setAccessibleName(tr('关闭平台预览'))
+        self._update_platform_button()
+        self.platform_menu.clear()
+        for index, platform in enumerate(self.platforms or [{}]):
+            action = Action(_platform_name(platform) or tr('未选平台'), self)
+            action.triggered.connect(lambda checked=False, value=index: self.set_platform_index(value))
+            self.platform_menu.addAction(action)
+        self.selection_panel.retranslate_ui()
         self._build_shell()
 
-    def set_platform_index(self, index):
-        self.platform_combo.setCurrentIndex(int(index))
-
-    # -- 受控刷新 -----------------------------------------------------
     def refresh_colors(self):
-        self._apply_header_styles()
+        color = materials.ecommerce_color
+        self.setStyleSheet('QWidget#platformPreviewOverlay {background:%s;}' % color('preview_canvas'))
+        self.overlay_header.setStyleSheet('QWidget#previewOverlayHeader {background:%s;}'
+                                         % color('preview_overlay_header'))
+        self.platform_button.setStyleSheet('QPushButton {background:%s; color:%s; border:1px solid %s; '
+                                           'border-radius:16px; padding:0 12px; font-size:12px;}'
+                                           % (color('preview_pill_bg'), color('preview_overlay_text'),
+                                              color('preview_overlay_border')))
+        self.header_separator.setStyleSheet('background:%s;' % color('preview_overlay_border'))
+        self.close_button.setStyleSheet('QPushButton {background:%s; color:%s; border:0; '
+                                        'border-radius:16px; font-size:24px;} QPushButton:hover {background:%s;}'
+                                        % (color('preview_close_bg'), color('preview_overlay_text'),
+                                           color('preview_close_hover')))
+        self.disclaimer_bar.setStyleSheet('QWidget#previewDisclaimerBar {background:%s;}'
+                                         % color('preview_overlay_disclaimer'))
+        self.disclaimer_icon.setStyleSheet('color:%s; background:transparent;' % color('preview_muted'))
+        self.disclaimer_label.setStyleSheet('color:%s; background:transparent;' % color('preview_disclaimer_text'))
+        self.canvas.setStyleSheet('QWidget#previewCanvas {background:%s;}' % color('preview_canvas'))
+        self.scroll.setStyleSheet('QScrollArea {background:%s; border:0;}' % color('preview_canvas'))
+        self.scroll.viewport().setStyleSheet('QWidget#previewShellViewport {background:%s;}'
+                                             % color('preview_canvas'))
+        self.shell_host.setStyleSheet('QWidget#previewShellHost {background:%s;}'
+                                      % color('preview_canvas'))
+        self.selection_panel.refresh_colors()
         if self.shell is not None:
             self.shell.update()
 
-    def retranslate_ui(self):
-        try:
-            self.set_title(tr('平台预览'))
-            self.platform_label.setText(tr('电商平台'))
-            self.disclaimer_label.setText(_disclaimer_text())
-            self._build_shell()
-        except RuntimeError:
-            return
-
     def refresh_interface_scale(self):
-        try:
-            self._build_shell()
-        except RuntimeError:
-            return
+        self.overlay_header.setFixedHeight(px(48))
+        self.disclaimer_bar.setFixedHeight(px(28))
+        self.platform_button.setFixedHeight(px(32))
+        self.close_button.setFixedSize(px(32), px(32))
+        self.header_separator.setFixedSize(px(1), px(20))
+        self._fit_columns()
+        self.updateGeometry()

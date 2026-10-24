@@ -300,9 +300,9 @@ class EcommercePersistenceTests(unittest.TestCase):
                 images.close()
                 history.close()
 
-    def assert_fallback_crud(self, store):
+    def assert_fallback_crud(self, store, *, updated_at=None):
         self.assertFalse(store.persistence_available)
-        store.upsert_group(dict(group_id='memory', config={'offline': True}))
+        store.upsert_group(dict(group_id='memory', config={'offline': True}, updated_at=updated_at))
         store.upsert_items_many([dict(group_id='memory', kind='detail', seq=1)])
         store.upsert_item(dict(group_id='memory', kind='detail', seq=1, status='failed'))
         self.assertEqual(store.list_groups()[0]['group_id'], 'memory')
@@ -315,18 +315,19 @@ class EcommercePersistenceTests(unittest.TestCase):
     def test_corrupt_database_falls_back_without_raising(self):
         path = self.path.with_name('corrupt.sqlite3')
         path.write_bytes(b'not a database')
-        self.assert_fallback_crud(EcommerceImageStore(path))
+        self.assert_fallback_crud(EcommerceImageStore(path), updated_at=1000.0)
 
     def test_unwritable_database_path_falls_back_without_raising(self):
         directory = self.path.with_name('directory.sqlite3')
         directory.mkdir()
-        self.assert_fallback_crud(EcommerceImageStore(directory))
+        self.assert_fallback_crud(EcommerceImageStore(directory), updated_at=1000.0)
 
     def test_runtime_database_failure_keeps_last_loaded_records(self):
         self.group('prior')
         with patch.object(self.store, '_open', side_effect=sqlite3.OperationalError('readonly database')):
             self.store.get_group('prior')
-            self.assert_fallback_crud(self.store)
+            self.assert_fallback_crud(
+                self.store, updated_at=self.store.get_group('prior')['updated_at'] + 1.0)
         self.assertEqual(self.store.get_group('prior')['product_name'], '产品')
 
     def test_invalid_batch_is_not_partially_written(self):
