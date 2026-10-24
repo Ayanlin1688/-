@@ -126,7 +126,7 @@ class LanguageSwitchTests(unittest.TestCase):
         self._switch('English')
         # 导航 / 关于入口
         self.assertEqual([item.text() for item in self.window._nav_items],
-                         ['Workspace', 'Image generation', 'Ecommerce Images', 'History', 'Settings'])
+                         ['Workspace', 'Image generation', 'Video creation', 'Ecommerce Images', 'History', 'Settings'])
         self.assertEqual(self.window._about_item.text(), 'About')
         # 设置页：页面标题、卡片、按钮、状态文案
         self.assertIn('Relay stations', self._current_page_titles())
@@ -151,12 +151,19 @@ class LanguageSwitchTests(unittest.TestCase):
         self._switch('English')
         self._switch('简体中文')
         self.assertEqual([item.text() for item in self.window._nav_items],
-                         ['工作台', '图片生成', '电商图', '任务历史', '设置'])
+                         ['工作台', '图片生成', '视频制作', '电商图', '任务历史', '设置'])
         self.assertIn('中转站', self._current_page_titles())
         self.assertEqual(self.settings.sync_models_button.text(), '同步上游模型')
         self.assertTrue(self.settings.license_status_label.text().startswith('许可状态'))
         self.assertEqual(self.history.filter_box.itemText(0), '全部状态')
         self.assertEqual(self.history.table.horizontalHeaderItem(1).text(), '序号')
+
+    def test_video_page_links_navigate_to_workspace_and_settings(self):
+        page = self.window.video_creation_page
+        page.navigate_workspace.emit()
+        self.assertIs(self.window.stackedWidget.currentWidget(), self.window.workspace_page)
+        page.open_settings_requested.emit()
+        self.assertIs(self.window.stackedWidget.currentWidget(), self.window.settings_page)
 
     def test_repeated_switch_is_stable_and_retranslate_idempotent(self):
         self._collect_deleted_widgets()

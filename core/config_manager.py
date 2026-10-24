@@ -37,6 +37,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "count": 1,
         "custom_prompts": [],
     },
+    "video_creation": {
+        "model": "",
+        "mode": "text",
+        "ratio": "9:16",
+        "output_size": "",
+        "duration": 5,
+        "count": 1,
+        "reference_images": [],
+        "reference_videos": [],
+        "reference_audios": [],
+    },
     "workspace": {
         "model": "video-v3",
         "aspect_ratio": "16:9",

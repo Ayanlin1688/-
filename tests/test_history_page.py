@@ -124,6 +124,48 @@ class HistoryPageManualImageTests(unittest.TestCase):
         self.assertFalse(self.page.table.cellWidget(row, 10).findChild(
             TransparentToolButton, 'manualImageDelete').isEnabled())
 
+    def test_manual_video_records_filter_copy_and_delete_without_removing_file(self):
+        video = self.output / 'result.mp4'
+        video.write_bytes(b'video-fixture')
+        video_store = _ManualStore([dict(
+            local_id='video-1', kind='video', prompt='A quiet product reveal',
+            prompt_name='A quiet product reveal', model='video-v2', status='succeeded',
+            video_url='https://relay.example/video.mp4', file_path=str(video),
+            output_dir=str(self.output_dir), task_id='remote-1', duration=5,
+            output_size='1920x1088', created_at=datetime(2026, 10, 24, 12, 1).timestamp(),
+            finished_at=datetime(2026, 10, 24, 12, 1, 5).timestamp(),
+        )])
+        self.page._manual_video_store = lambda: video_store
+        self.page.refresh_records()
+
+        task = next(record for record in self.page.records if record.get('kind') == 'manual_video')
+        self.assertEqual(task['local_id'], 'video:video-1')
+        self.assertEqual(task['product'], 'A quiet product reveal')
+        self.assertEqual(task['task_id'], 'remote-1')
+        self.assertEqual(task['size_bytes'], video.stat().st_size)
+        self.assertEqual(self.page._type_text(task), tr('视频生成'))
+        self.page.type_filter_box.setCurrentText(tr('视频生成'))
+        visible = [record for row, record in enumerate(self.page.records)
+                   if not self.page.table.isRowHidden(row)]
+        self.assertEqual([record['local_id'] for record in visible], ['video:video-1'])
+
+        row = self.row_for('video:video-1')
+        actions = self.page.table.cellWidget(row, 10)
+        copy_link = actions.findChild(TransparentToolButton, 'manualVideoCopyLink')
+        delete = actions.findChild(TransparentToolButton, 'manualVideoDelete')
+        self.assertTrue(copy_link.isEnabled())
+        self.assertTrue(delete.isEnabled())
+        with patch('ui.pages.history_page.InfoBar.success') as success:
+            copy_link.click()
+        self.assertEqual(self.app.clipboard().text(), 'https://relay.example/video.mp4')
+        success.assert_called_once()
+
+        delete.click()
+        self.assertNotIn('video-1', video_store.records)
+        self.assertTrue(video.is_file())
+        self.assertFalse(any(record.get('kind') == 'manual_video'
+                             for record in self.page.records))
+
 
 if __name__ == '__main__':
     unittest.main()

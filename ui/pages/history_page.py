@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel, QStyle, QStyleOptionButton, QStyleOptionViewItem
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget, QHeaderView, QTableWidgetItem, QLabel, QStyle, QStyleOptionButton, QStyleOptionViewItem
 from ..responsive import CoalescedCall, WrapLayout, scrollable_body
 from ..tokens import px
 from qfluentwidgets import CheckBox, ComboBox, InfoBar, PushButton, TableWidget, TableItemDelegate, TitleLabel, CaptionLabel, TransparentToolButton, IconWidget, StrongBodyLabel, setCustomStyleSheet, FluentIcon as FIF
@@ -122,7 +122,7 @@ class HistoryPage(QWidget):
         title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
         self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过'), tr('部分完成')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
-        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
+        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成'), tr('视频生成')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         self.batch_resolve_button = PushButton(FIF.INFO, tr('批量处理待确认提交'))
@@ -353,6 +353,59 @@ class HistoryPage(QWidget):
             ))
         return result
 
+    def _manual_video_store(self):
+        cached = getattr(self.config_manager, '_manual_video_store', None)
+        if cached is not None:
+            return cached
+        from core.manual_video import get_manual_video_store
+        return get_manual_video_store(self.config_manager)
+
+    def _manual_video_records(self):
+        """Map standalone video tasks into the common history row shape."""
+        try:
+            store = self._manual_video_store()
+            records = store.list(limit=HISTORY_DISPLAY_LIMIT)
+        except TypeError:
+            try:
+                records = store.list()
+            except Exception:
+                return []
+        except Exception:
+            return []
+        result = []
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            local_id = str(record.get('local_id') or '')
+            if not local_id:
+                continue
+            path = str(record.get('file_path') or '')
+            size_bytes = 0
+            if path:
+                try:
+                    size_bytes = os.path.getsize(path)
+                except OSError:
+                    pass
+            prompt = str(record.get('prompt') or '')
+            prompt_name = str(record.get('prompt_name') or prompt[:60])
+            raw_status = str(record.get('status') or 'pending')
+            status = {
+                'pending': 'waiting', 'running': 'processing', 'succeeded': 'completed',
+                'failed': 'failed', 'cancelled': 'cancelled',
+            }.get(raw_status, raw_status)
+            result.append(dict(
+                kind='manual_video', local_id='video:' + local_id, manual_id=local_id,
+                product=prompt_name, prompt_name=prompt[:60], model=record.get('model') or '',
+                status=status, manual_status=raw_status,
+                created_at=self._iso_timestamp(record.get('created_at')),
+                finished_at=self._iso_timestamp(record.get('finished_at')) if record.get('finished_at') else '',
+                size_bytes=size_bytes, result_path=path, output_dir=record.get('output_dir') or '',
+                task_id=record.get('task_id') or '', video_url=record.get('video_url') or '',
+                error=record.get('error') or '', duration=record.get('duration'),
+                output_size=record.get('output_size') or '',
+            ))
+        return result
+
     @staticmethod
     def _iso_timestamp(value):
         try:
@@ -396,7 +449,7 @@ class HistoryPage(QWidget):
     def update_history(self, records):
         # 只渲染最近 100 条（页脚已承诺）；数据未变化时短路，避免整表重建与控件重挂。
         videos = list(reversed(records))
-        combined = videos + self._ecommerce_records() + self._manual_records()
+        combined = videos + self._ecommerce_records() + self._manual_records() + self._manual_video_records()
         combined.sort(key=self._sort_timestamp, reverse=True)
         total = len(combined)
         self._all_records = combined
@@ -480,9 +533,15 @@ class HistoryPage(QWidget):
     def _is_manual_image(task):
         return task.get('kind') == 'manual_image'
 
+    @staticmethod
+    def _is_manual_video(task):
+        return task.get('kind') == 'manual_video'
+
     @classmethod
     def _status_text(cls, task):
         if cls._is_manual_image(task):
+            return tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
+        if cls._is_manual_video(task):
             return tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
         if cls._is_ecommerce(task):
             if task.get('status') == 'ec_partial':
@@ -497,6 +556,8 @@ class HistoryPage(QWidget):
             return tr('电商图')
         if cls._is_manual_image(task):
             return tr('图片生成')
+        if cls._is_manual_video(task):
+            return tr('视频生成')
         return tr('视频')
 
     @staticmethod
@@ -506,6 +567,9 @@ class HistoryPage(QWidget):
         if task.get('kind') == 'manual_image':
             return (materials.ecommerce_color('image_generation_primary_soft'),
                     materials.ecommerce_color('image_generation_primary'))
+        if task.get('kind') == 'manual_video':
+            return (materials.ecommerce_color('video_creation_primary_soft'),
+                    materials.ecommerce_color('video_creation_primary'))
         return 'rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'
 
     @staticmethod
@@ -546,6 +610,30 @@ class HistoryPage(QWidget):
             delete.clicked.connect(lambda _, t=task: self._request_manual_delete(t))
             layout.addWidget(open_file); layout.addWidget(open_folder); layout.addWidget(delete)
             return action
+        if self._is_manual_video(task):
+            open_file = TransparentToolButton(FIF.VIDEO)
+            open_file.setObjectName('manualVideoOpenFile')
+            open_file.setToolTip(tr('打开文件'))
+            open_file.setEnabled(bool(task.get('result_path')))
+            open_file.clicked.connect(lambda _, t=task: open_local(t.get('result_path'), self.log_callback))
+            open_folder = TransparentToolButton(FIF.FOLDER)
+            open_folder.setObjectName('manualVideoOpenFolder')
+            open_folder.setToolTip(tr('打开文件夹'))
+            open_folder.setEnabled(bool(task.get('output_dir')))
+            open_folder.clicked.connect(lambda _, t=task: open_local(t.get('output_dir'), self.log_callback, folder=True))
+            copy_link = TransparentToolButton(FIF.LINK)
+            copy_link.setObjectName('manualVideoCopyLink')
+            copy_link.setToolTip(tr('复制链接'))
+            copy_link.setEnabled(bool(task.get('video_url')))
+            copy_link.clicked.connect(lambda _, t=task: self._copy_video_link(t))
+            delete = TransparentToolButton(FIF.DELETE)
+            delete.setObjectName('manualVideoDelete')
+            delete.setToolTip(tr('删除记录'))
+            delete.setEnabled(self._is_deletable(task))
+            delete.clicked.connect(lambda _, t=task: self._request_manual_delete(t))
+            layout.addWidget(open_file); layout.addWidget(open_folder)
+            layout.addWidget(copy_link); layout.addWidget(delete)
+            return action
         open_file = TransparentToolButton(FIF.FOLDER)
         open_file.setToolTip(tr('打开文件') if task.get('result_path') else tr('打开文件（暂无本地文件，任务完成下载后可打开）'))
         open_file.setEnabled(bool(task.get('result_path')))
@@ -583,7 +671,7 @@ class HistoryPage(QWidget):
         self.records = records
         self._row_status = []
         for row, task in enumerate(records):
-            if self._is_manual_image(task):
+            if self._is_manual_image(task) or self._is_manual_video(task):
                 return False
             status = self._status_text(task)
             self._row_status.append(status)
@@ -752,6 +840,9 @@ class HistoryPage(QWidget):
         if cls._is_manual_image(task):
             return bool(task.get('manual_id')) and task.get('manual_status') in {
                 'succeeded', 'failed', 'cancelled'}
+        if cls._is_manual_video(task):
+            return bool(task.get('manual_id')) and task.get('manual_status') in {
+                'succeeded', 'failed', 'cancelled'}
         return bool(task.get('local_id')) and task.get('status') in DELETABLE_STATUSES
 
     def _select_all(self, state):
@@ -817,11 +908,14 @@ class HistoryPage(QWidget):
             workspace._set_recovery_entry_busy(True)
 
         video_records = [record for record in records
-                         if not self._is_ecommerce(record) and not self._is_manual_image(record)]
+                         if not self._is_ecommerce(record) and not self._is_manual_image(record)
+                         and not self._is_manual_video(record)]
         ecommerce_ids = [record['group_id'] for record in records
                          if self._is_ecommerce(record) and record.get('group_id')]
         manual_ids = [record['manual_id'] for record in records
                       if self._is_manual_image(record) and record.get('manual_id')]
+        manual_video_ids = [record['manual_id'] for record in records
+                            if self._is_manual_video(record) and record.get('manual_id')]
 
         def done(summary):
             delete_files = False
@@ -831,7 +925,7 @@ class HistoryPage(QWidget):
                 if workspace is not None and workspace.closing.is_set():
                     return
                 dialog = DeleteHistoryDialog(records, summary, self.window())
-                if (ecommerce_ids or manual_ids) and not video_records:
+                if (ecommerce_ids or manual_ids or manual_video_ids) and not video_records:
                     dialog.keep_files.setText(tr('仅删除记录，不删除已生成文件'))
                     dialog.delete_files.setEnabled(False)
                     dialog.keep_files.setChecked(True)
@@ -854,6 +948,11 @@ class HistoryPage(QWidget):
                     store = self._manual_store()
                     for local_id in manual_ids:
                         store.delete(local_id)
+                if manual_video_ids:
+                    store = self._manual_video_store()
+                    for local_id in manual_video_ids:
+                        store.delete(local_id)
+                if manual_ids or manual_video_ids:
                     self.refresh_records()
 
         def failed(message):
@@ -879,11 +978,19 @@ class HistoryPage(QWidget):
         if not self._is_deletable(task):
             return
         try:
-            self._manual_store().delete(task.get('manual_id'))
+            store = self._manual_video_store() if self._is_manual_video(task) else self._manual_store()
+            store.delete(task.get('manual_id'))
         except Exception as error:
             InfoBar.error(tr('删除记录失败'), str(error), parent=self, duration=4000)
             return
         self.refresh_records()
+
+    def _copy_video_link(self, task):
+        value = str(task.get('video_url') or '').strip()
+        if not value:
+            return
+        QApplication.clipboard().setText(value)
+        InfoBar.success(tr('链接已复制'), tr('视频链接已复制到剪贴板'), parent=self, duration=2500)
 
     def _filter(self, status):
         statuses = getattr(self, '_row_status', [])

@@ -519,6 +519,18 @@ ECOMMERCE_UI = {
     'image_generation_cta_end': ('#7C3AED', '#5B21B6'),
     'image_generation_hint': ('#64748B', '#A9B1C1'),
     'image_generation_error': ('#CB3C45', '#FF9EA6'),
+    # 独立视频制作页
+    'video_creation_surface': ('#FFFFFF', '#181C28'),
+    'video_creation_input': ('#F7F8FA', '#202431'),
+    'video_creation_border': ('#E5E8EF', '#41485B'),
+    'video_creation_primary': ('#2F7CF6', '#78AFFF'),
+    'video_creation_primary_soft': ('#EAF2FF', '#213B65'),
+    'video_creation_info_bg': ('#EFF8FF', '#1D3048'),
+    'video_creation_preview_bg': ('#111827', '#0B1020'),
+    'video_creation_preview_text': ('#F8FAFC', '#F8FAFC'),
+    'video_creation_success': ('#22A65B', '#7FD69C'),
+    'video_creation_error': ('#CB3C45', '#FF9EA6'),
+    'video_creation_muted': ('#64748B', '#A9B1C1'),
 }
 
 
