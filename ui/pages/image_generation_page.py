@@ -10,12 +10,12 @@ import re
 import threading
 from pathlib import Path
 
-from PyQt5.QtCore import QCoreApplication, Qt, QSignalBlocker, QThread, pyqtSignal, QRectF
+from PyQt5.QtCore import QCoreApplication, QEvent, Qt, QSignalBlocker, QThread, pyqtSignal, QRectF
 from PyQt5.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import (
     QBoxLayout, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPlainTextEdit, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout,
-    QWidget,
+    QToolButton, QWidget,
 )
 from qfluentwidgets import (
     ComboBox, InfoBar, LineEdit, PrimaryPushButton, PushButton, StrongBodyLabel,
@@ -113,6 +113,120 @@ RATIOS = ('9:16', '1:1', '16:9', '3:2', '2:3', '4:3', '3:4', '5:4')
 TIERS = ('1K', '2K', '4K')
 
 
+class _CountStepper(QWidget):
+    """Compact minus/value/plus control used for generation count.
+
+    The small compatibility surface mirrors the QSpinBox methods the page and
+    existing callers use, while keeping the visual control deterministic at
+    each interface scale.
+    """
+
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('imageGenerationCountStepper')
+        self._minimum = 1
+        self._maximum = 10
+        self._value = 1
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFixedHeight(px(34))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        self.minus_button = QToolButton(self)
+        self.minus_button.setObjectName('imageGenerationCountMinus')
+        self.minus_button.setText('\N{MINUS SIGN}')
+        self.minus_button.setToolTip(tr('减少生成次数'))
+        self.minus_button.setFixedSize(px(28), px(28))
+        self.minus_button.clicked.connect(lambda: self.setValue(self._value - 1))
+
+        self.value_label = QLabel(str(self._value), self)
+        self.value_label.setObjectName('imageGenerationCountValue')
+        self.value_label.setAlignment(Qt.AlignCenter)
+        self.value_label.setFixedSize(px(72), px(34))
+
+        self.plus_button = QToolButton(self)
+        self.plus_button.setObjectName('imageGenerationCountPlus')
+        self.plus_button.setText('+')
+        self.plus_button.setToolTip(tr('增加生成次数'))
+        self.plus_button.setFixedSize(px(28), px(28))
+        self.plus_button.clicked.connect(lambda: self.setValue(self._value + 1))
+
+        row.addWidget(self.minus_button, 0, Qt.AlignVCenter)
+        row.addWidget(self.value_label, 0, Qt.AlignVCenter)
+        row.addWidget(self.plus_button, 0, Qt.AlignVCenter)
+        self.refresh_colors()
+        self._refresh_buttons()
+
+    def refresh_colors(self):
+        border = materials.ecommerce_color('image_generation_border')
+        surface = materials.ecommerce_color('image_generation_surface')
+        primary = materials.ecommerce_color('image_generation_primary')
+        hint = materials.ecommerce_color('image_generation_hint')
+        self.setStyleSheet(
+            'QToolButton {background:%s; color:%s; border:1px solid %s; border-radius:%dpx; '
+            'font-size:%dpx; font-weight:600;}'
+            'QToolButton:hover:enabled {background:%s; color:%s;}'
+            'QToolButton:disabled {background:%s; color:%s;}'
+            'QLabel#imageGenerationCountValue {background:%s; color:%s; border:1px solid %s; '
+            'border-radius:%dpx; font-size:%dpx;}'
+            % (surface, primary, border, px(6), px(14),
+               materials.ecommerce_color('image_generation_primary_soft'), primary,
+               surface, hint, surface, primary, border, px(6), px(14)))
+
+    def refresh_interface_scale(self):
+        self.setFixedHeight(px(34))
+        self.minus_button.setFixedSize(px(28), px(28))
+        self.plus_button.setFixedSize(px(28), px(28))
+        self.value_label.setFixedSize(px(72), px(34))
+        self.refresh_colors()
+
+    def retranslate_ui(self):
+        self.minus_button.setToolTip(tr('减少生成次数'))
+        self.plus_button.setToolTip(tr('增加生成次数'))
+
+    def _refresh_buttons(self):
+        self.minus_button.setEnabled(self._value > self._minimum)
+        self.plus_button.setEnabled(self._value < self._maximum)
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return
+        value = max(self._minimum, min(self._maximum, value))
+        if value == self._value:
+            self._refresh_buttons()
+            return
+        self._value = value
+        self.value_label.setText(str(value))
+        self._refresh_buttons()
+        self.valueChanged.emit(value)
+
+    def setRange(self, minimum, maximum):
+        self._minimum = int(minimum)
+        self._maximum = max(self._minimum, int(maximum))
+        self.setValue(self._value)
+        self._refresh_buttons()
+
+    def setMinimum(self, minimum):
+        self.setRange(minimum, self._maximum)
+
+    def setMaximum(self, maximum):
+        self.setRange(self._minimum, maximum)
+
+    def minimum(self):
+        return self._minimum
+
+    def maximum(self):
+        return self._maximum
+
+
 def _records_for_image(config_manager):
     """Return current image records with a safe builtin fallback."""
     try:
@@ -194,6 +308,83 @@ class _CtaCard(QFrame):
         painter.fillPath(path, gradient)
         painter.end()
         super().paintEvent(event)
+
+
+class _ReferenceDropStrip(QFrame):
+    """Full-width empty state for the standalone image reference picker."""
+
+    clicked = pyqtSignal()
+    files_dropped = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('imageReferenceDropStrip')
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(px(96))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(px(16), px(12), px(16), px(12))
+        layout.setSpacing(px(8))
+        self.icon_label = QLabel('⬆', self)
+        self.icon_label.setObjectName('imageReferenceDropIcon')
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.icon_label.setFixedWidth(px(22))
+        self.text_label = QLabel(self)
+        self.text_label.setObjectName('imageReferenceDropText')
+        self.text_label.setAlignment(Qt.AlignCenter)
+        self.text_label.setWordWrap(True)
+        self.text_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addStretch(1)
+        layout.addWidget(self.icon_label, 0, Qt.AlignVCenter)
+        layout.addWidget(self.text_label, 0, Qt.AlignVCenter)
+        layout.addStretch(1)
+        self.retranslate_ui()
+        self.refresh_colors()
+
+    def refresh_colors(self):
+        border = materials.ecommerce_color('image_generation_border')
+        hint = materials.ecommerce_color('image_generation_hint')
+        surface = materials.ecommerce_color('image_generation_input')
+        primary = materials.ecommerce_color('image_generation_primary')
+        self.setStyleSheet(
+            'QFrame#imageReferenceDropStrip {background:%s; border:1px dashed %s;'
+            ' border-radius:%dpx;}'
+            'QLabel#imageReferenceDropIcon {background:transparent; color:%s;'
+            ' font-size:%dpx;}'
+            'QLabel#imageReferenceDropText {background:transparent; color:%s;'
+            ' font-size:%dpx;}'
+            % (surface, border, px(8), primary, px(20), hint, px(12)))
+
+    def refresh_interface_scale(self):
+        self.setFixedHeight(px(96))
+        self.refresh_colors()
+
+    def retranslate_ui(self):
+        self.text_label.setText(tr(
+            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)'))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                paths.append(url.toLocalFile())
+        if paths:
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 class _CustomPromptDialog(QDialog):
@@ -287,7 +478,10 @@ class ImageGenerationPage(QWidget):
         # the narrow layout breakpoint.  Keep the page/columns shrinkable so Qt
         # can actually enter the stacked layout below 1180px.
         self.setMinimumWidth(0)
-        root = QVBoxLayout(self)
+        root = scrollable_body(self)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_content.setMinimumWidth(0)
+        self.body_content.installEventFilter(self)
         root.setContentsMargins(px(26), px(16), px(26), px(20))
         root.setSpacing(px(16))
         header = QHBoxLayout()
@@ -343,8 +537,16 @@ class ImageGenerationPage(QWidget):
         super().resizeEvent(event)
         self._fit_columns()
 
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, 'body_content', None) and event.type() == QEvent.Resize:
+            self._fit_columns()
+        return super().eventFilter(watched, event)
+
     def _fit_columns(self):
-        stacked = self.width() < px(1180)
+        available_width = self.body_content.width() if getattr(self, 'body_content', None) else 0
+        if available_width <= 0:
+            available_width = self.width()
+        stacked = available_width < px(1180)
         direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
         if self.body_layout.direction() != direction:
             self.body_layout.setDirection(direction)
@@ -395,19 +597,35 @@ class ImageGenerationPage(QWidget):
         self.clear_images_button.clicked.connect(self.clear_references)
         heading.addWidget(self.used_images_button); heading.addWidget(self.gallery_button); heading.addWidget(self.clear_images_button)
         layout.addLayout(heading)
-        self.reference_grid = ImageUploadGrid('product', max_count=8, parent=box)
+        self.reference_drop_strip = _ReferenceDropStrip(box)
+        self.reference_drop_strip.clicked.connect(self.choose_reference_files)
+        self.reference_drop_strip.files_dropped.connect(self._accept_dropped_references)
+        layout.addWidget(self.reference_drop_strip)
+        self.reference_grid = ImageUploadGrid(
+            'product', max_count=8, parent=box,
+            add_label_provider=self._reference_add_label)
         self.image_grid = self.reference_grid
         self.reference_grid.setObjectName('imageReferenceGrid')
         self.reference_grid.preview_requested.connect(self._preview_reference)
         self.reference_grid.add_requested.connect(self.choose_reference_files)
         self.reference_grid.changed.connect(self._references_changed)
         self.reference_grid.set_paths([], emit=False)
+        self.reference_grid.setVisible(False)
         self._sync_reference_add_label()
         layout.addWidget(self.reference_grid)
         return box
 
     def _build_model_section(self):
-        box = QWidget(self.form_card); layout = QVBoxLayout(box); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(px(12))
+        box = QFrame(self.form_card)
+        box.setObjectName('imageModelSubcard')
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(px(16), px(14), px(16), px(16))
+        layout.setSpacing(px(14))
+        self.model_section_title = QLabel(tr('🐱 模型'), box)
+        self.model_section_title.setObjectName('imageModelSectionTitle')
+        layout.addWidget(self.model_section_title)
+        self._refresh_model_subcard_style()
+
         row1 = QGridLayout(); row1.setHorizontalSpacing(px(12)); row1.setVerticalSpacing(px(8))
         self.model_label = QLabel(tr('模型 *'), box); self.version_label = QLabel(tr('模型版本 *'), box)
         self.model_combo = ComboBox(box); self.model_combo.setObjectName('imageModelCombo')
@@ -423,7 +641,7 @@ class ImageGenerationPage(QWidget):
         self.aspect_ratio_combo = self.ratio_combo
         self.tier_combo = ComboBox(box); self.tier_combo.addItems(list(TIERS)); self.tier_combo.setCurrentText('1K')
         self.resolution_combo = self.tier_combo
-        self.count_spin = QSpinBox(box); self.count_spin.setRange(1, 10); self.count_spin.setValue(1); self.count_spin.setButtonSymbols(QSpinBox.PlusMinus)
+        self.count_spin = _CountStepper(box)
         self.count_spin.valueChanged.connect(self._update_count_hint)
         row2.addWidget(self.ratio_label, 0, 0); row2.addWidget(self.tier_label, 0, 1); row2.addWidget(self.count_label, 0, 2)
         row2.addWidget(self.ratio_combo, 1, 0); row2.addWidget(self.tier_combo, 1, 1); row2.addWidget(self.count_spin, 1, 2)
@@ -431,6 +649,18 @@ class ImageGenerationPage(QWidget):
         self.count_hint = QLabel('', box); self.count_hint.setStyleSheet('color:%s;' % materials.ecommerce_color('image_generation_primary'))
         layout.addWidget(self.count_hint)
         return box
+
+    def _refresh_model_subcard_style(self):
+        if not hasattr(self, 'model_section_title'):
+            return
+        self.model_section_title.setStyleSheet(
+            'font-size:%dpx; font-weight:600; background:transparent;' % px(13))
+        card = self.model_section_title.parentWidget()
+        if card is not None:
+            card.setStyleSheet(
+                'QFrame#imageModelSubcard {background:%s; border:1px solid %s; border-radius:%dpx;}'
+                % (materials.ecommerce_color('image_generation_surface'),
+                   materials.ecommerce_color('image_generation_border'), px(10)))
 
     def _build_quick_prompt_card(self):
         card = _Card(self.right_column)
@@ -452,6 +682,17 @@ class ImageGenerationPage(QWidget):
             self._warning(tr('最多只能上传8张图片'))
             return
         paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考图'), '', tr('图片 (*.png *.jpg *.jpeg *.webp)'))
+        if paths:
+            self.set_references(self.reference_paths + paths[:remaining])
+            if len(paths) > remaining:
+                self._warning(tr('最多只能上传8张图片'))
+
+    def _accept_dropped_references(self, paths):
+        remaining = max(0, 8 - len(self.reference_paths))
+        if not remaining:
+            self._warning(tr('最多只能上传8张图片'))
+            return
+        paths = [str(path) for path in (paths or []) if str(path).strip()]
         if paths:
             self.set_references(self.reference_paths + paths[:remaining])
             if len(paths) > remaining:
@@ -485,14 +726,19 @@ class ImageGenerationPage(QWidget):
     def _references_changed(self, paths):
         self.reference_paths = list(paths or [])[:8]
         self.clear_images_button.setVisible(bool(self.reference_paths))
+        self.reference_drop_strip.setVisible(not bool(self.reference_paths))
+        self.reference_grid.setVisible(bool(self.reference_paths))
         self._sync_reference_add_label()
+
+    def _reference_add_label(self, count, _max_count=8):
+        return tr('＋ 继续添加 ({n}/8)').format(n=int(count))
 
     def _sync_reference_add_label(self):
         tile = self.reference_grid.add_tile() if hasattr(self, 'reference_grid') else None
         if tile is None:
             return
         if self.reference_paths:
-            label = tr('＋ 继续添加 ({n}/8)').format(n=len(self.reference_paths))
+            label = self._reference_add_label(len(self.reference_paths), 8)
         else:
             label = tr('⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
         tile.set_label(label)
@@ -718,19 +964,28 @@ class ImageGenerationPage(QWidget):
 
     # —— host integration ——
     def refresh_interface_scale(self):
-        self._refresh_quick_prompts(); self.reference_grid.refresh_interface_scale(); self._sync_reference_add_label()
+        self._refresh_quick_prompts(); self.reference_drop_strip.refresh_interface_scale(); self.reference_grid.refresh_interface_scale(); self.count_spin.refresh_interface_scale(); self._refresh_model_subcard_style(); self._sync_reference_add_label()
+        self._fit_columns()
+        self.body_layout.invalidate()
+        self.body_layout.activate()
+        content_layout = self.body_content.layout()
+        if content_layout is not None:
+            content_layout.invalidate()
+            content_layout.activate()
+        self.body_content.updateGeometry()
 
     def refresh_colors(self):
         self.form_card.refresh_colors()
         for card in (self.cta_card, self.right_column.findChild(QFrame, 'imageGenerationCard')):
             if card is not None and hasattr(card, 'refresh_colors'): card.refresh_colors()
-        self._refresh_prompt_style(); self._update_prompt_state()
+        self._refresh_prompt_style(); self.count_spin.refresh_colors(); self._refresh_model_subcard_style(); self._update_prompt_state()
 
     def retranslate_ui(self):
         self.title_label.setText(tr('图片生成')); self.caption_label.setText(tr('使用 AI 生成高质量图片内容'))
         self.prompt_edit.setPlaceholderText(tr('请描述你想生成的图片内容...'))
         self.clear_prompt_button.setText(tr('清除')); self.used_images_button.setText(tr('已用图片')); self.gallery_button.setText(tr('画廊选图')); self.clear_images_button.setText(tr('清空'))
-        self.model_label.setText(tr('模型 *')); self.version_label.setText(tr('模型版本 *')); self.ratio_label.setText(tr('宽高比')); self.tier_label.setText(tr('分辨率')); self.count_label.setText(tr('生成次数'))
+        self.model_section_title.setText(tr('🐱 模型')); self.model_label.setText(tr('模型 *')); self.version_label.setText(tr('模型版本 *')); self.ratio_label.setText(tr('宽高比')); self.tier_label.setText(tr('分辨率')); self.count_label.setText(tr('生成次数'))
         self.submit_button.setText(tr('开始生成')); self.cta_button.setText(tr('开始生成')); self.cta_hint.setText(tr('填写提示词并选择模型后即可生成'))
         self.quick_title.setText(tr('💡 快速提示词')); self.quick_caption.setText(tr('点击快速应用提示词')); self.custom_prompt_button.setText(tr('+ 自定义提示词'))
+        self.reference_drop_strip.retranslate_ui(); self.reference_drop_strip.refresh_colors(); self.count_spin.retranslate_ui()
         self._refresh_quick_prompts(); self._update_count_hint(self.count_spin.value()); self._update_prompt_state()

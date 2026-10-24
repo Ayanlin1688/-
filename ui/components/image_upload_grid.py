@@ -289,10 +289,14 @@ class ImageUploadGrid(QWidget):
     preview_requested = pyqtSignal(int)
     add_requested = pyqtSignal()
 
-    def __init__(self, variant='product', max_count=PRODUCT_MAX, parent=None):
+    def __init__(self, variant='product', max_count=PRODUCT_MAX, parent=None,
+                 add_label_provider=None):
         super().__init__(parent)
         self.variant = 'style' if variant == 'style' else 'product'
         self.max_count = max(1, int(max_count))
+        # Optional page-owned label generation.  Existing callers keep the
+        # built-in product/style labels when this is omitted.
+        self.add_label_provider = add_label_provider
         self._paths = []
         self._tiles = []
         self._add_tile = None
@@ -384,9 +388,17 @@ class ImageUploadGrid(QWidget):
                 tile.show()
                 self._tiles.append(tile)
             if show_add:
-                label = (tr('点击上传产品图') if not self._paths
-                         else tr('继续添加 {count}/{max}').format(
-                             count=len(self._paths), max=self.max_count))
+                if callable(self.add_label_provider):
+                    try:
+                        label = str(self.add_label_provider(
+                            len(self._paths), self.max_count))
+                    except TypeError:
+                        # Permit the convenient one-argument provider form.
+                        label = str(self.add_label_provider(len(self._paths)))
+                else:
+                    label = (tr('点击上传产品图') if not self._paths
+                             else tr('继续添加 {count}/{max}').format(
+                                 count=len(self._paths), max=self.max_count))
                 self._add_tile = _AddTile(label, parent=self)
                 self._add_tile.clicked.connect(self.add_requested)
                 self._add_tile.show()

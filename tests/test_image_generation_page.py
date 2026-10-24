@@ -11,7 +11,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QBoxLayout, QDialog
+from PyQt5.QtWidgets import QApplication, QBoxLayout, QDialog, QFrame
 
 from core.config_manager import ConfigManager
 from core.i18n import set_language
@@ -69,9 +69,10 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertFalse(self.page.submit_button.isEnabled())
 
     def test_reference_file_selection_limit_remove_clear_and_preview(self):
-        empty_tile = self.page.reference_grid.add_tile()
-        self.assertIsNotNone(empty_tile)
-        self.assertIn('最多只能上传8张图片', empty_tile.text_label.text())
+        self.assertTrue(self.page.reference_drop_strip.isVisible())
+        self.assertEqual(
+            self.page.reference_drop_strip.text_label.text(),
+            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
         paths = [self._make_image(f'image-{index}.png') for index in range(10)]
         with patch('ui.pages.image_generation_page.QFileDialog.getOpenFileNames',
                    return_value=(paths, '')) as picker, \
@@ -93,7 +94,33 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertEqual(self.page.reference_paths, [])
         self.assertFalse(self.page.clear_images_button.isVisible())
 
+    def test_reference_empty_drop_strip_and_stable_add_label(self):
+        strip = self.page.reference_drop_strip
+        self.assertEqual(strip.objectName(), 'imageReferenceDropStrip')
+        self.assertTrue(strip.isVisible())
+        self.assertFalse(self.page.reference_grid.isVisible())
+        self.assertEqual(
+            strip.text_label.text(),
+            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
+        with patch('ui.pages.image_generation_page.QFileDialog.getOpenFileNames',
+                   return_value=([], '')) as choose:
+            strip.clicked.emit()
+        choose.assert_called_once()
+
+        image = self._make_image('reference.png')
+        self.page.set_references([image])
+        self.app.processEvents()
+        self.assertFalse(strip.isVisible())
+        self.assertTrue(self.page.reference_grid.isVisible())
+        self.assertEqual(self.page.reference_grid.add_tile().text_label.text(),
+                         '＋ 继续添加 (1/8)')
+        self.page.refresh_interface_scale()
+        self.assertEqual(self.page.reference_grid.add_tile().text_label.text(),
+                         '＋ 继续添加 (1/8)')
+
     def test_model_version_ratio_tier_count_and_quick_prompt(self):
+        self.assertEqual(self.page.model_section_title.text(), '🐱 模型')
+        self.assertIsNotNone(self.page.findChild(QFrame, 'imageModelSubcard'))
         self.assertEqual(self.page.model_combo.currentData(), 'image-model')
         self.assertEqual(self.page.version_combo.count(), 2)
         self.assertEqual(self.page.ratio_combo.count(), 8)
@@ -109,6 +136,17 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertEqual(self.page.prompt_edit.toPlainText(), DEFAULT_QUICK_PROMPTS[1])
         self.assertTrue(self.page.quick_prompt_buttons[1].property('selectedPrompt'))
         self.assertTrue(self.page.submit_button.isEnabled())
+
+    def test_count_stepper_edges_and_hint(self):
+        self.assertEqual(self.page.count_spin.value(), 1)
+        self.assertFalse(self.page.count_spin.minus_button.isEnabled())
+        self.page.count_spin.setValue(10)
+        self.assertFalse(self.page.count_spin.plus_button.isEnabled())
+        self.assertTrue(self.page.count_spin.minus_button.isEnabled())
+        self.page.count_spin.setValue(3)
+        self.assertTrue(self.page.count_spin.minus_button.isEnabled())
+        self.assertTrue(self.page.count_spin.plus_button.isEnabled())
+        self.assertEqual(self.page.count_hint.text(), '将循环创建 3 个相同任务')
 
     def test_custom_prompts_are_limited_and_persisted(self):
         class AcceptedDialog:
@@ -190,6 +228,35 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
         self.assertLess(self.page.left_column.geometry().right(),
                         self.page.right_column.geometry().left())
+
+    def test_scrollable_layout_remains_unclipped_at_supported_scales(self):
+        from tests.qt_scale_support import flush_layout, reset_interface_scaling
+        from ui.scaling import apply_interface_scale
+        from ui.tokens import px
+
+        try:
+            for scale in (1.0, 1.25, 1.5, 1.75):
+                apply_interface_scale(self.app, self.app.primaryScreen(), scale)
+                self.page.resize(1000, 900)
+                self.page.refresh_interface_scale()
+                flush_layout(self.app, self.page)
+
+                self.assertEqual(self.page.body_layout.direction(), QBoxLayout.TopToBottom)
+                self.assertEqual(self.page.body_scroll.horizontalScrollBarPolicy(),
+                                 Qt.ScrollBarAlwaysOff)
+                self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+                self.assertLessEqual(self.page.body_content.width(),
+                                     self.page.body_scroll.viewport().width())
+                self.assertGreaterEqual(self.page.prompt_edit.height(), px(140))
+
+                card_top = self.page.model_section_title.mapTo(self.page, self.page.model_section_title.rect().topLeft()).y()
+                card_bottom = self.page.count_spin.mapTo(self.page, self.page.count_spin.rect().bottomRight()).y()
+                subcard = self.page.findChild(QFrame, 'imageModelSubcard')
+                self.assertGreaterEqual(card_top, subcard.mapTo(self.page, subcard.rect().topLeft()).y())
+                self.assertLessEqual(card_bottom, subcard.mapTo(self.page, subcard.rect().bottomRight()).y())
+                self.assertTrue(self.page.body_scroll.verticalScrollBar().isVisible())
+        finally:
+            reset_interface_scaling(self.app)
 
     def test_retranslate_updates_page_labels(self):
         set_language('en')

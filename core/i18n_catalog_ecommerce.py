@@ -6,6 +6,7 @@
 EN_ECOMMERCE = {
     '图片生成': 'Image generation',
     '使用 AI 生成高质量图片内容': 'Use AI to generate high-quality images',
+    '🐱 模型': '🐱 Model',
     '提示词 *': 'Prompt *',
     '✏ 提示词 *': '✏ Prompt *',
     '🖼 参考图': '🖼 Reference images',
@@ -15,6 +16,8 @@ EN_ECOMMERCE = {
     '宽高比': 'Aspect ratio',
     '分辨率': 'Resolution',
     '生成次数': 'Generation count',
+    '减少生成次数': 'Decrease generation count',
+    '增加生成次数': 'Increase generation count',
     '请描述你想生成的图片内容...': 'Describe the image you want to generate...',
     '{n} / 10000': '{n} / 10000',
     '已用图片': 'Used images',
