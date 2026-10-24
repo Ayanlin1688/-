@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QAction, QSizePolicy
 from qfluentwidgets import ComboBox, EditableComboBox
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from core.model_catalog import builtin_models, classify_model, normalize_model_id, resolve_model_id
-from core.i18n import tr
+from core.i18n import translate_text, tr
 
 
 def catalog_snapshot(config_manager, capability=None):
@@ -24,7 +24,8 @@ def usable(record):
 
 
 def model_label(record):
-    parts = [record['id'], ' / '.join(record.get('resolutions', ())), record.get('pricing_text') or tr('计费未提供')]
+    pricing = translate_text(record.get('pricing_text') or '') or tr('计费未提供')
+    parts = [record['id'], ' / '.join(record.get('resolutions', ())), pricing]
     if record.get('kind') != 'video':
         parts.append(tr('非视频模型'))
     elif not record.get('protocol_known'):
@@ -97,6 +98,8 @@ class ModelComboBox(ComboBox):
         self.setToolTip(text + '\n' + self.descriptions.get(text, ''))
 
     def set_models(self, records, selected=None, automatic=False, keep_missing=False):
+        records = records if isinstance(records, dict) else {}
+        self._last_models = (records, selected, automatic, keep_missing)
         selected = self.currentText() if selected is None else selected
         selected = resolve_model_id(selected, records)
         blocker = QSignalBlocker(self)
@@ -109,9 +112,10 @@ class ModelComboBox(ComboBox):
         for model, record in records.items():
             label = model_label(record)
             self._compact[label] = compact_model_label(record)
-            self.descriptions[label] = record.get('description') or record.get('display_name') or model
             self.addItem(label, userData=model)
             self.setItemEnabled(self.count()-1, usable(record))
+            self.descriptions[label] = translate_text(
+                record.get('description') or record.get('display_name') or model)
         if selected and selected not in records and keep_missing:
             self.addItem(selected + ' · ' + tr('已下架'), userData=selected)
             self.setItemEnabled(self.count()-1, False)
@@ -123,6 +127,17 @@ class ModelComboBox(ComboBox):
             self.setText(tr('暂无可提交模型'))
         del blocker
         self._update_tooltip()
+
+    def retranslate_ui(self):
+        """语言变化时按当前语言重建模型标签（计费/协议/下架等后缀会翻译）。"""
+        cached = getattr(self, '_last_models', None)
+        if not cached:
+            return
+        records, selected, automatic, keep_missing = cached
+        try:
+            self.set_models(dict(records), selected, automatic=automatic, keep_missing=keep_missing)
+        except Exception:
+            pass
 
 
 _PROVIDER_PATTERNS = (
@@ -307,6 +322,7 @@ class ModelPickComboBox(EditableComboBox):
     def set_models(self, records, selected=None, kind='chat'):
         self._kind = kind
         records = records if isinstance(records, dict) else {}
+        self._last_models = (records, selected, kind)
         selected = normalize_model_id(
             self.value() if selected is None else selected,
             records.keys())
@@ -332,11 +348,23 @@ class ModelPickComboBox(EditableComboBox):
             self.setItemEnabled(separator, False)
             for model_id, record in rows:
                 display = str(record.get('display_name') or record.get('name') or model_id)
+                display = translate_text(display)
                 label_text = f'{model_id} · {display}' if display != model_id else model_id
                 self.addItem(label_text, userData=model_id)
                 description = str(record.get('description') or display)
-                self._item_tooltips[label_text] = description
+                self._item_tooltips[label_text] = translate_text(description)
 
         # A stored/custom ID remains editable even when it is not in the catalog.
         self.set_value(selected)
         del blocker
+
+    def retranslate_ui(self):
+        """语言变化时重建分组标题与模型标签（其他 / 其余后缀按当前语言）。"""
+        cached = getattr(self, '_last_models', None)
+        if not cached:
+            return
+        records, selected, kind = cached
+        try:
+            self.set_models(dict(records), selected, kind=kind)
+        except Exception:
+            pass

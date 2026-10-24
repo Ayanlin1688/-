@@ -1,0 +1,158 @@
+"""电商图模块英文译文（由 core/i18n.py 合并进 EN，供语言切换整体生效）。
+
+键 = 源码 tr() 中的中文原文（一字不差，含标点与 {placeholder}）；值 = 英文译文。
+由段4 语言切换接线补充，覆盖上传区 / 灯箱 / 选择器 / 任务列表 / 平台预览 / 批量制作页。
+"""
+EN_ECOMMERCE = {
+    '+ 上传参考图': '+ Upload reference image',
+    '+ 新建制作': '+ New Creation',
+    '{count} 个制作任务': '{count} creation tasks',
+    '上一张（←）': 'Previous (←)',
+    '上一页': 'Previous page',
+    '上传产品白底图，最多 6 张': 'Upload product photos on white background, up to 6',
+    '下一张（→）': 'Next (→)',
+    '下一页': 'Next page',
+    '产品信息（必填）': 'Product details (required)',
+    '产品名称（建议填写，用作任务标签）': 'Product name (recommended, used as task label)',
+    '产品图': 'Product photos',
+    '仅供图片效果预览，界面布局模拟自各平台公开商品页，与相关平台无隶属关系，仅用于图片效果自查':
+        'For image preview only. Layout simulates publicly available product pages; '
+        'not affiliated with any platform. For self-checking image results only.',
+    '从已完成任务中挑选生成过的图片，最多 {count} 张':
+        'Pick generated images from completed tasks, up to {count}',
+    '从已完成任务选择图片': 'Choose images from completed tasks',
+    '从本地画廊目录选择图片': 'Choose images from local gallery',
+    '从本地画廊目录选择图片，最多 {count} 张':
+        'Choose images from local gallery, up to {count}',
+    '全选': 'Select all',
+    '全选本页': 'Select page',
+    '共 {total} 行 · 就绪 {ready}': '{total} rows · {ready} ready',
+    '共享默认（新建行继承，提交时使用）': 'Shared defaults (new rows inherit, used on submit)',
+    '删除 {count} 个': 'Delete {count}',
+    '删除行': 'Delete row',
+    '删除该记录？': 'Delete this record?',
+    '删除选中': 'Delete selected',
+    '加入购物车': 'Add to cart',
+    '包邮 · 7 天无理由退换': 'Free shipping · 7-day returns',
+    '单个制作': 'Single creation',
+    '取消全选': 'Deselect all',
+    '可选': 'Optional',
+    '可选，上传参考图来指定风格': 'Optional; upload a reference to specify the style',
+    '商品详情': 'Product details',
+    '图片生成模型': 'Image generation model',
+    '图片缓存写入失败，请检查磁盘空间': 'Failed to write image cache; check disk space',
+    '图片过大（最大 {size}MB）': 'Image too large (max {size} MB)',
+    '图片链接下载失败：{message}': 'Image link download failed: {message}',
+    '图片链接下载失败：返回内容为空': 'Image link download failed: empty response',
+    '图片预览': 'Image preview',
+    '图片预览打开失败': 'Failed to open image preview',
+    '复制行': 'Copy row',
+    '复制选中（0）': 'Copy selected (0)',
+    '复制选中（{count}）': 'Copy selected ({count})',
+    '已删除 {count} 行': '{count} row(s) deleted',
+    '已售 1000+ · 好评率 98%': '1,000+ sold · 98% positive reviews',
+    '已复制 1 行': '1 row copied',
+    '已复制 {count} 行': '{count} row(s) copied',
+    '已清空 {count} 行': '{count} row(s) cleared',
+    '已用图片': 'Used images',
+    '已选 {selected} / {total}': 'Selected {selected} / {total}',
+    '平台预览': 'Platform preview',
+    '平台预览打开失败': 'Failed to open platform preview',
+    '建议只选一个平台，多平台可能存在规则冲突（最多5个）':
+        'One platform is recommended; multiple platforms may conflict (up to 5)',
+    '开启后按模型族自动下发思考参数：DeepSeek 线路的 deepseek-chat/flash 自动切换 deepseek-v4-pro 并下发 reasoning_effort=high；Gemini 下发 thinkingConfig；其他推理模型（R1 / QwQ / o1 / o3 / o4 / Thinking 等）下发 enable_thinking；Claude 走 thinking budget；非推理模型不会盲发参数':
+        'When enabled, thinking parameters are chosen per model family: DeepSeek '
+        'deepseek-chat/flash switch to deepseek-v4-pro with reasoning_effort=high; '
+        'Gemini receives thinkingConfig; other reasoning models (R1 / QwQ / o1 / o3 / '
+        'o4 / Thinking) receive enable_thinking; Claude uses thinking budget; '
+        'non-reasoning models receive no extra parameters',
+    '开始批量制作（0）': 'Start batch creation (0)',
+    '开始批量制作（{count}）': 'Start batch creation ({count})',
+    '张': 'images',
+    '当前第 {index} 张': 'Current image {index}',
+    '当前筛选下暂无任务': 'No tasks under the current filter',
+    '待完善': 'Incomplete',
+    '批量制作': 'Batch creation',
+    '批量制作异常中断：{message}': 'Batch creation interrupted: {message}',
+    '批量制作结束，可在任务列表查看各任务组':
+        'Batch creation finished; view each task group in the task list',
+    '批量制作：共 {count} 行，按顺序逐行提交':
+        'Batch creation: {count} rows submitted one by one in order',
+    '批量第 {index} 行失败：{message}': 'Batch row {index} failed: {message}',
+    '批量草稿读取失败，已忽略（不影响新建）':
+        'Batch draft could not be read and was ignored (new work is unaffected)',
+    '找不到本地图片：{name}': 'Local image not found: {name}',
+    '把图片拖进图片格，或在图片格 / 本行名称与信息框里按 Ctrl+V 粘贴截图':
+        'Drag images into the image cell, or press Ctrl+V in the image cell / '
+        'name / details box to paste a screenshot',
+    '搜索': 'Search',
+    '新增 1 行': 'Add 1 row',
+    '新增 5 行': 'Add 5 rows',
+    '无法预览该图片': 'Cannot preview this image',
+    '暂无任务，点「+ 新建制作」开始': 'No tasks yet. Click "+ New Creation" to start',
+    '暂无可选图片': 'No images available',
+    '暂无预览图片': 'No preview images',
+    '最多 {count} 行，仅复制了 {copied} 行':
+        'Limit is {count} rows; only {copied} row(s) were copied',
+    '最多 {count} 行，无法继续新增': 'Limit is {count} rows; cannot add more',
+    '最多选择 {count} 张图，其余已忽略': 'Up to {count} images; the rest were ignored',
+    '未选平台': 'No platform',
+    '未选模型': 'No model selected',
+    '此操作不可恢复，生成完成的图片不受影响':
+        'This cannot be undone. Generated images are not affected.',
+    '每行一个商品，提交后在历史任务中各自显示为独立任务组':
+        'One product per row; each row becomes an independent task group in history',
+    '每行一个图片链接（http/https）或本地绝对路径，最多 {count} 条':
+        'One image URL (http/https) or local absolute path per line, up to {count}',
+    '没有可提交的行': 'No submittable rows',
+    '没有可用的图片': 'No usable images',
+    '滚轮缩放 · 拖拽平移 · ←/→ 切换 · Esc 关闭':
+        'Scroll to zoom · drag to pan · ←/→ to switch · Esc to close',
+    '点击上传产品图': 'Click to upload product photos',
+    '电商图任务': 'Ecommerce Image Tasks',
+    '电商图批量制作': 'Ecommerce Image Batch Creation',
+    '电商平台': 'Ecommerce platforms',
+    '画廊目录不可用，请换一个目录': 'Gallery folder is unavailable; choose another',
+    '画廊选图': 'Gallery',
+    '确认删除任务「{name}」？': 'Delete task "{name}"?',
+    '确认删除选中的 {count} 个任务？': 'Delete the {count} selected tasks?',
+    '确认添加': 'Add',
+    '立即购买': 'Buy now',
+    '第 {current} / {total} 页': 'Page {current} / {total}',
+    '管理': 'Manage',
+    '粘贴的图片保存失败，请重试': 'Failed to save pasted image; try again',
+    '继续添加 {count}/{max}': 'Add more {count}/{max}',
+    '草稿保存失败，已保留内存中的内容':
+        'Failed to save draft; current content is kept in memory',
+    '详情图': 'Detail images',
+    '详情图 {count} 张': 'Detail images: {count}',
+    '请先选择画廊目录': 'Choose a gallery folder first',
+    '请先选择要删除的行': 'Select rows to delete first',
+    '请先选择要复制的行': 'Select rows to copy first',
+    '请填写产品信息': 'Fill in product details',
+    '请至少上传 1 张产品图': 'Upload at least 1 product photo',
+    '请输入至少一个图片链接或本地路径': 'Enter at least one image link or local path',
+    '请选择 AI 分析模型': 'Choose an AI analysis model',
+    '请选择图片生成模型': 'Choose an image generation model',
+    '请选择至少一个平台': 'Choose at least one platform',
+    '请选择至少一张图片': 'Choose at least one image',
+    '请选择至少一种输出类型（轮播图或详情图）':
+        'Choose at least one output type (carousel or detail)',
+    '轮播': 'Carousel',
+    '轮播图': 'Carousel images',
+    '轮播图 {count} 张': 'Carousel images: {count}',
+    '输入': 'Input',
+    '输入图片 URL': 'Enter image URL',
+    '选择此行': 'Select this row',
+    '选择画廊目录': 'Choose gallery folder',
+    '选择该记录': 'Select this record',
+    '部分·失败': 'Partial / Failed',
+    '链接会下载到本地缓存目录，网络失败会给出中文提示':
+        'Links are downloaded to the local cache; network failures are reported clearly',
+    '风格参考图': 'Style reference',
+    '风格参考图（可选，整批共用）': 'Style reference (optional, shared by the batch)',
+    '风格图最多 1 张，已使用第一张': 'Only 1 style reference is allowed; the first was used',
+    '（未填写产品信息）': '(No product details)',
+    'https://example.com/product.png\nD:\\图片\\产品白底图.jpg':
+        'https://example.com/product.png\nD:\\images\\product-white.png',
+}

@@ -174,7 +174,7 @@ class ModelCatalogController(QObject):
         if 'kkone' in host:
             return 'kkone'
         parts = host.split('.')
-        return (parts[-2] if len(parts) > 1 else host) or '线路'
+        return (parts[-2] if len(parts) > 1 else host) or tr('线路')
 
     def _start_refresh(self, identities):
         identities = [identity for identity in self._line_order
@@ -192,7 +192,7 @@ class ModelCatalogController(QObject):
             for identity in identities:
                 candidate = self._new_catalog(identity)
                 if not identity[1]:
-                    results.append((identity, candidate, '未配置 API Key'))
+                    results.append((identity, candidate, tr('未配置 API Key')))
                     continue
                 client = None
                 try:
@@ -230,7 +230,8 @@ class ModelCatalogController(QObject):
 
             self.changed.emit(self.snapshot())
             self.state_changed.emit()
-            details = [f'{self._line_name(identity)} {count} 个' for identity, count in succeeded]
+            details = [tr('线路 {line}：{count} 个').format(line=self._line_name(identity), count=count)
+                       for identity, count in succeeded]
             if failures:
                 names = '、'.join(self._line_name(identity) for identity, _ in failures)
                 if details:

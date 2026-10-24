@@ -9,7 +9,7 @@ from core.task_manager import STATUS_TEXT, ACTIVE, TERMINAL
 from core.i18n import tr
 from core.prompt_detector import short_model_name
 from core.task_state import submission_images
-from .task_queue_panel import TaskQueuePanel
+from .task_queue_panel import TaskQueuePanel, FILTER_KEYS
 from .workspace_surface import WorkspaceCard, BreathingDot, ReferenceStrip, label, style_button, BLUE, GREEN, RED, YELLOW, MUTED
 from ..motion import Shimmer
 from ..tokens import px
@@ -206,8 +206,8 @@ class ExpandedTaskRow(QWidget):
         elapsed = t.get('poll_elapsed_seconds')
         if elapsed is not None:
             seconds = max(0, int(elapsed))
-            self.timing.setText(f'{seconds//60}分{seconds%60}秒')
-            self.timing.setToolTip(f'已轮询{seconds//60}分{seconds%60}秒')
+            self.timing.setText(tr('{minutes}分{seconds}秒').format(minutes=seconds//60, seconds=seconds%60))
+            self.timing.setToolTip(tr('已轮询{minutes}分{seconds}秒').format(minutes=seconds//60, seconds=seconds%60))
         self.progress.setPaused(s not in ACTIVE)
         is_unknown = s == 'submission_unknown'
         self.resolve_button.setVisible(is_unknown)
@@ -251,6 +251,15 @@ class ExpandedTaskRow(QWidget):
             self.resolve_button.setToolTip(
                 tr('队列、匹配扫描或下载进行中，完成后可处理待确认提交') if busy else
                 tr('处理该条提交待确认记录'))
+    def retranslate_ui(self):
+        """语言切换后重建行内文案；行控件与其选中/滚动状态保持不变。"""
+        try:
+            self.resolve_button.setText(tr('处理待确认'))
+            self.set_editable(self.editable, self.busy)
+            self.update_task(self.task)
+        except RuntimeError:
+            pass
+
     def paintEvent(self,e):
         s=self.task.get('status'); p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         if s in ACTIVE:
@@ -277,8 +286,8 @@ class WorkspaceTaskTable(TaskQueuePanel):
         QWidget.__init__(self,parent); self.defaults=defaults; self._tasks=[]; self.rows=[]; self._catalog={}; self._default_model=''; self.models_editable=True; self.busy=False; self._task_items={}; self._collapsed=set(); self._widths=[]; self._layout_signature=None
         root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0); self.surface=WorkspaceCard(); lay=QVBoxLayout(self.surface); lay.setContentsMargins(1,1,1,1); lay.setSpacing(0)
         tools=WrapLayout(spacing=8); tools.setContentsMargins(16,10,16,10)
-        tools.addWidget(label(tr('任务队列'),16,'#f5f5f5',True), 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
-        self.filter_box=ComboBox(); self.filter_box.addItems([tr('全部'),tr('等待中'),tr('生成中'),tr('上传中'),tr('提交中'),tr('下载中'),tr('重试中'),tr('等待冷却'),tr('已暂停'),tr('已完成'),tr('失败'),tr('重复'),tr('提交待确认'),tr('已跳过'),tr('已取消')]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
+        self.heading=label(tr('任务队列'),16,'#f5f5f5',True); tools.addWidget(self.heading, 0, Qt.AlignVCenter); self.count_label=label(f'0 {tr("个任务")}'); tools.addWidget(self.count_label, 0, Qt.AlignVCenter); self.product_progress_label=label(f"{tr('产品')} 0/0"); tools.addWidget(self.product_progress_label, 0, Qt.AlignVCenter); tools.addStretch(1)
+        self.filter_box=ComboBox(); self.filter_box.addItems([tr(key) for key in FILTER_KEYS]); self.filter_box.currentTextChanged.connect(self._filter); self.filter_box.setFixedHeight(32); tools.addWidget(self.filter_box, 0, Qt.AlignVCenter)
         # 低频与破坏性操作收进「更多操作」菜单，头部只留高频入口（筛选 + 匹配详情）。
         self.reset_models_button=style_button(PushButton(tr('重置模型识别'))); self.reset_models_button.setFixedHeight(32); self.reset_models_button.clicked.connect(self.reset_models_requested)
         self.params_button=style_button(PushButton(FIF.SETTING,tr('生成参数'))); self.params_button.setFixedHeight(32)
@@ -337,6 +346,41 @@ class WorkspaceTaskTable(TaskQueuePanel):
         root.addWidget(self.empty_panel,1)
         self._resize_relayout = CoalescedCall(self, self._apply_column_widths)
         self._apply_column_widths()
+
+    def retranslate_ui(self):
+        """语言切换后重建任务表全部文案；不重建行、不丢选中与滚动位置。"""
+        try:
+            index = self.filter_box.currentIndex()
+            self.heading.setText(tr('任务队列'))
+            self.filter_box.blockSignals(True)
+            self.filter_box.clear()
+            self.filter_box.addItems([tr(key) for key in FILTER_KEYS])
+            self.filter_box.setCurrentIndex(max(0, index))
+            self.filter_box.blockSignals(False)
+            for head, txt in zip(self._header_cells, HEADERS):
+                head.setText(tr(txt))
+            self.reset_models_button.setText(tr('重置模型识别'))
+            self.params_button.setText(tr('生成参数'))
+            self.match_button.setText(tr('匹配详情'))
+            self.cancel_button.setText(tr('取消全部'))
+            self.more_button.setText(tr('更多操作'))
+            self.empty_label.setText(tr('暂无任务'))
+            self.empty_hint.setText(tr('选择分镜提示词目录后会自动扫描并匹配参考图'))
+            self.empty_button.setText(tr('选择目录'))
+            self.count_label.setText(f'{len(self._tasks)} {tr("个任务")}')
+            self._update_product_summary(self._tasks)
+            for position, task in enumerate(self._tasks):
+                item = self._task_items.get(position)
+                if item is not None:
+                    item.setData(Qt.UserRole, tr(STATUS_TEXT.get(task.get('status', 'waiting'), task.get('status', 'waiting'))))
+            for row in self.rows:
+                row.retranslate_ui()
+            self.set_models_editable(self.models_editable)
+            self.set_busy(self.busy)
+            self._filter(self.filter_box.currentText())
+            self._apply_column_widths()
+        except RuntimeError:
+            pass
 
     def _apply_header_mode_style(self):
         try:
@@ -542,8 +586,8 @@ class WorkspaceTaskTable(TaskQueuePanel):
         else: InfoBar.info(tr('没有可操作的任务'), tr('请先选择一条任务后再打开更多操作'), parent=self, duration=3000)
     def action_menu(self,i):
         m=RoundMenu(parent=self)
-        for text,a in [('重试','retry'),('跳过','skip'),('查看日志','logs'),('打开文件夹','folder'),('任务详情 / 确认提交','details')]:
-            x=Action(tr(text),m); x.triggered.connect(lambda checked=False,v=a:self.action_requested.emit(i,v)); m.addAction(x)
+        for text,a in [(tr('重试'),'retry'),(tr('跳过'),'skip'),(tr('查看日志'),'logs'),(tr('打开文件夹'),'folder'),(tr('任务详情 / 确认提交'),'details')]:
+            x=Action(text,m); x.triggered.connect(lambda checked=False,v=a:self.action_requested.emit(i,v)); m.addAction(x)
         return m
     def model_menu_for(self,i):
         m=RoundMenu(tr('强制使用模型'),self)

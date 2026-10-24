@@ -246,6 +246,9 @@ class EcommercePageTests(unittest.TestCase):
         self.network_mock = self.network.start()
         self.notices = patch('ui.pages.ecommerce_page.InfoBar.error').start()
         self.warnings = patch('ui.pages.ecommerce_page.InfoBar.warning').start()
+        self.probe_patch = patch('ui.pages.ecommerce_page.probe_line',
+                                 return_value=dict(ok=True, message='离线示例'))
+        self.probe = self.probe_patch.start()
         self.page = EcommercePage(self.config)
         self.analysis = Mock(side_effect=fake_analysis)
         self.image = Mock(side_effect=fake_image)
@@ -257,6 +260,10 @@ class EcommercePageTests(unittest.TestCase):
         if self.page.busy:
             self.page.cancel_generation()
             self.wait_until(lambda: not self.page.busy)
+        for timer in getattr(self.page, '_model_probe_timers', {}).values():
+            timer.stop()
+        if getattr(self.page, '_model_probe_workers', None):
+            self.wait_until(lambda: not self.page._model_probe_workers, timeout=3000)
         self.page.close()
         self.page.deleteLater()
         QTest.qWait(20)
@@ -759,6 +766,38 @@ class EcommercePageTests(unittest.TestCase):
         page._show_batch_view()
         page.batch_page.single_button.click()
         self.assertEqual(page.current_view_index(), page.SINGLE_VIEW)
+
+    def test_language_switch_localizes_ecommerce_page_and_children(self):
+        from core.i18n import set_language
+        self.page.show()
+        self.page.show_single_creation()
+        self.page._refresh_references()
+        set_language('English')
+        try:
+            self.page.retranslate_ui()
+            self.app.processEvents()
+            self.assertEqual(self.page.stage_label.text(), tr('等待开始'))
+            self.assertIn('Start', self.page.start_button.text())
+            self.assertEqual(self.page.product_grid.add_tile().text_label.text(),
+                             tr('点击上传产品图'))
+            self.assertEqual(self.page.task_list.title_label.text(), tr('电商图任务'))
+            self.assertIn('Tasks', self.page.task_list.title_label.text())
+            self.page._show_batch_view()
+            self.assertIn('Batch', self.page.batch_page.title_label.text())
+            self.page.show_single_creation()
+            self.assertEqual(self.page.result_panel.title_label.text(), tr('结果'))
+            self.assertEqual(self.page.thinking_switch.toolTip(), tr(
+                '开启后按模型族自动下发思考参数：DeepSeek 线路的 deepseek-chat/flash 自动切换 '
+                'deepseek-v4-pro 并下发 reasoning_effort=high；Gemini 下发 thinkingConfig；'
+                '其他推理模型（R1 / QwQ / o1 / o3 / o4 / Thinking 等）下发 enable_thinking；'
+                'Claude 走 thinking budget；非推理模型不会盲发参数'))
+        finally:
+            set_language('zh-CN')
+            self.page.retranslate_ui()
+            self.app.processEvents()
+        self.assertEqual(self.page.stage_label.text(), '等待开始')
+        self.assertEqual(self.page.result_panel.title_label.text(), '结果')
+        self.assertNotIn('Tasks', self.page.task_list.title_label.text())
 
     def test_platform_preview_opens_with_group_manifest(self):
         group, items = self.seed_history('preview-group', 'succeeded',

@@ -502,3 +502,21 @@ class EcommerceResultPanel(QWidget):
         self.title_label.setStyleSheet('color: %s;' % materials.palette()['text1'])
         for card in self.cards.values():
             card.refresh_colors()
+
+    def retranslate_ui(self):
+        """语言切换：重翻标题/工具栏并按当前语言重绘卡片文案（幂等）。"""
+        self.title_label.setText(tr('结果'))
+        self.regenerate_failed_button.setText(tr('重生成失败项'))
+        self.select_all_checkbox.setText(tr('全选失败'))
+        self.adaptive_label.setText(tr('图片自适应'))
+        for card in self.cards.values():
+            try:
+                card.update_record(card.record)
+            except Exception:
+                continue
+        try:
+            from ..i18n_helpers import retranslate_tree
+            retranslate_tree(self)
+        except Exception:
+            pass
+        self._refresh_selection()

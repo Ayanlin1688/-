@@ -339,6 +339,10 @@ class ImageUploadGrid(QWidget):
             self._add_tile.update()
         self.update()
 
+    def retranslate_ui(self):
+        """语言切换：添加格/删除钮提示等动态文案按新语言重建（幂等）。"""
+        self._rebuild(emit=False)
+
     # —— 内部 ——
     def _apply_style(self):
         colors = materials.palette()

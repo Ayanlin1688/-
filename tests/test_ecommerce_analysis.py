@@ -275,6 +275,9 @@ class AnalysisStreamTests(unittest.TestCase):
             'messages': [{'role': 'system', 'content': '系统提示'},
                          {'role': 'user', 'content': '用户提示'}],
             'stream': True, 'temperature': 0.7,
+            # 关闭思考时 openai 兼容线路的 reasoning 模型会收到显式关闭参数。
+            'enable_thinking': False,
+            'chat_template_kwargs': {'enable_thinking': False},
         })
         self.assertEqual(items, prompt_items())
         self.assertEqual(thoughts, ''.join(reasoning))
@@ -290,6 +293,10 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertEqual(urls, ['https://api.deepseek.com/v1/chat/completions'])
         self.assertEqual(body['model'], 'deepseek-v4-pro')
         self.assertEqual(body['temperature'], 0.7)
+        self.assertEqual(body['reasoning_effort'], 'high')
+        self.assertEqual(body['thinking'], {'type': 'enabled'})
+        self.assertNotIn('enable_thinking', body)
+        self.assertNotIn('extra_body', body)
         self.assertTrue(any('deepseek-chat 已切换为 deepseek-v4-pro' in line for line in logs.output))
 
     def test_actual_model_name_is_used_in_deepseek_error(self):
@@ -308,6 +315,8 @@ class AnalysisStreamTests(unittest.TestCase):
             body = server.calls[0][3]
         self.assertEqual(body['model'], 'deepseek-v4-pro')
         self.assertEqual(body['temperature'], 0.7)
+        self.assertEqual(body['reasoning_effort'], 'high')
+        self.assertEqual(body['thinking'], {'type': 'enabled'})
 
     def test_reasoning_only_sse_is_parsed(self):
         body = (sse_frame({'choices': [{'delta': {'reasoning_content': '只思考'}}]})
@@ -318,18 +327,91 @@ class AnalysisStreamTests(unittest.TestCase):
         self.assertEqual(content, '')
         self.assertEqual(reasoning, '只思考')
 
-    def test_thinking_payload_is_limited_to_claude_or_explicit_thinking_models(self):
-        for model, expected_thinking in (('claude-sonnet-4-6', True),
-                                         ('gemini-3.8-flash-thinking', True),
-                                         ('gemini-3.8-flash', False)):
+    def test_all_reasoning_alias_keys_are_extracted(self):
+        pairs = (('reasoning_content', '甲'), ('reasoning', '乙'),
+                 ('reasoningContent', '丙'), ('reasoning_text', '丁'))
+        frames = ''.join(sse_frame({'choices': [{'delta': {key: value}}]})
+                         for key, value in pairs)
+        callbacks = []
+        with LocalAnalysisServer((frames + 'data: [DONE]\n\n').encode('utf-8')) as server:
+            content, reasoning = analyze_stream(
+                server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '',
+                on_reasoning=callbacks.append)
+        self.assertEqual(content, '')
+        self.assertEqual(reasoning, '甲乙丙丁')
+        self.assertEqual(callbacks, ['甲', '乙', '丙', '丁'])
+
+    def test_openai_compatible_line_no_longer_sends_blind_claude_thinking(self):
+        with LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+            self.analyze_via_local_fixture(
+                server, 'https://text.example/v1', 'claude-sonnet-4-6', thinking=True)
+            body = server.calls[0][3]
+        for key in ('thinking', 'reasoning_effort', 'enable_thinking',
+                    'chat_template_kwargs', 'extra_body'):
+            self.assertNotIn(key, body)
+        self.assertEqual(body['temperature'], 0.7)
+
+    def test_openai_compatible_gemini_models_send_google_thinking_config(self):
+        cases = (
+            # gemini-3 系：thinkingLevel=medium。
+            ('gemini-3.8-flash',
+             {'include_thoughts': True, 'thinking_level': 'medium'}),
+            # 其他 gemini：thinkingBudget=-1。
+            ('gemini-2.5-flash',
+             {'include_thoughts': True, 'thinking_budget': -1}),
+        )
+        for model, thinking_config in cases:
             with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
                 self.analyze_via_local_fixture(
                     server, 'https://text.example/v1', model, thinking=True)
                 body = server.calls[0][3]
-            self.assertEqual('thinking' in body, expected_thinking)
-            if expected_thinking:
-                self.assertEqual(body['thinking'], {'type': 'enabled', 'budget_tokens': 1024})
+            self.assertEqual(body['reasoning_effort'], 'medium')
+            self.assertIs(body['enable_thinking'], True)
+            self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': True})
+            self.assertEqual(body['extra_body'],
+                             {'google': {'thinking_config': thinking_config}})
+            # thinkingConfig 逻辑参数只映射到 extra_body，不留在顶层。
+            self.assertNotIn('thinkingConfig', body)
             self.assertEqual(body['temperature'], 0.7)
+
+    def test_openai_compatible_other_reasoning_models_send_enable_thinking(self):
+        for model in ('o3-mini', 'qwen3-thinking'):
+            with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                self.analyze_via_local_fixture(
+                    server, 'https://text.example/v1', model, thinking=True)
+                body = server.calls[0][3]
+            self.assertEqual(body['reasoning_effort'], 'medium')
+            self.assertIs(body['enable_thinking'], True)
+            self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': True})
+            self.assertNotIn('thinking', body)
+            self.assertNotIn('extra_body', body)
+
+    def test_non_reasoning_models_receive_no_thinking_parameters(self):
+        for model in ('gpt-image-2', 'gpt-4o', 'video-v3'):
+            with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                self.analyze_via_local_fixture(
+                    server, 'https://text.example/v1', model, thinking=True)
+                body = server.calls[0][3]
+            for key in ('thinking', 'reasoning_effort', 'enable_thinking',
+                        'chat_template_kwargs', 'extra_body'):
+                self.assertNotIn(key, body)
+
+    def test_thinking_off_sends_closed_parameters_only_for_reasoning_models(self):
+        cases = (
+            ('deepseek-chat', {'thinking': {'type': 'disabled'}}),
+            ('gemini-3.8-flash', {'enable_thinking': False,
+                                  'chat_template_kwargs': {'enable_thinking': False}}),
+            ('gpt-image-2', {}),
+        )
+        for model, expected in cases:
+            with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                self.analyze_via_local_fixture(
+                    server, 'https://text.example/v1', model, thinking=False)
+                body = server.calls[0][3]
+            for key, value in expected.items():
+                self.assertEqual(body[key], value)
+            self.assertEqual(set(body) - {'model', 'messages', 'stream', 'temperature'},
+                             set(expected))
 
     def test_no_reasoning_and_no_callbacks_are_valid(self):
         body = (sse_frame({'choices': [{'delta': {'content': '正文'}}]})
@@ -372,6 +454,10 @@ class AnalysisStreamTests(unittest.TestCase):
              'content 格式错误：期望字符串'),
             (sse_frame({'choices': [{'delta': {'reasoning_content': []}}]}).encode('utf-8'),
              'reasoning_content 格式错误：期望字符串'),
+            (sse_frame({'choices': [{'delta': {'reasoning': []}}]}).encode('utf-8'),
+             'reasoning 格式错误：期望字符串'),
+            (sse_frame({'choices': [{'delta': {'reasoning_text': 1}}]}).encode('utf-8'),
+             'reasoning_text 格式错误：期望字符串'),
             (sse_frame({'error': {'message': 'channel failed ' + FIXTURE_KEY}}).encode('utf-8'), None),
         )
         for payload, protocol_message in payloads:
@@ -481,6 +567,28 @@ class GeminiAnalysisTests(unittest.TestCase):
             'contents': [{'role': 'user', 'parts': [{'text': 'user'}]}],
             'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'}})
         self.assertEqual(len(server.calls), 1)
+
+    def test_native_gemini_thinking_config_merges_into_generation_config(self):
+        cases = (
+            ('gemini-3.8-flash',
+             {'includeThoughts': True, 'include_thoughts': True,
+              'thinkingLevel': 'medium', 'thinking_level': 'medium'}),
+            ('gemini-2.5-flash',
+             {'includeThoughts': True, 'include_thoughts': True,
+              'thinkingBudget': -1, 'thinking_budget': -1}),
+        )
+        for model, thinking_config in cases:
+            with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
+                               model, 'system', 'user', thinking=True)
+                payload = server.calls[0][3]
+            # 基础 generationConfig 字段保留，thinkingConfig 只做合并。
+            self.assertEqual(payload['generationConfig'], {
+                'temperature': 0.7, 'responseMimeType': 'application/json',
+                'thinkingConfig': thinking_config})
+            self.assertEqual(set(payload),
+                             {'systemInstruction', 'contents', 'generationConfig'})
+            self.assertEqual(len(server.calls), 1)
 
     def test_gemini_error_frame_is_final_after_200(self):
         frame = sse_frame({'error': {'code': 503, 'message': 'temporarily unavailable ' + FIXTURE_KEY}})

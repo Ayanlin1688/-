@@ -80,7 +80,8 @@ class InteractionTests(unittest.TestCase):
         try:
             self.assertEqual(reopened.settings_page.base_url.text(), "https://example.invalid/v1")
             self.assertEqual(reopened.settings_page.api_key.text(), "test-only-secret")
-            self.assertEqual(reopened.settings_page.strategy.currentText(), "随机")
+            # 界面可随语言切换（项文本会翻译），业务值始终保存在 itemData。
+            self.assertEqual(reopened.settings_page.strategy.currentData(), "随机")
             self.assertEqual(reopened.settings_page.cooldown.value(), 63)
             self.assertFalse(reopened.settings_page.auto_retry.isChecked())
             self.assertTrue(reopened.settings_page.open_folder.isChecked())

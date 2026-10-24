@@ -10,6 +10,7 @@ from qfluentwidgets import CheckBox, ComboBox, InfoBar, PushButton, TableWidget,
 from core.background import BackgroundJobs
 from core.task_manager import STATUS_TEXT
 from core.i18n import tr
+from ..i18n_helpers import retranslate_tree
 from ..file_actions import open_local
 from ..history_cleanup import DELETABLE_STATUSES, output_summary
 from ..components.history_dialog import DeleteHistoryDialog
@@ -307,6 +308,25 @@ class HistoryPage(QWidget):
 
     def refresh_records(self):
         self.update_history(self.config_manager.history_records())
+
+    def retranslate_ui(self):
+        """语言切换后重翻历史页（标题/按钮/表头/筛选/空态），并按当前语言重建数据行。"""
+        retranslate_tree(self)
+        from core.version import APP_VERSION
+        try:
+            self.footer_right.setText(tr('显示最近 100 条') + f' · v{APP_VERSION}')
+        except Exception:
+            pass
+        # 状态胶囊 / 类型标签 / 行内操作提示都是按语言生成的：强制整表重建一次。
+        try:
+            self._display_keys = None
+            self.update_history(self.config_manager.history_records())
+        except Exception:
+            pass
+        try:
+            self._filter(self.filter_box.currentText())
+        except Exception:
+            pass
 
     def update_history(self, records):
         # 只渲染最近 100 条（页脚已承诺）；数据未变化时短路，避免整表重建与控件重挂。

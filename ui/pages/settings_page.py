@@ -21,7 +21,8 @@ from core.model_parameters import MODELS
 from core.repository_sync import RepositorySync, repository_secrets, default_repository_root, validate_repository_root
 from core.version import APP_NAME, APP_VERSION
 from core.licensing import license_status
-from core.i18n import tr
+from core.i18n import translate_text, tr
+from ..i18n_helpers import register_item_sources, retranslate_tree, translate_multiline
 from core.api_errors import classify_connection_error, classify_http_error
 from core.line_routing import normalize_base_url, resolve_line
 from core.line_probe import probe_line, probe_upload, looks_like_upload_token, valid_http_url
@@ -264,6 +265,8 @@ class SettingsPage(QWidget):
     detection_changed = pyqtSignal()
     appearance_changed = pyqtSignal()
     generation_defaults_changed = pyqtSignal()
+    # 连续模型同步完成事件在该窗口内合并，只展示最新一条 InfoBar。
+    MODEL_SYNC_INFOBAR_DEBOUNCE = 1500
 
     class _SettingsScrollProxy:
         """滚动代理：保持旧接口（ensureWidgetVisible / verticalScrollBar / widget），
@@ -307,6 +310,13 @@ class SettingsPage(QWidget):
         self._sanitize_upload_fields_once()
         self.jobs = BackgroundJobs(self)
         self.jobs.log_message.connect(self.log_callback)
+        # 模型同步提示单例：同一时刻最多一条；连续触发合并为最新一条（1.5s 防抖）。
+        self._model_sync_infobar = None
+        self._model_sync_pending = None
+        self._model_sync_timer = QTimer(self)
+        self._model_sync_timer.setSingleShot(True)
+        self._model_sync_timer.setInterval(self.MODEL_SYNC_INFOBAR_DEBOUNCE)
+        self._model_sync_timer.timeout.connect(self._show_model_sync_infobar)
         self.model_rows = []
         self.pool_rows = {'video': self.model_rows, 'chat': [], 'image': []}
         self.groups = []
@@ -393,8 +403,8 @@ class SettingsPage(QWidget):
 
     @staticmethod
     def _page_title(layout, title, subtitle):
-        layout.addWidget(TitleLabel(title))
-        caption = CaptionLabel(subtitle)
+        layout.addWidget(TitleLabel(tr(title)))
+        caption = CaptionLabel(tr(subtitle))
         caption.setWordWrap(True)
         layout.addWidget(caption)
 
@@ -435,7 +445,7 @@ class SettingsPage(QWidget):
         return None
 
     def _group(self, title):
-        group = SettingCardGroup(title)
+        group = SettingCardGroup(tr(title))
         group.cardLayout.setSpacing(24)
         self.root.addWidget(group)
         self.groups.append(group)
@@ -457,7 +467,7 @@ class SettingsPage(QWidget):
         self._page_buttons = {}
 
         def add_entry(text, key):
-            button = QPushButton(text)
+            button = QPushButton(tr(text))
             button.setCursor(Qt.PointingHandCursor)
             button.setMinimumHeight(32)
             button.clicked.connect(lambda checked=False, k=key, b=button: self._jump_to_group(k, b))
@@ -467,7 +477,7 @@ class SettingsPage(QWidget):
             return button
 
         def add_head(text):
-            head = CaptionLabel(text)
+            head = CaptionLabel(tr(text))
             head.setStyleSheet('color:rgba(237,237,240,0.55); font-size:11px; letter-spacing:0.08em; padding-left:6px;')
             layout.addWidget(head); layout.addSpacing(4)
 
@@ -489,7 +499,7 @@ class SettingsPage(QWidget):
         add_entry('中转站管理', 'stations')
         self._station_nav_layout = QVBoxLayout(); self._station_nav_layout.setSpacing(4)
         layout.addLayout(self._station_nav_layout)
-        self._station_nav_add = QPushButton('+ 新增中转站')
+        self._station_nav_add = QPushButton(tr('+ 新增中转站'))
         self._station_nav_add.setObjectName('stationNavButton')
         self._station_nav_add.setCursor(Qt.PointingHandCursor)
         self._station_nav_add.setMinimumHeight(32)
@@ -541,7 +551,7 @@ class SettingsPage(QWidget):
         active = self.config_manager.config.get('stations_active', '')
         stations = self._stations()
         if not stations:
-            hint = CaptionLabel('（暂无 · 点「+ 新增中转站」创建）')
+            hint = CaptionLabel(tr('（暂无 · 点「+ 新增中转站」创建）'))
             hint.setWordWrap(True)
             hint.setStyleSheet('color:rgba(237,237,240,0.30); font-size:11px; padding-left:8px;')
             layout.addWidget(hint)
@@ -549,7 +559,7 @@ class SettingsPage(QWidget):
         for station in stations:
             sid = station.get('id')
             is_active = sid == active and bool(active)
-            button = QPushButton(station.get('name') or '未命名')
+            button = QPushButton(station.get('name') or tr('未命名'))
             button.setIcon(dot_icon('#5B8DEF' if is_active else '#6B7280', 10, filled=is_active))
             button.setIconSize(QSize(10, 10))
             button.setObjectName('stationNavButton')
@@ -615,22 +625,22 @@ class SettingsPage(QWidget):
 
     def _build_station_page(self, station):
         sid = station.get('id')
-        self.root.addWidget(TitleLabel(station.get('name') or '未命名中转站'))
-        caption = CaptionLabel('中转站 ID：' + str(sid) + ' · 修改后点击「保存修改」')
+        self.root.addWidget(TitleLabel(station.get('name') or tr('未命名中转站')))
+        caption = CaptionLabel(tr('中转站 ID：{sid} · 修改后点击「保存修改」').format(sid=sid))
         caption.setWordWrap(True)
         self.root.addWidget(caption)
         card = make_card()
         layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
-        name = LineEdit(); name.setText(station.get('name', '')); name.setPlaceholderText('名称，例如：主线路 · 国内')
-        base = LineEdit(); base.setText(station.get('base_url', '')); base.setPlaceholderText('API Base URL')
-        key_edit = LineEdit(); key_edit.setText(station.get('api_key', '')); key_edit.setEchoMode(LineEdit.Password); key_edit.setPlaceholderText('API Key')
+        name = LineEdit(); name.setText(station.get('name', '')); name.setPlaceholderText(tr('名称，例如：主线路 · 国内'))
+        base = LineEdit(); base.setText(station.get('base_url', '')); base.setPlaceholderText(tr('API Base URL'))
+        key_edit = LineEdit(); key_edit.setText(station.get('api_key', '')); key_edit.setEchoMode(LineEdit.Password); key_edit.setPlaceholderText(tr('API Key'))
         self._station_page_key_fields[sid] = key_edit
-        upload = LineEdit(); upload.setText(station.get('upload_url', '')); upload.setPlaceholderText('上传接口 URL（可留空）')
-        upload_key = LineEdit(); upload_key.setText(station.get('upload_api_key', '')); upload_key.setEchoMode(LineEdit.Password); upload_key.setPlaceholderText('上传 Token（可留空）')
+        upload = LineEdit(); upload.setText(station.get('upload_url', '')); upload.setPlaceholderText(tr('上传接口 URL（可留空）'))
+        upload_key = LineEdit(); upload_key.setText(station.get('upload_api_key', '')); upload_key.setEchoMode(LineEdit.Password); upload_key.setPlaceholderText(tr('上传 Token（可留空）'))
         for caption_text, field in (('名称', name), ('API Base URL', base), ('API Key', key_edit),
                                     ('上传接口 URL', upload), ('上传 Token', upload_key)):
             row = WrapLayout(spacing=10)
-            lbl = CaptionLabel(caption_text); lbl.setMinimumWidth(110)
+            lbl = CaptionLabel(tr(caption_text)); lbl.setMinimumWidth(110)
             field.setMinimumWidth(180)
             field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             field.setFixedHeight(32)
@@ -639,7 +649,7 @@ class SettingsPage(QWidget):
             if field is upload:
                 self._attach_upload_url_hint(upload, upload_key, layout)
         caps = WrapLayout(spacing=14)
-        caps_label = CaptionLabel('能力标签'); caps_label.setMinimumWidth(110)
+        caps_label = CaptionLabel(tr('能力标签')); caps_label.setMinimumWidth(110)
         caps.addWidget(caps_label, 0, Qt.AlignVCenter)
         boxes = {}
         for key2, text in (('video', tr('视频')), ('llm', tr('文本（AI分析）')), ('image', tr('生图'))):
@@ -706,12 +716,12 @@ class SettingsPage(QWidget):
         self.station_list = QVBoxLayout(); self.station_list.setSpacing(8)
         holder = QWidget(); holder.setLayout(self.station_list); layout.addWidget(holder)
         buttons = WrapLayout(spacing=8)
-        self.add_station_button = PushButton(FIF.ADD, '新增中转站')
+        self.add_station_button = PushButton(FIF.ADD, tr('新增中转站'))
         self.add_station_button.clicked.connect(lambda: self._open_station_editor(None))
         self.add_deepseek_button = PushButton(FIF.ADD, tr('添加官方 DeepSeek（模板）'))
         self.add_deepseek_button.setToolTip(tr('创建官方 DeepSeek 文本线路，API Key 留空后填写'))
         self.add_deepseek_button.clicked.connect(self._add_official_deepseek_template)
-        self.capture_station_button = PushButton(FIF.SAVE, '把当前 API 配置保存为中转站')
+        self.capture_station_button = PushButton(FIF.SAVE, tr('把当前 API 配置保存为中转站'))
         self.capture_station_button.clicked.connect(self._capture_current_station)
         buttons.addWidget(self.add_station_button); buttons.addWidget(self.add_deepseek_button)
         buttons.addWidget(self.capture_station_button); buttons.addStretch(1)
@@ -728,13 +738,13 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(card); layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(12)
         self.station_editor_host = QWidget()
         editor = QVBoxLayout(self.station_editor_host); editor.setContentsMargins(0, 0, 0, 0); editor.setSpacing(8)
-        self.station_editor_title = CaptionLabel('新增中转站'); editor.addWidget(self.station_editor_title)
-        self.station_name = LineEdit(); self.station_name.setPlaceholderText('名称，例如：主线路 · 国内'); editor.addWidget(self.station_name)
-        self.station_base = LineEdit(); self.station_base.setPlaceholderText('API Base URL'); editor.addWidget(self.station_base)
-        self.station_key = LineEdit(); self.station_key.setPlaceholderText('API Key')
+        self.station_editor_title = CaptionLabel(tr('新增中转站')); editor.addWidget(self.station_editor_title)
+        self.station_name = LineEdit(); self.station_name.setPlaceholderText(tr('名称，例如：主线路 · 国内')); editor.addWidget(self.station_name)
+        self.station_base = LineEdit(); self.station_base.setPlaceholderText(tr('API Base URL')); editor.addWidget(self.station_base)
+        self.station_key = LineEdit(); self.station_key.setPlaceholderText(tr('API Key'))
         self.station_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_key)
-        self.station_upload = LineEdit(); self.station_upload.setPlaceholderText('上传接口 URL（可留空沿用默认）'); editor.addWidget(self.station_upload)
-        self.station_upload_key = LineEdit(); self.station_upload_key.setPlaceholderText('上传 Token（可留空）')
+        self.station_upload = LineEdit(); self.station_upload.setPlaceholderText(tr('上传接口 URL（可留空沿用默认）')); editor.addWidget(self.station_upload)
+        self.station_upload_key = LineEdit(); self.station_upload_key.setPlaceholderText(tr('上传 Token（可留空）'))
         self.station_upload_key.setEchoMode(LineEdit.Password); editor.addWidget(self.station_upload_key)
         self._attach_upload_url_hint(self.station_upload, self.station_upload_key, editor)
         caps = WrapLayout(spacing=14)
@@ -774,7 +784,7 @@ class SettingsPage(QWidget):
         stations = self._stations()
         active = self.config_manager.config.get('stations_active', '')
         if not stations:
-            empty = CaptionLabel('还没有中转站 · 点击「把当前 API 配置保存为中转站」一键创建，或「新增中转站」手动填写')
+            empty = CaptionLabel(tr('还没有中转站 · 点击「把当前 API 配置保存为中转站」一键创建，或「新增中转站」手动填写'))
             empty.setWordWrap(True); self.station_list.addWidget(empty)
             self._fit_stations_card()
             self._sync_station_nav()
@@ -789,23 +799,23 @@ class SettingsPage(QWidget):
             line1 = WrapLayout(spacing=8)
             dot = Dot(8, '#5B8DEF' if is_active else '#454B5A', filled=is_active)
             line1.addWidget(dot)
-            name = label(station.get('name') or '未命名中转站', 13, '#F4F5F7', True)
+            name = label(station.get('name') or tr('未命名中转站'), 13, '#F4F5F7', True)
             name.setToolTip(station.get('name') or '')
             setattr(row, '_studio_name_label', name)
             line1.addWidget(name)
             if is_active:
-                current = label('当前使用中', 10, '#7CC79A')
+                current = label(tr('当前使用中'), 10, '#7CC79A')
                 current.setProperty('statusTone', True)
                 line1.addWidget(current)
             line1.addStretch(1)
             if not is_active:
-                use = PushButton('设为当前'); use.setFixedHeight(28); use.setCursor(Qt.PointingHandCursor)
+                use = PushButton(tr('设为当前')); use.setFixedHeight(28); use.setCursor(Qt.PointingHandCursor)
                 use.clicked.connect(lambda checked=False, sid=station.get('id'): self._set_current_station(sid))
                 line1.addWidget(use)
-            edit = PushButton('编辑'); edit.setFixedHeight(28); edit.setCursor(Qt.PointingHandCursor)
+            edit = PushButton(tr('编辑')); edit.setFixedHeight(28); edit.setCursor(Qt.PointingHandCursor)
             edit.clicked.connect(lambda checked=False, sid=station.get('id'): self._open_station_editor(sid))
             line1.addWidget(edit)
-            remove = TransparentToolButton(FIF.DELETE); remove.setToolTip('删除该中转站')
+            remove = TransparentToolButton(FIF.DELETE); remove.setToolTip(tr('删除该中转站'))
             remove.clicked.connect(lambda checked=False, sid=station.get('id'): self._delete_station(sid))
             line1.addWidget(remove)
             line2 = WrapLayout(spacing=10)
@@ -832,7 +842,7 @@ class SettingsPage(QWidget):
             if field is not None:
                 QTimer.singleShot(0, field.setFocus)
             return
-        self.station_editor_title.setText('新增中转站')
+        self.station_editor_title.setText(tr('新增中转站'))
         self.station_name.setText('')
         self.station_base.setText('')
         self.station_key.setText('')
@@ -974,8 +984,8 @@ class SettingsPage(QWidget):
                 return
             active = self.config_manager.config.get('stations_active', '')
             name = next((s.get('name') for s in self._stations() if s.get('id') == active and active), '')
-            group.titleLabel.setText(f'当前线路 · {name}' if name else '当前线路')
-            group.titleLabel.setToolTip('此处编辑的是当前使用的中转站连接参数；修改会自动回写该中转站')
+            group.titleLabel.setText(tr('当前线路 · {name}').format(name=name) if name else tr('当前线路'))
+            group.titleLabel.setToolTip(tr('此处编辑的是当前使用的中转站连接参数；修改会自动回写该中转站'))
         except Exception:
             pass
 
@@ -1006,7 +1016,7 @@ class SettingsPage(QWidget):
         if secret:
             edit.setEchoMode(LineEdit.Password)
             reveal = TransparentToolButton(FIF.VIEW)
-            reveal.setToolTip("显示或隐藏密钥")
+            reveal.setToolTip(tr("显示或隐藏密钥"))
             reveal.clicked.connect(lambda: self._toggle_secret(edit, reveal))
             row.addWidget(reveal)
         if path == ("api", "api_key"):
@@ -1022,7 +1032,7 @@ class SettingsPage(QWidget):
             column.addWidget(hint)
             self._api_upload_url_hint = hint
             self._api_upload_url_hint_layout = column
-        card = CustomSettingCard(title, host, FIF.LINK)
+        card = CustomSettingCard(tr(title), host, FIF.LINK)
         group.addSettingCard(card)
         if column is not None:
             self._upload_url_hint_cards = getattr(self, '_upload_url_hint_cards', {})
@@ -1031,7 +1041,10 @@ class SettingsPage(QWidget):
 
     def _combo(self, group, title, path, choices, texts=None):
         item = OptionsConfigItem(path[0], path[1], self._value(path), OptionsValidator(choices))
-        card = JsonComboBoxSettingCard(item, FIF.SETTING, title, texts=texts or choices)
+        display_texts = [tr(text) for text in (texts or choices)]
+        card = JsonComboBoxSettingCard(item, FIF.SETTING, tr(title), texts=display_texts)
+        # 记录源语言选项文本：中文/英文选项（如语言 English）切回中文时不被回译。
+        register_item_sources(card.comboBox, texts or choices)
         card.comboBox.setMinimumWidth(200)
         card._prepare_responsive_card()
         # Model-dependent choices are rebuilt without signals. Persist the actual
@@ -1048,7 +1061,7 @@ class SettingsPage(QWidget):
         control.setMinimumWidth(120)
         control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         control.valueChanged.connect(lambda v: self.config_manager.update(path, v))
-        group.addSettingCard(CustomSettingCard(title, control))
+        group.addSettingCard(CustomSettingCard(tr(title), control))
         return control
 
     def _model_combo(self, group, title, path, automatic=False):
@@ -1057,11 +1070,11 @@ class SettingsPage(QWidget):
         combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         combo.set_models(catalog_snapshot(self.config_manager), self._value(path), automatic=automatic)
         combo.currentTextChanged.connect(lambda model: self.config_manager.update(path, model))
-        group.addSettingCard(CustomSettingCard(title, combo))
+        group.addSettingCard(CustomSettingCard(tr(title), combo))
         return combo
 
     def _switch(self, group, title, path, icon=FIF.SETTING):
-        card = StudioSwitchSettingCard(icon, title)
+        card = StudioSwitchSettingCard(icon, tr(title))
         card.setChecked(self._value(path))
         card.checkedChanged.connect(lambda v: self.config_manager.update(path, bool(v)))
         group.addSettingCard(card)
@@ -1078,8 +1091,8 @@ class SettingsPage(QWidget):
         self.upload_key = self._line(group, '图床 API Key（上传 Token）', ('api', 'upload_api_key'), True)
         self._register_upload_url_hint(self.upload_url, self.upload_key, self._api_upload_url_hint,
                                        self._api_upload_url_hint_layout)
-        self.upload_key.setPlaceholderText('服务商签发的素材上传 Token')
-        self.upload_key.setToolTip('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限')
+        self.upload_key.setPlaceholderText(tr('服务商签发的素材上传 Token'))
+        self.upload_key.setToolTip(tr('默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限'))
         self.base_url.textChanged.connect(self._persist_base_url_input)
         for field in (self.api_key, self.upload_url, self.upload_key):
             field.textChanged.connect(self._mirror_api_to_station)
@@ -1087,16 +1100,16 @@ class SettingsPage(QWidget):
         self._refresh_api_group_title()
         self.auto_upload = self._switch(group, "自动上传缺失图片", ("api", "auto_upload_missing"), FIF.CLOUD)
         self.debug_mode = self._switch(group, '调试模式', ('diagnostics', 'debug_mode'), FIF.INFO)
-        self.debug_mode.setToolTip('记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式')
+        self.debug_mode.setToolTip(tr('记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式'))
         self.debug_mode.checkedChanged.connect(self.debug_mode_changed)
         host = QWidget()
         row = WrapLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
-        self.last_model_sync = CaptionLabel('尚未同步')
-        self.sync_models_button = PushButton(FIF.SYNC, '同步上游模型')
+        self.last_model_sync = CaptionLabel(tr('尚未同步'))
+        self.sync_models_button = PushButton(FIF.SYNC, tr('同步上游模型'))
         row.addWidget(self.last_model_sync, 1)
         row.addWidget(self.sync_models_button)
-        group.addSettingCard(CustomSettingCard('上游模型目录', host, FIF.SYNC))
+        group.addSettingCard(CustomSettingCard(tr('上游模型目录'), host, FIF.SYNC))
         diag_host = QWidget()
         diag_row = WrapLayout(diag_host)
         diag_row.setContentsMargins(0, 0, 0, 0)
@@ -1658,21 +1671,21 @@ class SettingsPage(QWidget):
         self.prevent_duplicates = self._switch(group, '防重复提交', ('task_strategy', 'prevent_duplicates'), FIF.SETTING)
         self.auto_convert_prompt = self._switch(group, '自动转换提示词格式', ('prompt_conversion', 'enabled'), FIF.SYNC)
         self.preserve_original_prompt = self._switch(group, '转换后保留原文', ('prompt_conversion', 'preserve_original'), FIF.DOCUMENT)
-        self.preserve_original_prompt.setToolTip('保留转换前的额外原文快照；关闭后仍保存实际提交文本，便于核对任务。原始 TXT 文件不改动。')
+        self.preserve_original_prompt.setToolTip(tr('保留转换前的额外原文快照；关闭后仍保存实际提交文本，便于核对任务。原始 TXT 文件不改动。'))
         self.prefer_same_format = self._switch(group, '故障转移优先同格式模型', ('prompt_conversion', 'prefer_same_format'), FIF.SYNC)
         self.max_concurrency = self._spin(group, '最大并发数', ('task_strategy', 'max_concurrency'), 1, 5)
-        self.max_concurrency.setToolTip('全队列最多同时处理的任务数（默认 5）；所有产品共享该并发，任务完成立即补位')
+        self.max_concurrency.setToolTip(tr('全队列最多同时处理的任务数（默认 5）；所有产品共享该并发，任务完成立即补位'))
         self.auto_retry = self._switch(group, "失败自动重试", ("task_strategy", "auto_retry"), FIF.SYNC)
         self.max_retry = self._spin(group, "最大重试次数", ("task_strategy", "max_retries"), 0, 20)
-        self.max_retry.setToolTip('首次尝试之外的重试次数（默认 3）；超过后任务标记失败并保存现场，队列继续下一个')
+        self.max_retry.setToolTip(tr('首次尝试之外的重试次数（默认 3）；超过后任务标记失败并保存现场，队列继续下一个'))
         self.retry_interval = self._spin(group, "重试间隔（秒）", ("task_strategy", "retry_interval"), 1, 60)
         self.fail_threshold = self._spin(group, "连续失败阈值", ("task_strategy", "failure_skip_threshold"), 1, 100)
         self.watch_interval = self._spin(group, '无人值守监听（秒）', ('task_strategy', 'watch_interval'), 0, 86400)
-        self.watch_interval.setToolTip('队列结束后按此间隔自动重扫目录；发现新提示词会自动开始下一批，适合 7×24 无人值守。0 = 关闭')
+        self.watch_interval.setToolTip(tr('队列结束后按此间隔自动重扫目录；发现新提示词会自动开始下一批，适合 7×24 无人值守。0 = 关闭'))
         self.disk_cleanup_days = self._spin(group, '临时缓存保留（天）', ('task_strategy', 'disk_cleanup_days'), 0, 90)
-        self.disk_cleanup_days.setToolTip('仅清理输出目录内超过保留期的下载临时文件（含联接/符号链接防护，绝不越出输出目录）；0 表示停止清理，仅检查剩余空间')
+        self.disk_cleanup_days.setToolTip(tr('仅清理输出目录内超过保留期的下载临时文件（含联接/符号链接防护，绝不越出输出目录）；0 表示停止清理，仅检查剩余空间'))
         self.disk_min_free_gb = self._spin(group, '磁盘剩余预警（GB）', ('task_strategy', 'disk_min_free_gb'), 1, 200)
-        self.disk_min_free_gb.setToolTip('输出盘剩余空间低于该值时写入预警日志并加强清理')
+        self.disk_min_free_gb.setToolTip(tr('输出盘剩余空间低于该值时写入预警日志并加强清理'))
         self.max_retry.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
         self.fail_threshold.valueChanged.connect(lambda *_: self.task_settings_changed.emit())
         self.unmatched = self._combo(group, "未匹配参考图时", ("task_strategy", "unmatched_prompt"),
@@ -1741,7 +1754,7 @@ class SettingsPage(QWidget):
         from ..palettes import combo_choices
         theme_values, theme_texts = combo_choices()
         self.theme = self._combo(group, "主题", ("appearance", "theme"), theme_values, theme_texts)
-        self.theme.setToolTip("9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效")
+        self.theme.setToolTip(tr("9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效"))
         from ..scaling import SCALE_CHOICES
         host = QWidget()
         row = WrapLayout(host)
@@ -1762,10 +1775,10 @@ class SettingsPage(QWidget):
         group.addSettingCard(self.ui_scale_card)
         self.ui_scale.currentIndexChanged.connect(self._ui_scale_changed)
         self.blur = self._switch(group, "高斯模糊玻璃", ("appearance", "blur"), FIF.CLOUD)
-        self.blur.setToolTip("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）")
+        self.blur.setToolTip(tr("开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）"))
         self.language = self._combo(group, "语言", ("appearance", "language"), ["简体中文", "English"])
         self.reduce_motion = self._switch(group, '减弱动效', ('appearance', 'reduce_motion'), FIF.INFO)
-        self.reduce_motion.setToolTip('停止呼吸点与流光等循环动画，并让页面过渡即时完成（无障碍）')
+        self.reduce_motion.setToolTip(tr('停止呼吸点与流光等循环动画，并让页面过渡即时完成（无障碍）'))
         self.theme.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
         self.blur.checkedChanged.connect(lambda *_: self.appearance_changed.emit())
         self.language.currentIndexChanged.connect(lambda *_: self.appearance_changed.emit())
@@ -1792,7 +1805,7 @@ class SettingsPage(QWidget):
         top = WrapLayout(spacing=8)
         self.license_dot = Dot(8, '#8B93A3')
         top.addWidget(self.license_dot, 0, Qt.AlignVCenter)
-        self.license_badge = label('未激活', 12, '#8B93A3', True)
+        self.license_badge = label(tr('未激活'), 12, '#8B93A3', True)
         self.license_badge.setProperty('statusTone', True)
         top.addWidget(self.license_badge)
         top.addStretch(1)
@@ -1812,19 +1825,20 @@ class SettingsPage(QWidget):
         self.license_trial_caption.setProperty('statusTone', True)
         layout.addWidget(self.license_trial_caption)
         self.root.addWidget(card)
-        self.root.addWidget(CaptionLabel(f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步')))
+        self.version_caption = CaptionLabel(f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步'))
+        self.root.addWidget(self.version_caption)
         self._refresh_license_badge()
 
     def _refresh_license_badge(self):
         """按当前许可状态刷新徽标与试用进度（激活成功 / 状态变化后调用）。"""
         status = license_status(self.config_manager.config)
         tones = {'active': '#22C55E', 'trial': '#5B8DEF', 'expired': '#E5B94E', 'invalid': '#F56C6C'}
-        texts = {'active': '已激活', 'trial': '试用中', 'expired': '试用已结束', 'invalid': '许可无效'}
+        texts = {'active': tr('已激活'), 'trial': tr('试用中'), 'expired': tr('试用已结束'), 'invalid': tr('许可无效')}
         tone = tones.get(status['state'], '#8B93A3')
         if hasattr(self, 'license_dot'):
             self.license_dot.set_color(tone)
         if hasattr(self, 'license_badge'):
-            self.license_badge.setText(texts.get(status['state'], '未激活'))
+            self.license_badge.setText(texts.get(status['state'], tr('未激活')))
             self.license_badge.setTextColor(tone, tone)
         trial = status['state'] == 'trial' and status.get('days_left') is not None
         for widget in (self.license_trial_bar, self.license_trial_caption):
@@ -1839,12 +1853,12 @@ class SettingsPage(QWidget):
             self.license_trial_bar.setStyleSheet(
                 'QProgressBar {background:rgba(128,128,128,0.18); border:0; border-radius:3px;}'
                 f'QProgressBar::chunk {{background:{accent}; border-radius:3px;}}')
-            self.license_trial_caption.setText(f'试用剩余 {left} / {days} 天')
+            self.license_trial_caption.setText(tr('试用剩余 {left} / {days} 天').format(left=left, days=days))
             self.license_trial_caption.setTextColor('#8B93A3', '#8B93A3')
 
     def _license_text(self):
         status = license_status(self.config_manager.config)
-        return tr('许可状态') + '：' + status['detail']
+        return translate_text('许可状态：') + translate_text(status['detail'])
 
     def _activate_license(self):
         from core.licensing import parse_key
@@ -1902,12 +1916,12 @@ class SettingsPage(QWidget):
             column.setMaximumWidth(16777215)
             column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.schedule_time.setTime(QTime.fromString(self._value(('schedule', 'time')), 'HH:mm'))
-        group.addSettingCard(CustomSettingCard('定时开始时间', self.schedule_time, FIF.HISTORY))
+        group.addSettingCard(CustomSettingCard(tr('定时开始时间'), self.schedule_time, FIF.HISTORY))
         self.schedule_mode = self._combo(group, '执行模式', ('schedule', 'mode'), ['once', 'daily'], ['仅一次', '每天重复'])
         self.schedule_after = self._combo(group, '定时队列全部结束后', ('schedule', 'after_finish'), ['keep', 'close'], ['保持运行', '自动关闭软件'])
-        self.current_time = CaptionLabel('当前时间：正在读取')
+        self.current_time = CaptionLabel(tr('当前时间：正在读取'))
         self.current_time.setWordWrap(True)
-        group.addSettingCard(CustomSettingCard('当前时间 / 网络校时', self.current_time, FIF.HISTORY))
+        group.addSettingCard(CustomSettingCard(tr('当前时间 / 网络校时'), self.current_time, FIF.HISTORY))
         self.schedule_enabled.checkedChanged.connect(lambda *_: self.schedule_changed.emit())
         self.schedule_time.timeChanged.connect(self._schedule_time_changed)
         self.schedule_mode.currentIndexChanged.connect(lambda *_: self.schedule_changed.emit())
@@ -1918,7 +1932,7 @@ class SettingsPage(QWidget):
         self.schedule_changed.emit()
 
     def update_schedule_state(self, now, clock_status):
-        self.current_time.setText(now.strftime('%Y-%m-%d %H:%M:%S') + '\n' + clock_status)
+        self.current_time.setText(now.strftime('%Y-%m-%d %H:%M:%S') + '\n' + translate_text(str(clock_status or '')))
         enabled = bool(self.config_manager.config['schedule']['enabled'])
         if self.schedule_enabled.isChecked() != enabled:
             blocker = QSignalBlocker(self.schedule_enabled)
@@ -1969,7 +1983,7 @@ class SettingsPage(QWidget):
 
     def _repository_status(self, text, valid=None):
         from .. import materials
-        self.repo_status_label.setText(text)
+        self.repo_status_label.setText(translate_multiline(text))
         palette = materials.palette()
         color = palette['success'] if valid else palette['error'] if valid is False else palette['text3']
         self.repo_status_label.setTextColor(color, color)
@@ -1977,7 +1991,7 @@ class SettingsPage(QWidget):
 
     def _show_repository_validation(self, report):
         text = (tr('目录已就绪：{root} · main · origin 已匹配').format(root=report['root'])
-                if report['valid'] else '\n'.join(report['errors']))
+                if report['valid'] else '\n'.join(translate_multiline(error) for error in report['errors']))
         self._repository_status(text, report['valid'])
 
     def _repository_busy_state(self, busy, message=''):
@@ -2077,7 +2091,8 @@ class SettingsPage(QWidget):
         layout = WrapLayout(row)
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(8)
-        check = CheckBox("启用" if kind == 'video' else tr("启用"))
+        raw_status = status
+        check = CheckBox(tr("启用"))
         check.setChecked(enabled)
         combo = ModelComboBox() if kind == 'video' else ModelPickComboBox()
         combo.setMinimumWidth(160 if kind == 'video' else 140)
@@ -2086,14 +2101,14 @@ class SettingsPage(QWidget):
             combo.set_models(catalog_snapshot(self.config_manager), name, keep_missing=True)
         else:
             combo.set_models(catalog_snapshot(self.config_manager, kind), name, kind=kind)
-        state = CaptionLabel(status if kind == 'video' else tr(status))
+        state = CaptionLabel(translate_text(raw_status))
         state.setProperty('statusTone', True)
-        color = "#67c23a" if status == "健康" else "#e6a23c"
+        color = "#67c23a" if raw_status == "健康" else "#e6a23c"
         state.setTextColor(color, color)
         dot = Dot(7, color)
         state.dot = dot
         remove = TransparentToolButton(FIF.DELETE)
-        remove.setToolTip("删除模型" if kind == 'video' else tr("删除模型"))
+        remove.setToolTip(tr("删除模型"))
         for widget in (check, combo, dot, state, remove):
             layout.addWidget(widget, 1 if widget is combo else 0)
         self.pool_model_layouts[kind].addWidget(row)
@@ -2176,6 +2191,7 @@ class SettingsPage(QWidget):
             self.pool_timer.stop()
         except Exception:
             pass
+        self._cleanup_model_sync_infobar()
 
     def refresh_pool_state(self):
         now = time.time()
@@ -2217,37 +2233,37 @@ class SettingsPage(QWidget):
             record = catalog.get(name)
             if kind == 'video':
                 if record is None or not usable(record):
-                    status = '已下架' if record is None else '非视频模型' if record.get('kind') != 'video' else '协议待确认'
+                    status = tr('已下架') if record is None else tr('非视频模型') if record.get('kind') != 'video' else tr('协议待确认')
                     self._set_pool_row_state(check, status_label, status, '#92929b', False)
                     check.setToolTip(tr('该模型当前不可用：已下架、不是视频模型或协议待确认，请同步模型或选择其他模型'))
                     continue
                 cooling = model.get('status') == '冷却中'
                 remaining = max(0, math.ceil(model.get('cooldown_until', 0) - now))
-                status = f'冷却中 {remaining}秒' if cooling else '健康'
+                status = tr('冷却中 {seconds}秒').format(seconds=remaining) if cooling else tr('健康')
                 self._set_pool_row_state(check, status_label, status,
                                          '#e6a23c' if cooling else '#67c23a', True)
                 check.setToolTip(tr('启用或停用此模型'))
                 continue
 
             if record is None or not record.get('available', True):
-                status = '已下架'
+                status = tr('已下架')
                 valid = False
             elif record.get('kind') != kind:
-                status = '非文本模型' if kind == 'chat' else '非图片模型'
+                status = tr('非文本模型') if kind == 'chat' else tr('非图片模型')
                 valid = False
             else:
-                status, valid = '健康', True
+                status, valid = tr('健康'), True
             if not valid and check.isChecked():
                 blocker = QSignalBlocker(check)
                 check.setChecked(False)
                 del blocker
             self._set_pool_row_state(check, status_label, status,
-                                     '#67c23a' if valid else '#92929b', valid, translate=True)
+                                     '#67c23a' if valid else '#92929b', valid)
             check.setToolTip(tr('启用或停用此模型') if valid else tr('请同步模型或选择对应类型的模型'))
 
     @staticmethod
     def _set_pool_row_state(check, status_label, status, color, enabled, translate=False):
-        status_label.setText(tr(status) if translate else status)
+        status_label.setText(translate_text(status))
         status_label.setTextColor(color, color)
         dot = getattr(status_label, 'dot', None)
         if dot is not None:
@@ -2286,13 +2302,97 @@ class SettingsPage(QWidget):
             tr('模型同步进行中，完成后恢复') if controller.syncing else
             tr('从上游刷新可用模型列表'))
         fetched = controller.catalog.fetched_at
-        text = datetime.fromtimestamp(fetched).strftime('%Y-%m-%d %H:%M:%S') if fetched else '尚未同步'
-        self.last_model_sync.setText('上次同步：' + text)
+        text = datetime.fromtimestamp(fetched).strftime('%Y-%m-%d %H:%M:%S') if fetched else tr('尚未同步')
+        self.last_model_sync.setText(tr('上次同步：{time}').format(time=text))
 
     def model_sync_finished(self, success, count, message):
-        from qfluentwidgets import InfoBar
-        (InfoBar.success if success else InfoBar.warning)('模型同步', message, parent=self, duration=4500)
+        """模型同步提示单例化：先关旧条；1.5s 内连续触发只展示最新一次（合并/防抖）。"""
+        self._close_model_sync_infobar()
+        self._model_sync_pending = (bool(success), str(message))
+        self._model_sync_timer.start()
         self.refresh_sync_state()
+
+    def _show_model_sync_infobar(self):
+        payload = self._model_sync_pending
+        self._model_sync_pending = None
+        if payload is None:
+            return
+        success, message = payload
+        factory = InfoBar.success if success else InfoBar.warning
+        bar = factory(tr('模型同步'), message, parent=self, duration=4500)
+        self._model_sync_infobar = bar
+        try:
+            bar.closedSignal.connect(lambda bar=bar: self._on_model_sync_infobar_closed(bar))
+        except (AttributeError, TypeError, RuntimeError):
+            pass
+
+    def _on_model_sync_infobar_closed(self, bar=None):
+        # 旧条晚到的关闭信号不能清掉新条引用。
+        if bar is None or self._model_sync_infobar is bar:
+            self._model_sync_infobar = None
+
+    def _close_model_sync_infobar(self):
+        bar = self._model_sync_infobar
+        self._model_sync_infobar = None
+        if bar is None:
+            return
+        try:
+            bar.close()
+        except (RuntimeError, TypeError):
+            pass
+
+    def _cleanup_model_sync_infobar(self):
+        """窗口关闭 / 页面销毁时安全清理防抖计时器与悬挂的同步提示。"""
+        try:
+            self._model_sync_timer.stop()
+        except (AttributeError, RuntimeError):
+            pass
+        self._model_sync_pending = None
+        self._close_model_sync_infobar()
+
+    def retranslate_ui(self):
+        """语言切换后重翻设置页全部文案，并刷新动态状态（幂等，可重复调用）。"""
+        retranslate_tree(self)
+        # 下拉设置卡的「配置值 → 显示文案」映射随选项文本同步更新，
+        # 否则后续 setValue 仍会用旧语言文本去找选项。
+        for card in self.findChildren(JsonComboBoxSettingCard):
+            combo = getattr(card, 'comboBox', None)
+            if combo is None:
+                continue
+            try:
+                card.optionToText = {combo.itemData(index): combo.itemText(index)
+                                     for index in range(combo.count())}
+            except Exception:
+                pass
+        try:
+            # 模型选择器选项里带有「计费未提供 / 已下架 / 协议待确认」等译文，
+            # 直接按当前语言重建目录快照。
+            self.refresh_catalog()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'license_status_label'):
+                self.license_status_label.setText(self._license_text())
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'version_caption'):
+                self.version_caption.setText(
+                    f'{APP_NAME} v{APP_VERSION} · ' + tr('多模型并发、产品批处理、定时执行与GitHub同步'))
+        except Exception:
+            pass
+        try:
+            self._refresh_license_badge()
+        except Exception:
+            pass
+        try:
+            self._refresh_api_group_title()
+        except Exception:
+            pass
+        try:
+            self._refresh_routing_options()
+        except Exception:
+            pass
 
     def refresh_task_settings(self, *_):
         for widget, key in ((self.max_retry, 'max_retries'), (self.fail_threshold, 'failure_skip_threshold')):
@@ -2377,7 +2477,8 @@ class SettingsPage(QWidget):
         icon = {'success': InfoBarIcon.SUCCESS, 'warning': InfoBarIcon.WARNING,
                 'error': InfoBarIcon.ERROR}.get(tone, InfoBarIcon.ERROR)
         duration = {'success': 5000, 'warning': 7000, 'error': 9000}.get(tone, 9000)
-        bar = _ResultInfoBar(icon, title, self._redact_probe_error(message), orient=Qt.Vertical,
+        bar = _ResultInfoBar(icon, translate_text(title), translate_multiline(self._redact_probe_error(message)),
+                             orient=Qt.Vertical,
                              parent=self.window(), duration=duration, position=InfoBarPosition.TOP)
         full_detail = self._redact_probe_error(tooltip if tooltip is not None else message)
         bar.titleLabel.setToolTip(full_detail)

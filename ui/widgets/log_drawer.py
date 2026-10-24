@@ -19,6 +19,9 @@ from ..tokens import MOTION
 class LogDrawer(QWidget):
     COLORS = {"debug": "#8db9dc", "info": "#9999a0", "success": "#8ab978", "warning": "#ccb080", "error": "#d79292"}
     MAX_ENTRIES = 5000  # 日志上限：24h 无人值守防止内存与重放成本随时间无限增长
+    # 筛选项固定顺序：retranslate 时按索引保序，避免重建下拉后选中项漂移。
+    LEVEL_KEYS = ['全部', '调试', '成功', '警告', '错误']
+    LEVEL_VALUES = [None, 'debug', 'success', 'warning', 'error']
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -36,18 +39,19 @@ class LogDrawer(QWidget):
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
-        header_layout.addWidget(CaptionLabel("执行日志"))
+        self.heading = CaptionLabel(tr('执行日志'))
+        header_layout.addWidget(self.heading)
         self.toggle_button = TransparentToolButton(self._icon("UP"))
         self.toggle_button.setIcon(self._icon("UP"))
         self.toggle_button.clicked.connect(self.toggle)
         header_layout.addWidget(self.toggle_button)
         header_layout.addStretch(1)
         self.filter_box = ComboBox()
-        self.filter_box.addItems(["全部", "调试", "成功", "警告", "错误"])
+        self.filter_box.addItems([tr(key) for key in self.LEVEL_KEYS])
         self.filter_box.currentTextChanged.connect(self._render)
         header_layout.addWidget(self.filter_box)
-        export_button = PushButton("导出")
-        clear_button = PushButton("清空")
+        export_button = PushButton(tr('导出'))
+        clear_button = PushButton(tr('清空'))
         self.export_button = export_button
         self.clear_button = clear_button
         export_button.clicked.connect(self.export)
@@ -77,12 +81,15 @@ class LogDrawer(QWidget):
             self._append_entry(timestamp, message, level)
 
     def _selected_level(self):
-        return {"调试": "debug", "成功": "success", "警告": "warning", "错误": "error"}.get(self.filter_box.currentText())
+        index = self.filter_box.currentIndex()
+        if 0 <= index < len(self.LEVEL_VALUES):
+            return self.LEVEL_VALUES[index]
+        return None
 
     def set_debug_mode(self, enabled):
         self.debug_mode = bool(enabled)
-        if not enabled and self.filter_box.currentText() == '调试':
-            self.filter_box.setCurrentText('全部')
+        if not enabled and self.filter_box.currentIndex() == self.LEVEL_KEYS.index('调试'):
+            self.filter_box.setCurrentIndex(0)
         self._render()
         if self._expanded:
             self.browser.setMaximumHeight(260 if enabled else 120)
@@ -155,6 +162,22 @@ class LogDrawer(QWidget):
             self.browser.setVisible(True)
         self._animation.start()
         self.toggle_button.setIcon(self._icon("UP" if self._expanded else "DOWN"))
+
+    def retranslate_ui(self):
+        """语言切换后重建日志面板文案；已有日志内容与筛选位置保持不变。"""
+        try:
+            index = self.filter_box.currentIndex()
+            self.heading.setText(tr('执行日志'))
+            self.filter_box.blockSignals(True)
+            self.filter_box.clear()
+            self.filter_box.addItems([tr(key) for key in self.LEVEL_KEYS])
+            self.filter_box.setCurrentIndex(max(0, index))
+            self.filter_box.blockSignals(False)
+            self.export_button.setToolTip(tr('导出'))
+            self.clear_button.setToolTip(tr('清空'))
+            self._render()
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _icon(name):

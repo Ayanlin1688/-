@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel, FluentIcon as FIF, StrongBodyLabel, TransparentToolButton,
 )
-from core.i18n import tr
+from core.i18n import register_retranslate, translate_text, tr
+from ..i18n_helpers import retranslate_tree
 from ..tokens import px
 
 WINDOW_RADIUS = 12
@@ -58,6 +59,7 @@ class DialogHeader(QWidget):
     def __init__(self, dialog, title='', parent=None):
         super().__init__(dialog if parent is None else parent)
         self.dialog = dialog
+        self._title_source = title
         self._drag_offset = None
         self.setFixedHeight(42)
         layout = QHBoxLayout(self)
@@ -71,6 +73,12 @@ class DialogHeader(QWidget):
         self.close_button.setToolTip(tr('关闭（Esc）'))
         self.close_button.clicked.connect(self.dialog.reject)
         layout.addWidget(self.close_button)
+
+    def retranslate_ui(self):
+        translated = translate_text(self._title_source)
+        if translated:
+            self.title_label.setText(translated)
+        self.close_button.setToolTip(tr('关闭（Esc）'))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -123,6 +131,17 @@ class StudioDialogBase:
     def set_title(self, text):
         self.header.title_label.setText(text)
 
+    def retranslate_ui(self):
+        """语言总线回调：重翻弹窗内所有静态文案与标题头（子类可覆写追加动态文案）。"""
+        retranslate_tree(self)
+        header = getattr(self, 'header', None)
+        handler = getattr(header, 'retranslate_ui', None)
+        if callable(handler):
+            try:
+                handler()
+            except Exception:
+                pass
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -156,6 +175,8 @@ def make_studio_dialog_class():
         def __init__(self, parent=None, title=''):
             super().__init__(parent)
             self._build_studio_shell(title)
+            # 弹窗通常在使用中途打开：登记语言总线，切换语言时同步重翻。
+            register_retranslate(self)
 
     return StudioDialog
 

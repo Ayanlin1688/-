@@ -164,6 +164,7 @@ class EcommerceModelGridLayoutTests(unittest.TestCase):
             page = EcommercePage(config)
             try:
                 page.show()
+                page.show_single_creation()
                 for scale in ('1.0', '1.25', '1.5', '1.75'):
                     apply_interface_scale(self.app, FakeScreen(), scale)
                     for width in (1000, 1400, 1820):

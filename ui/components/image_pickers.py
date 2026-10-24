@@ -411,6 +411,28 @@ class _PickerDialogBase(StudioDialog):
         actions.addWidget(self.confirm_button)
         self.body_layout.addLayout(actions)
         style_controls(self)
+        try:
+            from core.i18n import register_retranslate
+            register_retranslate(self)
+        except Exception:
+            pass
+
+    def retranslate_ui(self):
+        """语言切换：重翻静态控件与子类动态说明（幂等）。"""
+        try:
+            from ..i18n_helpers import retranslate_tree
+            retranslate_tree(self)
+        except Exception:
+            pass
+        self.cancel_button.setText(tr('取消'))
+        self.confirm_button.setText(tr('确认添加'))
+        try:
+            self._retranslate_dynamic()
+        except Exception:
+            pass
+
+    def _retranslate_dynamic(self):
+        """子类覆写：刷新运行时生成的说明/占位文案。"""
 
     def _confirm(self):
         paths = self.collect()
@@ -442,6 +464,12 @@ class UsedImagePickerDialog(_PickerDialogBase):
         self.content_layout.addWidget(self.grid, 1)
         images = self._used_images()
         self.grid.set_images(images)
+        self.empty_label = self.grid.empty_label
+
+    def _retranslate_dynamic(self):
+        self.header_label.setText(tr('从已完成任务中挑选生成过的图片，最多 {count} 张').format(
+            count=self.max_count))
+        self.grid.set_images(self._used_images())
         self.empty_label = self.grid.empty_label
 
     def _used_images(self):
@@ -513,6 +541,16 @@ class GalleryPickerDialog(_PickerDialogBase):
         self.grid.set_images([(path, Path(path).name)
                               for path in scan_gallery_images(directory)])
 
+    def _retranslate_dynamic(self):
+        self.header_label.setText(tr('从本地画廊目录选择图片，最多 {count} 张').format(
+            count=self.max_count))
+        directory = gallery_directory(self.config_manager)
+        if directory is None or not directory.is_dir():
+            self.directory_label.setText(tr('请先选择画廊目录'))
+        else:
+            self.directory_label.setText(str(directory))
+        self.grid.empty_label.setText(tr('暂无可选图片'))
+
     def choose_directory(self):
         current = gallery_directory(self.config_manager)
         start = str(current) if current is not None and current.is_dir() else str(Path.home())
@@ -553,6 +591,14 @@ class UrlImageDialog(_PickerDialogBase):
         self.hint_label.setStyleSheet('color:%s;' % materials.palette()['text3'])
         self.content_layout.addWidget(self.hint_label)
         self.error_label.setStyleSheet('color:%s;' % materials.palette()['warning'])
+
+    def _retranslate_dynamic(self):
+        self.header_label.setText(tr(
+            '每行一个图片链接（http/https）或本地绝对路径，最多 {count} 条').format(
+                count=self.max_count))
+        self.editor.setPlaceholderText(
+            tr('https://example.com/product.png\nD:\\图片\\产品白底图.jpg'))
+        self.hint_label.setText(tr('链接会下载到本地缓存目录，网络失败会给出中文提示'))
 
     def collect(self):
         entries = parse_input_lines(self.editor.toPlainText())

@@ -32,8 +32,9 @@ class DataSourceCard(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
-        layout.addWidget(StrongBodyLabel(tr('数据源')))
+        self.heading = StrongBodyLabel(tr('数据源')); layout.addWidget(self.heading)
         labels = [("prompts", tr('分镜提示词目录')), ("images", tr('参考图片目录')), ("output", tr('视频保存目录'))]
+        self._caption_labels = {}
         for key, text in labels:
             row = WrapLayout(spacing=10)
             caption_widget = CaptionLabel(text)
@@ -48,6 +49,7 @@ class DataSourceCard(QWidget):
             field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             field.setToolTip(field.text())
             self.fields[key] = field
+            self._caption_labels[key] = caption_widget
             row.addWidget(field, 1)
             choose = PushButton(FIF.FOLDER, tr('选择'))
             choose.setFixedHeight(32)
@@ -66,6 +68,9 @@ class DataSourceCard(QWidget):
         self.match_button.clicked.connect(self.open_match_dialog)
         status_row.addWidget(self.match_button)
         layout.addLayout(status_row)
+        self._match_counts = None
+        self._status_override = None
+        self._busy = False
 
     def _choose(self, key: str, field: LineEdit) -> None:
         directory = QFileDialog.getExistingDirectory(self, tr('选择目录'), self.config_manager.config['paths'].get(key, ''))
@@ -74,11 +79,11 @@ class DataSourceCard(QWidget):
             field.setText(directory)
             field.setToolTip(directory)
             self.config_manager.update(("paths", key), directory)
-            self.log_callback(f"已设置{key}目录：{directory}", "success")
+            self.log_callback(tr('已设置{key}目录：{directory}').format(key=key, directory=directory), "success")
             self.directories_changed.emit()
 
     def set_busy(self, busy):
-        busy = bool(busy)
+        self._busy = bool(busy)
         reason = tr('队列、匹配扫描或下载进行中，完成后可选择目录')
         for button in self.choose_buttons:
             button.setEnabled(not busy)
@@ -88,14 +93,30 @@ class DataSourceCard(QWidget):
 
     def set_matches(self, matches, automatic=None):
         self.matches = matches
+        self._status_override = None
         if automatic is not None:
             self.automatic_matches = automatic
         count = sum(bool(t['images']) for t in matches)
         products = {task.get('product') for task in matches if task.get('product')}
+        self._match_counts = (len(products), len(matches), count)
+        self._render_status()
+
+    def set_status_override(self, state=None):
+        """记录一条临时状态（如扫描失败），语言切换后按同一状态重新翻译。"""
+        self._status_override = state
+        self._render_status()
+
+    def _render_status(self):
+        if self._status_override == 'scan_failed':
+            self.status_label.setText(tr('扫描失败，请检查目录'))
+            return
+        if self._match_counts is None:
+            self.status_label.setText(tr('请选择提示词与图片目录'))
+            return
+        products, prompts, matched = self._match_counts
         self.status_label.setText(
-            f'已识别 {len(products)} 个产品，共 {len(matches)} 个提示词；'
-            f'已匹配 {count} / 未匹配 {len(matches)-count}'
-        )
+            tr('已识别 {products} 个产品，共 {prompts} 个提示词；已匹配 {matched} / 未匹配 {unmatched}').format(
+                products=products, prompts=prompts, matched=matched, unmatched=prompts - matched))
 
     def open_match_dialog(self, prompt_path=None) -> None:
         if self.active_match_dialog is not None and self.active_match_dialog.isVisible():
@@ -105,7 +126,7 @@ class DataSourceCard(QWidget):
         if self.before_match_dialog is not None:
             if not self.before_match_dialog(prompt_path):
                 return
-        self.log_callback("打开匹配详情", "info")
+        self.log_callback(tr('打开匹配详情'), "info")
         dialog = MatchDialog(self.window(), self.log_callback, self.config_manager, self.matches, self.automatic_matches)
         self.active_match_dialog = dialog
         if isinstance(prompt_path, str):
@@ -119,3 +140,21 @@ class DataSourceCard(QWidget):
         finally:
             self.active_match_dialog = None
             safe_delete_dialog(dialog)
+
+    def retranslate_ui(self):
+        """语言切换后重建本卡文案；目录数据与匹配结果保持不变。"""
+        try:
+            self.heading.setText(tr('数据源'))
+            for key, text in (('prompts', tr('分镜提示词目录')), ('images', tr('参考图片目录')), ('output', tr('视频保存目录'))):
+                label = self._caption_labels.get(key)
+                if label is not None:
+                    label.setText(text)
+            for field in self.fields.values():
+                field.setPlaceholderText(tr('尚未选择目录'))
+            for button in self.choose_buttons:
+                button.setText(tr('选择'))
+            self.match_button.setToolTip(tr('匹配详情'))
+            self._render_status()
+            self.set_busy(self._busy)
+        except RuntimeError:
+            pass

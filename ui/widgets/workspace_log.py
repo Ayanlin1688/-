@@ -59,6 +59,13 @@ class FilterTabs(QWidget):
         self._apply()
         self._buttons['DEBUG'].hide()
 
+    def retranslate_ui(self):
+        try:
+            for name, chip in self._buttons.items():
+                chip.setText(tr(name))
+        except RuntimeError:
+            pass
+
     def currentText(self):
         return self._current
 
@@ -108,8 +115,11 @@ class WorkspaceLog(LogDrawer):
         self.setStyleSheet('#workspaceLog {background:rgba(15,16,26,0.55); border:1px solid rgba(255,255,255,0.10); border-top-left-radius:14px; border-top-right-radius:14px;}')
         root = QVBoxLayout(self); root.setContentsMargins(18, 10, 18, 10); root.setSpacing(8)
         header = WrapLayout(spacing=8); self.header = header
-        header.addWidget(label(tr('执行日志'), 13, '#F4F5F7', True))
+        self.heading = label(tr('执行日志'), 13, '#F4F5F7', True)
+        header.addWidget(self.heading)
         self.count_label = label(f'{tr("本次运行")} 0 {tr("条")}', 11, '#7A8294', mono=True)
+        self._focus_name = ''
+        self._focus_found = True
         header.addWidget(self.count_label)
         header.addStretch(1)
         self.search_label = label(''); header.addWidget(self.search_label)
@@ -208,12 +218,33 @@ class WorkspaceLog(LogDrawer):
 
     def focus_task(self, name):
         self.filter_box.setCurrentText('全部')
-        self.search_label.setText(f'{tr("查找")}：{name}')
+        self._focus_name = str(name)
         self.browser.moveCursor(QTextCursor.Start)
-        if not self.browser.find(name):
-            self.search_label.setText(f'{tr("暂无该任务日志")}：{name}')
+        self._focus_found = bool(self.browser.find(name))
+        self._render_search_label()
         if not self._expanded:
             self.toggle()
+
+    def _render_search_label(self):
+        if not self._focus_name:
+            self.search_label.setText('')
+            return
+        key = '查找' if self._focus_found else '暂无该任务日志'
+        self.search_label.setText(f'{tr(key)}：{self._focus_name}')
+
+    def retranslate_ui(self):
+        """语言切换后重建日志面板文案；已有日志条目与筛选状态保持不变。"""
+        try:
+            self.heading.setText(tr('执行日志'))
+            self._update_count()
+            self.filter_box.retranslate_ui()
+            self._render_search_label()
+            self.export_button.setToolTip(tr('导出'))
+            self.clear_button.setToolTip(tr('清空'))
+            self.toggle_button.setToolTip(tr('折叠 / 展开日志'))
+            self._render()
+        except RuntimeError:
+            pass
 
     def toggle(self):
         self._animation.stop()

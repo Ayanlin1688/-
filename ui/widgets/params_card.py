@@ -30,7 +30,8 @@ class ParamsCard(QWidget):
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(8)
         title_row = WrapLayout()
-        title_row.addWidget(StrongBodyLabel(tr("生成参数")))
+        self.heading = StrongBodyLabel(tr("生成参数"))
+        title_row.addWidget(self.heading)
         title_row.addStretch(1)
         self.expand_button = PushButton(FIF.UP, tr("高级参数"))
         self.expand_button.clicked.connect(self.toggle_advanced)
@@ -43,15 +44,18 @@ class ParamsCard(QWidget):
         self.ratio = ComboBox(); self.ratio.addItems(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "2:3", "3:2"]); self.ratio.setCurrentText(workspace["aspect_ratio"])
         self.resolution = ComboBox(); self.resolution.addItems(["480p", "720p", "768p", "1080p", "2K", "4K"]); self.resolution.setCurrentText(workspace["resolution"])
         self.duration = SpinBox(); self.duration.setRange(1, 30); self.duration.setValue(workspace["duration"])
-        fields = [(tr("模型"), self.model), (tr("比例"), self.ratio), (tr("分辨率"), self.resolution), (tr("时长（秒）"), self.duration)]
-        for text, control in fields:
+        self._field_captions = []
+        fields = [("模型", self.model), ("比例", self.ratio), ("分辨率", self.resolution), ("时长（秒）", self.duration)]
+        for key, control in fields:
             control.setMinimumWidth(150)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             if not isinstance(control, SwitchButton):
                 control.setFixedHeight(32)
             field = QWidget(); field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             field_layout = QVBoxLayout(field); field_layout.setContentsMargins(0, 0, 0, 0); field_layout.setSpacing(6)
-            field_layout.addWidget(CaptionLabel(text)); field_layout.addWidget(control)
+            caption = CaptionLabel(tr(key))
+            field_layout.addWidget(caption); field_layout.addWidget(control)
+            self._field_captions.append((caption, key))
             grid.addWidget(field)
         root.addLayout(grid)
         self.size_hint = CaptionLabel('')
@@ -70,17 +74,21 @@ class ParamsCard(QWidget):
         self.retries = SpinBox(); self.retries.setRange(0, 20); self.retries.setValue(workspace["max_retries"])
         self.threshold = SpinBox(); self.threshold.setRange(1, 100); self.threshold.setValue(workspace["skip_threshold"])
         self.seed = LineEdit(); self.seed.setText(workspace["seed"]); self.seed.setPlaceholderText(tr("留空则随机"))
-        advanced_fields = [(tr("生成音频"), self.audio), (tr("轮询间隔（秒）"), self.poll), (tr("最大重试次数"), self.retries), (tr("模型连续失败阈值"), self.threshold)]
-        for text, control in advanced_fields:
+        self._advanced_captions = []
+        advanced_fields = [("生成音频", self.audio), ("轮询间隔（秒）", self.poll), ("最大重试次数", self.retries), ("模型连续失败阈值", self.threshold)]
+        for key, control in advanced_fields:
             control.setMinimumWidth(150)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             if not isinstance(control, SwitchButton):
                 control.setFixedHeight(32)
             field = QWidget(); field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             field_layout = QVBoxLayout(field); field_layout.setContentsMargins(0, 0, 0, 0); field_layout.setSpacing(6)
-            field_layout.addWidget(CaptionLabel(text)); field_layout.addWidget(control)
+            caption = CaptionLabel(tr(key))
+            field_layout.addWidget(caption); field_layout.addWidget(control)
+            self._advanced_captions.append((caption, key))
             advanced_form.addWidget(field)
-        advanced_root.addWidget(CaptionLabel(tr("随机种子")))
+        self.seed_caption = CaptionLabel(tr("随机种子"))
+        advanced_root.addWidget(self.seed_caption)
         advanced_root.addWidget(self.seed)
         root.addWidget(self.advanced)
         self._advanced_height = max(1, self.advanced.sizeHint().height())
@@ -106,6 +114,7 @@ class ParamsCard(QWidget):
         self.refresh_task_settings()
 
     def set_busy(self, busy):
+        self._busy = bool(busy)
         busy = bool(busy)
         reason = tr('队列、匹配扫描或下载进行中，完成后可编辑生成参数')
         self.setEnabled(not busy)
@@ -161,7 +170,7 @@ class ParamsCard(QWidget):
             hint = (f"{tr('支持时长')}：" + ' / '.join(map(str, durations)) + f" {tr('秒')}" if len(durations) <= 3 and durations
                     else f"{tr('支持时长')}：{min(durations)}–{max(durations)} {tr('秒')}" if durations else tr('提交协议尚未确认'))
         if changes:
-            message = f'{model} 已调整不支持的选项：' + '；'.join(changes)
+            message = f'{model}' + tr('已调整不支持的选项：') + '；'.join(changes)
             self.parameters_adjusted.emit(message, 'warning')
             hint += '\n' + '；'.join(changes)
         self.size_hint.setText(hint)
@@ -194,6 +203,31 @@ class ParamsCard(QWidget):
             self._refresh_model_options()
         finally:
             self._applying_saved = False
+
+    def retranslate_ui(self):
+        """语言切换后重建参数卡文案；已保存的参数值与模型选择保持不变。"""
+        try:
+            self.heading.setText(tr("生成参数"))
+            self.expand_button.setText(tr("高级参数"))
+            for caption, key in self._field_captions:
+                caption.setText(tr(key))
+            for caption, key in self._advanced_captions:
+                caption.setText(tr(key))
+            self.seed_caption.setText(tr("随机种子"))
+            self.seed.setPlaceholderText(tr("留空则随机"))
+            for control in (self.model,):
+                callback = getattr(control, 'retranslate_ui', None)
+                if callable(callback):
+                    try:
+                        callback()
+                    except Exception:
+                        pass
+            self.refresh_pool_hint()
+            self._refresh_model_options()
+            self.set_busy(getattr(self, '_busy', False))
+        except RuntimeError:
+            pass
+
     def _select_saved(self, control, value):
         text = str(value or '')
         choices = [control.itemText(index) for index in range(control.count())]

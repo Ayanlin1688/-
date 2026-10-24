@@ -1,11 +1,12 @@
 """多语言：tr 回退与切换、目录完整性、语言规范化与启动语言应用时序。"""
+import gc
 import os
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from core import i18n
-from core.i18n_catalog import EN
+from core.i18n_catalog import EN as EN_BASE
 
 
 class I18nTests(unittest.TestCase):
@@ -27,8 +28,8 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(i18n.current_language(), 'zh-CN')
 
     def test_catalog_entries_are_nonempty_strings(self):
-        self.assertGreater(len(EN), 20)
-        for source, target in EN.items():
+        self.assertGreater(len(EN_BASE), 20)
+        for source, target in EN_BASE.items():
             self.assertIsInstance(source, str)
             self.assertTrue(source.strip())
             self.assertIsInstance(target, str)
@@ -153,6 +154,119 @@ class I18nTests(unittest.TestCase):
             self.assertEqual(i18n.tr(source), target, source)
 
 
+class LanguageBusTests(unittest.TestCase):
+    """语言总线：变化才发射、弱引用登记、合并词表容错。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        i18n.set_language('简体中文')
+        self.received = []
+        self._slot = self.received.append
+        i18n.language_bus().language_changed.connect(self._slot)
+
+    def tearDown(self):
+        try:
+            i18n.language_bus().language_changed.disconnect(self._slot)
+        except (TypeError, RuntimeError):
+            pass
+        i18n.set_language('简体中文')
+
+    def test_emits_once_per_actual_change(self):
+        self.assertEqual(i18n.set_language('简体中文'), 'zh-CN')
+        self.assertEqual(self.received, [])
+        self.assertEqual(i18n.set_language('English'), 'en-US')
+        self.assertEqual(self.received, ['en-US'])
+        # 同语言重复设置不得重复发射。
+        i18n.set_language('English')
+        i18n.set_language('en')
+        self.assertEqual(self.received, ['en-US'])
+        i18n.set_language('简体中文')
+        self.assertEqual(self.received, ['en-US', 'zh-CN'])
+
+    def test_register_retranslate_calls_widget_and_ignores_missing_method(self):
+        from PyQt5.QtWidgets import QWidget
+
+        calls = []
+
+        class _Translatable(QWidget):
+            def retranslate_ui(self):
+                calls.append(i18n.current_language())
+
+        widget = _Translatable()
+        self.assertTrue(i18n.register_retranslate(widget))
+        plain = QWidget()
+        self.assertFalse(i18n.register_retranslate(plain))
+        i18n.set_language('English')
+        self.assertEqual(calls, ['en-US'])
+        widget.deleteLater()
+        plain.deleteLater()
+
+    def test_register_retranslate_survives_destroyed_widget(self):
+        from PyQt5.QtWidgets import QWidget
+
+        calls = []
+
+        class _Translatable(QWidget):
+            def retranslate_ui(self):
+                calls.append(1)
+
+        widget = _Translatable()
+        self.assertTrue(i18n.register_retranslate(widget))
+        i18n.set_language('English')
+        before = len(calls)
+        del widget
+        gc.collect()
+        # 控件销毁后切语言不得抛异常，也不得再回调。
+        i18n.set_language('简体中文')
+        i18n.set_language('English')
+        self.assertEqual(len(calls), before)
+
+    def test_retranslate_error_in_one_widget_does_not_block_others(self):
+        from PyQt5.QtWidgets import QWidget
+
+        calls = []
+
+        class _Broken(QWidget):
+            def retranslate_ui(self):
+                raise RuntimeError('boom')
+
+        class _Translatable(QWidget):
+            def retranslate_ui(self):
+                calls.append(1)
+
+        broken, widget = _Broken(), _Translatable()
+        i18n.register_retranslate(broken)
+        i18n.register_retranslate(widget)
+        i18n.set_language('English')
+        self.assertEqual(calls, [1])
+        broken.deleteLater()
+        widget.deleteLater()
+
+    def test_merged_catalog_is_a_copy_with_extensions_tolerant(self):
+        # 可选扩展模块尚未接入时也必须能 import；合并结果是副本，可被扩展覆盖。
+        self.assertIsInstance(i18n.EN, dict)
+        self.assertIsNot(i18n.EN, EN_BASE)
+        self.assertEqual(i18n.EN['工作台'], 'Workspace')
+        self.assertGreaterEqual(len(i18n.EN), len(EN_BASE))
+
+    def test_translate_text_templates_roundtrip(self):
+        i18n.set_language('English')
+        self.assertEqual(i18n.translate_text('共 3 条记录 · 存储占用 1.20 GB'),
+                         'Total 3 records · Storage 1.20 GB')
+        self.assertEqual(i18n.translate_text('冷却中 5秒'), 'Cooling down 5s')
+        self.assertEqual(i18n.tr('中转站'), 'Relay stations')
+        i18n.set_language('简体中文')
+        self.assertEqual(i18n.translate_text('Total 3 records · Storage 1.20 GB'),
+                         '共 3 条记录 · 存储占用 1.20 GB')
+        self.assertEqual(i18n.translate_text('Relay stations'), '中转站')
+        # 未收录的文本原样返回，不得损坏用户数据。
+        self.assertEqual(i18n.translate_text('C:\\Users\\demo\\a.mp4'), 'C:\\Users\\demo\\a.mp4')
+
+
 class StartupLanguageTests(unittest.TestCase):
     """启动时语言必须先于界面构建生效：否则英文模式重启后部分界面仍显示中文。"""
 
@@ -180,6 +294,10 @@ class StartupLanguageTests(unittest.TestCase):
                 # 不进入事件循环：构造期 tr() 就必须解析为配置语言。
                 self.assertEqual([item.text() for item in window._nav_items], ['Workspace', 'Ecommerce Images', 'History', 'Settings'])
                 self.assertTrue(window.settings_page.license_status_label.text().startswith('License status'))
+                # 设置页 / 历史页（本次新增的全量重翻）启动即英文。
+                self.assertEqual(window.settings_page.sync_models_button.text(), 'Sync upstream models')
+                self.assertEqual(window.history_page.filter_box.itemText(0), 'All statuses')
+                self.assertEqual(window.history_page.table.horizontalHeaderItem(1).text(), 'No.')
             finally:
                 window.close()
                 window.deleteLater()

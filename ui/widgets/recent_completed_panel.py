@@ -25,10 +25,16 @@ class RecentCompletedRow(QWidget):
         detail.setMinimumWidth(0); detail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         text.addWidget(detail)
         layout.addLayout(text, 1)
-        open_button = TransparentToolButton(FIF.FOLDER)
-        open_button.setToolTip(tr("打开"))
-        open_button.clicked.connect(lambda: open_local(path, log_callback))
-        layout.addWidget(open_button)
+        self.open_button = TransparentToolButton(FIF.FOLDER)
+        self.open_button.setToolTip(tr("打开"))
+        self.open_button.clicked.connect(lambda: open_local(path, log_callback))
+        layout.addWidget(self.open_button)
+
+    def retranslate_ui(self):
+        try:
+            self.open_button.setToolTip(tr("打开"))
+        except RuntimeError:
+            pass
 
 
 class RecentCompletedPanel(QWidget):
@@ -36,7 +42,7 @@ class RecentCompletedPanel(QWidget):
         super().__init__(parent)
         self.log_callback = log_callback
         root = QVBoxLayout(self); root.setContentsMargins(8, 0, 0, 0); root.setSpacing(10)
-        root.addWidget(StrongBodyLabel(tr("最近完成")))
+        self.heading = StrongBodyLabel(tr("最近完成")); root.addWidget(self.heading)
         self.list = QListWidget()
         self.list.setSpacing(2)
         self.list.setStyleSheet(
@@ -52,8 +58,8 @@ class RecentCompletedPanel(QWidget):
         empty.addStretch(1)
         icon = IconWidget(FIF.VIDEO); icon.setFixedSize(38, 38)
         empty.addWidget(icon, 0, Qt.AlignHCenter)
-        label = CaptionLabel(tr('暂无完成的视频')); label.setAlignment(Qt.AlignCenter); label.setWordWrap(True)
-        empty.addWidget(label)
+        self.empty_label = CaptionLabel(tr('暂无完成的视频')); self.empty_label.setAlignment(Qt.AlignCenter); self.empty_label.setWordWrap(True)
+        empty.addWidget(self.empty_label)
         empty.addStretch(1)
         root.addWidget(self.empty_state, 1)
         self.update_history([])
@@ -82,3 +88,15 @@ class RecentCompletedPanel(QWidget):
             self.list.setItemWidget(item, row)
         from ..theme import style_controls
         style_controls(self.list)
+
+    def retranslate_ui(self):
+        """语言切换后重建最近完成区文案；已完成记录行保持不变。"""
+        try:
+            self.heading.setText(tr("最近完成"))
+            self.empty_label.setText(tr('暂无完成的视频'))
+            for index in range(self.list.count()):
+                row = self.list.itemWidget(self.list.item(index))
+                if row is not None and hasattr(row, 'retranslate_ui'):
+                    row.retranslate_ui()
+        except RuntimeError:
+            pass

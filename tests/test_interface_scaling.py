@@ -1,4 +1,5 @@
 """Extra interface zoom: no double DPI, cumulative growth or stale layouts."""
+import math
 import os
 import sys
 import tempfile
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWid
 
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
 from ui import tokens
-from ui.scaling import SCALE_CHOICES, apply_interface_scale, interface_factors
+from ui.scaling import AUTO_MAX_TOTAL, SCALE_CHOICES, apply_interface_scale, interface_factors
 from tests.qt_scale_support import flush_layout, reset_interface_scaling
 
 
@@ -42,23 +43,59 @@ class FakeScreen(QObject):
 
 
 class InterfaceFactorsTests(unittest.TestCase):
-    def test_auto_1080p_96dpi(self):
-        self.assertEqual(interface_factors(FakeScreen())['z'], 1)
+    def test_auto_1080p_96dpi_is_identity(self):
+        factors = interface_factors(FakeScreen())
+        self.assertEqual(factors['z'], 1)
+        self.assertEqual(factors['total'], 1)
 
-    def test_auto_unscaled_4k(self):
+    def test_auto_unscaled_4k_is_damped_resolution_compensation(self):
         factors = interface_factors(FakeScreen(96, 3840, 2160, 2080))
-        self.assertAlmostEqual(factors['z'], 1.6)
-        self.assertAlmostEqual(factors['total'], 1.6)
+        self.assertAlmostEqual(factors['z'], math.sqrt(2))
+        self.assertAlmostEqual(factors['total'], math.sqrt(2))
+        self.assertLessEqual(factors['total'], AUTO_MAX_TOTAL)
+
+    def test_auto_1440p_100_percent_is_converged_not_oversized(self):
+        factors = interface_factors(FakeScreen(96, 2560, 1440, 1400))
+        self.assertAlmostEqual(factors['z'], math.sqrt(4 / 3))
+        self.assertGreater(factors['z'], 1.0)
+        self.assertLessEqual(factors['total'], 1.33)
 
     def test_auto_4k_200_percent_is_not_scaled_twice(self):
         factors = interface_factors(FakeScreen(192, 1920, 1080))
         self.assertEqual(factors['z'], 1)
         self.assertEqual(factors['total'], 2)
 
-    def test_auto_4k_150_percent_is_not_scaled_twice(self):
+    def test_auto_4k_150_percent_is_damped_below_total_cap(self):
         factors = interface_factors(FakeScreen(144, 2560, 1440))
-        self.assertEqual(factors['z'], 1)
-        self.assertEqual(factors['total'], 1.5)
+        self.assertAlmostEqual(factors['total'], 1.5 * math.sqrt(4 / 3))
+        self.assertLessEqual(factors['total'], AUTO_MAX_TOTAL)
+        self.assertGreater(factors['total'], 1.5)
+
+    def test_auto_total_scale_never_exceeds_cap(self):
+        for dpi, width, height in ((96, 5120, 2880), (120, 3840, 2160), (144, 3840, 2160),
+                                   (168, 3840, 2160)):
+            with self.subTest(dpi=dpi, height=height):
+                factors = interface_factors(FakeScreen(dpi, width, height))
+                self.assertLessEqual(factors['total'], AUTO_MAX_TOTAL + 1e-9)
+
+    def test_dpi_125_150_175_are_continuous_and_monotonic(self):
+        physical = ((3840, 2160), (2560, 1440), (1920, 1080))
+        for width, height in physical:
+            with self.subTest(physical=f'{width}x{height}'):
+                totals = []
+                for percent in (100, 125, 150, 175):
+                    dpi = 96.0 * percent / 100.0
+                    logical_width = round(width * 96.0 / dpi)
+                    logical_height = round(height * 96.0 / dpi)
+                    factors = interface_factors(FakeScreen(dpi, logical_width, logical_height))
+                    self.assertAlmostEqual(factors['total'], factors['dpi'] * factors['z'])
+                    totals.append(factors['total'])
+                for previous, current in zip(totals, totals[1:]):
+                    self.assertGreaterEqual(current, previous, totals)
+                    self.assertLessEqual(current - previous, 0.3, totals)
+        # 1080p 100% 是重置基准，任何位置切回都必须回到 1.0。
+        self.assertEqual(interface_factors(FakeScreen(96, 1920, 1080))['z'], 1.0)
+        self.assertEqual(interface_factors(FakeScreen(96, 1920, 1080))['total'], 1.0)
 
     def test_manual_choices_are_extra_scale(self):
         for choice in SCALE_CHOICES[1:]:
@@ -70,12 +107,13 @@ class InterfaceFactorsTests(unittest.TestCase):
     def test_auto_uses_logical_screen_height_not_work_area(self):
         screen = FakeScreen(96, 3840, 2160, 800)
         screen.available = QRect(-3840, 40, 3800, 800)
-        self.assertAlmostEqual(interface_factors(screen)['z'], 1.6)
+        self.assertAlmostEqual(interface_factors(screen)['z'], math.sqrt(2))
 
     def test_auto_clamps_small_large_and_extreme_dpi(self):
-        for dpi, height, expected in ((96, 720, 1), (96, 8640, 1.6), (48, 2160, 2), (288, 720, 1)):
+        expected_values = ((96, 720, 1), (96, 8640, AUTO_MAX_TOTAL), (48, 2160, 2), (288, 720, 1))
+        for dpi, height, expected in expected_values:
             with self.subTest(dpi=dpi, height=height):
-                self.assertEqual(interface_factors(FakeScreen(dpi, 3840, height))['z'], expected)
+                self.assertAlmostEqual(interface_factors(FakeScreen(dpi, 3840, height))['z'], expected)
 
     def test_invalid_settings_and_dpi_have_safe_fallback(self):
         for dpi in (0, -1, float('nan'), float('inf')):
@@ -83,7 +121,8 @@ class InterfaceFactorsTests(unittest.TestCase):
                 self.assertEqual(interface_factors(FakeScreen(dpi))['z'], 1)
         for choice in (None, '', 'invalid', 'nan', 'inf'):
             with self.subTest(choice=choice):
-                self.assertEqual(interface_factors(FakeScreen(96, 3840, 2160), choice)['z'], 1.6)
+                self.assertAlmostEqual(interface_factors(FakeScreen(96, 3840, 2160), choice)['z'],
+                                       math.sqrt(2))
 
     def test_manual_out_of_range_values_are_clamped(self):
         self.assertEqual(interface_factors(FakeScreen(), '-2')['z'], 1)
@@ -92,7 +131,7 @@ class InterfaceFactorsTests(unittest.TestCase):
     def test_manual_175_percent_is_available_without_changing_auto(self):
         self.assertIn('1.75', SCALE_CHOICES)
         self.assertEqual(interface_factors(FakeScreen(), '1.75')['z'], 1.75)
-        self.assertEqual(interface_factors(FakeScreen(96, 3840, 2160))['z'], 1.6)
+        self.assertAlmostEqual(interface_factors(FakeScreen(96, 3840, 2160))['z'], math.sqrt(2))
 
 
 class InterfaceApplicationTests(unittest.TestCase):
@@ -180,6 +219,18 @@ class InterfaceApplicationTests(unittest.TestCase):
         self.assertIn('border-radius:8px', self.button.styleSheet())
         self.assertEqual(self.layout.contentsMargins().left(), 12)
         self.assertEqual(self.layout.itemAt(0).sizeHint().height(), 20)
+        self.assertAlmostEqual(self.app.font().pointSizeF(), self.base_font.pointSizeF())
+
+    def test_auto_mode_reset_to_1080p_restores_unscaled_baseline(self):
+        factors = apply_interface_scale(self.app, FakeScreen(96, 3840, 2160), 'auto')
+        self.assertAlmostEqual(factors['z'], math.sqrt(2))
+        QTest.qWait(20)
+        factors = apply_interface_scale(self.app, FakeScreen(), 'auto')
+        self.assertEqual(factors['z'], 1)
+        self.assertEqual(tokens.interface_scale(), 1.0)
+        self.assertEqual(self.button.height(), 40)
+        self.assertEqual(self.caption.font().pixelSize(), 12)
+        self.assertIn('border-radius:8px', self.button.styleSheet())
         self.assertAlmostEqual(self.app.font().pointSizeF(), self.base_font.pointSizeF())
 
     def test_new_controls_inherit_zoom_and_do_not_accumulate(self):
@@ -415,12 +466,18 @@ class InterfaceWindowTests(unittest.TestCase):
     def test_screen_switch_and_dpi_signal_recompute_without_restart(self):
         screen = FakeScreen(96, 3840, 2160)
         self.window._on_screen_changed(screen)
-        self.assertEqual(self.window._interface_factors['z'], 1.6)
+        self.assertAlmostEqual(self.window._interface_factors['z'], math.sqrt(2))
         screen.dpi = 144
         screen.screen_size = QSize(2560, 1440)
         screen.logicalDotsPerInchChanged.emit(144)
-        self.assertEqual(self.window._interface_factors['z'], 1)
+        self.assertAlmostEqual(self.window._interface_factors['z'], math.sqrt(4 / 3))
+        self.assertAlmostEqual(self.window._interface_factors['total'], 1.5 * math.sqrt(4 / 3))
         self.assertIn('150%', self.window.settings_page.ui_scale_status.text())
+        # 切回 1080p / 100% 必须恢复到 1.0（重置基准）。
+        self.window._on_screen_changed(FakeScreen())
+        self.assertEqual(self.window._interface_factors['z'], 1)
+        self.assertEqual(self.window._interface_factors['total'], 1)
+        self.assertEqual(tokens.interface_scale(), 1.0)
 
     def test_manual_mode_remains_fixed_when_screen_changes(self):
         self.manager.config['appearance']['ui_scale'] = '1.3'

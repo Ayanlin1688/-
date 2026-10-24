@@ -65,6 +65,7 @@ class StatBlock(QWidget):
     def __init__(self, title, value='—', parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self); layout.setContentsMargins(15, 8, 15, 8); layout.setSpacing(2)
+        self._title_text = title
         self.title = label(title, 12, '#8B93A3')
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(self.title)
@@ -80,6 +81,12 @@ class StatBlock(QWidget):
         layout.addWidget(self.bar)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
+    def retranslate_ui(self):
+        try:
+            self.title.setText(tr(self._title_text))
+        except RuntimeError:
+            pass
+
 
 class CompoundStat(QWidget):
     """复合指标卡：产品进度 / 失败 / 并发 三行紧凑排布。"""
@@ -88,13 +95,25 @@ class CompoundStat(QWidget):
         super().__init__(parent)
         root = WrapLayout(self, spacing=16); root.setContentsMargins(15, 8, 15, 8)
         self.rows = {}
-        for key, title in (('product', tr('产品进度')), ('failed', tr('失败')), ('active', tr('并发'))):
+        self.name_labels = {}
+        self._title_keys = {'product': '产品进度', 'failed': '失败', 'active': '并发'}
+        for key, title in (('product', tr(self._title_keys['product'])),
+                           ('failed', tr(self._title_keys['failed'])),
+                           ('active', tr(self._title_keys['active']))):
             row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
             name = label(title, 12, '#8B93A3')
             value = label('—', 12, '#f0f0f5', True, mono=True)
             row.addWidget(name); row.addStretch(1); row.addWidget(value)
             root.addLayout(row)
             self.rows[key] = value
+            self.name_labels[key] = name
+
+    def retranslate_ui(self):
+        try:
+            for key, name in self.name_labels.items():
+                name.setText(tr(self._title_keys[key]))
+        except RuntimeError:
+            pass
 
 
 class _CompatCard(QWidget):
@@ -112,7 +131,9 @@ class WorkspaceSummary(QWidget):
         super().__init__(parent)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(8)
         self.metrics_row = WrapLayout(spacing=12, card_width=220)
-        specs = [(tr('任务进度'), '0/0'), (tr('成功率'), '—'), (tr('今日完成'), '0'), (tr('待处理'), '0')]
+        self._block_title_keys = ['任务进度', '成功率', '今日完成', '待处理']
+        specs = [(tr('任务进度'), '0/0'), (tr('成功率'), '—'),
+                 (tr('今日完成'), '0'), (tr('待处理'), '0')]
         self.blocks = []
         self.stat_cards = []
         for index, (title, value) in enumerate(specs):
@@ -133,6 +154,7 @@ class WorkspaceSummary(QWidget):
         self.cards = [_CompatCard(self) for _ in range(4)]
         self.blocks[0].bar.setVisible(True)
         self.blocks[1].bar.setVisible(True)
+        self._last_tasks = ([], [], 0, False)
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_mode_style)
         self._apply_mode_style()
@@ -155,7 +177,20 @@ class WorkspaceSummary(QWidget):
     def update_metrics(self, metrics):
         self._metrics = dict(metrics)
 
+    def retranslate_ui(self):
+        """语言切换后重建概览卡标题与统计文字；数字沿用当前数据。"""
+        try:
+            for block, key in zip(self.blocks, self._block_title_keys):
+                block._title_text = key
+                block.title.setText(tr(key))
+            self.compound.retranslate_ui()
+            tasks, history, elapsed, running = self._last_tasks
+            self.update_tasks(tasks, history, elapsed, running)
+        except RuntimeError:
+            pass
+
     def update_tasks(self, tasks, history, elapsed, running):
+        self._last_tasks = (list(tasks), list(history), elapsed, running)
         completed = sum(t.get('status') == 'completed' for t in tasks)
         failed = sum(t.get('status') == 'failed' for t in tasks)
         pending = sum(t.get('status', 'waiting') not in {'completed', 'failed', 'cancelled', 'skipped', 'duplicate', 'submission_unknown'} for t in tasks)

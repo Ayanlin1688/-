@@ -39,6 +39,7 @@ from ..widgets.workspace_task_table import WorkspaceTaskTable
 from ..widgets.task_monitor_bar import TaskMonitorBar
 from ..widgets.workspace_summary import WorkspaceSummary, directory_metrics
 from ..widgets.workspace_directory_bar import WorkspaceDirectoryBar
+from ..widgets.task_queue_panel import FILTER_KEYS
 from ..widgets.workspace_surface import ImagePreview, BreathingDot, label, style_button, BLUE, GREEN, MUTED, RED
 
 
@@ -99,6 +100,9 @@ class WorkspacePage(QWidget):
         self._watch_seen = None
         self._watch_pending_scan = False
         self._watch_retry = 0
+        self._api_state = 'unknown'
+        self._api_message = ''
+        self._product_progress_state = None
         self._build_ui()
         manager = self.task_manager
         self.start_button.clicked.connect(lambda: self.start_generation(interactive=True))
@@ -146,7 +150,8 @@ class WorkspacePage(QWidget):
         root = scrollable_body(self); root.setContentsMargins(26, 12, 26, 20); root.setSpacing(18)
         self.toolbar = QWidget(); self.toolbar.setMinimumHeight(56)
         header = WrapLayout(self.toolbar, spacing=12)
-        header.addWidget(label(tr('工作台'), 22, '#F4F5F7', True))
+        self.title_label = label(tr('工作台'), 22, '#F4F5F7', True)
+        header.addWidget(self.title_label)
         self.navigation_tabs = {}
         for key, text in [('workspace', tr('工作台')), ('history', tr('任务历史')), ('settings', tr('设置'))]:
             button = PushButton(text); button.setProperty('studioStyled', True); button.setFixedSize(76, 44)
@@ -178,7 +183,8 @@ class WorkspacePage(QWidget):
         view = self.config_manager.config.get('workspace_view', {})
         self.auto_save.setChecked(view.get('auto_save', True))
         self.auto_save.setToolTip(tr('自动保存日志高度与任务筛选；参考图顺序、生成参数和任务记录始终即时保存'))
-        header.addWidget(label(tr('自动保存'), 11)); header.addWidget(self.auto_save)
+        self.auto_save_label = label(tr('自动保存'), 11)
+        header.addWidget(self.auto_save_label); header.addWidget(self.auto_save)
         self.start_button = style_button(PrimaryPushButton(FIF.PLAY, tr('开始生成')), primary=True)
         self.pause_button = style_button(PushButton(FIF.PAUSE, tr('暂停')))
         for button in (self.pause_button, self.start_button):
@@ -210,7 +216,7 @@ class WorkspacePage(QWidget):
         recovery_layout.addWidget(self.recovery_button)
         root.addWidget(self.recovery_bar)
         self.recovery_bar.hide()
-        self.product_progress_label = label('当前：—，总进度：产品 0/0', 11)
+        self.product_progress_label = label('', 11)
         self.product_progress = ProgressBar()
         self.product_progress.hide()
         self.product_progress.setRange(0, 1)
@@ -230,7 +236,11 @@ class WorkspacePage(QWidget):
         root.addWidget(self.splitter, 1)
         self.splitter.splitterMoved.connect(self._save_view)
         self.auto_save.checkedChanged.connect(self._auto_save_changed)
-        self.queue_panel.filter_box.setCurrentText(view.get('task_filter', '全部'))
+        saved_filter = view.get('task_filter', '全部')
+        saved_index = view.get('task_filter_index')
+        filter_index = saved_index if isinstance(saved_index, int) and 0 <= saved_index < len(FILTER_KEYS) else next(
+            (position for position, key in enumerate(FILTER_KEYS) if saved_filter in (key, tr(key))), 0)
+        self.queue_panel.filter_box.setCurrentIndex(filter_index)
         self.queue_panel.filter_box.currentTextChanged.connect(self._save_view)
         self.log_drawer.view_changed.connect(self._log_toggled)
         # Existing parameter, matching and submission recovery controls remain
@@ -258,12 +268,52 @@ class WorkspacePage(QWidget):
         center_layout.addWidget(self.recent_panel)
         center_layout.addStretch(1)
         dialog_layout.addWidget(self.center_scroll, 1)
-        close = style_button(PushButton(tr('关闭'))); close.setFixedHeight(32); close.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(close, 0, Qt.AlignRight)
+        self.close_button = style_button(PushButton(tr('关闭'))); self.close_button.setFixedHeight(32); self.close_button.clicked.connect(self.controls_dialog.accept); dialog_layout.addWidget(self.close_button, 0, Qt.AlignRight)
         self.queue_panel.params_button.clicked.connect(self.open_controls)
         self.queue_panel.match_button.clicked.connect(self.data_source.open_match_dialog)
         self.queue_panel.select_prompts_requested.connect(lambda: self.choose_directory('prompts'))
         self.set_debug_mode(self.config_manager.config.get('diagnostics', {}).get('debug_mode', False))
         self.params_card.parameters_adjusted.connect(self.append_log)
+
+    def retranslate_ui(self):
+        """语言切换后重建工作台页面与全部子控件文案；不重建任务表、不丢状态。"""
+        try:
+            self.title_label.setText(tr('工作台'))
+            for key, text in (('workspace', tr('工作台')), ('history', tr('任务历史')), ('settings', tr('设置'))):
+                button = self.navigation_tabs.get(key)
+                if button is not None:
+                    button.setText(text)
+                    # 导航 tab 文本变化后重新锁宽，避免英文标签被裁切。
+                    button.setFixedSize(76, 44)
+            self.auto_save_label.setText(tr('自动保存'))
+            self.auto_save.setToolTip(tr('自动保存日志高度与任务筛选；参考图顺序、生成参数和任务记录始终即时保存'))
+            self.start_button.setText(tr('开始生成'))
+            self.pause_button.setText(tr('继续') if self.task_manager.is_paused else tr('暂停'))
+            self.recovery_button.setText(tr('逐条核对'))
+            self.close_button.setText(tr('关闭'))
+            try:
+                self.controls_dialog.set_title(tr('生成参数与任务详情'))
+            except Exception:
+                pass
+            for child in (self.summary, self.directory_bar, self.task_monitor, self.queue_panel,
+                          self.log_drawer, self.data_source, self.params_card, self.current_task,
+                          self.recent_panel):
+                callback = getattr(child, 'retranslate_ui', None)
+                if callable(callback):
+                    try:
+                        callback()
+                    except Exception:
+                        continue
+            self._render_api_status()
+            self._render_product_progress()
+            self._update_recovery_bar()
+            # 复用与运行状态一致的刷新路径，重算按钮可用态与状态提示（tooltip 也是文案）。
+            self._running_changed(self.task_manager.is_running)
+            if self._interactive_scan_busy:
+                self.data_source.status_label.setText(tr('正在扫描匹配...'))
+                self.status_text.setText(tr('正在扫描匹配...'))
+        except RuntimeError:
+            pass
 
     def paintEvent(self, event):
         # 页面保持透明，让窗口的深空渐变背景透出。
@@ -413,9 +463,9 @@ class WorkspacePage(QWidget):
             self.data_source.status_label.setText(tr('正在扫描匹配...'))
             self.status_text.setText(tr('正在扫描匹配...'))
         else:
-            previous_status = getattr(self, '_interactive_scan_status_text', None)
-            if previous_status is not None and getattr(self, '_interactive_scan_restore_status', True):
-                self.data_source.status_label.setText(previous_status)
+            if getattr(self, '_interactive_scan_restore_status', True):
+                # 语言切换后不能回放旧语言快照：按当前语言重算数据源状态。
+                self.data_source._render_status()
             self._interactive_scan_status_text = None
             self._interactive_scan_restore_status = True
             self.status_text.setText(tr('批量生成中') if self.task_manager.is_running else tr('就绪'))
@@ -458,7 +508,8 @@ class WorkspacePage(QWidget):
         if self.auto_save.isChecked():
             current = dict(self.config_manager.config.get('workspace_view', {}))
             current.update(auto_save=True, log_height=self.log_drawer.height() if self.log_drawer._expanded else self.log_drawer._saved_height,
-                           task_filter=self.queue_panel.filter_box.currentText())
+                           task_filter=self.queue_panel.filter_box.currentText(),
+                           task_filter_index=self.queue_panel.filter_box.currentIndex())
             self.config_manager.update(('workspace_view',), current)
 
     def _log_toggled(self):
@@ -466,10 +517,24 @@ class WorkspacePage(QWidget):
         self.splitter.setSizes([max(100, sum(sizes)-height), height]); self._save_view()
 
     def set_api_connection(self, connected, message=''):
+        self._api_state = 'connected' if connected else 'offline'
+        self._api_message = message
         color = GREEN if connected else RED
         self.api_dot.setTextColor(color, color)
-        self.api_status.setText(tr('已连接') if connected else tr('离线缓存'))
-        self.api_status.setToolTip(message or tr('已验证模型列表接口；上传鉴权请在设置中测试'))
+        self.api_status.setTextColor(color, color)
+        self._render_api_status()
+
+    def _render_api_status(self):
+        """按当前语言重渲染接口状态文案；颜色沿用最近一次状态语义。"""
+        state = getattr(self, '_api_state', 'unknown')
+        text = {'connected': tr('已连接'), 'offline': tr('离线缓存'), 'checking': tr('检测中'),
+                'unconfigured': tr('未配置'), 'untested': tr('未检测')}.get(state, tr('未检测'))
+        self.api_status.setText(text)
+        if state in ('connected', 'offline'):
+            self.api_status.setToolTip(
+                getattr(self, '_api_message', '') or tr('已验证模型列表接口；上传鉴权请在设置中测试'))
+        elif state == 'unknown':
+            self.api_status.setToolTip(tr('连接状态来自本次上游模型同步结果；上传鉴权请在设置中测试'))
 
     def refresh_api_state(self):
         controller = getattr(self.config_manager, 'model_catalog_controller', None)
@@ -480,13 +545,15 @@ class WorkspacePage(QWidget):
             from PyQt5.QtGui import QColor
             from ..materials import is_light
             # 状态语义区分：未配置=橙色预警，未检测=灰色。
+            self._api_state = 'untested' if configured else 'unconfigured'
             raw = MUTED if configured else ('#A9770F' if is_light() else '#D9A94E')
             color = QColor(raw)
-            self.api_status.setText(tr('未检测') if configured else tr('未配置'))
             self.api_status.setTextColor(color, color)
             self.api_dot.setTextColor(color, color)
+            self._render_api_status()
         if controller and controller.syncing:
-            self.api_status.setText(tr('检测中'))
+            self._api_state = 'checking'
+            self._render_api_status()
 
     def _refresh_row_parameters(self):
         for row in self.queue_panel.rows:
@@ -733,7 +800,7 @@ class WorkspacePage(QWidget):
                     return
                 self.data_source.set_matches([], [])
                 self._tasks_updated([])
-                self.data_source.status_label.setText('扫描失败，请检查目录')
+                self.data_source.set_status_override('scan_failed')
                 self.append_log(message, 'error')
                 # 无人值守监听：一次扫描失败不能让挂机静默停摆，按退避重挂。
                 interval = self._watch_interval()
@@ -753,9 +820,9 @@ class WorkspacePage(QWidget):
             InfoBar.warning(tr('匹配扫描未开始'), str(error), parent=self, duration=4500)
 
     def _choose_unmatched_policy(self, tasks):
-        dialog = StudioDialog(self, '未匹配参考图')
+        dialog = StudioDialog(self, tr('未匹配参考图'))
         dialog.resize(560, 300)
-        message = CaptionLabel(f'检测到{len(tasks)}个提示词未匹配参考图，是否继续？')
+        message = CaptionLabel(tr('检测到{count}个提示词未匹配参考图，是否继续？').format(count=len(tasks)))
         message.setWordWrap(True)
         dialog.body_layout.addWidget(message)
         names = CaptionLabel('\n'.join(Path(t['prompt_path']).name for t in tasks[:8]))
@@ -765,11 +832,11 @@ class WorkspacePage(QWidget):
         def choose(policy):
             selected[0] = policy
             dialog.accept()
-        for text, policy in [('跳过未匹配任务', '跳过并警告'), ('全部提交为文生视频', '仍提交文生视频')]:
+        for text, policy in [(tr('跳过未匹配任务'), '跳过并警告'), (tr('全部提交为文生视频'), '仍提交文生视频')]:
             button = PushButton(text)
             button.clicked.connect(lambda checked=False, p=policy: choose(p))
             dialog.body_layout.addWidget(button)
-        cancel = PushButton('取消返回匹配')
+        cancel = PushButton(tr('取消返回匹配'))
         cancel.clicked.connect(dialog.reject)
         dialog.body_layout.addWidget(cancel)
         cancel.setFocus()
@@ -990,9 +1057,18 @@ class WorkspacePage(QWidget):
         task_total = task.get('product_task_total', len(self.task_manager.tasks) or 1)
         product_index = task.get('product_index', 1)
         product_total = task.get('product_total', 1)
+        self._product_progress_state = (product, task_index, task_total, product_index, product_total)
+        self._render_product_progress()
+
+    def _render_product_progress(self):
+        state = self._product_progress_state
+        if not state:
+            self.product_progress_label.setText(tr('当前：—，总进度：产品 0/0'))
+            return
+        product, task_index, task_total, product_index, product_total = state
         self.product_progress_label.setText(
-            f'当前：{product} ({task_index}/{task_total})，总进度：产品 {product_index}/{product_total}'
-        )
+            tr('当前：{product} ({index}/{total})，总进度：产品 {pi}/{pt}').format(
+                product=product, index=task_index, total=task_total, pi=product_index, pt=product_total))
 
     def _tasks_updated(self, tasks):
         if self.closing.is_set():
@@ -1018,7 +1094,8 @@ class WorkspacePage(QWidget):
         self.product_progress.setRange(0, max(1, total))
         self.product_progress.setValue(sum(task.get('status') in TERMINAL for task in tasks))
         if not tasks:
-            self.product_progress_label.setText('当前：—，总进度：产品 0/0')
+            self._product_progress_state = None
+            self._render_product_progress()
             self.task_monitor.show_idle()
         self._update_recovery_bar(tasks)
         self._update_summary()
@@ -1310,14 +1387,15 @@ class WorkspacePage(QWidget):
         cancelled = sum(t['status'] == 'cancelled' for t in self.task_manager.tasks)
         duplicates = sum(t['status'] == 'duplicate' for t in self.task_manager.tasks)
         uncertain = sum(t['status'] == 'submission_unknown' for t in self.task_manager.tasks)
-        message = f'成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled} · 重复 {duplicates} · 待确认 {uncertain}'
-        self.append_log('队列结束：' + message, 'info')
+        message = tr('成功 {success} · 失败 {failed} · 跳过 {skipped} · 取消 {cancelled} · 重复 {duplicates} · 待确认 {uncertain}').format(
+            success=success, failed=failed, skipped=skipped, cancelled=cancelled, duplicates=duplicates, uncertain=uncertain)
+        self.append_log(tr('队列结束：') + message, 'info')
         if not self.closing.is_set():
-            InfoBar.info('队列结束', message, parent=self, duration=5000)
+            InfoBar.info(tr('队列结束'), message, parent=self, duration=5000)
             if duplicates:
-                InfoBar.warning('防重复提交', f'已跳过{duplicates}个重复任务，避免重复扣费', parent=self, duration=6000)
+                InfoBar.warning(tr('防重复提交'), tr('已跳过{count}个重复任务，避免重复扣费').format(count=duplicates), parent=self, duration=6000)
             if uncertain:
-                InfoBar.warning('提交待确认', '提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。', parent=self, duration=8000)
+                InfoBar.warning(tr('提交待确认'), tr('提交结果未确认，已阻止重新创建。请在当前任务或历史记录中处理待确认提交。'), parent=self, duration=8000)
         self._update_recovery_bar(self.task_manager.tasks)
         self._arm_watch()
 
@@ -1415,8 +1493,8 @@ class WorkspacePage(QWidget):
         self._active_recovery_dialog = dialog
         self._set_recovery_entry_busy(True)
         if pending.get('legacy_task_id'):
-            hint = CaptionLabel('旧记录候选ID：' + str(pending['legacy_task_id']) +
-                                '。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。')
+            hint = CaptionLabel(tr('旧记录候选ID：') + str(pending['legacy_task_id']) +
+                                tr('。该ID尚未绑定当前账号；请先核对设置中的账号，并在服务商后台确认后手动填写。'))
             hint.setWordWrap(True)
             dialog.viewLayout.addWidget(hint)
         accepted = False

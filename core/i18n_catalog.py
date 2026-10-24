@@ -460,3 +460,611 @@ EN = {
     '当前总比例 {total:.0%}（系统DPI {dpi:.0%} × 界面 {z:.0%}）': 'Total scale {total:.0%} (system DPI {dpi:.0%} × interface {z:.0%})',
     '总比例包含系统DPI；字体与主布局立即生效': 'Total scale includes system DPI; fonts and the main layout update immediately',
 }
+
+# —— 段4 i18n：界面外壳 / 设置页 / 历史页 / 通用对话框（i18n-core 维护）——
+# 约定同文件头：键 = 中文原文（一字不差），值 = 英文译文；模板占位符 {name} 保持原样。
+EN.update({
+    # ---- 设置页：左侧分类导航与页面标题 ----
+    '中转站': 'Relay stations',
+    '新增中转站': 'New relay station',
+    '当前线路': 'Active route',
+    '模型池': 'Model pool',
+    '任务策略': 'Task strategy',
+    '默认参数': 'Generation defaults',
+    '定时执行': 'Scheduled runs',
+    '外观与语言': 'Appearance & language',
+    '账号与许可': 'Account & license',
+    'GitHub 同步': 'GitHub sync',
+    'GitHub代码同步': 'GitHub code sync',
+    '许可与激活': 'License & activation',
+    '外观': 'Appearance',
+    '模型与生成': 'Models & generation',
+    '网络与数据': 'Network & data',
+    '高级': 'Advanced',
+    '中转站管理': 'Relay stations',
+    '每个中转站独立成一页；左侧导航可直达；「设为当前」后任务走该线路':
+        'Each relay station has its own page, reachable from the left navigation; after “Set as active”, tasks use this route',
+    '填写后保存即可；也可从「中转站管理」一键保存当前 API 配置':
+        'Fill in and save; you can also save the current API settings with one click from “Relay stations”',
+    '任务提交使用此线路；切换中转站后自动同步':
+        'Task submissions use this route; it syncs automatically when you switch relay stations',
+    '多模型调度、故障转移与健康状态': 'Multi-model scheduling, failover and health status',
+    '重试、并发、未匹配策略与命名规则': 'Retries, concurrency, unmatched-image handling and file naming',
+    '新任务的默认模型与生成参数': 'Default model and generation parameters for new tasks',
+    '按时间自动开始任务队列': 'Start the task queue automatically at a scheduled time',
+    '主题、玻璃质感、背景与界面语言': 'Theme, glass effect, background and interface language',
+    '激活状态、许可管理与版本信息': 'Activation status, license management and version info',
+    '把代码改动同步到你的私人仓库': 'Sync code changes to your private repository',
+    # ---- 设置页：中转站管理 ----
+    '每个中转站独立成一项（左侧导航可直达）；「设为当前」后任务走该线路；可标记视频 / 文本（AI分析）/ 生图能力。':
+        'Each relay station is one entry (reachable from the left navigation); after “Set as active”, tasks use this route; it can be tagged for video / text (AI analysis) / image generation',
+    '添加官方 DeepSeek（模板）': 'Add official DeepSeek (template)',
+    '创建官方 DeepSeek 文本线路，API Key 留空后填写': 'Create an official DeepSeek text route; fill in the API key afterward',
+    '把当前 API 配置保存为中转站': 'Save current API settings as a relay station',
+    '还没有中转站 · 点击「把当前 API 配置保存为中转站」一键创建，或「新增中转站」手动填写':
+        'No relay stations yet · Click “Save current API settings as a relay station” to create one, or “New relay station” to fill it in manually',
+    '（暂无 · 点「+ 新增中转站」创建）': '(None yet · click “+ New relay station” to create one)',
+    '+ 新增中转站': '+ New relay station',
+    '未命名': 'Unnamed',
+    '未命名中转站': 'Unnamed relay station',
+    '未填写地址': 'No address',
+    '当前使用中': 'In use',
+    '设为当前': 'Set as active',
+    '编辑': 'Edit',
+    '删除该中转站': 'Delete this relay station',
+    '保存修改': 'Save changes',
+    '保存': 'Save',
+    '测试': 'Test',
+    '测试中': 'Testing...',
+    '取消': 'Cancel',
+    '能力标签': 'Capability tags',
+    '名称': 'Name',
+    '名称，例如：主线路 · 国内': 'Name, e.g. Primary route · Domestic',
+    '上传接口 URL': 'Upload API URL',
+    '上传接口 URL（可留空）': 'Upload API URL (optional)',
+    '上传接口 URL（可留空沿用默认）': 'Upload API URL (optional; defaults apply)',
+    '上传 Token': 'Upload token',
+    '上传 Token（可留空）': 'Upload token (optional)',
+    '文本（AI分析）': 'Text (AI analysis)',
+    '生图': 'Image generation',
+    '视频': 'Video',
+    '官方 DeepSeek': 'Official DeepSeek',
+    '官方 DeepSeek 模板已准备，请填写 API Key': 'The official DeepSeek template is ready; enter the API key',
+    '中转站 ID：{sid} · 修改后点击「保存修改」': 'Relay station ID: {sid} · Click “Save changes” after editing',
+    '中转站名称不能为空': 'Relay station name cannot be empty',
+    '此处编辑的是当前使用的中转站连接参数；修改会自动回写该中转站':
+        'These are the connection settings of the active relay station; changes are written back automatically',
+    '当前线路 · {name}': 'Active route · {name}',
+    # ---- 设置页：API 连接 / 模型同步 / 诊断 ----
+    'API 连接': 'API connection',
+    '测试连接': 'Test connection',
+    '显示或隐藏密钥': 'Show or hide key',
+    '分别检查视频、文本和图片 API；上传 Token 未配置时跳过上传测试':
+        'Check the video, text and image APIs separately; the upload test is skipped when no upload token is configured',
+    '可只填域名，如 https://api.kkone.vip/ ，自动补 /v1；官方 DeepSeek 填 https://api.deepseek.com':
+        'You can enter just the domain, e.g. https://api.kkone.vip/ (auto-appends /v1); for official DeepSeek enter https://api.deepseek.com',
+    '图床上传 URL': 'Image-hosting upload URL',
+    '图床 API Key（上传 Token）': 'Image-hosting API key (upload token)',
+    '服务商签发的素材上传 Token': 'Upload token issued by the provider',
+    '默认图床使用 X-Upload-Token 和 Bearer 头；视频 API Key 不保证具有上传权限':
+        'The default image host uses X-Upload-Token and Bearer headers; a video API key may not have upload permission',
+    '自动上传缺失图片': 'Auto-upload missing images',
+    '调试模式': 'Debug mode',
+    '记录参考图、提示词和脱敏请求体；额外下载上传后的图片检查尺寸和格式':
+        'Record reference images, prompts and redacted request bodies; additionally download uploaded images to verify size and format',
+    '尚未同步': 'Not synced yet',
+    '同步上游模型': 'Sync upstream models',
+    '上游模型目录': 'Upstream model catalog',
+    '将日志、脱敏配置与环境信息打包为 zip，便于排查问题':
+        'Pack logs, redacted configuration and environment info into a zip for troubleshooting',
+    '导出诊断包': 'Export diagnostics package',
+    '诊断包': 'Diagnostics package',
+    '视频线路': 'Video route',
+    'AI分析（文本）线路': 'AI analysis (text) route',
+    '图片生成线路': 'Image generation route',
+    '视频 API': 'Video API',
+    'AI分析（文本）API': 'AI analysis (text) API',
+    '图片 API': 'Image API',
+    '上传 API': 'Upload API',
+    '测试未完成': 'Test did not finish',
+    '请求失败，请检查线路与参数': 'Request failed; check the route and parameters',
+    '视频 {video} / 文本 {chat} / 图片 {image}': 'Video {video} / Text {chat} / Image {image}',
+    '文本调用成功': 'Text call succeeded',
+    '命中 {model}；{counts}': 'Matched {model}; {counts}',
+    '文本实际命中模型：{model}': 'Text model actually used: {model}',
+    '启动时已自动纠正 {count} 条上传 URL 中的 Token':
+        'Moved the upload token out of {count} upload URL(s) at startup',
+    '已把误填到 URL 的上传 Token 移入 Token 字段（覆盖旧值）':
+        'Moved the upload token mistakenly entered in the URL into the token field (overwriting the old value)',
+    '已将上传 Token 移入 Token 字段，并清空上传 URL。':
+        'Moved the upload token into the token field and cleared the upload URL.',
+    '上传 URL 必须以 http:// 或 https:// 开头，或留空使用默认地址。':
+        'The upload URL must start with http:// or https://, or be left empty to use the default address.',
+    '上传 URL 格式无效，请修正后再保存或测试。':
+        'The upload URL format is invalid; fix it before saving or testing.',
+    '请至少勾选一项能力后再测试。': 'Select at least one capability before testing.',
+    '上传 URL 未配置或格式无效，本次仅测试所选 API 线路':
+        'Upload URL is missing or invalid; this run tests only the selected API routes',
+    # ---- 设置页：模型池 ----
+    '模型池类别': 'Model pool category',
+    '启用模型池': 'Enable model pool',
+    '调用策略': 'Routing strategy',
+    '自动故障转移': 'Automatic failover',
+    '冷却时间（秒）': 'Cooldown (seconds)',
+    '关闭时使用工作台所选单模型。运行期间修改设置将在下一批任务生效。':
+        'When off, the single model selected in the workspace is used. Changes made during a run apply to the next batch.',
+    '模型列表 · 列表顺序即优先级；修改在下一批生效':
+        'Model list · order is priority; changes apply to the next batch',
+    '添加模型': 'Add model',
+    '健康': 'Healthy',
+    '冷却中': 'Cooling down',
+    '冷却中 {seconds}秒': 'Cooling down {seconds}s',
+    '已下架': 'Delisted',
+    '非视频模型': 'Not a video model',
+    '协议待确认': 'Protocol unverified',
+    '非文本模型': 'Not a text model',
+    '非图片模型': 'Not an image model',
+    '启用或停用此模型': 'Enable or disable this model',
+    '该模型当前不可用：已下架、不是视频模型或协议待确认，请同步模型或选择其他模型':
+        'This model is currently unavailable: delisted, not a video model, or protocol unverified. Sync models or choose another model',
+    '请同步模型或选择对应类型的模型': 'Sync models or choose a model of the matching type',
+    '删除模型': 'Remove model',
+    '启用': 'Enable',
+    # ---- 设置页：任务策略 ----
+    '自动识别模型': 'Auto-detect model',
+    '无法识别时使用': 'If detection fails, use',
+    '防重复提交': 'Prevent duplicate submissions',
+    '自动转换提示词格式': 'Auto-convert prompt format',
+    '转换后保留原文': 'Keep original text after conversion',
+    '保留转换前的额外原文快照；关闭后仍保存实际提交文本，便于核对任务。原始 TXT 文件不改动。':
+        'Keep an extra snapshot of the original text before conversion; when off, the submitted text is still saved for review. The original TXT file is never modified.',
+    '故障转移优先同格式模型': 'Prefer same-format models for failover',
+    '最大并发数': 'Max concurrency',
+    '全队列最多同时处理的任务数（默认 5）；所有产品共享该并发，任务完成立即补位':
+        'Maximum tasks processed at once in the whole queue (default 5); all products share this limit and finished slots are refilled immediately',
+    '失败自动重试': 'Auto-retry on failure',
+    '最大重试次数': 'Max retries',
+    '首次尝试之外的重试次数（默认 3）；超过后任务标记失败并保存现场，队列继续下一个':
+        'Retries after the first attempt (default 3); afterward the task is marked failed with evidence saved and the queue moves on',
+    '重试间隔（秒）': 'Retry interval (s)',
+    '连续失败阈值': 'Consecutive failure threshold',
+    '无人值守监听（秒）': 'Unattended rescan interval (s)',
+    '队列结束后按此间隔自动重扫目录；发现新提示词会自动开始下一批，适合 7×24 无人值守。0 = 关闭':
+        'Rescan the folder at this interval after the queue ends; new prompts start the next batch automatically, suitable for 24/7 unattended runs. 0 = off',
+    '临时缓存保留（天）': 'Temp cache retention (days)',
+    '仅清理输出目录内超过保留期的下载临时文件（含联接/符号链接防护，绝不越出输出目录）；0 表示停止清理，仅检查剩余空间':
+        'Only clean download temp files older than the retention period inside the output folder (with junction/symlink protection; never leaves the output folder); 0 disables cleanup and only checks free space',
+    '磁盘剩余预警（GB）': 'Low disk warning (GB)',
+    '输出盘剩余空间低于该值时写入预警日志并加强清理':
+        'When free space on the output drive drops below this value, log a warning and clean more aggressively',
+    '未匹配参考图时': 'When reference images are unmatched',
+    '跳过并警告': 'Skip with a warning',
+    '跳过该任务': 'Skip this task',
+    '仍提交文生视频': 'Submit as text-to-video',
+    '仍提交为文生视频': 'Submit as text-to-video',
+    '暂停任务': 'Pause tasks',
+    '下载命名规则': 'Download naming rule',
+    '下载完成自动打开': 'Open folder after download',
+    '默认模型': 'Default model',
+    '默认比例': 'Default aspect ratio',
+    '默认分辨率': 'Default resolution',
+    '默认时长（秒）': 'Default duration (s)',
+    '默认轮询间隔（秒）': 'Default poll interval (s)',
+    # ---- 设置页：外观与语言 ----
+    '主题': 'Theme',
+    '9 套主题 + 跟随系统：深色（深空 / 午夜 / 石墨 / 星云 / 深海 / 暮色），浅色（白玉 / 晨雾 / 暖沙）；切换立即生效':
+        '9 themes plus follow-system: dark (Deep Space / Midnight / Graphite / Nebula / Deep Sea / Dusk) and light (White Jade / Morning Mist / Warm Sand); switches take effect immediately',
+    '跟随系统': 'Follow system',
+    '深空': 'Deep Space',
+    '午夜': 'Midnight',
+    '石墨': 'Graphite',
+    '星云': 'Nebula',
+    '深海': 'Deep Sea',
+    '暮色': 'Dusk',
+    '白玉': 'White Jade',
+    '晨雾': 'Morning Mist',
+    '暖沙': 'Warm Sand',
+    '霞光': 'Aurora',
+    '简体中文': 'Simplified Chinese',
+    '高斯模糊玻璃': 'Acrylic blur',
+    '开启后窗口叠加系统亚克力模糊（由系统合成器提供，部分环境可能不可用）':
+        'Adds system acrylic blur behind the window (provided by the system compositor; may be unavailable in some environments)',
+    '减弱动效': 'Reduce motion',
+    '停止呼吸点与流光等循环动画，并让页面过渡即时完成（无障碍）':
+        'Stops looping animations such as breathing dots and light sweeps, and makes page transitions instant (accessibility)',
+    '语言': 'Language',
+    # ---- 设置页：账号与许可 ----
+    '未激活': 'Not activated',
+    '已激活': 'Activated',
+    '试用中': 'Trial',
+    '试用已结束': 'Trial ended',
+    '许可无效': 'Invalid license',
+    '激活': 'Activate',
+    '输入激活码': 'Enter activation code',
+    '激活失败': 'Activation failed',
+    '激活码无法识别，请检查后重试': 'The activation code is not recognized; check it and try again',
+    '激活成功': 'Activated successfully',
+    '导出诊断包': 'Export diagnostics package',
+    '导出失败': 'Export failed',
+    '诊断包已导出：': 'Diagnostics package exported: ',
+    '已导出诊断包': 'Diagnostics package exported',
+    '许可状态：': 'License status: ',
+    '试用剩余 {left} / {days} 天': 'Trial: {left} of {days} days left',
+    '多模型并发、产品批处理、定时执行与GitHub同步':
+        'Multi-model concurrency, product batching, scheduled runs and GitHub sync',
+    # ---- 设置页：定时执行 / 当前时间 ----
+    '启用定时执行': 'Enable scheduled runs',
+    '定时开始时间': 'Scheduled start time',
+    '执行模式': 'Run mode',
+    '仅一次': 'Once',
+    '每天重复': 'Repeat daily',
+    '定时队列全部结束后': 'When the scheduled queue finishes',
+    '保持运行': 'Keep running',
+    '自动关闭软件': 'Close the app',
+    '当前时间：正在读取': 'Current time: reading...',
+    '当前时间 / 网络校时': 'Current time / network time',
+    # ---- 设置页：GitHub 同步 ----
+    '选择项目文件夹': 'Choose project folder',
+    '本地项目Git根目录；只同步main到项目授权origin':
+        'Local project Git root; only main is synced to the project’s authorized origin',
+    '选择Git根目录，随后自动校验分支和origin；不会修改远端':
+        'Choose the Git root; the branch and origin are validated automatically; remotes are never modified',
+    '同步到GitHub': 'Sync to GitHub',
+    '提交已修改的代码并推送main；配置、密钥、视频及日志不会上传':
+        'Commit modified code and push main; configuration, keys, videos and logs are not uploaded',
+    '目录尚未校验；选择文件夹后或同步前自动校验main分支与origin。':
+        'Folder not validated yet; the main branch and origin are validated after choosing a folder or before syncing.',
+    '请先在设置→GitHub同步选择本地项目Git根目录':
+        'Choose the local project Git root in Settings → GitHub sync first',
+    '目录已就绪：{root} · main · origin 已匹配': 'Folder ready: {root} · main · origin matched',
+    '正在选择目录...': 'Selecting folder...',
+    '正在同步...': 'Syncing...',
+    '正在校验目录...': 'Validating folder...',
+    '正在后台校验项目Git根目录、main分支与origin...':
+        'Validating the project Git root, main branch and origin in the background...',
+    '项目目录保存失败': 'Could not save the project folder',
+    'GitHub同步': 'GitHub sync',
+    'GitHub同步失败': 'GitHub sync failed',
+    'GitHub同步成功': 'GitHub sync succeeded',
+    '已同步到GitHub，最新commit: {commit}': 'Synced to GitHub, latest commit: {commit}',
+    '正在校验目录或同步，请等待完成再操作':
+        'Folder validation or sync is running; wait until it finishes',
+    '正在校验目录或同步，完成后恢复': 'Validating the folder or syncing; available when finished',
+    '正在校验目录或同步，完成后可重新选择':
+        'Validating the folder or syncing; you can choose again when finished',
+    '本次可校验所选目录，但配置未能保存；请检查配置目录写入权限后重新选择':
+        'The selected folder can be validated, but settings were not saved; check configuration folder permissions and select it again',
+    '界面缩放保存失败': 'Could not save interface scale',
+    '本次已生效；请检查配置目录写入权限后重新选择':
+        'Applied for this session; check configuration folder permissions and select it again',
+    '界面缩放': 'Interface scale',
+    '正在读取显示器比例...': 'Reading display scale...',
+    '仅调整额外界面倍率，不重复叠加系统DPI；字体与主布局立即生效':
+        'Adjusts extra interface zoom without applying system DPI twice; fonts and the main layout update immediately',
+    '当前总比例 {total:.0%}（系统DPI {dpi:.0%} × 界面 {z:.0%}）':
+        'Total scale {total:.0%} (system DPI {dpi:.0%} × interface {z:.0%})',
+    '总比例包含系统DPI；字体与主布局立即生效':
+        'Total scale includes system DPI; fonts and the main layout update immediately',
+    # ---- 设置页：模型同步状态 ----
+    '模型同步': 'Model sync',
+    '模型同步进行中，完成后恢复': 'Model sync in progress; available when finished',
+    '正在测试连接，完成后恢复': 'Testing connection; available when finished',
+    '从上游刷新可用模型列表': 'Refresh the available model list from upstream',
+    '上次同步：{time}': 'Last sync: {time}',
+    # ---- 历史页 ----
+    '全选当前显示且可删除的记录': 'Select all visible deletable records',
+    '批量处理待确认提交': 'Resolve all unconfirmed submissions',
+    '当前没有待确认提交': 'No unconfirmed submissions',
+    '批量删除（0）': 'Delete selected (0)',
+    '批量删除（{count}）': 'Delete selected ({count})',
+    '清理缓存': 'Clean cache',
+    '清理输出、参考图目录及临时目录中超过1天的缓存；保留视频和参考图片':
+        'Clean cache older than 1 day in the output, reference-image and temp folders; videos and reference images are kept',
+    '显示最近 100 条': 'Showing the latest 100',
+    '显示最近 100 条 · v{version}': 'Showing the latest 100 · v{version}',
+    '共 {n} 条记录 · 存储占用 {gb:.1f} GB': 'Total {n} records · Storage {gb:.1f} GB',
+    '待确认弹窗打开中，请先完成或关闭当前核对':
+        'A confirmation dialog is open; finish or close it first',
+    '处理所有待确认提交；每条都需明确选择，不会静默重复提交':
+        'Resolve all unconfirmed submissions; each one needs an explicit choice and nothing is resubmitted silently',
+    '处理所有待确认提交；每条都需明确选择':
+        'Resolve all unconfirmed submissions; each one needs an explicit choice',
+    '打开文件（暂无本地文件，任务完成下载后可打开）':
+        'Open file (no local file yet; available after the task finishes downloading)',
+    '当前没有可查询的远端 task_id': 'No remote task_id available to query',
+    '当前没有待确认提交；队列结束并产生待确认记录后可使用':
+        'No unconfirmed submissions; available once the queue ends with unconfirmed records',
+    '没有待确认提交': 'No unconfirmed submissions',
+    '当前无需核对；可继续创建新任务': 'Nothing to review; you can keep creating new tasks',
+    '正在清理或核对，请等待完成': 'Cleaning or reviewing; wait until it finishes',
+    '任务仍在运行或排队，请先结束/暂停并结束队列后删除':
+        'The task is running or queued; pause and finish the queue before deleting',
+    '选择此记录进行删除': 'Select this record for deletion',
+    '确认删除已选择的记录': 'Confirm deleting the selected records',
+    '请先勾选可删除的历史记录': 'Select the history records to delete first',
+    '清理超过1天的临时缓存，保留视频与参考图片':
+        'Clean temp cache older than 1 day; keep videos and reference images',
+    '当前没有可删除的记录': 'No deletable records',
+    '当前无法删除': 'Cannot delete right now',
+    '请等待当前清理或核对完成': 'Wait until the current cleanup or review finishes',
+    '未选择记录': 'No records selected',
+    '未打开删除确认': 'Could not open the delete confirmation',
+    '打开文件夹': 'Open folder',
+    '查看电商图结果': 'View ecommerce image results',
+    '重新查询并下载（不创建新任务）': 'Re-query and download (does not create a task)',
+    '处理待确认提交': 'Resolve unconfirmed submission',
+    '重新生成（需确认，会创建新任务）': 'Regenerate (needs confirmation; creates a new task)',
+    # ---- 批量删除 / 永久删除对话框 ----
+    '批量删除历史': 'Bulk delete history',
+    '将删除 {count} 条记录，涉及 {files} 个输出文件，合计 {size:.2f} MB。':
+        'Delete {count} records and {files} output files totaling {size:.2f} MB.',
+    '仅删除记录，保留已生成视频文件': 'Delete records only; keep generated video files',
+    '删除记录并清理输出文件（优先放入回收站，可恢复）':
+        'Delete records and clean up output files (recycle bin first when recoverable)',
+    '回收站不可用时会再次询问是否永久删除；取消不会永久删除输出文件。':
+        'If the recycle bin is unavailable you will be asked again before permanent deletion; cancelling keeps the output files.',
+    '我确认待确认任务未在服务商后台创建，同意作废后删除记录':
+        'I confirm the unconfirmed task was not created on the provider side; void it and delete the record',
+    '确认删除': 'Delete',
+    '请先确认待确认任务未创建；删除会作废，不会重试或提交。':
+        'Confirm that the unconfirmed task was not created first; deleting voids it without retry or submission.',
+    '只处理已选择的非运行态记录；不会创建任务或重复扣费。':
+        'Only selected non-running records are handled; no tasks are created and nothing is charged twice.',
+    '回收站不可用：确认永久删除？': 'Recycle bin unavailable: permanently delete?',
+    '{count} 个输出文件无法放入回收站。永久删除不可恢复；取消将保留这些文件和对应历史记录。':
+        '{count} output files cannot be moved to the recycle bin. Permanent deletion cannot be undone; cancelling keeps the files and their history records.',
+    '保留文件与记录': 'Keep files and records',
+    '确认永久删除': 'Delete permanently',
+    # ---- 与提示词匹配详情对话框 ----
+    '图片与提示词匹配详情': 'Image & prompt matching details',
+    '拖动图片行调整 @参考图1/2/3 的顺序；修改后点击保存调整':
+        'Drag image rows to reorder @reference image 1/2/3; click Save changes when done',
+    '图片绑定详情': 'Image binding details',
+    '自动识别模型：未识别': 'Detected model: not detected',
+    '匹配方式：未绑定图片': 'Match method: no images bound',
+    '已绑定0张参考图': 'No reference images bound',
+    '已绑定{count}张参考图 · 实际提交 {actual}/{count} · 从上到下对应 Picture 1–{actual}':
+        '{count} reference images bound · submitting {actual}/{count} · top to bottom maps to Picture 1–{actual}',
+    '添加图片': 'Add images',
+    '移除': 'Remove',
+    '提示词预览': 'Prompt preview',
+    '原始格式': 'Original format',
+    '转换后格式': 'Converted format',
+    '选择提示词后显示预览': 'Select a prompt to preview',
+    '重新自动匹配': 'Re-run auto matching',
+    '全部重置为自动识别': 'Reset all to auto detection',
+    '保存调整': 'Save changes',
+    '关闭': 'Close',
+    '未识别（使用默认模型）': 'Not detected (using default model)',
+    '匹配方式：{method}': 'Match method: {method}',
+    '自动识别模型：{model}': 'Detected model: {model}',
+    '文件缺失或图片不可读': 'File missing or image unreadable',
+    '本地图片': 'Local image',
+    '超出模型上限，本次不提交': 'Exceeds the model limit; not submitted this time',
+    '拖动图片行调整顺序': 'Drag image rows to reorder',
+    '选择参考图片': 'Choose reference images',
+    '请先选择目录并扫描提示词': 'Choose a folder and scan prompts first',
+    '保存失败，请查看执行日志；本次修改仍保留在内存':
+        'Save failed; check the run log. Your changes are still in memory.',
+    '模型选择保存失败，请查看执行日志': 'Could not save model selection; check the run log',
+    '保存失败：': 'Save failed: ',
+    '匹配调整已保存': 'Match adjustments saved',
+    '自动转换已关闭': 'Auto conversion is off',
+    '无需转换': 'No conversion needed',
+    '转换失败：': 'Conversion failed: ',
+    '转换失败 · 请检查提示词结构': 'Conversion failed · check the prompt structure',
+    '已恢复本次扫描的自动匹配结果，点击保存调整生效':
+        'Restored auto-matching from this scan; click Save changes to apply',
+    '选择本条提示词使用的模型': 'Model used for this prompt',
+    '自动识别已关闭，模型选择不可用；请先在设置中开启自动识别':
+        'Auto detection is off, so model selection is unavailable; enable auto detection in Settings first',
+    '手动绑定': 'Manually bound',
+    '手动强制': 'Manual override',
+    '自动识别': 'Auto detected',
+    '默认回退': 'Default fallback',
+    '历史任务': 'History record',
+    '工作台选择': 'Workspace selection',
+    '匹配详情': 'Match details',
+    # ---- 待确认提交恢复对话框 ----
+    '确认提交结果': 'Confirm submission result',
+    '暂不处理': 'Not now',
+    '保存确认结果': 'Save confirmation',
+    '请先在服务商后台核对该任务。关闭或“暂不处理”只会保持待确认，不会产生任何提交。':
+        'Check this task on the provider side first. Closing or “Not now” keeps it unconfirmed and submits nothing.',
+    '保持待确认': 'Keep unconfirmed',
+    '填写已创建的任务ID': 'Enter the created task ID',
+    '我已确认服务端未创建任务': 'I confirmed the task was not created',
+    '作废：确认无效，移出待处理（不重试）': 'Void: confirmed invalid, remove from pending (no retry)',
+    '选择已在服务商后台核对后的处理方式':
+        'Choose how to handle the task after checking the provider',
+    '我已在服务商后台确认该任务未创建 → 仅重试这一条，不重复提交其他任务':
+        'I confirmed on the provider side that this task was not created → retry only this one and submit nothing else',
+    '选择“未创建”并立即保存，只释放当前提示词的防重复保护':
+        'Choose “Not created” and save immediately; only this prompt’s duplicate protection is released',
+    '服务商后台已创建，我填写 task_id → 仅查询并下载，不重新创建':
+        'Already created on the provider; enter task_id → query and download only, no re-creation',
+    '展开 task_id 输入框；填写后只查询并下载':
+        'Expand the task_id field; after filling it in, only query and download',
+    '服务商返回的 task_id': 'Task ID returned by the provider',
+    '我确认该任务未在服务商后台创建，作废后不再提示':
+        'I confirm this task was not created on the provider side; void it and do not prompt again',
+    '核对结果': 'Review result',
+    '请选择核对结果': 'Choose a review result',
+    '未创建：仅重试这一条': 'Not created: retry only this one',
+    '已创建：填写 task_id，仅查询并下载': 'Created: enter task_id, query and download only',
+    '服务商后台的 task_id': 'Provider-side task_id',
+    '请逐条在服务商后台核对。每条都必须明确选择；关闭或取消不会提交任何任务，“未创建”也只会逐条重试，不会静默重建其他任务。':
+        'Check each task on the provider side. Every row needs an explicit choice; closing or cancelling submits nothing, and “Not created” only retries that row without silently recreating others.',
+    '请逐条选择处理结果后才能保存': 'Choose a result for every row before saving',
+    '请逐条选择处理结果；已创建项需填写 task_id，作废项需勾选服务端未创建确认':
+        'Choose a result for every row; created items need a task_id and voided items need the not-created confirmation',
+    '所有条目都已明确核对，可以保存；保存后仍将逐条执行并保留防重复提交保护。':
+        'All rows are explicitly reviewed and can be saved; each row is then executed individually with duplicate-submission protection kept in place.',
+    '请逐条选择上面的核对结果；已创建项需填写 task_id，作废项需勾选服务端未创建确认。取消或关闭不会产生任何提交。':
+        'Choose a result for every row above; created items need a task_id and voided items need the not-created confirmation. Cancelling or closing submits nothing.',
+    '请先选择：保持待确认、未创建、已创建或作废。':
+        'Choose one of: keep unconfirmed, not created, created, or void.',
+    '请填写服务商后台已创建的 task_id。': 'Enter the task_id created on the provider side.',
+    '请填写服务商后台已创建的 task_id；填写后“保存确认结果”即可点击。':
+        'Enter the task_id created on the provider side; “Save confirmation” becomes available once filled in.',
+    '请先选择上面的核对结果；关闭或暂不处理不会提交。':
+        'Choose a review result above first; closing or “Not now” submits nothing.',
+    '保持待确认：不调用提交接口，仍阻止该任务再次创建。':
+        'Keep unconfirmed: the submit API is not called and the task is still blocked from re-creation.',
+    '仅释放并重试这一条提示词，不会提交其他任务。':
+        'Only this prompt’s protection is released and retried; no other tasks are submitted.',
+    '将仅查询并下载该 task_id，不会创建新任务。':
+        'Only queries and downloads this task_id; no new task is created.',
+    '将仅查询并下载该 task_id，不会重新创建任务。':
+        'Only queries and downloads this task_id; the task is not recreated.',
+    '将只重试当前这一条，不会提交其他任务。':
+        'Only retries the current item; no other tasks are submitted.',
+    '将作废该条、移出待处理，不重试、不提交其他任务':
+        'Voids this item, removes it from pending, and neither retries nor submits anything else',
+    '作废需确认服务端未创建，以防漏单/重复扣费':
+        'Voiding requires confirming the server did not create it, to avoid missed or double charges',
+    '仅无 task_id 的待确认或创建前失败记录可作废。':
+        'Only unconfirmed or pre-creation failed records without a task_id can be voided.',
+    '该记录已有 task_id，不能作废；请选择“已创建：仅查询下载”。':
+        'This record already has a task_id and cannot be voided; choose “Created: query and download only”.',
+    '上次上游返回摘要：{error}': 'Last upstream response summary: {error}',
+    '\n上次上游返回摘要：{error}': '\nLast upstream response summary: {error}',
+    '产品名：{product}\n提示词文件：{prompt_name}\n模型：{model}\n提交时间：{submitted_at}{summary}':
+        'Product: {product}\nPrompt file: {prompt_name}\nModel: {model}\nSubmitted: {submitted_at}{summary}',
+    # ---- 历史清理 / 打开本地文件 ----
+    '当前平台回收站不可用': 'The recycle bin is unavailable on this platform',
+    '该输出目录不支持本地回收站': 'This output folder does not support the local recycle bin',
+    '回收站删除未完成（返回码 {code}）': 'Recycle bin deletion did not finish (code {code})',
+    '输出文件超出记录的输出目录，未删除：{path}':
+        'Output file is outside the record’s output folder and was not deleted: {path}',
+    '输出路径不是文件，未删除：{path}': 'Output path is not a file and was not deleted: {path}',
+    '尚未设置本地路径': 'No local path configured',
+    '已打开：{path}': 'Opened: {path}',
+    '无法打开：{error}': 'Could not open: {error}',
+    '文件或目录不存在：{path}': 'File or folder does not exist: {path}',
+})
+
+# —— 段4 i18n：主窗口骨架 / 动态状态与核心模块提示（i18n-core 维护）——
+EN.update({
+    # ---- 主窗口：导航 / 关于 / 更新 / 退出 ----
+    '展开 / 收起导航': 'Expand / collapse navigation',
+    '当前用户 · 版本信息': 'Current user · Version info',
+    '许可提示': 'License notice',
+    '发现新版本': 'Update available',
+    'v{version} 已发布（当前 v{current}）': 'v{version} is available (current v{current})',
+    '版本 v{version}': 'Version v{version}',
+    '产品批处理 · 定时执行 · GitHub同步':
+        'Product batching · Scheduled runs · GitHub sync',
+    '多模型调度 · 自动重试 · 并发生成 · 自动下载':
+        'Multi-model scheduling · Auto-retry · Concurrent generation · Auto-download',
+    '正在安全退出，等待后台任务完成后关闭':
+        'Closing safely; waiting for background tasks to finish',
+    '正在安全退出，等待后台请求返回或超时...':
+        'Closing safely; waiting for background requests to return or time out...',
+    '后台任务超过安全退出时限，强制退出应用':
+        'Background tasks exceeded the safe shutdown timeout; forcing the app to exit',
+    '定时队列全部结束，自动关闭软件':
+        'The scheduled queue has finished; closing the app automatically',
+    '系统时间（未启用网络校时）': 'System time (network time disabled)',
+    '系统时间（正在网络校时）': 'System time (syncing network time)',
+    '窗口玻璃后端：{backend}（Windows build {build}）':
+        'Window glass backend: {backend} (Windows build {build})',
+    '未捕获异常已拦截：{type}: {exc}；现场文件：{path}':
+        'Uncaught exception intercepted: {type}: {exc}; crash file: {path}',
+    # ---- 许可状态详情（core/licensing.py 生成，界面层翻译） ----
+    '已激活：{customer}': 'Activated: {customer}',
+    '已激活：{customer}（永久）': 'Activated: {customer} (perpetual)',
+    '已激活：{customer}（有效期至 {expires}）':
+        'Activated: {customer} (valid until {expires})',
+    '试用中：剩余 {left} 天（共 {days} 天）': 'Trial: {left} days left (of {days})',
+    '试用已结束（共 {days} 天），请激活后继续使用':
+        'Trial ended ({days} days); activate to continue using the app',
+    '激活码校验失败（签名不匹配）': 'Activation code verification failed (signature mismatch)',
+    '激活码内容无法解析': 'Activation code could not be parsed',
+    '激活码内容不完整': 'Activation code is incomplete',
+    '激活码有效期格式不正确': 'Invalid activation code expiry format',
+    '激活码格式不正确': 'Incorrect activation code format',
+    '激活码包含无法识别的字符，请检查是否混入了中文或全角符号':
+        'The activation code contains unrecognized characters; check for Chinese or full-width symbols',
+    '激活码已于 {expires} 到期': 'The activation code expired on {expires}',
+    '此激活码为旧版演示格式，正式版已不再支持；请联系供应商获取新版激活码':
+        'This code uses the legacy demo format, which the release build no longer supports; contact the vendor for a new code',
+    # ---- 网络校时状态（core/network_clock.py） ----
+    '网络时间响应延迟或缓存过大': 'Network time response is delayed or the cache is too large',
+    '网络时间缺少时区': 'Network time is missing a time zone',
+    '网络校时未成功，使用系统时间；': 'Network time sync failed; using system time; ',
+    '网络已校时 · {source} · 校正{offset}秒':
+        'Network time synced · {source} · corrected {offset}s',
+    ' · 校正': ' · corrected',
+    '秒': 's',
+    '网络已校时 · ': 'Network time synced · ',
+    '网络不可用，使用系统时间': 'Network unavailable; using system time',
+    # ---- 定时执行状态（core/scheduler.py） ----
+    '未启用': 'Disabled',
+    '下次定时执行：': 'Next scheduled run: ',
+    '下次定时执行：{time}': 'Next scheduled run: {time}',
+    '配置未保存': 'Configuration not saved',
+    '定时状态保存失败，本次不会启动：': 'Could not save schedule state; this run will not start: ',
+    '定时配置无效，请重新选择时间和模式':
+        'Invalid schedule configuration; choose the time and mode again',
+    '软件关闭期间错过的定时不补交，重新安排下次执行':
+        'Schedules missed while the app was closed are not replayed; the next run is rescheduled',
+    '距离定时开始还有5分钟': '5 minutes until the scheduled start',
+    '定时已到，但有任务正在运行，跳过本次定时执行':
+        'Scheduled time reached, but tasks are running; skipping this run',
+    '定时已到，自动开始生成': 'Scheduled time reached; starting generation automatically',
+    # ---- GitHub 同步校验（core/repository_sync.py） ----
+    '目录：请先选择本地项目Git根目录': 'Folder: choose the local project Git root first',
+    '目录：不是可用的Git工作区，请选择项目Git根目录；':
+        'Folder: not a usable Git worktree; choose the project Git root; ',
+    '目录：所选目录不是项目Git根目录，请选择 ': 'Folder: the selected folder is not the project Git root; choose ',
+    '分支：请先切换到main分支再同步': 'Branch: switch to main before syncing',
+    '分支：无法读取当前分支，请确认处于main分支':
+        'Branch: cannot read the current branch; make sure you are on main',
+    'origin：与项目授权仓库不一致（包括推送地址），拒绝同步，不会推送；只允许 ':
+        'Origin: does not match the authorized repository (including push URL); sync refused and nothing pushed; only ',
+    'origin：无法读取授权仓库地址，拒绝同步，不会推送；只允许 ':
+        'Origin: cannot read the authorized repository URL; sync refused and nothing pushed; only ',
+    'Git执行失败：': 'Git command failed: ',
+    '已有GitHub同步正在运行': 'A GitHub sync is already running',
+    '同步目录必须是项目Git根目录': 'The sync folder must be the project Git root',
+    '请先切换到main分支再同步': 'Switch to the main branch before syncing',
+    'origin与项目授权仓库不一致，停止同步':
+        'Origin does not match the authorized repository; sync stopped',
+    '远端commit尚未与本地一致': 'The remote commit does not match the local one yet',
+    '无': 'None',
+    '。已核验远端：': '. Verified remote: ',
+    '。本地提交已保留；请检查网络/GitHub登录后重试。':
+        '. The local commit is kept; check the network/GitHub login and retry.',
+    # ---- 模型目录 / 选择器状态 ----
+    '计费未提供': 'Pricing unavailable',
+    '未配置 API Key': 'API key not configured',
+    '线路': 'Route',
+    '线路 {line}：{count} 个': 'Route {line}: {count}',
+    '请先填写 API Key；当前使用内置模型':
+        'Enter the API key first; built-in models are used for now',
+    '已同步：{details}': 'Synced: {details}',
+    '已同步：{details}；{failure_count} 条线路失败已用离线缓存':
+        'Synced: {details}; {failure_count} route(s) failed and are using the offline cache',
+    '{failure_count} 条线路失败已用离线缓存':
+        '{failure_count} route(s) failed and are using the offline cache',
+    '模型目录同步部分完成：{names}，使用离线缓存':
+        'Model catalog sync partially completed: {names}; using the offline cache',
+    '非视频': 'Not a video model',
+    '自动识别 / 工作台默认': 'Auto detect / workspace default',
+    '已下架': 'Delisted',
+    '暂无可提交模型': 'No submittable model',
+    '其他': 'Other',
+    '── 其他 ──': '── Other ──',
+    # ---- 模型参数提示（core/model_parameters.py / ui/components/model_options.py） ----
+    '此模型仅支持': 'This model only supports ',
+    '此模型仅支持：{choice}，无需切换': 'This model only supports {choice}; no switch needed',
+    '，无需切换': '; no switch needed',
+    '此模型没有可用时长，无法调整': 'This model has no available durations to adjust',
+    '此模型没有可用时长，该参数不会发送':
+        'This model has no available durations; this parameter is not sent',
+    '此模型不支持此参数，不会发送':
+        'This model does not support this parameter; it is not sent',
+    '此模型未提供此参数的可选值': 'This model provides no options for this parameter',
+    '支持': 'Supported',
+})

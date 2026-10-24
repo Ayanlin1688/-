@@ -182,6 +182,41 @@ class EcommerceModelControlTests(unittest.TestCase):
         self.assertTrue(self.page.sync_analysis_models_button.isEnabled())
         self.assertTrue(self.page.sync_image_models_button.isEnabled())
 
+    def test_model_change_triggers_debounced_auto_probe(self):
+        self.page.show()
+        self.finish_probe()
+        self.probe.reset_mock()
+        self.page.analysis_model_picker.set_value('another-chat-model')
+        wait_until(lambda: any(call.kwargs.get('preferred_model') == 'another-chat-model'
+                               for call in self.probe.call_args_list), timeout=4000)
+        self.finish_probe()
+        self.assertEqual(self.page.analysis_status_dot._color.name(), '#67c23a')
+
+    def test_cached_result_shows_immediately_when_switching_back(self):
+        self.page.show()
+        self.finish_probe()
+        self.probe.reset_mock()
+        self.page.sync_analysis_models_button.click()
+        self.finish_probe()
+        self.assertEqual(self.page.analysis_status_dot._color.name(), '#67c23a')
+        self.assertIn('文本调用成功', self.page.analysis_status_dot.toolTip())
+        self.page.analysis_model_picker.set_value('other-chat-model')
+        self.assertEqual(self.page.analysis_status_dot._color.name(), '#92929b')
+        self.page.analysis_model_picker.set_value('deepseek-v4-pro')
+        self.assertEqual(self.page.analysis_status_dot._color.name(), '#67c23a',
+                         '同指纹缓存应立即回显状态点')
+        self.assertIn('文本调用成功', self.page.analysis_status_dot.toolTip())
+        self.finish_probe()
+
+    def test_auto_probe_failure_is_red_but_does_not_spam_infobar(self):
+        self.probe.return_value = dict(ok=False, message='自动探测失败')
+        self.page.show()
+        wait_until(lambda: self.probe.called, timeout=4000)
+        self.finish_probe()
+        wait_until(lambda: self.page.analysis_status_dot._color.name() == '#f56c6c',
+                   timeout=4000)
+        self.notice.assert_not_called()
+
     def test_close_suppresses_late_failure_and_reopening_restores_button(self):
         started, release, _calls = self.block_probe(dict(ok=False, message='旧测试失败'))
         self.page.show()

@@ -12,6 +12,10 @@ from qfluentwidgets import CardWidget, ImageLabel
 from . import tokens
 
 SCALE_CHOICES = ('auto', '1.0', '1.1', '1.25', '1.3', '1.4', '1.5', '1.6', '1.75')
+# 自动模式只做「分辨率补偿」：以 1080p 逻辑高度为基准，按 0.5 次幂收敛，
+# 再与系统 DPI 取较大者；自动补偿的总倍率上限 1.75（系统 DPI 更高时跟随系统）。
+AUTO_MAX_TOTAL = 1.75
+REFERENCE_HEIGHT = 1080.0
 
 
 def screen_factors(screen) -> dict[str, float | int]:
@@ -31,14 +35,37 @@ def _clamp(value, low, high):
     return max(low, min(high, value))
 
 
+def _auto_total(factors, dpi):
+    """Auto-mode total scale: follow the system DPI, add damped resolution compensation."""
+    height = factors['logical_height']
+    resolution_gain = 1.0
+    try:
+        height = float(height)
+    except (TypeError, ValueError):
+        height = REFERENCE_HEIGHT
+    if math.isfinite(height) and height > REFERENCE_HEIGHT:
+        resolution_gain = min(AUTO_MAX_TOTAL, math.sqrt(height / REFERENCE_HEIGHT))
+    total = dpi * resolution_gain
+    # 不缩小到 100% 设计基线以下，也不低于系统 DPI（跟随系统 DPI）。
+    total = max(total, dpi, 1.0)
+    # 自动补偿的总倍率上限；系统 DPI 本身高于 1.75 时保持系统比例。
+    total = min(total, max(dpi, AUTO_MAX_TOTAL))
+    return total
+
+
 def interface_factors(screen, ui_scale='auto'):
+    """Extra scale (``z``) applied on top of Qt's system DPI, and the resulting ``total``.
+
+    ``auto`` follows the system DPI and only adds damped compensation for logical
+    screens taller than 1080p (1080p/100% is exactly 1.0); manual choices stay
+    pure extra multipliers as the user picked them.
+    """
     factors = screen_factors(screen)
     dpi = factors['dpi']
     if not math.isfinite(dpi) or dpi <= 0:
         dpi = 1.0
-    factor_size = _clamp(factors['logical_height'] / 1080.0, 1.0, 1.6)
     if str(ui_scale).strip().lower() == 'auto':
-        extra = _clamp(max(dpi, factor_size) / dpi, 1.0, 2.0 / dpi)
+        extra = _auto_total(factors, dpi) / dpi
     else:
         try:
             extra = float(ui_scale)

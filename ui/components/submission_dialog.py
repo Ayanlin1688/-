@@ -43,6 +43,8 @@ def _context_text(record):
 class _RecoveryDialogBase(StudioDialog):
     """带即时生效按钮的恢复弹窗外壳。"""
 
+    TITLE = ''
+
     def _add_footer(self):
         footer = QHBoxLayout()
         footer.setSpacing(8)
@@ -57,6 +59,18 @@ class _RecoveryDialogBase(StudioDialog):
         self.body_layout.addLayout(footer)
         self.buttonLayout = footer
 
+    def retranslate_ui(self):
+        super().retranslate_ui()
+        try:
+            self.setWindowTitle(tr(self.TITLE))
+            self.set_title(tr(self.TITLE))
+        except Exception:
+            pass
+        try:
+            self._changed()
+        except Exception:
+            pass
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.reject()
@@ -65,8 +79,10 @@ class _RecoveryDialogBase(StudioDialog):
 
 
 class SubmissionRecoveryDialog(_RecoveryDialogBase):
+    TITLE = '确认提交结果'
+
     def __init__(self, parent=None, record=None):
-        super().__init__(parent, tr('确认提交结果'))
+        super().__init__(parent, tr(self.TITLE))
         self.record = record or {}
         self.viewLayout = self.body_layout
         self.resize(680, 560)
@@ -115,6 +131,13 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
         self.cancelButton.setFocus()
         self._changed()
 
+    def retranslate_ui(self):
+        super().retranslate_ui()
+        try:
+            self.context_label.setText(_context_text(self.record))
+        except Exception:
+            pass
+
     def _retry_not_created(self):
         self.action.setCurrentIndex(2)
         self.accept()
@@ -159,8 +182,10 @@ class SubmissionRecoveryDialog(_RecoveryDialogBase):
 class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
     """Require an explicit decision for every uncertain submission before saving."""
 
+    TITLE = '批量处理待确认提交'
+
     def __init__(self, records, parent=None):
-        super().__init__(parent, tr('批量处理待确认提交'))
+        super().__init__(parent, tr(self.TITLE))
         self.records = list(records or [])
         self._rows = []
         self.viewLayout = self.body_layout
@@ -227,11 +252,24 @@ class SubmissionRecoveryBatchDialog(_RecoveryDialogBase):
         reason.setWordWrap(True)
         layout.addWidget(reason)
         self._content_layout.addWidget(frame)
-        entry = dict(record=record, action=action, task_id=task_id, reason=reason, discard_confirm=discard_confirm)
+        entry = dict(record=record, action=action, task_id=task_id, reason=reason, discard_confirm=discard_confirm,
+                     number=number, title=title)
         self._rows.append(entry)
         action.currentIndexChanged.connect(self._changed)
         task_id.textChanged.connect(self._changed)
         discard_confirm.stateChanged.connect(self._changed)
+
+    def retranslate_ui(self):
+        super().retranslate_ui()
+        for entry in getattr(self, '_rows', []):
+            try:
+                entry['title'].setText(f"{entry['number']}. {_context_text(entry['record'])}")
+            except Exception:
+                pass
+        try:
+            self._changed()
+        except Exception:
+            pass
 
     def _accept_if_valid(self):
         self._changed()

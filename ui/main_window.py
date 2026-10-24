@@ -15,7 +15,7 @@ from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow
 
 from core.config_manager import ConfigManager
 from core.crash_reporter import set_notify
-from core.i18n import set_language, tr
+from core.i18n import current_language, register_retranslate, set_language, translate_text, tr
 from core.version import APP_NAME, APP_VERSION
 from core.network_clock import NetworkClock
 from core.scheduler import ScheduleEngine
@@ -66,6 +66,8 @@ class MainWindow(FluentWindow):
         self.config_manager.load_config()
         # 语言须在界面构建前生效：否则构建期 tr() 拿不到配置语言（重启后英文也显示中文）。
         set_language(self.config_manager.config.get('appearance', {}).get('language', '简体中文'))
+        # 记录最近一次已完整重翻的语言，避免 apply_appearance 与语言总线重复重翻。
+        self._last_retranslated_language = None
         self.model_catalog = ModelCatalogController(
             self.config_manager, lambda *args: self.workspace_page.append_log(*args), self,
             auto_sync=network_time if model_sync is None else model_sync)
@@ -135,6 +137,8 @@ class MainWindow(FluentWindow):
         # Apply the saved scale before choosing the first visible geometry.
         self.apply_appearance()
         self._restore_window_geometry()
+        # 登记到语言总线：设置里切语言（set_language 广播）时整窗重翻。
+        register_retranslate(self)
 
     @staticmethod
     def _bounded_geometry(rect, available, minimum):
@@ -257,12 +261,13 @@ class MainWindow(FluentWindow):
             if not result or self._closing:
                 return
             self.workspace_page.append_log(f"发现新版本 v{result['version']}（当前 v{APP_VERSION}），可前往下载更新", 'info')
-            InfoBar.info('发现新版本', f"v{result['version']} 已发布（当前 v{APP_VERSION}）", parent=self, duration=8000)
+            InfoBar.info(tr('发现新版本'), tr('v{version} 已发布（当前 v{current}）').format(
+                version=result['version'], current=APP_VERSION), parent=self, duration=8000)
 
         self.workspace_page.jobs.start(lambda: check_for_update(url), done, lambda message: None)
 
     def _retranslate_chrome(self):
-        """语言切换即时生效范围：导航 / 关于入口 / 关于对话框（其余界面重启后完整生效）。"""
+        """语言切换即时生效：导航项 / 关于入口 / 菜单按钮提示。"""
         for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('电商图'), tr('任务历史'), tr('设置')]):
             try:
                 item.setText(text)
@@ -274,6 +279,71 @@ class MainWindow(FluentWindow):
                 about_item.setText(tr('关于'))
             except Exception:
                 pass
+        try:
+            self.navigationInterface.panel.menuButton.setToolTip(tr('展开 / 收起导航'))
+        except Exception:
+            pass
+        try:
+            avatar = getattr(self, 'user_avatar', None)
+            if avatar is not None:
+                avatar.setToolTip(tr('当前用户 · 版本信息'))
+        except Exception:
+            pass
+
+    def _retranslate_pages(self):
+        """遍历各页面与关于入口，调用其 retranslate_ui()（有则调，异常兜底）。"""
+        for name in ('workspace_page', 'ecommerce_page', 'history_page', 'settings_page'):
+            page = getattr(self, name, None)
+            handler = getattr(page, 'retranslate_ui', None)
+            if not callable(handler):
+                continue
+            try:
+                handler()
+            except Exception:
+                # 单个页面重翻失败不得影响其它页面的语言切换。
+                pass
+
+    def _retranslate_dynamic_chrome(self):
+        """重翻由主窗口持有的动态文案：定时状态、网络校时、下一个定时提示。"""
+        try:
+            engine = getattr(self, 'schedule_engine', None)
+            label = getattr(self, 'next_schedule_label', None)
+            if engine is not None and label is not None:
+                label.setText(translate_text(engine.next_text()))
+        except Exception:
+            pass
+        try:
+            settings = getattr(self, 'settings_page', None)
+            clock = getattr(self, 'clock', None)
+            if settings is not None and clock is not None:
+                settings.update_schedule_state(clock.now(), clock.status)
+        except Exception:
+            pass
+        try:
+            from core.version import APP_NAME as _name
+            title_label = getattr(self, 'titleLabel', None)
+            if title_label is not None:
+                title_label.setText(_name)
+            self.setWindowTitle(_name)
+        except Exception:
+            pass
+
+    def _retranslate_all(self):
+        """语言切换全量应用：先外壳，再各页面，最后刷新窗口标题与动态状态。"""
+        if getattr(self, '_retranslating_ui', False):
+            return
+        self._retranslating_ui = True
+        try:
+            self._retranslate_chrome()
+            self._retranslate_pages()
+            self._retranslate_dynamic_chrome()
+            self._last_retranslated_language = current_language()
+        finally:
+            self._retranslating_ui = False
+
+    def retranslate_ui(self):
+        """语言总线回调：整窗（导航 / 页面 / 标题）按当前语言重翻，幂等。"""
+        self._retranslate_all()
 
     def _announce_license(self):
         """启动公告许可状态；首次运行写入试用起点。"""
@@ -283,9 +353,10 @@ class MainWindow(FluentWindow):
             self.config_manager.save_config()
         except Exception:
             pass
-        self.workspace_page.append_log('许可状态：' + status['detail'], 'info')
+        detail = translate_text(status['detail'])
+        self.workspace_page.append_log('许可状态：' + detail, 'info')
         if status['state'] in {'expired', 'invalid'}:
-            InfoBar.warning(tr('许可提示'), status['detail'], parent=self, duration=8000)
+            InfoBar.warning(tr('许可提示'), detail, parent=self, duration=8000)
 
     def _settings_generation_changed(self):
         if getattr(self.settings_page, '_applying_saved', False):
@@ -307,7 +378,10 @@ class MainWindow(FluentWindow):
         """应用外观设置（主题 / 高斯模糊 / 语言），切换立即生效；主题未变化时不重复全量刷新。"""
         config = self.settings_page.config_manager.config.get('appearance', {})
         set_language(config.get('language', '简体中文'))
-        self._retranslate_chrome()
+        # 语言实际变化时由语言总线（MainWindow 已登记）同步重翻；若本次未变化
+        # （首次构建 / 仅主题刷新）则在这里补一次幂等重翻，保证界面文案与配置一致。
+        if getattr(self, '_last_retranslated_language', None) != current_language():
+            self._retranslate_all()
         from .motion import set_reduced_motion
         set_reduced_motion(bool(config.get('reduce_motion', False)))
         from .tokens import MOTION
@@ -466,6 +540,10 @@ class MainWindow(FluentWindow):
                 setter(th['accent'], th['accent'])
                 self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
+            # 指示条只由原生 setIndicatorColor 绘制；这里只校正其几何：
+            # 44px 导航行内垂直居中，并随界面缩放（原生硬编码 10/16 不随缩放）。
+            for target in (item, inner):
+                target.indicatorRect = lambda target=target: self._rail_indicator_rect(target)
             self._guard_leaf_nav_item(item, inner)
             # 点击后延迟一拍校正尺寸：吸收原生在两态切换边缘的任何小动作（幂等）。
             item.clicked.connect(lambda *args, _self=self: QTimer.singleShot(300, _self._settle_nav_pane))
@@ -669,7 +747,12 @@ class MainWindow(FluentWindow):
 
     @staticmethod
     def _decorate_rail_item(inner) -> None:
-        """Selected chip background + the 3px accent indicator bar."""
+        """Selected / hover chip background only.
+
+        The accent indicator bar is drawn natively from ``setIndicatorColor``
+        (see ``_rail_indicator_rect``); painting it here as well produced the
+        duplicated double-bar the user reported after switching pages.
+        """
         original = inner.paintEvent
 
         def paint(event, inner=inner, original=original):
@@ -682,17 +765,17 @@ class MainWindow(FluentWindow):
                 painter.drawRoundedRect(QRectF(inner.rect()), px(8), px(8))
                 painter.end()
             original(event)
-            if inner.isSelected:
-                painter = QPainter(inner)
-                painter.setRenderHint(QPainter.Antialiasing)
-                painter.setPen(Qt.NoPen)
-                bar_y = (inner.height() - px(16)) / 2
-                from . import materials
-                painter.setBrush(QColor(materials.palette()['accent']))
-                painter.drawRoundedRect(QRectF(px(8), bar_y, px(3), px(16)), px(1.5), px(1.5))
-                painter.end()
 
         inner.paintEvent = paint
+
+    @staticmethod
+    def _rail_indicator_rect(widget) -> QRectF:
+        """Native indicator geometry: scaled with the interface and centred in the 44px row."""
+        margins = widget._margins()
+        height = max(2, px(16))
+        width = max(1, px(3))
+        return QRectF(float(margins.left()), (widget.height() - height) / 2.0,
+                      float(width), float(height))
 
     @staticmethod
     def _guard_leaf_nav_item(item, inner) -> None:
@@ -1284,7 +1367,10 @@ class MainWindow(FluentWindow):
     def show_about(self) -> None:
         from PyQt5.QtWidgets import QLabel
         from .components.brand_widgets import logo_pixmap
-        dialog = Dialog(tr('关于') + ' ' + APP_NAME, f'版本 v{APP_VERSION}\n' + tr('产品批处理 · 定时执行 · GitHub同步') + '\n' + tr('多模型调度 · 自动重试 · 并发生成 · 自动下载'), self)
+        detail = (tr('版本 v{version}').format(version=APP_VERSION) + '\n'
+                  + tr('产品批处理 · 定时执行 · GitHub同步') + '\n'
+                  + tr('多模型调度 · 自动重试 · 并发生成 · 自动下载'))
+        dialog = Dialog(tr('关于') + ' ' + APP_NAME, detail, self)
         dialog.setWindowIcon(self.windowIcon())
         badge = QLabel()
         badge.setPixmap(logo_pixmap(56))
@@ -1299,7 +1385,7 @@ class MainWindow(FluentWindow):
     def _setup_schedule(self, network_time):
         self.clock = NetworkClock()
         self.schedule_engine = ScheduleEngine(self.config_manager, now=self.clock.now, log=self.workspace_page.append_log)
-        self.next_schedule_label = CaptionLabel(self.schedule_engine.next_text())
+        self.next_schedule_label = CaptionLabel(translate_text(self.schedule_engine.next_text()))
         self.workspace_page.status_row.addWidget(self.next_schedule_label)
         self._scheduled_batch = False
         self.settings_page.schedule_changed.connect(self._schedule_changed)
@@ -1311,7 +1397,7 @@ class MainWindow(FluentWindow):
         if network_time:
             QTimer.singleShot(0, self._calibrate_clock)
         else:
-            self.clock.status = '系统时间（未启用网络校时）'
+            self.clock.status = tr('系统时间（未启用网络校时）')
         self.settings_page.update_schedule_state(self.clock.now(), self.clock.status)
 
     def _calibrate_clock(self):
@@ -1341,7 +1427,7 @@ class MainWindow(FluentWindow):
         if self.schedule_engine.tick(busy=busy):
             workspace.start_generation()
             self._scheduled_batch = workspace.task_manager.is_running
-        self.next_schedule_label.setText(self.schedule_engine.next_text())
+        self.next_schedule_label.setText(translate_text(self.schedule_engine.next_text()))
         self.settings_page.update_schedule_state(self.clock.now(), self.clock.status)
 
     def _scheduled_finished(self, *_):

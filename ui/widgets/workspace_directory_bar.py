@@ -13,7 +13,7 @@ class DirectoryCard(WorkspaceCard):
 
     choose_requested = pyqtSignal()
 
-    def __init__(self, title, icon=FIF.FOLDER, parent=None):
+    def __init__(self, title_key, icon=FIF.FOLDER, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(56)
         self.setMinimumWidth(190)
@@ -26,7 +26,8 @@ class DirectoryCard(WorkspaceCard):
         g.addWidget(glyph, 0, Qt.AlignCenter)
         row.addWidget(self.glyph_host)
         col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(1)
-        self.title = label(title, 11, '#9CA3AF')
+        self._title_key = title_key
+        self.title = label(tr(title_key), 11, '#9CA3AF')
         col.addWidget(self.title)
         self.path = ElidedLabel(tr('未选择'))
         col.addWidget(self.path)
@@ -43,6 +44,12 @@ class DirectoryCard(WorkspaceCard):
     def set_value(self, text, suffix=''):
         self.path.setFullText(str(text) if text else tr('未选择'), suffix)
 
+    def retranslate_ui(self):
+        try:
+            self.title.setText(tr(self._title_key))
+        except RuntimeError:
+            pass
+
 
 class WorkspaceDirectoryBar(QWidget):
     choose_requested = pyqtSignal(str)
@@ -53,10 +60,9 @@ class WorkspaceDirectoryBar(QWidget):
         row = WrapLayout(self, spacing=10)
         self._tints = {'prompts': '74,141,255', 'images': '139,92,246', 'output': '52,199,89'}
         self.fields = {}
-        for key, title, icon in [('prompts', tr('提示词'), FIF.DOCUMENT),
-                                 ('images', tr('参考图'), FIF.PHOTO),
-                                 ('output', tr('保存至'), FIF.VIDEO)]:
-            field = DirectoryCard(title, icon)
+        self._titles = {'prompts': '提示词', 'images': '参考图', 'output': '保存至'}
+        for key, icon in [('prompts', FIF.DOCUMENT), ('images', FIF.PHOTO), ('output', FIF.VIDEO)]:
+            field = DirectoryCard(self._titles[key], icon)
             field.choose_requested.connect(lambda k=key: self.choose_requested.emit(k))
             self.fields[key] = field
             row.addWidget(field, 1)
@@ -73,6 +79,8 @@ class WorkspaceDirectoryBar(QWidget):
         self.match_button.clicked.connect(self.match_requested)
         match_row.addWidget(self.match_button)
         row.addWidget(match_host)
+        self._last = ({}, [], {})
+        self._busy = False
         from ..materials import register_theme_callback
         register_theme_callback(self._apply_mode_style)
         self._apply_mode_style()
@@ -94,9 +102,13 @@ class WorkspaceDirectoryBar(QWidget):
 
     def refresh(self, paths, tasks, metrics=None):
         metrics = metrics or {}
-        self.fields['prompts'].set_value(paths.get('prompts'), f'  · {len(tasks)}条')
-        self.fields['images'].set_value(paths.get('images'), f'  · {metrics.get("images", 0)}张')
-        self.fields['output'].set_value(paths.get('output'), f'  · {metrics.get("videos", 0)}个 · {metrics.get("bytes", 0)/1024**3:.1f}GB')
+        self._last = (dict(paths), list(tasks), dict(metrics))
+        self.fields['prompts'].set_value(
+            paths.get('prompts'), f"  · {tr('{count} 条提示词').format(count=len(tasks))}")
+        self.fields['images'].set_value(
+            paths.get('images'), f"  · {tr('{count} 张图片').format(count=metrics.get('images', 0))}")
+        self.fields['output'].set_value(
+            paths.get('output'), f"  · {tr('{count} 个视频 · {size:.1f}GB').format(count=metrics.get('videos', 0), size=metrics.get('bytes', 0)/1024**3)}")
         matched = sum(bool(t.get('images')) for t in tasks)
         self.match_status.setText(f"{tr('已匹配')} {matched}/{len(tasks)}")
         from PyQt5.QtGui import QColor
@@ -111,6 +123,7 @@ class WorkspaceDirectoryBar(QWidget):
         self.match_status.setTextColor(QColor(tone), QColor(tone))
 
     def set_busy(self, busy):
+        self._busy = bool(busy)
         busy = bool(busy)
         reason = tr('队列、匹配扫描或下载进行中，完成后可选择目录或查看匹配详情')
         for field in self.fields.values():
@@ -118,3 +131,15 @@ class WorkspaceDirectoryBar(QWidget):
             field.setToolTip(reason if busy else tr('选择目录'))
         self.match_button.setEnabled(not busy)
         self.match_button.setToolTip(reason if busy else tr('查看每个提示词绑定的参考图'))
+
+    def retranslate_ui(self):
+        """语言切换后重建目录条文案；目录路径与匹配数字保持不变。"""
+        try:
+            for key, field in self.fields.items():
+                field.retranslate_ui()
+            self.match_button.setText(tr('匹配详情'))
+            paths, tasks, metrics = self._last
+            self.refresh(paths, tasks, metrics)
+            self.set_busy(self._busy)
+        except RuntimeError:
+            pass

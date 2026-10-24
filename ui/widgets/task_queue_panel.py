@@ -18,6 +18,10 @@ from qfluentwidgets import IconWidget, FluentIcon as FIF, RoundMenu, Action, Pus
 from ..components.custom_widgets import BodyLabel, ComboBox, CaptionLabel, StrongBodyLabel, make_card
 
 
+FILTER_KEYS = ['全部', '等待中', '生成中', '上传中', '提交中', '下载中', '重试中', '等待冷却',
+               '已暂停', '已完成', '失败', '重复', '提交待确认', '已跳过', '已取消']
+
+
 class TaskQueueRow(QWidget):
     """Fluent list row without a native checkbox or delegate text rendering."""
 
@@ -59,7 +63,7 @@ class TaskGroupHeader(QWidget):
         self.indicator = IconWidget(FIF.RIGHT_ARROW if collapsed else FIF.DOWN)
         self.indicator.setFixedSize(12, 12)
         self.title = StrongBodyLabel(product)
-        self.count = CaptionLabel(f'{task_count} 个任务')
+        self.count = CaptionLabel(f'{task_count} {tr("个任务")}')
         layout.addWidget(self.indicator)
         layout.addWidget(self.title, 1)
         layout.addWidget(self.count)
@@ -79,12 +83,13 @@ class TaskQueuePanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 8, 0)
         root.setSpacing(10)
-        root.addWidget(StrongBodyLabel("任务队列"))
+        self.heading = StrongBodyLabel(tr('任务队列'))
+        root.addWidget(self.heading)
         self.filter_box = ComboBox()
-        self.filter_box.addItems([tr('全部'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已跳过'), tr('已取消')])
+        self.filter_box.addItems([tr(key) for key in FILTER_KEYS])
         root.addWidget(self.filter_box)
-        self.reset_models_button = PushButton(FIF.SYNC, '重置模型识别')
-        self.reset_models_button.setToolTip('全部重置为自动识别')
+        self.reset_models_button = PushButton(FIF.SYNC, tr('重置模型识别'))
+        self.reset_models_button.setToolTip(tr('全部重置为自动识别'))
         self.reset_models_button.clicked.connect(self.reset_models_requested)
         root.addWidget(self.reset_models_button)
         self.list = QListWidget()
@@ -103,14 +108,19 @@ class TaskQueuePanel(QWidget):
         self.list.customContextMenuRequested.connect(self._show_model_menu)
         self.filter_box.currentTextChanged.connect(self._filter)
         root.addWidget(self.list, 1)
-        self.current_product_label = CaptionLabel('当前产品 —')
-        self.product_progress_label = CaptionLabel('已完成产品 0/0')
+        self._current_product = ''
+        self._product_progress = (0, 0)
+        self.current_product_label = CaptionLabel(tr('当前产品') + ' —')
+        self.product_progress_label = CaptionLabel(tr('已完成产品') + ' 0/0')
         root.addWidget(self.current_product_label)
         root.addWidget(self.product_progress_label)
         grid = QGridLayout()
         grid.setSpacing(8)
         self.stat_labels = []
-        stats = [("成功数", "00", "#67c23a"), ("进行中", "00", "#409eff"), ("失败数", "00", "#f56c6c"), ("跳过数", "00", "#e6a23c")]
+        self.stat_title_labels = []
+        self._stat_title_keys = ['成功数', '进行中', '失败数', '跳过数']
+        stats = [(tr('成功数'), "00", "#67c23a"), (tr('进行中'), "00", "#409eff"),
+                 (tr('失败数'), "00", "#f56c6c"), (tr('跳过数'), "00", "#e6a23c")]
         for index, (title, value, color) in enumerate(stats):
             card = make_card()
             card.setFixedHeight(66)
@@ -119,6 +129,7 @@ class TaskQueuePanel(QWidget):
             card_layout.setSpacing(3)
             label = CaptionLabel(title); label.setStyleSheet('font-size: 11px;')
             card_layout.addWidget(label)
+            self.stat_title_labels.append((label, self._stat_title_keys[index]))
             number = StrongBodyLabel(value); number.setStyleSheet(f"color: {color}; font-size: 18px;")
             card_layout.addWidget(number)
             self.stat_labels.append(number)
@@ -173,7 +184,7 @@ class TaskQueuePanel(QWidget):
             number = task.get('product_task_index', index + 1) if product else index + 1
             model = task.get('model') or task.get('requested_model', '')
             source = task.get('model_source', '')
-            source_label = '手动' if source == 'manual' else '自动' if source == 'auto' and model != self._default_model else ''
+            source_label = tr('手动') if source == 'manual' else tr('自动') if source == 'auto' and model != self._default_model else ''
             row = TaskQueueRow(number, title, status, COLORS[status], model=model, source=source_label)
             item.setToolTip(title + '\n' + task.get('error', ''))
             item.setSizeHint(row.sizeHint())
@@ -193,7 +204,8 @@ class TaskQueuePanel(QWidget):
             product_tasks.setdefault(task.get('product') or None, []).append(task)
         completed = sum(bool(rows) and all(row.get('status', 'waiting') in TERMINAL for row in rows)
                         for rows in product_tasks.values())
-        self.product_progress_label.setText(f'已完成产品 {completed}/{len(product_tasks)}')
+        self._product_progress = (completed, len(product_tasks))
+        self.product_progress_label.setText(f'{tr("已完成产品")} {completed}/{len(product_tasks)}')
         self._filter(self.filter_box.currentText())
 
     def task_item(self, index):
@@ -211,7 +223,7 @@ class TaskQueuePanel(QWidget):
             tr('全部重置为自动识别'))
 
     def model_menu_for(self, index):
-        menu = RoundMenu('强制使用模型', self)
+        menu = RoundMenu(tr('强制使用模型'), self)
         for model, record in self._catalog.items():
             action = Action(model_label(record), menu)
             action.setData(model)
@@ -236,7 +248,7 @@ class TaskQueuePanel(QWidget):
             return
         menu = RoundMenu(parent=self)
         menu.addMenu(self.model_menu_for(index))
-        reset = Action('恢复自动识别', menu)
+        reset = Action(tr('恢复自动识别'), menu)
         reset.triggered.connect(lambda: self.model_override_requested.emit(index, ''))
         menu.addAction(reset)
         menu.exec(self.list.mapToGlobal(position))
@@ -271,7 +283,8 @@ class TaskQueuePanel(QWidget):
         index = current.data(Qt.UserRole + 1) if current is not None else None
         if isinstance(index, int) and 0 <= index < len(self._tasks):
             product = self._tasks[index].get('product') or '未分组'
-            self.current_product_label.setText(f'当前产品 {product}')
+            self._current_product = product
+            self.current_product_label.setText(f'{tr("当前产品")} {product}')
             if not self._programmatic_selection:
                 self.task_selected.emit(index)
 
@@ -290,3 +303,32 @@ class TaskQueuePanel(QWidget):
                 dot_color = COLORS.get(item.data(Qt.UserRole), color)
                 dot.setTextColor(dot_color, dot_color)
             row.findChildren(CaptionLabel)[-1].setTextColor(color, color)
+
+    def retranslate_ui(self):
+        """语言切换后重建任务队列文案；任务条目与选中状态保持不变。"""
+        try:
+            index = self.filter_box.currentIndex()
+            self.heading.setText(tr('任务队列'))
+            self.filter_box.blockSignals(True)
+            self.filter_box.clear()
+            self.filter_box.addItems([tr(key) for key in FILTER_KEYS])
+            self.filter_box.setCurrentIndex(max(0, index))
+            self.filter_box.blockSignals(False)
+            self.reset_models_button.setText(tr('重置模型识别'))
+            self.reset_models_button.setToolTip(
+                tr('队列运行中，完成后可重置模型') if not self.models_editable else tr('全部重置为自动识别'))
+            for label, key in self.stat_title_labels:
+                label.setText(tr(key))
+            if self._current_product:
+                self.current_product_label.setText(f'{tr("当前产品")} {self._current_product}')
+            else:
+                self.current_product_label.setText(tr('当前产品') + ' —')
+            completed, total = self._product_progress
+            self.product_progress_label.setText(f'{tr("已完成产品")} {completed}/{total}')
+            for index_task, task in enumerate(self._tasks):
+                item = self._task_items.get(index_task)
+                if item is not None:
+                    item.setData(Qt.UserRole, tr(STATUS_TEXT.get(task.get('status', 'waiting'), '等待中')))
+            self._filter(self.filter_box.currentText())
+        except RuntimeError:
+            pass

@@ -273,8 +273,24 @@ class ImageLightbox(QDialog):
         self._apply_theme()
         for button in (self.close_button, self.prev_button, self.next_button):
             button.raise_()
+        try:
+            from core.i18n import register_retranslate
+            register_retranslate(self)
+        except Exception:
+            pass
         if paths:
             self.set_images(paths, index)
+
+    def retranslate_ui(self):
+        """语言切换：标题/提示/按钮 tooltip 重翻（幂等）。"""
+        self.title_label.setText(tr('图片预览'))
+        self.hint_label.setText(tr('滚轮缩放 · 拖拽平移 · ←/→ 切换 · Esc 关闭'))
+        self.close_button.setToolTip(tr('关闭（Esc）'))
+        self.prev_button.setToolTip(tr('上一张（←）'))
+        self.next_button.setToolTip(tr('下一张（→）'))
+        self.counter_label.setToolTip(tr('当前第 {index} 张').format(
+            index=self._index + 1))
+        self._show_current()
 
     # —— 主题 ——
     def _apply_theme(self):

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from urllib.parse import urlsplit
 
@@ -10,7 +9,9 @@ import requests
 
 from core.http_client import HttpClient, RequestError
 from core.api_errors import classify_http_error, classify_connection_error
-from core.model_catalog import normalize_model_id
+from core.thinking_params import (
+    REASONING_KEYS, apply_thinking_to_payload, request_model as resolve_request_model,
+)
 
 
 DEFAULT_ANALYSIS_MODEL = 'gemini-3.8-flash'
@@ -110,7 +111,7 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
                 raise EcommerceAnalysisError('AI 流式响应 delta 格式错误：期望对象', response.status_code)
             for field, parts, callback in (
                 ('content', content_parts, on_content),
-                ('reasoning_content', reasoning_parts, on_reasoning),
+                *((key, reasoning_parts, on_reasoning) for key in REASONING_KEYS),
             ):
                 value = delta.get(field)
                 if value is None or value == '':
@@ -124,15 +125,6 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
     return ''.join(content_parts), ''.join(reasoning_parts)
 
 
-def _request_model(base_url, model, thinking):
-    model = normalize_model_id(model)
-    host = (urlsplit(str(base_url or '').strip()).hostname or '').lower()
-    if thinking and 'deepseek.com' in host and model in {'deepseek-chat', 'deepseek-flash'}:
-        logging.getLogger('storyboard').info('%s 已切换为 deepseek-v4-pro', model)
-        return 'deepseek-v4-pro'
-    return model
-
-
 def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
                    timeout=(15, 120), on_content=None, on_reasoning=None, thinking=False):
     """Return complete content and reasoning, notifying callbacks per delta.
@@ -142,7 +134,7 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
     """
     client = HttpClient(api_key=api_key, timeout=timeout)
     status_code = None
-    request_model = _request_model(base_url, model, thinking)
+    request_model = resolve_request_model(base_url, model, thinking)
     payload = {
         'model': request_model,
         'messages': [
@@ -153,8 +145,6 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
     }
     if request_model != 'deepseek-reasoner':
         payload['temperature'] = 0.7
-    if thinking and (request_model.lower().startswith('claude-') or 'thinking' in request_model.lower()):
-        payload['thinking'] = {'type': 'enabled', 'budget_tokens': 1024}
     gemini = is_gemini_native(base_url)
     url = base_url.strip().rstrip('/') + '/chat/completions'
     headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
@@ -166,6 +156,10 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
             'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
             'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'},
         }
+        payload = apply_thinking_to_payload(payload, 'gemini', request_model, thinking)
+    else:
+        # 矩阵参数按模型名映射；OpenAI 兼容线路上的 claude 不再盲发 thinking。
+        payload = apply_thinking_to_payload(payload, 'openai', request_model, thinking)
     try:
         with client.request(
             'POST', url,

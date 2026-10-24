@@ -16,14 +16,15 @@ from .model_selector import ModelComboBox, catalog_snapshot
 from core.prompt_detector import annotate_tasks
 from core.prompt_converter import convert_for_model
 from core.task_state import parameters_for_model, submission_images
-from core.i18n import tr
+from core.i18n import translate_text, tr
 
 
 class MatchDialog(StudioDialog):
+    TITLE = '图片与提示词匹配详情'
     saved = pyqtSignal()
 
     def __init__(self, parent=None, log_callback=None, config_manager=None, matches=None, automatic_matches=None):
-        super().__init__(parent, '图片与提示词匹配详情')
+        super().__init__(parent, tr(self.TITLE))
         self.log_callback = log_callback or (lambda *args: None)
         self.config_manager = config_manager
         self.matches = copy.deepcopy(matches or [])
@@ -36,10 +37,11 @@ class MatchDialog(StudioDialog):
         if config_manager:
             annotate_tasks(self.matches, config_manager.config)
         self.setObjectName("matchDialog")
-        self.setWindowTitle("图片-提示词匹配详情")
+        self.setWindowTitle(tr(self.TITLE))
         self.resize(1000, 680)
         root = self.body_layout
-        root.addWidget(CaptionLabel('拖动图片行调整 @参考图1/2/3 的顺序；修改后点击保存调整'))
+        self.hint_label = CaptionLabel(tr('拖动图片行调整 @参考图1/2/3 的顺序；修改后点击保存调整'))
+        root.addWidget(self.hint_label)
         splitter = QSplitter(Qt.Horizontal)
         self.prompt_list = ListWidget()
         for task in self.matches:
@@ -54,36 +56,36 @@ class MatchDialog(StudioDialog):
         detail = QWidget()
         layout = QVBoxLayout(detail)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(StrongBodyLabel("图片绑定详情"))
-        self.detected_model_label = CaptionLabel('自动识别模型：未识别')
+        layout.addWidget(StrongBodyLabel(tr("图片绑定详情")))
+        self.detected_model_label = CaptionLabel(tr('自动识别模型：未识别'))
         self.detected_model_label.setWordWrap(True)
         layout.addWidget(self.detected_model_label)
-        self.match_method_label = CaptionLabel('匹配方式：未绑定图片')
+        self.match_method_label = CaptionLabel(tr('匹配方式：未绑定图片'))
         self.match_method_label.setWordWrap(True)
         layout.addWidget(self.match_method_label)
         self.model_combo = ModelComboBox()
         layout.addWidget(self.model_combo)
-        self.binding_summary = CaptionLabel('已绑定0张参考图')
+        self.binding_summary = CaptionLabel(tr('已绑定0张参考图'))
         layout.addWidget(self.binding_summary)
         self.picture_list = ListWidget()
         self.picture_list.setDragDropMode(ListWidget.InternalMove)
         self.picture_list.setDefaultDropAction(Qt.MoveAction)
         layout.addWidget(self.picture_list, 1)
         actions = QHBoxLayout()
-        add = PushButton(FIF.ADD, "添加图片")
-        remove = PushButton(FIF.REMOVE, "移除")
-        add.clicked.connect(self._add)
-        remove.clicked.connect(self._remove)
-        actions.addWidget(add)
-        actions.addWidget(remove)
+        self.add_button = PushButton(FIF.ADD, tr("添加图片"))
+        self.remove_button = PushButton(FIF.REMOVE, tr("移除"))
+        self.add_button.clicked.connect(self._add)
+        self.remove_button.clicked.connect(self._remove)
+        actions.addWidget(self.add_button)
+        actions.addWidget(self.remove_button)
         actions.addStretch(1)
         layout.addLayout(actions)
-        layout.addWidget(StrongBodyLabel('提示词预览'))
+        layout.addWidget(StrongBodyLabel(tr('提示词预览')))
         self.preview_tabs = SegmentedWidget()
-        self.preview_tabs.addItem('original', '原始格式')
-        self.preview_tabs.addItem('converted', '转换后格式')
+        self.preview_tabs.addItem('original', tr('原始格式'))
+        self.preview_tabs.addItem('converted', tr('转换后格式'))
         layout.addWidget(self.preview_tabs)
-        self.preview_status = CaptionLabel('选择提示词后显示预览')
+        self.preview_status = CaptionLabel(tr('选择提示词后显示预览'))
         self.preview_status.setWordWrap(True)
         layout.addWidget(self.preview_status)
         self.prompt_preview = PlainTextEdit()
@@ -97,15 +99,15 @@ class MatchDialog(StudioDialog):
         root.addWidget(splitter, 1)
         footer = QHBoxLayout()
         footer.addStretch(1)
-        rematch = PushButton(FIF.SYNC, "重新自动匹配")
-        self.reset_models_button = PushButton(FIF.SYNC, '全部重置为自动识别')
+        self.rematch_button = PushButton(FIF.SYNC, tr("重新自动匹配"))
+        self.reset_models_button = PushButton(FIF.SYNC, tr('全部重置为自动识别'))
         self.reset_models_button.clicked.connect(self.reset_models)
-        save = PrimaryPushButton(FIF.SAVE, "保存调整")
-        close = PushButton("关闭")
-        rematch.clicked.connect(self._rematch)
-        save.clicked.connect(self._save)
-        close.clicked.connect(self.accept)
-        for button in (self.reset_models_button, rematch, save, close):
+        self.save_button = PrimaryPushButton(FIF.SAVE, tr("保存调整"))
+        self.close_button = PushButton(tr("关闭"))
+        self.rematch_button.clicked.connect(self._rematch)
+        self.save_button.clicked.connect(self._save)
+        self.close_button.clicked.connect(self.accept)
+        for button in (self.reset_models_button, self.rematch_button, self.save_button, self.close_button):
             footer.addWidget(button)
         root.addLayout(footer)
         self.prompt_list.currentRowChanged.connect(self._show_details)
@@ -115,16 +117,31 @@ class MatchDialog(StudioDialog):
         style_page(self, opaque_window=False)
         style_controls(self)
 
+    def retranslate_ui(self):
+        """语言切换时（弹窗仍打开）重翻标题、静态文案并刷新动态预览。"""
+        super().retranslate_ui()
+        try:
+            self.setWindowTitle(tr(self.TITLE))
+            self.set_title(tr(self.TITLE))
+        except Exception:
+            pass
+        try:
+            self._show_details(self.prompt_list.currentRow())
+        except Exception:
+            pass
+
     def _show_details(self, row):
         self.picture_list.clear()
-        self.binding_summary.setText('已绑定0张参考图')
+        self.binding_summary.setText(tr('已绑定0张参考图'))
         if row < 0:
             return
         key = self.matches[row]['prompt_path']
         task = self.matches[row]
-        self.match_method_label.setText('匹配方式：' + task.get('match_method', '手动绑定'))
-        detected = task.get('detected_model') or '未识别（使用默认模型）'
-        self.detected_model_label.setText('自动识别模型：' + detected)
+        self.match_method_label.setText(
+            tr('匹配方式：{method}').format(method=translate_text(task.get('match_method', '手动绑定'))))
+        detected = task.get('detected_model') or tr('未识别（使用默认模型）')
+        self.detected_model_label.setText(
+            tr('自动识别模型：{model}').format(model=translate_text(detected)))
         self.model_combo.set_models(catalog_snapshot(self.config_manager), self.model_overrides.get(key, ''),
                                     automatic=True, keep_missing=True)
         model_selection_enabled = bool(
@@ -168,7 +185,7 @@ class MatchDialog(StudioDialog):
         label.setObjectName('pictureCaption')
         row.addWidget(label, 1)
         handle = TransparentToolButton(FIF.MOVE)
-        handle.setToolTip("拖动图片行调整顺序")
+        handle.setToolTip(tr("拖动图片行调整顺序"))
         handle.setAttribute(Qt.WA_TransparentForMouseEvents)
         row.addWidget(handle)
         self.picture_list.setItemWidget(item, host)
@@ -181,18 +198,19 @@ class MatchDialog(StudioDialog):
         model = self._effective_preview_model(task) if task else ''
         actual = len(submission_images(dict(task, images=paths), model, catalog_snapshot(self.config_manager)))
         self.binding_summary.setText(
-            f'已绑定{count}张参考图 · 实际提交 {actual}/{count} · 从上到下对应 Picture 1–{actual}'
-            if count else '已绑定0张参考图')
+            tr('已绑定{count}张参考图 · 实际提交 {actual}/{count} · 从上到下对应 Picture 1–{actual}').format(
+                count=count, actual=actual)
+            if count else tr('已绑定0张参考图'))
         for index in range(count):
             item = self.picture_list.item(index)
             host = self.picture_list.itemWidget(item)
             if host is not None:
                 name = Path(item.data(Qt.UserRole)).name
-                status = '文件缺失或图片不可读' if item.data(Qt.UserRole + 1) else '本地图片'
+                status = tr('文件缺失或图片不可读') if item.data(Qt.UserRole + 1) else tr('本地图片')
                 method = task.get('image_match_methods', {}).get(item.data(Qt.UserRole), task.get('match_method', '手动绑定'))
-                status += f' · {method}'
+                status += f' · {translate_text(method)}'
                 if index >= actual:
-                    status += ' · 超出模型上限，本次不提交'
+                    status += ' · ' + tr('超出模型上限，本次不提交')
                 host.findChild(CaptionLabel, 'pictureCaption').setText(f'Picture {index+1} · {name}\n{status}')
                 item.setToolTip(status)
 
@@ -207,9 +225,10 @@ class MatchDialog(StudioDialog):
 
     def _add(self):
         if self.prompt_list.currentRow() < 0:
-            self._notice('请先选择目录并扫描提示词')
+            self._notice(tr('请先选择目录并扫描提示词'))
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, "选择参考图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, tr("选择参考图片"), "", tr("图片 (*.png *.jpg *.jpeg *.webp *.bmp)"))
         for path in paths:
             self._append_picture(str(Path(path).resolve()))
         self._remember()
@@ -227,16 +246,16 @@ class MatchDialog(StudioDialog):
                 overrides[key] = self.bindings[key]
             try:
                 if not self.config_manager.update(('match_overrides',), overrides):
-                    self._notice('保存失败，请查看执行日志；本次修改仍保留在内存')
+                    self._notice(tr('保存失败，请查看执行日志；本次修改仍保留在内存'))
                     return
                 if self.models_dirty and not self.config_manager.update(('model_overrides',), dict(self.model_overrides)):
-                    self._notice('模型选择保存失败，请查看执行日志')
+                    self._notice(tr('模型选择保存失败，请查看执行日志'))
                     return
             except Exception as error:
-                self._notice(f'保存失败：{error}')
+                self._notice(tr('保存失败：') + str(error))
                 return
         self.saved.emit()
-        self._notice("匹配调整已保存")
+        self._notice(tr("匹配调整已保存"))
 
     def _model_changed(self, model):
         row = self.prompt_list.currentRow()
@@ -265,7 +284,7 @@ class MatchDialog(StudioDialog):
         if row < 0:
             self._preview_original = ''
             self._preview_converted = ''
-            self.preview_status.setText('选择提示词后显示预览')
+            self.preview_status.setText(tr('选择提示词后显示预览'))
             self._show_preview_mode(self.preview_tabs.currentRouteKey() or 'original')
             return
         task = self.matches[row]
@@ -288,19 +307,19 @@ class MatchDialog(StudioDialog):
             if result.converted:
                 status = f'{result.source_format} → {result.target_format}'
             elif not enabled:
-                status = '自动转换已关闭'
+                status = tr('自动转换已关闭')
             else:
-                status = f'{result.source_format} → {result.target_format} · 无需转换'
+                status = f'{result.source_format} → {result.target_format} · ' + tr('无需转换')
             if result.warnings:
-                status += ' · ' + '；'.join(result.warnings)
+                status += ' · ' + '；'.join(translate_text(warning) for warning in result.warnings)
             self.preview_status.setText(status)
         except Exception as error:
             try:
                 self._preview_original = Path(task['prompt_path']).read_text(encoding='utf-8-sig')
             except Exception:
                 self._preview_original = ''
-            self._preview_converted = f'转换失败：{error}'
-            self.preview_status.setText('转换失败 · 请检查提示词结构')
+            self._preview_converted = tr('转换失败：') + str(error)
+            self.preview_status.setText(tr('转换失败 · 请检查提示词结构'))
         self._show_preview_mode(self.preview_tabs.currentRouteKey() or 'original')
 
     def _show_preview_mode(self, route_key):
@@ -319,9 +338,9 @@ class MatchDialog(StudioDialog):
                          for task in self.matches}
         self.dirty.update(self.bindings)
         self._show_details(self.prompt_list.currentRow())
-        self._notice('已恢复本次扫描的自动匹配结果，点击保存调整生效')
+        self._notice(tr('已恢复本次扫描的自动匹配结果，点击保存调整生效'))
 
     def _notice(self, text):
         from qfluentwidgets import InfoBar
         self.log_callback(text, "info")
-        InfoBar.info("匹配详情", text, parent=self, duration=2200)
+        InfoBar.info(tr("匹配详情"), translate_text(text), parent=self, duration=2200)

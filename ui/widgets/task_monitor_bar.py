@@ -45,6 +45,8 @@ class TaskMonitorBar(QFrame):
         self.setMinimumHeight(62)
         self._apply_surface_style()
         self.task_info = {}
+        self._last_index = None
+        self._last_progress = (0, 0, -1)
 
         root = WrapLayout(self)
         root.setContentsMargins(18, 10, 14, 10)
@@ -138,6 +140,7 @@ class TaskMonitorBar(QFrame):
     def update_task(self, index, task):
         task = dict(task or {})
         self.task_info = task
+        self._last_index = index
         status = task.get('status')
         if not status:
             self.show_idle()
@@ -162,13 +165,19 @@ class TaskMonitorBar(QFrame):
         self.resolve_button.setToolTip(tr('处理该条提交待确认记录') if is_unknown else tr('当前没有待确认提交'))
 
     def update_progress(self, progress, elapsed, eta):
+        self._last_progress = (progress, elapsed, eta)
         self.progress.setValue(int(progress))
         self.percent.setText(f'{int(progress)}%')
+        self.timing.setText(self._timing_text())
+
+    def _timing_text(self):
+        progress, elapsed, eta = self._last_progress
         remaining = f'{eta:.0f} {tr("秒")}' if eta >= 0 else '—'
-        self.timing.setText(f"{tr('已用')} {elapsed:.0f} {tr('秒')} · {tr('剩余')} {remaining}")
+        return f"{tr('已用')} {elapsed:.0f} {tr('秒')} · {tr('剩余')} {remaining}"
 
     def show_idle(self):
         self.task_info = {}
+        self._last_index = None
         self.title.setText(tr('尚未开始任务'))
         self.title.setTextColor(*_dual('title'))
         self.state_label.setText('')
@@ -184,3 +193,20 @@ class TaskMonitorBar(QFrame):
         self.resolve_button.setVisible(False)
         self.resolve_button.setEnabled(False)
         self.resolve_button.setToolTip(tr('当前没有待确认提交'))
+
+    def retranslate_ui(self):
+        """语言切换后重建监看带文案；行数据与进度保持不变。"""
+        try:
+            self.live_label.setText(tr('当前任务'))
+            self.skip_button.setText(tr('跳过'))
+            self.details_button.setText(tr('详情'))
+            self.resolve_button.setText(tr('处理待确认'))
+            if self.task_info:
+                self.update_task(self._last_index if self._last_index is not None else 0, self.task_info)
+                self.timing.setText(self._timing_text())
+            else:
+                self.show_idle()
+            if not self.skip_button.isEnabled():
+                self.skip_button.setToolTip(tr('当前没有可跳过的运行中任务'))
+        except RuntimeError:
+            pass

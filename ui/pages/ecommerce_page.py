@@ -4,7 +4,7 @@ from copy import deepcopy
 import threading
 from urllib.parse import urlsplit
 
-from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
     QFileDialog, QGridLayout, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget,
@@ -182,6 +182,19 @@ class EcommercePage(QWidget):
         self._model_probe_revisions = {'chat': 0, 'image': 0}
         self._model_probe_fingerprints = {}
         self._probe_closing = False
+        # 探针缓存：同模型/线路指纹的结果直接回显（绿/红立即出现），
+        # 未命中则 350ms 防抖后台自动探测，避免每次切换都点按钮。
+        self._model_probe_cache = {}
+        self._model_probe_cache_limit = 48
+        self._model_probe_timers = {}
+        self._probe_autostart = False
+        for capability in ('chat', 'image'):
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(350)
+            timer.timeout.connect(
+                lambda capability=capability: self._auto_probe_model(capability))
+            self._model_probe_timers[capability] = timer
         self._lightbox = None
         self._platform_selection_order = []
         self._picker_buttons = []
@@ -318,6 +331,16 @@ class EcommercePage(QWidget):
         self.model_grid.setHorizontalSpacing(px(10))
         self.model_grid.setVerticalSpacing(px(8))
         self.model_grid.setColumnStretch(0, 1)
+        # 模型设置卡居中限宽：宽窗不再把控件拉满整行（需求5：卡片居中、不要过宽）。
+        self.model_card_container = QWidget()
+        self.model_card_container.setMaximumWidth(px(980))
+        self.model_card_container.setLayout(self.model_grid)
+        centered_models = QHBoxLayout()
+        centered_models.setContentsMargins(0, 0, 0, 0)
+        centered_models.addStretch(1)
+        centered_models.addWidget(self.model_card_container, 10)
+        centered_models.addStretch(1)
+        self.model_centered_layout = centered_models
         self.analysis_model_picker = ModelPickComboBox()
         self.analysis_model_picker.setObjectName('ecommerceAnalysisModel')
         self.analysis_model_picker.setMinimumWidth(px(260))
@@ -370,11 +393,13 @@ class EcommercePage(QWidget):
         self.thinking_switch.setObjectName('ecommerceThinking')
         self.thinking_switch.setChecked(bool(defaults.get('thinking', False)))
         self.thinking_switch.setToolTip(tr(
-            '开启后，DeepSeek 官方线路的 deepseek-chat 自动切换为 deepseek-v4-pro；'
-            'Claude 思考模型加 thinking 参数；其他模型不受影响'))
+            '开启后按模型族自动下发思考参数：DeepSeek 线路的 deepseek-chat/flash 自动切换 '
+            'deepseek-v4-pro 并下发 reasoning_effort=high；Gemini 下发 thinkingConfig；'
+            '其他推理模型（R1 / QwQ / o1 / o3 / o4 / Thinking 等）下发 enable_thinking；'
+            'Claude 走 thinking budget；非推理模型不会盲发参数'))
         self.model_grid.addWidget(CaptionLabel(tr('深度思考')), 4, 0)
         self.model_grid.addWidget(self.thinking_switch, 4, 1, Qt.AlignLeft | Qt.AlignVCenter)
-        models.addLayout(self.model_grid)
+        models.addLayout(self.model_centered_layout)
         self.sync_analysis_models_button.clicked.connect(lambda: self._test_selected_model('chat'))
         self.sync_image_models_button.clicked.connect(lambda: self._test_selected_model('image'))
         self.analysis_model_picker.currentTextChanged.connect(
@@ -449,6 +474,8 @@ class EcommercePage(QWidget):
 
     def show_single_creation(self):
         self.stack.setCurrentIndex(self.SINGLE_VIEW)
+        self._fit_model_columns()
+        QTimer.singleShot(0, self._fit_model_columns)
 
     def _show_batch_view(self):
         self.stack.setCurrentIndex(self.BATCH_VIEW)
@@ -509,6 +536,11 @@ class EcommercePage(QWidget):
                     for item in items])
                 group = dict(group, manifest=manifest)
             dialog = PlatformPreviewDialog(self, redact_structure(group, self._clean))
+            try:
+                from core.i18n import register_retranslate
+                register_retranslate(dialog)
+            except Exception:
+                pass
             try:
                 dialog.exec_()
             finally:
@@ -764,8 +796,11 @@ class EcommercePage(QWidget):
             return
         outer = self.body_content.layout().contentsMargins()
         inner = self.analysis_model_picker.parentWidget().layout().contentsMargins()
-        available = (self.body_scroll.viewport().width() - outer.left() - outer.right()
-                     - inner.left() - inner.right())
+        viewport = self.body_scroll.viewport().width()
+        # 模型卡居中限宽：列宽预算最多按 980px 卡宽计算，宽窗不把控件拉满整行；
+        # 同时扣掉卡片自身左右内边距，避免窄窗下卡片最小宽度撑出横向滚动。
+        card_width = min(px(980), max(px(320), viewport - outer.left() - outer.right()))
+        available = max(px(120), card_width - px(36) - inner.left() - inner.right())
         spacing = max(0, self.model_grid.horizontalSpacing()) * 4
         reserved = sum(max(first.minimumSizeHint().width(), second.minimumSizeHint().width(),
                            first.minimumWidth(), second.minimumWidth())
@@ -773,13 +808,21 @@ class EcommercePage(QWidget):
                                              (self.analysis_status_dot, self.image_status_dot),
                                              (self.sync_analysis_models_button,
                                               self.sync_image_models_button)))
-        combo_width = min(px(200), max(px(120), available - spacing - reserved - px(260)))
-        picker_width = min(px(260), max(px(140), available - spacing - reserved - combo_width))
+        picker_width = min(px(260), max(px(110), available - spacing - reserved - px(120)))
+        combo_width = min(px(200), max(px(90), available - spacing - reserved - picker_width))
+        total = picker_width + combo_width + reserved + spacing
+        if total > available:
+            picker_width = max(px(80), picker_width - (total - available))
+            total = picker_width + combo_width + reserved + spacing
+        if total > available:
+            combo_width = max(px(80), combo_width - (total - available))
         for picker in (self.analysis_model_picker, self.image_model_picker):
             picker.setMinimumWidth(picker_width)
         for combo in (self.analysis_line_combo, self.image_line_combo):
             combo.setMinimumWidth(combo_width)
             combo.setMaximumWidth(px(200))
+        for label in (self.analysis_line_label, self.image_line_label):
+            label.setMaximumWidth(px(96))
 
     def refresh_interface_scale(self):
         self._fit_model_columns()
@@ -850,20 +893,62 @@ class EcommercePage(QWidget):
 
     def _refresh_model_probe_identity(self, capability):
         identity = self._model_probe_fingerprint(capability)
-        if self._model_probe_fingerprints.get(capability) != identity:
-            self._model_probe_fingerprints[capability] = identity
-            self._model_probe_revisions[capability] += 1
+        if self._model_probe_fingerprints.get(capability) == identity:
+            return
+        self._model_probe_fingerprints[capability] = identity
+        self._model_probe_revisions[capability] += 1
+        cached = self._model_probe_cache.get(identity)
+        if cached is not None:
+            self._apply_probe_result(capability, cached, cached_mode=True)
+        else:
             _picker, dot, _button = self._model_probe_controls(capability)
             dot.set_color('#92929b')
             dot.setToolTip(tr('未测试'))
+        self._schedule_auto_probe(capability)
 
-    def _test_selected_model(self, capability):
+    def _schedule_auto_probe(self, capability):
+        if not self._probe_autostart or self._probe_closing or self.busy:
+            return
+        picker, _dot, _button = self._model_probe_controls(capability)
+        if not str(picker.value() or '').strip():
+            return
+        timer = self._model_probe_timers.get(capability)
+        if timer is not None:
+            timer.start()
+
+    def _auto_probe_model(self, capability):
+        if self.busy or self._probe_closing or capability in self._model_probe_workers:
+            return
+        if not self._probe_autostart:
+            return
+        self._test_selected_model(capability, automatic=True)
+
+    def _apply_probe_result(self, capability, result, *, cached_mode=False, automatic=False):
+        _picker, dot, _button = self._model_probe_controls(capability)
+        ok = bool(result.get('ok'))
+        message = self._clean(result.get('message') or tr('模型测试失败，请检查线路与模型'))
+        dot.set_color('#67c23a' if ok else '#f56c6c')
+        dot.setToolTip(tr('模型测试通过：{message}').format(message=message) if ok else message)
+        if not ok and not cached_mode and not automatic:
+            title = tr('文本模型测试失败') if capability == 'chat' else tr('图片模型测试失败')
+            InfoBar.error(tr('电商图'), title + ' · ' + message, parent=self, duration=5000)
+
+    def _remember_probe_result(self, capability, result):
+        identity = self._model_probe_fingerprints.get(capability)
+        if identity is None:
+            return
+        self._model_probe_cache[identity] = dict(result)
+        while len(self._model_probe_cache) > self._model_probe_cache_limit:
+            self._model_probe_cache.pop(next(iter(self._model_probe_cache)))
+
+    def _test_selected_model(self, capability, automatic=False):
         if self.busy or self._probe_closing or capability in self._model_probe_workers:
             return
         picker, dot, button = self._model_probe_controls(capability)
         self._refresh_model_probe_identity(capability)
-        dot.set_color('#92929b')
-        dot.setToolTip(tr('未测试'))
+        if not automatic:
+            dot.set_color('#92929b')
+            dot.setToolTip(tr('未测试'))
         button.setEnabled(False)
         revision = self._model_probe_revisions[capability]
         snapshot = catalog_snapshot(self.config_manager, capability)
@@ -872,6 +957,7 @@ class EcommercePage(QWidget):
                       else {'id': model_id} for model_id, record in snapshot.items()]
         worker = EcommerceModelProbeWorker(
             deepcopy(self.config_manager.config), capability, model_rows, picker.value(), revision)
+        worker.automatic = bool(automatic)
         self._model_probe_workers[capability] = worker
         _LIVE_WORKERS.add(worker)
         worker.result.connect(self._on_model_probe_result, Qt.QueuedConnection)
@@ -885,14 +971,10 @@ class EcommercePage(QWidget):
         self._refresh_model_probe_identity(capability)
         if self._probe_closing or revision != self._model_probe_revisions[capability]:
             return
-        _picker, dot, _button = self._model_probe_controls(capability)
-        ok = bool(result.get('ok'))
-        message = self._clean(result.get('message') or tr('模型测试失败，请检查线路与模型'))
-        dot.set_color('#67c23a' if ok else '#f56c6c')
-        dot.setToolTip(tr('模型测试通过：{message}').format(message=message) if ok else message)
-        if not ok:
-            title = tr('文本模型测试失败') if capability == 'chat' else tr('图片模型测试失败')
-            InfoBar.error(tr('电商图'), title + ' · ' + message, parent=self, duration=5000)
+        worker = self.sender()
+        automatic = bool(getattr(worker, 'automatic', False))
+        self._remember_probe_result(capability, result)
+        self._apply_probe_result(capability, result, automatic=automatic)
         self._sync_catalog(capability)
 
     @pyqtSlot()
@@ -1414,11 +1496,72 @@ class EcommercePage(QWidget):
         if self._group and self._group.get('output_dir'):
             self._open_folder(self._group['output_dir'])
 
+    def retranslate_ui(self):
+        """语言切换：重翻本页静态控件与子组件/动态状态（幂等，异常兜底）。"""
+        try:
+            self.task_list.retranslate_ui()
+        except Exception:
+            pass
+        try:
+            self.batch_page.retranslate_ui()
+        except Exception:
+            pass
+        try:
+            self.result_panel.retranslate_ui()
+        except Exception:
+            pass
+        for grid in (getattr(self, 'product_grid', None), getattr(self, 'style_grid', None)):
+            try:
+                grid.retranslate_ui()
+            except Exception:
+                pass
+        try:
+            from ..i18n_helpers import retranslate_tree
+            retranslate_tree(self)
+        except Exception:
+            pass
+        try:
+            self.refresh_effective_lines()
+            self.refresh_model_pickers()
+            if self._group:
+                status = self._group.get('status')
+                self.stage_label.setText(_stage_text(status))
+                totals = self._group.get('totals', {})
+                self.summary_label.setText(
+                    tr('成功 {success} / 失败 {failed} / 跳过 {skipped}').format(
+                        success=totals.get('succeeded', 0),
+                        failed=totals.get('failed', 0),
+                        skipped=totals.get('skipped', 0)))
+                for item in self.config_manager.ecommerce_store().list_items(
+                        self._group['group_id']):
+                    self._on_item(item)
+            elif not self.busy:
+                self.stage_label.setText(tr('等待开始'))
+        except Exception:
+            pass
+        for capability in ('chat', 'image'):
+            try:
+                _picker, dot, _button = self._model_probe_controls(capability)
+                identity = self._model_probe_fingerprints.get(capability)
+                cached = self._model_probe_cache.get(identity) if identity else None
+                if cached is not None:
+                    self._apply_probe_result(capability, cached, cached_mode=True)
+                else:
+                    dot.setToolTip(tr('未测试'))
+            except Exception:
+                pass
+
     def showEvent(self, event):
         super().showEvent(event)
         self._fit_model_columns()
         self._probe_closing = False
+        self._probe_autostart = True
         for capability in ('chat', 'image'):
+            identity = self._model_probe_fingerprint(capability)
+            cached = self._model_probe_cache.get(identity)
+            if cached is not None:
+                self._apply_probe_result(capability, cached, cached_mode=True)
+            self._schedule_auto_probe(capability)
             _picker, _dot, button = self._model_probe_controls(capability)
             button.setEnabled(not self.busy and capability not in self._model_probe_workers)
         self._refresh_history()
@@ -1429,6 +1572,12 @@ class EcommercePage(QWidget):
             self.cancel_generation()
             event.ignore()
             return
+        self._probe_autostart = False
+        for timer in getattr(self, '_model_probe_timers', {}).values():
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
         if self._lightbox is not None:
             try:
                 self._lightbox.close()

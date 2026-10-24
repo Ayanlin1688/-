@@ -320,7 +320,7 @@ class ResponsiveLayoutTests(unittest.TestCase):
         screen = FakeScreen(96, 3840, 2160)
         self.window._on_screen_changed(screen)
         QTest.qWait(100)
-        self.assertEqual(self.window._interface_factors['z'], 1.6)
+        self.assertAlmostEqual(self.window._interface_factors['z'], 2 ** 0.5)
         self.assert_layout_inside(self.page.summary.metrics_row)
         screen.dpi = 192
         screen.screen_size = QSize(1920, 1080)
