@@ -24,6 +24,7 @@ from .assets import asset_path
 from .components.studio_dialog import safe_delete_dialog
 from .pages.history_page import HistoryPage
 from .pages.ecommerce_page import EcommercePage
+from .pages.image_generation_page import ImageGenerationPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
@@ -272,7 +273,7 @@ class MainWindow(FluentWindow):
 
     def _retranslate_chrome(self):
         """语言切换即时生效：导航项 / 关于入口 / 菜单按钮提示。"""
-        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('电商图'), tr('任务历史'), tr('设置')]):
+        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('图片生成'), tr('电商图'), tr('任务历史'), tr('设置')]):
             try:
                 item.setText(text)
             except Exception:
@@ -296,7 +297,7 @@ class MainWindow(FluentWindow):
 
     def _retranslate_pages(self):
         """遍历各页面与关于入口，调用其 retranslate_ui()（有则调，异常兜底）。"""
-        for name in ('workspace_page', 'ecommerce_page', 'history_page', 'settings_page'):
+        for name in ('workspace_page', 'image_generation_page', 'ecommerce_page', 'history_page', 'settings_page'):
             page = getattr(self, name, None)
             handler = getattr(page, 'retranslate_ui', None)
             if not callable(handler):
@@ -1320,6 +1321,7 @@ class MainWindow(FluentWindow):
 
     def _setup_pages(self) -> None:
         self.workspace_page = WorkspacePage(self.config_manager)
+        self.image_generation_page = ImageGenerationPage(self.config_manager)
         self.ecommerce_page = EcommercePage(self.config_manager)
         self.history_page = HistoryPage(self.workspace_page.append_log, self.config_manager)
         self.settings_page = SettingsPage(self.config_manager, self.workspace_page.append_log)
@@ -1330,6 +1332,7 @@ class MainWindow(FluentWindow):
         self.settings_page.pool_enabled.checkedChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.settings_page.strategy.currentTextChanged.connect(self.workspace_page.params_card.refresh_pool_hint)
         self.workspace_page.history_changed.connect(self.history_page.update_history)
+        self.image_generation_page.history_changed.connect(self.history_page.refresh_records)
         self.ecommerce_page.history_records_changed.connect(self.history_page.refresh_records)
         self.history_page.redownload_requested.connect(self.workspace_page.redownload)
         self.history_page.resolve_requested.connect(self.workspace_page.resolve_submission)
@@ -1342,6 +1345,7 @@ class MainWindow(FluentWindow):
         self.history_page.clean_cache_requested.connect(self.workspace_page.clean_cache_now)
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
+            self.addSubInterface(self.image_generation_page, FIF.IMAGE_EXPORT, tr('图片生成')),
             self.addSubInterface(self.ecommerce_page, FIF.PHOTO, tr('电商图')),
             self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
             self.addSubInterface(self.settings_page, FIF.SETTING, tr('设置')),

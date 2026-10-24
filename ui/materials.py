@@ -509,6 +509,16 @@ ECOMMERCE_UI = {
     'preview_badge_bg': ('rgba(0,0,0,0.55)', 'rgba(0,0,0,0.55)'),
     'preview_unchecked_bg': ('rgba(0,0,0,0.28)', 'rgba(0,0,0,0.28)'),
     'preview_hint': ('#9CA3AF', '#9CA3AF'),
+    # 独立图片生成页
+    'image_generation_surface': ('#FFFFFF', '#181C28'),
+    'image_generation_input': ('#F7F8FA', '#202431'),
+    'image_generation_border': ('#E5E8EF', '#41485B'),
+    'image_generation_primary': ('#7C3AED', '#A78BFA'),
+    'image_generation_primary_soft': ('#F3EEFF', '#35264F'),
+    'image_generation_cta_start': ('#8B5CF6', '#6D28D9'),
+    'image_generation_cta_end': ('#7C3AED', '#5B21B6'),
+    'image_generation_hint': ('#64748B', '#A9B1C1'),
+    'image_generation_error': ('#CB3C45', '#FF9EA6'),
 }
 
 

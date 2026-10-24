@@ -31,6 +31,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_concurrency": 5,
         "thumbnail_adaptive": True,
     },
+    "image_generation": {
+        "ratio": "9:16",
+        "tier": "1K",
+        "count": 1,
+        "custom_prompts": [],
+    },
     "workspace": {
         "model": "video-v3",
         "aspect_ratio": "16:9",

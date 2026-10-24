@@ -38,7 +38,7 @@ class UiSmokeTests(unittest.TestCase):
         self.assertTrue(hasattr(window, "workspace_page"))
         self.assertTrue(hasattr(window, "ecommerce_page"))
         self.assertEqual(window.ecommerce_page.objectName(), 'ecommercePage')
-        self.assertEqual([item.text() for item in window._nav_items], ['工作台', '电商图', '任务历史', '设置'])
+        self.assertEqual([item.text() for item in window._nav_items], ['工作台', '图片生成', '电商图', '任务历史', '设置'])
         self.assertTrue(hasattr(window, "history_page"))
         self.assertTrue(hasattr(window, "settings_page"))
         self.assertEqual(window.workspace_page.queue_panel.list.count(), 0)

@@ -16,6 +16,7 @@ from ..history_cleanup import DELETABLE_STATUSES, output_summary
 from ..components.history_dialog import DeleteHistoryDialog
 from ..components.studio_dialog import is_dialog_alive, safe_delete_dialog
 from ..tokens import interface_scale
+from .. import materials
 
 HISTORY_DISPLAY_LIMIT = 100  # 历史页只渲染最近 N 条（页脚文案同步承诺）
 
@@ -121,7 +122,7 @@ class HistoryPage(QWidget):
         title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
         self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过'), tr('部分完成')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
-        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(130); header.addWidget(self.type_filter_box)
+        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         self.batch_resolve_button = PushButton(FIF.INFO, tr('批量处理待确认提交'))
@@ -288,6 +289,70 @@ class HistoryPage(QWidget):
             ))
         return result
 
+    def _manual_store(self):
+        cached = getattr(self.config_manager, '_manual_image_store', None)
+        if cached is not None:
+            return cached
+        from core.manual_image import get_manual_image_store
+        return get_manual_image_store(self.config_manager)
+
+    def _manual_records(self):
+        """Map standalone image tasks into the history table's common row shape."""
+        try:
+            store = self._manual_store()
+        except Exception:
+            return []
+        try:
+            records = store.list(limit=HISTORY_DISPLAY_LIMIT)
+        except TypeError:
+            try:
+                records = store.list()
+            except Exception:
+                return []
+        except Exception:
+            return []
+        result = []
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            local_id = str(record.get('local_id') or '')
+            if not local_id:
+                continue
+            raw_files = record.get('files') or []
+            files = []
+            for value in raw_files:
+                if isinstance(value, dict):
+                    path = value.get('path') or value.get('file_path')
+                else:
+                    path = value
+                if path:
+                    files.append(str(path))
+            if not files and record.get('file_path'):
+                files = [str(record['file_path'])]
+            size_bytes = 0
+            for path in files:
+                try:
+                    size_bytes += os.path.getsize(path)
+                except OSError:
+                    pass
+            prompt = str(record.get('prompt') or '')
+            prompt_name = str(record.get('prompt_name') or prompt[:60])
+            raw_status = str(record.get('status') or 'pending')
+            status = {
+                'pending': 'waiting', 'running': 'processing', 'succeeded': 'completed',
+                'failed': 'failed', 'cancelled': 'cancelled',
+            }.get(raw_status, raw_status)
+            result.append(dict(
+                kind='manual_image', local_id='image:' + local_id, manual_id=local_id,
+                product=prompt_name, prompt_name=prompt[:60], model=record.get('model_version') or record.get('model') or '',
+                status=status, manual_status=raw_status,
+                created_at=self._iso_timestamp(record.get('created_at')),
+                finished_at=self._iso_timestamp(record.get('finished_at')) if record.get('finished_at') else '',
+                size_bytes=size_bytes, result_path=files[0] if files else '',
+                output_dir=record.get('output_dir') or '', task_id='', error=record.get('error') or '',
+            ))
+        return result
+
     @staticmethod
     def _iso_timestamp(value):
         try:
@@ -331,7 +396,7 @@ class HistoryPage(QWidget):
     def update_history(self, records):
         # 只渲染最近 100 条（页脚已承诺）；数据未变化时短路，避免整表重建与控件重挂。
         videos = list(reversed(records))
-        combined = videos + self._ecommerce_records()
+        combined = videos + self._ecommerce_records() + self._manual_records()
         combined.sort(key=self._sort_timestamp, reverse=True)
         total = len(combined)
         self._all_records = combined
@@ -411,8 +476,14 @@ class HistoryPage(QWidget):
     def _is_ecommerce(task):
         return task.get('kind') == 'ec'
 
+    @staticmethod
+    def _is_manual_image(task):
+        return task.get('kind') == 'manual_image'
+
     @classmethod
     def _status_text(cls, task):
+        if cls._is_manual_image(task):
+            return tr(STATUS_TEXT.get(task.get('status'), task.get('status', '—')))
         if cls._is_ecommerce(task):
             if task.get('status') == 'ec_partial':
                 return tr('部分完成')
@@ -424,12 +495,17 @@ class HistoryPage(QWidget):
     def _type_text(cls, task):
         if cls._is_ecommerce(task):
             return tr('电商图')
+        if cls._is_manual_image(task):
+            return tr('图片生成')
         return tr('视频')
 
     @staticmethod
     def _type_colors(task):
         if task.get('kind') == 'ec':
             return 'rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'
+        if task.get('kind') == 'manual_image':
+            return (materials.ecommerce_color('image_generation_primary_soft'),
+                    materials.ecommerce_color('image_generation_primary'))
         return 'rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'
 
     @staticmethod
@@ -451,6 +527,24 @@ class HistoryPage(QWidget):
             view.setToolTip(tr('查看电商图结果'))
             view.clicked.connect(lambda _, group_id=task.get('group_id', ''): self.view_ecommerce_group.emit(group_id))
             layout.addWidget(open_folder); layout.addWidget(view)
+            return action
+        if self._is_manual_image(task):
+            open_file = TransparentToolButton(FIF.FOLDER)
+            open_file.setObjectName('manualImageOpenFile')
+            open_file.setToolTip(tr('打开文件'))
+            open_file.setEnabled(bool(task.get('result_path')))
+            open_file.clicked.connect(lambda _, t=task: open_local(t.get('result_path'), self.log_callback))
+            open_folder = TransparentToolButton(FIF.FOLDER)
+            open_folder.setObjectName('manualImageOpenFolder')
+            open_folder.setToolTip(tr('打开文件夹'))
+            open_folder.setEnabled(bool(task.get('output_dir')))
+            open_folder.clicked.connect(lambda _, t=task: open_local(t.get('output_dir'), self.log_callback, folder=True))
+            delete = TransparentToolButton(FIF.DELETE)
+            delete.setObjectName('manualImageDelete')
+            delete.setToolTip(tr('删除记录'))
+            delete.setEnabled(self._is_deletable(task))
+            delete.clicked.connect(lambda _, t=task: self._request_manual_delete(t))
+            layout.addWidget(open_file); layout.addWidget(open_folder); layout.addWidget(delete)
             return action
         open_file = TransparentToolButton(FIF.FOLDER)
         open_file.setToolTip(tr('打开文件') if task.get('result_path') else tr('打开文件（暂无本地文件，任务完成下载后可打开）'))
@@ -489,6 +583,8 @@ class HistoryPage(QWidget):
         self.records = records
         self._row_status = []
         for row, task in enumerate(records):
+            if self._is_manual_image(task):
+                return False
             status = self._status_text(task)
             self._row_status.append(status)
             values = [str(len(records)-row), self._type_text(task), task.get('product', '') or '—', task.get('prompt_name', ''), task.get('model', ''), status,
@@ -653,6 +749,9 @@ class HistoryPage(QWidget):
         if cls._is_ecommerce(task):
             return bool(task.get('local_id')) and task.get('status') in {
                 'completed', 'ec_partial', 'failed', 'cancelled'}
+        if cls._is_manual_image(task):
+            return bool(task.get('manual_id')) and task.get('manual_status') in {
+                'succeeded', 'failed', 'cancelled'}
         return bool(task.get('local_id')) and task.get('status') in DELETABLE_STATUSES
 
     def _select_all(self, state):
@@ -717,9 +816,12 @@ class HistoryPage(QWidget):
             workspace._set_history_maintenance_busy(True)
             workspace._set_recovery_entry_busy(True)
 
-        video_records = [record for record in records if not self._is_ecommerce(record)]
+        video_records = [record for record in records
+                         if not self._is_ecommerce(record) and not self._is_manual_image(record)]
         ecommerce_ids = [record['group_id'] for record in records
                          if self._is_ecommerce(record) and record.get('group_id')]
+        manual_ids = [record['manual_id'] for record in records
+                      if self._is_manual_image(record) and record.get('manual_id')]
 
         def done(summary):
             delete_files = False
@@ -729,7 +831,7 @@ class HistoryPage(QWidget):
                 if workspace is not None and workspace.closing.is_set():
                     return
                 dialog = DeleteHistoryDialog(records, summary, self.window())
-                if ecommerce_ids and not video_records:
+                if (ecommerce_ids or manual_ids) and not video_records:
                     dialog.keep_files.setText(tr('仅删除记录，不删除已生成文件'))
                     dialog.delete_files.setEnabled(False)
                     dialog.keep_files.setChecked(True)
@@ -748,6 +850,11 @@ class HistoryPage(QWidget):
                     self.delete_requested.emit(video_records, delete_files)
                 if ecommerce_ids:
                     self.ecommerce_delete_requested.emit(ecommerce_ids)
+                if manual_ids:
+                    store = self._manual_store()
+                    for local_id in manual_ids:
+                        store.delete(local_id)
+                    self.refresh_records()
 
         def failed(message):
             self.set_maintenance_busy(False)
@@ -767,6 +874,16 @@ class HistoryPage(QWidget):
         task = self.records[row] if 0 <= row < len(self.records) else {}
         folder = task.get('output_dir') or task.get('result_path') or self.config_manager.config['paths']['output']
         open_local(folder, self.log_callback, folder=True)
+
+    def _request_manual_delete(self, task):
+        if not self._is_deletable(task):
+            return
+        try:
+            self._manual_store().delete(task.get('manual_id'))
+        except Exception as error:
+            InfoBar.error(tr('删除记录失败'), str(error), parent=self, duration=4000)
+            return
+        self.refresh_records()
 
     def _filter(self, status):
         statuses = getattr(self, '_row_status', [])
