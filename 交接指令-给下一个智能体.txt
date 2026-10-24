@@ -1,0 +1,36 @@
+你接手 Windows 桌面软件「言林智创矩阵 / Yanlin Smart-Creation Matrix」的后续开发。这是一个 PyQt5 + QFluentWidgets 项目，仓库已随压缩包交付。请严格按以下步骤开工。
+
+═══ 第 0 步：环境准备 ═══
+1. 把交付压缩包解压到一个固定目录（例如 D:\bendihua，或你自己的工作目录，下文称 <项目根>）。
+2. 先完整阅读 <项目根>\项目文件夹.md，这是本项目交接文档，包含：项目结构、铁律、测试/打包/推送命令、已完成批次、当前进行中任务的 12 条需求规格、已勘察结论（含改动文件行号地图和深度思考参数矩阵）、5 段分段计划。不要凭印象改代码，一切以该文档和仓库实际代码为准。
+3. 跑一次自检确认环境：
+   - git status -sb：工作区应干净，main 跟踪 origin/main，HEAD 应为 e1d728c 或更新。
+   - 全量 offscreen 测试（命令见交接文档第 3 节）：约 1257 项，1256 通过 / 1 跳过（Windows 符号链接权限，属正常）。跑不过先修环境，不要继续新功能。
+
+═══ 第 1 步：铁律（违反会出事，逐条遵守）═══
+- 唯一 remote：origin = https://github.com/Ayanlin1688/-.git。永远不要 push 到 legacy 仓库 admin11044/StoryboardVideoStudio；不要改 origin、不要 force push、不要加 mirror remote。
+- 提交身份固定 Ayanlin1688 <329457281+Ayanlin1688@users.noreply.github.com>。提交前核对 git config user.email；不要换身份、不要 --author。
+- 提交说明中文，前缀 feat:/fix:/refactor:/docs:/test:/release:。
+- 推送统一执行：python -X utf8 scripts/sync_github.py --message-file <UTF-8提交说明文件>（该脚本只提交一次、只推 origin、失败重试≤3 次不重复 commit）。推送成功后向用户报告：已同步到GitHub，最新commit: <全 hash>，并用 git log -1 --format="%an <%ae>" 报作者。网络/代理失败就保留本地提交并如实报告，不要谎称已推送成功。
+- 永不入库：config.json、API key/token、.env、生成产物、日志、截图、temp/、打包产物、诊断文件。真实凭据只在用户本机 %APPDATA%\Yanlin\config.json，代码/提交/日志/对话中一律不得出现。
+- 技术栈只用 PyQt5 + QFluentWidgets，不混 Qt6/PySide。
+- 兼容基线：Win10 1909/22H2 + Win11；100/125/150/175% 缩放下布局不重叠；网络/SSL/代理/字体/路径改动必须有失败兜底 + offscreen 测试；面向用户报错用中文短句，外文原文和堆栈只进脱敏日志。
+- 参考软件 E:\大洋芋ai\zhangyugeapp-com-tools\章鱼哥·API Pro 批量客户端.exe 只读参考，禁止复制其源码入库。
+
+═══ 第 2 步：开发任务（按交接文档 §5.4 的 5 段顺序执行）═══
+当前基线 v3.4.3 已完成。新批次任务 = 12 条需求（1:1 复刻参考软件的电商图上传区/灯箱/任务列表/管理模式/批量制作页 + 修 6 个 UI bug + 深度思考参数矩阵），逐条规格和代码改动点全部写在交接文档 §5。按段推进，每段一个独立提交：
+- 段1：新上传组件 + 已用图片/本地画廊/输入URL 三选择器 + 灯箱（支持滚轮缩放/拖拽平移/键盘）+ 单制作页接线 + 勾选平台自动套用比例张数 + SpinBox 范围改轮播1-6/详情1-15。
+- 段2：电商页改 QStackedWidget 三视图（任务列表/单个制作/批量制作）+ 任务列表 1:1（卡片/tab/管理模式/复选/底部操作条/批量删除/分页）+ 平台预览通用模板对话框 + 查看结果跳单制作视图。
+- 段3：批量制作页（共享默认/行表格/上限30行/复制行/Ctrl+V与拖拽/草稿 JSON 持久化）+ worker start_batch 顺序队列，每组独立 group_id。
+- 段4：探针缓存即时显示 + 模型卡居中限宽 + InfoBar 单例去重 + 删导航双竖杆 + 缩放公式收敛 + i18n 语言总线全量切换 + core/thinking_params.py 深度思考矩阵接入 analysis.py。
+- 段5：全量 offscreen 回归 + compileall + git diff --check + core/version.py 升 3.5.0 + packaging\build_release.py 打包 + sync_github.py 推送，回报全 hash。
+
+═══ 第 3 步：每段的执行规范 ═══
+1. 动手前先 Read 交接文档点名的源文件核对现状（行号是勘察时的，可能漂移），不要凭文档行号假设。
+2. 每段改动后：先跑该段相关定向 offscreen 测试，再跑全量；全量必须保持 1256+/1257 基线，不许新增失败。
+3. 迁移旧测试而不是留兼容壳（尤其 tests\test_ecommerce_page.py 对 history_panel.rows 的旧 API 依赖），行为覆盖不能丢。
+4. 每段完成后按第 1 步流程提交+推送，向用户汇报：本段改了哪些文件、测试结果、commit 全 hash。
+5. 段5 打包后提醒用户做人工冒烟（清单见交接文档 §6）。
+
+═══ 第 4 步：开工信号 ═══
+准备好后先汇报：解压路径、git HEAD、全量测试结果，然后从段1开始。遇到交接文档与代码不一致的地方，以代码为准并在汇报中说明偏差；遇到需要用户拍板的事（README GBK 乱码、GitHub About 文案、任务历史合并页去留），先列出来问用户，不要擅自改。
