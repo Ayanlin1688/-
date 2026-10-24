@@ -367,6 +367,138 @@ class EcommercePageTests(unittest.TestCase):
         self.assertIsNotNone(card, '任务列表中找不到该任务卡：%s' % group_id)
         return card
 
+    def test_item_progress_coalesces_thirty_history_refreshes(self):
+        self.page.show()
+        QTest.qWait(20)
+        with patch.object(self.page, '_refresh_history',
+                          wraps=self.page._refresh_history) as refresh:
+            for index in range(30):
+                self.page._on_item(dict(
+                    item_id=f'memory-group:carousel:{index + 1}',
+                    group_id='memory-group', kind='carousel', seq=index + 1,
+                    status='running', updated_at=index + 1, warnings=[]))
+            self.assertLessEqual(refresh.call_count, 2)
+            before_timer = refresh.call_count
+            QTest.qWait(300)
+            self.assertEqual(refresh.call_count, before_timer + 1)
+            self.assertFalse(self.page._history_dirty)
+            self.page._flush_history_refresh()
+            self.assertEqual(refresh.call_count, before_timer + 1)
+
+    def test_history_signature_skips_unchanged_groups_and_preserves_selection(self):
+        self.seed_history('signature-group', 'failed', states=('failed',))
+        with patch.object(self.page.task_list, 'update_groups',
+                          wraps=self.page.task_list.update_groups) as update:
+            self.page._refresh_history()
+            card = self.history_card('signature-group')
+            self.page.task_list.set_manage_mode(True)
+            card.checkbox.setChecked(True)
+            self.page._refresh_history()
+            self.assertEqual(update.call_count, 1)
+            self.assertIs(self.page.task_list.card_for('signature-group'), card)
+            self.assertEqual(self.page.task_list.selected_ids(), ['signature-group'])
+            self.assertTrue(self.page.task_list.manage_mode)
+
+    def test_history_enrich_cache_avoids_repeated_manifest_and_disk_work(self):
+        groups = [dict(
+            group_id=f'cached-group-{index}', status='succeeded', updated_at=1,
+            manifest={'image_model': 'offline-model', 'items': [
+                dict(kind='carousel', seq=seq, status='succeeded',
+                     file=str(self.root / f'missing-{index}-{seq}.png'))
+                for seq in range(1, 13)]}) for index in range(2)]
+        store = Mock()
+        with patch('ui.pages.ecommerce_page.os.path.isfile',
+                   return_value=False) as exists:
+            for group in groups:
+                self.page._enrich_history_group(store, dict(group))
+            self.assertEqual(exists.call_count, 3 * len(groups))
+            exists.reset_mock()
+            for _ in range(4):
+                for group in groups:
+                    cached = dict(group, manifest=Mock())
+                    self.page._enrich_history_group(store, cached)
+                    self.assertEqual(cached['thumbs'], [])
+                    self.assertEqual(cached['image_model'], 'offline-model')
+            exists.assert_not_called()
+            store.list_items.assert_not_called()
+            changed = dict(groups[0], updated_at=2)
+            self.page._enrich_history_group(store, changed)
+            self.assertEqual(exists.call_count, 3)
+
+    def test_hidden_history_waits_for_show_and_first_frame_flush_is_deferred(self):
+        self.seed_history('show-group', 'succeeded', states=())
+        with patch.object(self.page, '_refresh_history',
+                          wraps=self.page._refresh_history) as refresh:
+            self.page._schedule_history_refresh()
+            self.assertTrue(self.page._history_dirty)
+            self.assertFalse(self.page._history_timer.isActive())
+            self.page.show()
+            refresh.assert_not_called()
+            self.assertFalse(self.page.task_list.updatesEnabled())
+            QTest.qWait(20)
+            refresh.assert_called_once_with()
+            self.assertTrue(self.page.task_list.updatesEnabled())
+            self.assertIsNotNone(self.page.task_list.card_for('show-group'))
+            self.page.show_single_creation()
+            self.page.show_task_list()
+            QTest.qWait(180)
+            self.assertEqual(len(self.page.task_list.cards), 1)
+
+    def test_history_flush_restores_first_frame_updates_on_error(self):
+        self.page._history_dirty = True
+        self.page._history_signature = (('failed-snapshot', 1, 'failed'),)
+        self.page._history_persistence_available = True
+        self.page.task_list.setUpdatesEnabled(False)
+        with patch.object(self.page, '_refresh_history', side_effect=OSError('fixture')):
+            with self.assertRaises(OSError):
+                self.page._flush_history_refresh()
+        self.assertTrue(self.page.task_list.updatesEnabled())
+        self.assertFalse(self.page._history_timer.isActive())
+        self.assertTrue(self.page._history_dirty)
+        self.assertIsNone(self.page._history_signature)
+        self.assertIsNone(self.page._history_persistence_available)
+        self.page._flush_history_refresh()
+        self.assertFalse(self.page._history_dirty)
+        self.assertEqual(self.page._history_signature, ())
+
+    def test_terminal_group_flushes_pending_history_and_stops_timer(self):
+        group, _ = self.seed_history('terminal-group', 'succeeded', states=())
+        self.page.show()
+        QTest.qWait(20)
+        self.page._schedule_history_refresh()
+        self.assertTrue(self.page._history_timer.isActive())
+        with patch.object(self.page, '_refresh_history',
+                          wraps=self.page._refresh_history) as refresh:
+            self.page._on_group(group)
+            refresh.assert_called_once_with()
+            self.assertFalse(self.page._history_timer.isActive())
+            QTest.qWait(220)
+            refresh.assert_called_once_with()
+            refresh.reset_mock()
+            self.page._on_result(group['group_id'], '')
+            refresh.assert_called_once_with()
+            refresh.reset_mock()
+            self.page._thread_stopped()
+            refresh.assert_called_once_with()
+
+    def test_history_buttons_defer_refresh_and_delete_clears_enrich_cache(self):
+        group, _ = self.seed_history('deferred-group', 'succeeded', states=())
+        self.page._refresh_history()
+        self.assertIn(group['group_id'], self.page._enrich_cache)
+        with patch.object(self.page, '_refresh_history',
+                          wraps=self.page._refresh_history) as refresh:
+            self.history_card(group['group_id']).view_button.click()
+            refresh.assert_not_called()
+            QTest.qWait(10)
+            refresh.assert_called_once_with()
+            refresh.reset_mock()
+            self.page._delete_history_groups([group['group_id']])
+            self.assertNotIn(group['group_id'], self.page._enrich_cache)
+            refresh.assert_not_called()
+            QTest.qWait(10)
+            refresh.assert_called_once_with()
+            self.assertIsNone(self.page.task_list.card_for(group['group_id']))
+
     def test_default_view_is_task_list_and_switches(self):
         page = self.page
         self.assertEqual(page.stack.count(), 3)
@@ -391,6 +523,7 @@ class EcommercePageTests(unittest.TestCase):
                                              states=('succeeded',) if status == 'succeeded' else ('failed',))
             records.append(group)
         self.page.task_list.refresh_button.click()
+        QTest.qWait(10)
         groups = self.page.task_list.groups()
         self.assertEqual([group['group_id'] for group in groups],
                          [group['group_id'] for group in records[::-1]])
@@ -486,6 +619,7 @@ class EcommercePageTests(unittest.TestCase):
         for index in range(52):
             store.upsert_group(dict(group_id=f'group-{index:02d}', status='succeeded', updated_at=index))
         self.page.show()
+        QTest.qWait(20)
         groups = self.page.task_list.groups()
         self.assertEqual(len(groups), 50)
         self.assertEqual(groups[0]['group_id'], 'group-51')
@@ -531,6 +665,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(card.status_badge.text(), '已完成')
         self.assertIn('轮播图 5 张', card.counts_label.text())
         self.assertFalse(card.resume_action.isEnabled())
+        self.wait_until(lambda: card.thumb_count == 3)
         self.assertEqual(card.thumb_count, 3)
         self.assertTrue(all(card.record['status'] == 'succeeded'
                             for card in self.page.result_panel.ordered_cards()))
@@ -631,6 +766,7 @@ class EcommercePageTests(unittest.TestCase):
             with patch.object(self.page.task_list, 'confirm_delete',
                               return_value=accept) as confirm:
                 self.history_card(group['group_id']).delete_button.click()
+            QTest.qWait(10)
             confirm.assert_called_once_with(1)
             store = self.config.ecommerce_store()
             if accept:
@@ -682,6 +818,7 @@ class EcommercePageTests(unittest.TestCase):
                          tr('删除 {count} 个').format(count=2))
         with patch.object(ledger, 'confirm_delete', return_value=True) as confirm:
             ledger.delete_selected_button.click()
+        QTest.qWait(10)
         confirm.assert_called_once_with(2)
         store = self.config.ecommerce_store()
         self.assertIsNone(store.get_group('bulk-1'))

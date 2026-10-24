@@ -8,7 +8,7 @@ import threading
 import time
 import math
 
-from PyQt5.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath
+from PyQt5.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRect, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
@@ -27,7 +27,7 @@ from .pages.ecommerce_page import EcommercePage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
 from .theme import style_controls, style_page, apply_palette
-from .materials import ACCENT, paint_background, paint_window_tint, window_background_snapshot, legacy_background_snapshot
+from .materials import ACCENT, paint_background, paint_window_tint, window_background_snapshot, legacy_background_snapshot, ui_font_family
 from .motion import PageTransition
 from .model_catalog_controller import ModelCatalogController
 from .scaling import screen_factors, apply_interface_scale
@@ -39,8 +39,12 @@ from .window_backdrop import WindowsBackdropApi, WindowBackdrop, WM_ENTERSIZEMOV
 
 class MainWindow(FluentWindow):
     def __init__(self, config_manager: ConfigManager | None = None, network_time=True, model_sync=None) -> None:
-        ensure_ui_font()
-        apply_palette(QApplication.instance())
+        app = QApplication.instance()
+        if app is not None and not getattr(app, '_yanlin_ui_font_initialized', False):
+            ensure_ui_font()
+            app.setFont(QFont(ui_font_family(), 9))
+            app._yanlin_ui_font_initialized = True
+        apply_palette(app)
         setTheme(Theme.DARK, save=False)
         setThemeColor(QColor(ACCENT), save=False)
         super().__init__()
@@ -1362,7 +1366,7 @@ class MainWindow(FluentWindow):
         for group_id in group_ids:
             store.delete_group(group_id)
         self.history_page.refresh_records()
-        self.ecommerce_page._refresh_history()
+        self.ecommerce_page._queue_history_refresh()
 
     def show_about(self) -> None:
         from PyQt5.QtWidgets import QLabel

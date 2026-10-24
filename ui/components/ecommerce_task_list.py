@@ -15,10 +15,15 @@
              page_index / page_size
 """
 from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime
+import os
 from pathlib import Path
+import re
+import threading
+import weakref
 
-from PyQt5.QtCore import QPoint, QRectF, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPoint, QRectF, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -47,6 +52,9 @@ TAB_STATUSES = {
 
 _THUMBNAIL_CACHE = OrderedDict()
 _THUMBNAIL_CACHE_LIMIT = 64
+_THUMBNAIL_PENDING = {}
+_THUMBNAIL_LOCK = threading.Lock()
+_THUMBNAIL_DISPATCHER = None
 
 
 # ---------------------------------------------------------------------------
@@ -58,29 +66,92 @@ def _rgba(color, alpha):
     return 'rgba(%d,%d,%d,%d)' % (value.red(), value.green(), value.blue(), alpha)
 
 
-def _image(value):
-    """带 mtime 失效的缩略图缓存；限制 64 张、单张 ≤240px，避免吃内存。"""
-    if not value:
-        return QImage()
+def _thumbnail_key(value):
+    """路径和文件版本共同标识缓存；文件重生后不会复用旧图。"""
+    path = os.path.abspath(str(value))
     try:
-        path = Path(str(value))
-        stat = path.stat()
-        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        stat = os.stat(path)
+        return '%s\0%d\0%d' % (path, stat.st_mtime_ns, stat.st_size)
+    except (OSError, ValueError, TypeError):
+        return path + '\0missing'
+
+
+def _image(key):
+    """只读取有界 QImage 缓存；界面刷新路径不读盘、不解码。"""
+    with _THUMBNAIL_LOCK:
         cached = _THUMBNAIL_CACHE.get(key)
         if cached is not None:
             _THUMBNAIL_CACHE.move_to_end(key)
-            return cached
-        loaded = QImage.fromData(path.read_bytes())
-        if loaded.isNull():
-            return loaded
-        if max(loaded.width(), loaded.height()) > 240:
-            loaded = loaded.scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        _THUMBNAIL_CACHE[key] = loaded
-        while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_LIMIT:
-            _THUMBNAIL_CACHE.popitem(last=False)
-        return loaded
+        return cached
+
+
+def _decode_thumbnail(path):
+    """仅供后台任务调用：读取并降采样图片，不接触 QWidget 或 QPixmap。"""
+    try:
+        image = QImage.fromData(Path(path).read_bytes())
+        if not image.isNull() and max(image.width(), image.height()) > 240:
+            image = image.scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return image
     except (OSError, ValueError, TypeError):
         return QImage()
+
+
+class _ThumbnailDispatcher(QObject):
+    """后台完成信号统一排队回 GUI 线程，再安全通知仍然存在的缩略图。"""
+
+    loaded = pyqtSignal(str, str, QImage)
+
+    def __init__(self):
+        super().__init__()
+        self.loaded.connect(self._complete, Qt.QueuedConnection)
+
+    def _complete(self, key, path, image):
+        with _THUMBNAIL_LOCK:
+            _THUMBNAIL_CACHE[key] = image
+            _THUMBNAIL_CACHE.move_to_end(key)
+            while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_LIMIT:
+                _THUMBNAIL_CACHE.popitem(last=False)
+            callbacks = _THUMBNAIL_PENDING.pop(key, ())
+        for callback in callbacks:
+            method = callback()
+            if method is not None:
+                try:
+                    method(key, path, image)
+                except RuntimeError:
+                    # 卡片可能已经翻页/删除，Qt 对象销毁后丢弃该回调。
+                    continue
+
+
+class _ThumbnailLoader(QRunnable):
+    def __init__(self, key, path, dispatcher):
+        super().__init__()
+        self.key, self.path, self.dispatcher = key, path, dispatcher
+
+    def run(self):
+        try:
+            image = _decode_thumbnail(self.path)
+        except Exception:
+            # 异常图片只回传缺失占位，不能让后台任务异常中断 GUI 进程。
+            image = QImage()
+        try:
+            self.dispatcher.loaded.emit(self.key, self.path, image)
+        except RuntimeError:
+            # 应用退出时 GUI 接收对象可能已先销毁。
+            with _THUMBNAIL_LOCK:
+                _THUMBNAIL_PENDING.pop(self.key, None)
+
+
+def _request_thumbnail(key, path, callback):
+    global _THUMBNAIL_DISPATCHER
+    if _THUMBNAIL_DISPATCHER is None:
+        _THUMBNAIL_DISPATCHER = _ThumbnailDispatcher()
+    with _THUMBNAIL_LOCK:
+        pending = _THUMBNAIL_PENDING.get(key)
+        if pending is not None:
+            pending.append(weakref.WeakMethod(callback))
+            return
+        _THUMBNAIL_PENDING[key] = [weakref.WeakMethod(callback)]
+    QThreadPool.globalInstance().start(_ThumbnailLoader(key, path, _THUMBNAIL_DISPATCHER))
 
 
 def _label(size=13, bold=False, wrap=False, text=''):
@@ -88,7 +159,9 @@ def _label(size=13, bold=False, wrap=False, text=''):
     widget.setTextFormat(Qt.PlainText)
     widget.setWordWrap(wrap)
     font = widget.font()
-    font.setPixelSize(px(size))
+    font.setFamily(materials.ui_font_family())
+    # 声明尺寸使用 100% 基线；InterfaceScaler 负责控件与样式缩放。
+    font.setPixelSize(size)
     font.setBold(bold)
     widget.setFont(font)
     return widget
@@ -136,11 +209,43 @@ def _group_thumbs(group):
     return [str(item['file']) for item in succeeded[:3]]
 
 
-def _group_descriptions(group):
+def _product_info(group):
     config = group.get('config') if isinstance(group.get('config'), dict) else {}
     manifest = group.get('manifest') if isinstance(group.get('manifest'), dict) else {}
     info = str(config.get('product_info') or manifest.get('product_info') or '').strip()
     return info
+
+
+def _display_description(group):
+    """列表仅展示简短产品说明，避免把系统提示词整段铺进任务卡。"""
+    original = _product_info(group)
+    if not original:
+        return tr('（未填写产品信息）')
+    text = re.sub(r'\s+', ' ', original.replace('\r\n', '\n').replace('\t', ' ')).strip()
+    folded = text.lower()
+    chinese = len(re.findall(r'[\u4e00-\u9fff]', text))
+    prompt_like = (text.startswith('[')
+                   or any(marker in folded for marker in
+                          ('system role', 'specification', 'you are ', 'ground truth'))
+                   or (len(text) > 300 and chinese / len(text) < 0.2))
+
+    def clipped(value, limit):
+        return value[:limit] + '…' if len(value) > limit else value
+
+    if not prompt_like:
+        return clipped(text, 200)
+    manifest = group.get('manifest') if isinstance(group.get('manifest'), dict) else {}
+    for item in manifest.get('items') or ():
+        if not isinstance(item, dict) or item.get('status') != 'succeeded':
+            continue
+        description = re.sub(r'\s+', ' ', str(item.get('desc') or '')).strip()
+        if re.search(r'[\u4e00-\u9fff]', description):
+            return clipped(description, 140)
+    carousel, detail = _group_output_counts(group)
+    if carousel is not None or detail is not None:
+        return tr('提示词型产品信息 · 轮播 {carousel} 张 / 详情 {detail} 张').format(
+            carousel=carousel or 0, detail=detail or 0)
+    return tr('已提交提示词型任务')
 
 
 def _group_model(group):
@@ -182,28 +287,71 @@ class _Thumbnail(QLabel):
         super().__init__(parent)
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(px(56), px(56))
+        self.setFixedSize(56, 56)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.has_image = False
         self.path = ''
         self._rendered_path = None
         self._rendered_theme = None
+        self._rendered_key = None
+        self._rendered_size = None
+        self._requested_key = None
+        font = self.font()
+        font.setFamily(materials.ui_font_family())
+        font.setPixelSize(12)
+        self.setFont(font)
         self.set_source('')
 
     def set_source(self, path):
-        """路径与主题都没变就直接复用已有 pixmap（生成中高频刷新时省重绘）。"""
+        """先显示占位或缓存；缺失缓存交给后台线程读取与解码。"""
         path = str(path) if path else ''
         theme = materials.THEME_ID
+        key = _thumbnail_key(path) if path else None
+        size = (px(56), float(self.devicePixelRatioF() or 1.0))
         if (path == self._rendered_path and theme == self._rendered_theme
-                and not self.pixmap().isNull()):
-            self.path = path
+                and key == self._rendered_key and size == self._rendered_size):
             return
         self.path = path
         self._rendered_path, self._rendered_theme = path, theme
+        self._rendered_key, self._rendered_size = key, size
+        self.setToolTip(path)
         self.has_image = False
-        image = _image(path)
+        if not path:
+            self._requested_key = None
+            self._paint_thumbnail(QImage())
+            return
+        image = _image(key)
+        if image is not None:
+            self._requested_key = None
+            self._paint_thumbnail(image, missing=image.isNull())
+            return
+        self._paint_thumbnail(QImage())
+        if key != self._requested_key:
+            self._requested_key = key
+            _request_thumbnail(key, path, self._decoded)
+
+    def _decoded(self, key, path, image):
+        if path != self.path or key != self._rendered_key:
+            return
+        self._requested_key = None
+        if _thumbnail_key(path) != key:
+            self.set_source(path)
+            return
+        self._paint_thumbnail(image, missing=image.isNull())
+
+    def _paint_thumbnail(self, image, missing=False):
         size = px(56)
         ratio = max(1.0, float(self.devicePixelRatioF() or 1.0))
+        self.has_image = not image.isNull()
+        self.setProperty('thumbLoaded', self.has_image)
+        self.setStyleSheet(
+            'color:%s; background:%s; border-radius:%dpx;'
+            % (materials.text_color(3), materials.ecommerce_color('thumb_bg'), 6))
+        if missing:
+            self.setPixmap(QPixmap())
+            self.setText(tr('缺失'))
+            return
+        self.setText('')
         canvas = QPixmap(round(size * ratio), round(size * ratio))
         canvas.setDevicePixelRatio(ratio)
         canvas.fill(Qt.transparent)
@@ -224,13 +372,18 @@ class _Thumbnail(QLabel):
                                 (scaled.height() - physical) / 2,
                                 physical, physical)
                 painter.drawImage(QRectF(0, 0, size, size), scaled, source)
-                self.has_image = True
+            else:
+                icon_size = px(18)
+                painter.setOpacity(0.45)
+                painter.drawPixmap((size - icon_size) // 2, (size - icon_size) // 2,
+                                   FIF.PHOTO.icon().pixmap(icon_size, icon_size))
         finally:
             painter.end()
         self.setPixmap(canvas)
-        self.setProperty('thumbLoaded', self.has_image)
 
     def refresh(self):
+        # 主题/语言刷新需要重绘占位；解码结果仍直接复用缓存。
+        self._rendered_theme = None
         self.set_source(self.path)
 
 
@@ -238,10 +391,11 @@ class _IndexBox(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(px(24))
-        self.setFixedHeight(px(24))
+        self.setMinimumWidth(24)
+        self.setFixedHeight(24)
         font = self.font()
-        font.setPixelSize(px(13))
+        font.setFamily(materials.ui_font_family())
+        font.setPixelSize(13)
         font.setBold(True)
         self.setFont(font)
         self.setTextFormat(Qt.PlainText)
@@ -250,7 +404,7 @@ class _IndexBox(QLabel):
         colors = materials.palette()
         self.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:0 %dpx;'
-            % (colors['text2'], materials.ecommerce_color('index_bg'), px(6), px(6)))
+            % (colors['text2'], materials.ecommerce_color('index_bg'), 6, 6))
 
 
 # ---------------------------------------------------------------------------
@@ -270,16 +424,20 @@ class EcommerceTaskCard(CardWidget):
         self._styled = False
         self._theme_id = None
         self._chip_names = []
+        self._data_initialized = False
+        self._description_timer = QTimer(self)
+        self._description_timer.setSingleShot(True)
+        self._description_timer.timeout.connect(self._sync_description_height)
 
         self.setObjectName('ecommerceTaskCard')
-        self.setBorderRadius(px(12))
+        self.setBorderRadius(12)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root = QHBoxLayout(self)
-        root.setContentsMargins(px(16), px(14), px(16), px(14))
-        root.setSpacing(px(12))
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
 
         self.checkbox = CheckBox(self)
-        self.checkbox.setFixedSize(px(18), px(18))
+        self.checkbox.setFixedSize(18, 18)
         self.checkbox.setToolTip(tr('选择该记录'))
         self.checkbox.toggled.connect(self._on_checkbox)
         self.checkbox.setVisible(False)
@@ -291,7 +449,7 @@ class EcommerceTaskCard(CardWidget):
         self.thumb_host = QWidget(self)
         thumb_layout = QHBoxLayout(self.thumb_host)
         thumb_layout.setContentsMargins(0, 0, 0, 0)
-        thumb_layout.setSpacing(px(4))
+        thumb_layout.setSpacing(4)
         self.thumb_labels = [_Thumbnail(self.thumb_host) for _ in range(3)]
         for thumb in self.thumb_labels:
             thumb_layout.addWidget(thumb)
@@ -299,10 +457,10 @@ class EcommerceTaskCard(CardWidget):
 
         info = QVBoxLayout()
         info.setContentsMargins(0, 0, 0, 0)
-        info.setSpacing(px(4))
+        info.setSpacing(4)
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(px(8))
+        top_row.setSpacing(8)
         self.time_label = _label(12)
         self.time_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_badge = QLabel(self)
@@ -316,18 +474,19 @@ class EcommerceTaskCard(CardWidget):
         info.addWidget(self.name_label)
         self.desc_label = _label(12, wrap=True)
         self.desc_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.desc_label.installEventFilter(self)
         metrics = self.desc_label.fontMetrics()
-        self.desc_label.setMaximumHeight(metrics.lineSpacing() * 2 + px(2))
+        self.desc_label.setMaximumHeight(metrics.lineSpacing() * 2 + 2)
         info.addWidget(self.desc_label)
         chips_host = QWidget(self)
-        chips = WrapLayout(chips_host, spacing=px(4))
+        chips = WrapLayout(chips_host, spacing=4)
         self.chip_host = chips_host
         self.chip_layout = chips
         self.platform_chips = []
         info.addWidget(chips_host)
         output_row = QHBoxLayout()
         output_row.setContentsMargins(0, 0, 0, 0)
-        output_row.setSpacing(px(8))
+        output_row.setSpacing(8)
         self.counts_label = _label(12)
         self.counts_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.model_label = QLabel(self)
@@ -341,16 +500,16 @@ class EcommerceTaskCard(CardWidget):
 
         actions = QVBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(px(6))
+        actions.setSpacing(6)
         self.view_button = PushButton(tr('查看结果'), self)
         self.preview_button = PushButton(tr('平台预览'), self)
         self.delete_button = PushButton(tr('删除'), self)
         for button in (self.view_button, self.preview_button, self.delete_button):
-            button.setFixedHeight(px(28))
-            button.setMinimumWidth(px(88))
+            button.setFixedHeight(28)
+            button.setMinimumWidth(88)
             actions.addWidget(button)
         self.more_button = TransparentToolButton(FIF.MORE, self)
-        self.more_button.setFixedSize(px(28), px(28))
+        self.more_button.setFixedSize(28, 28)
         self.more_button.setToolTip(tr('更多操作'))
         more_row = QHBoxLayout()
         more_row.setContentsMargins(0, 0, 0, 0)
@@ -379,14 +538,33 @@ class EcommerceTaskCard(CardWidget):
         self.more_button.clicked.connect(self._show_more_menu)
 
         self.update_group(group, index=index)
+        # 新卡片会先被全局缩放器处理，再按最终字体度量校正两行上限。
+        self._description_timer.start(0)
+
+    def eventFilter(self, watched, event):
+        if (watched is getattr(self, 'desc_label', None)
+                and event.type() in (QEvent.FontChange, QEvent.StyleChange, QEvent.Polish)):
+            self._description_timer.start(0)
+        return super().eventFilter(watched, event)
+
+    def _sync_description_height(self):
+        maximum = self.desc_label.fontMetrics().lineSpacing() * 2 + px(2)
+        if self.desc_label.maximumHeight() != maximum:
+            self.desc_label.setMaximumHeight(maximum)
 
     # -- 数据 ---------------------------------------------------------
     def update_group(self, group, index=None):
-        self.group = dict(group or {})
-        self.group_id = str(self.group.get('group_id') or self.group_id)
         if index is not None:
             self.index = int(index)
-        self.index_label.setText(str(self.index + 1))
+        index_text = str(self.index + 1)
+        if self.index_label.text() != index_text:
+            self.index_label.setText(index_text)
+        incoming = dict(group or {})
+        if self._data_initialized and incoming == self.group:
+            return
+        self.group = deepcopy(incoming)
+        self._data_initialized = True
+        self.group_id = str(self.group.get('group_id') or self.group_id)
         self.time_label.setText(_created_text(self.group))
         self.time_label.setToolTip(self.time_label.text())
 
@@ -396,11 +574,8 @@ class EcommerceTaskCard(CardWidget):
         self.name_label.setText(name)
         self.name_label.setToolTip(name)
 
-        description = _group_descriptions(self.group)
-        if not description:
-            description = tr('（未填写产品信息）')
-        self.desc_label.setText(description)
-        self.desc_label.setToolTip(description)
+        self.desc_label.setText(_display_description(self.group))
+        self.desc_label.setToolTip(_product_info(self.group)[:300])
 
         names = [_platform_name(item) for item in (self.group.get('platforms') or ())]
         names = [name for name in names if name]
@@ -415,7 +590,8 @@ class EcommerceTaskCard(CardWidget):
                 chip = QLabel(name, self.chip_host)
                 chip.setTextFormat(Qt.PlainText)
                 font = chip.font()
-                font.setPixelSize(px(11))
+                font.setFamily(materials.ui_font_family())
+                font.setPixelSize(11)
                 chip.setFont(font)
                 _style_chip(chip)
                 self.chip_layout.addWidget(chip)
@@ -440,8 +616,7 @@ class EcommerceTaskCard(CardWidget):
             thumb.set_source(thumbs[slot] if slot < len(thumbs) else '')
 
         self._refresh_status()
-        metrics = self.desc_label.fontMetrics()
-        self.desc_label.setMaximumHeight(metrics.lineSpacing() * 2 + px(2))
+        self._description_timer.start(0)
         self.set_busy(self.panel.busy)
         theme = materials.THEME_ID
         if not self._styled or theme != self._theme_id:
@@ -458,6 +633,10 @@ class EcommerceTaskCard(CardWidget):
         self.checkbox.setToolTip(tr('选择该记录'))
         self.resume_action.setText(tr('继续生成（断点恢复）'))
         self.open_action.setText(tr('打开文件夹'))
+        self._data_initialized = False
+        self.update_group(self.group)
+        for thumb in self.thumb_labels:
+            thumb.refresh()
 
     def _refresh_status(self):
         status = self.group.get('status')
@@ -478,7 +657,7 @@ class EcommerceTaskCard(CardWidget):
         self.status_badge.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
             ' font-size:%dpx; font-weight:600;'
-            % (self._tone, _rgba(self._tone, 26), px(10), px(1), px(8), px(11)))
+            % (self._tone, _rgba(self._tone, 26), 10, 1, 8, 11))
 
     # -- 状态 ---------------------------------------------------------
     @property
@@ -572,7 +751,7 @@ class EcommerceTaskCard(CardWidget):
             _style_chip(chip)
         self.model_label.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
-            % (colors['accent'], materials.ecommerce_color('tag_bg'), px(8), px(1), px(7)))
+            % (colors['accent'], materials.ecommerce_color('tag_bg'), 8, 1, 7))
         _style_outline(self.view_button, colors['accent'])
         _style_outline(self.preview_button, colors['text2'])
         _style_outline(self.delete_button, colors['error'])
@@ -580,7 +759,7 @@ class EcommerceTaskCard(CardWidget):
         self.status_badge.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
             ' font-size:%dpx; font-weight:600;'
-            % (self._tone, _rgba(self._tone, 26), px(10), px(1), px(8), px(11)))
+            % (self._tone, _rgba(self._tone, 26), 10, 1, 8, 11))
         self._styled = True
         self._theme_id = materials.THEME_ID
         self.update()
@@ -594,7 +773,7 @@ def _style_chip(chip):
     chip.setStyleSheet(
         'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
         % (colors['text2'], materials.ecommerce_color('chip_bg'),
-           px(10), px(1), px(7)))
+           10, 1, 7))
 
 def _style_outline(button, color):
     """描边按钮：蓝=查看、灰=预览、红=删除；颜色全部来自主题。"""
@@ -606,7 +785,7 @@ def _style_outline(button, color):
         ' color:%s; padding:0 %dpx; font-size:%dpx;}'
         'QPushButton:hover {background:%s;}'
         'QPushButton:disabled {color:%s; border-color:%s;}'
-        % (value.name(), px(8), value.name(), px(10), px(12), hover,
+        % (value.name(), 8, value.name(), 10, 12, hover,
            disabled, _rgba(value, 60)))
 
 
@@ -619,8 +798,8 @@ def _style_danger_primary(button):
         ' color:%s; padding:0 %dpx; font-size:%dpx; font-weight:600;}'
         'QPushButton:hover {background:%s;}'
         'QPushButton:disabled {background:%s; border-color:%s; color:%s;}'
-        % (error.name(), px(8), error.name(), materials.ecommerce_color('preview_white'),
-           px(14), px(13), hover.name(), _rgba(error, 60),
+        % (error.name(), 8, error.name(), materials.ecommerce_color('preview_white'),
+           14, 13, hover.name(), _rgba(error, 60),
            _rgba(error, 80), _rgba(error, 120)))
 
 
@@ -637,8 +816,8 @@ class _TabButton(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(px(12), px(5), px(12), px(5))
-        layout.setSpacing(px(8))
+        layout.setContentsMargins(12, 5, 12, 5)
+        layout.setSpacing(8)
         self.name_label = _label(13, bold=False)
         self.count_label = _label(13, bold=True)
         layout.addWidget(self.name_label)
@@ -660,12 +839,12 @@ class _TabButton(QWidget):
         accent = QColor(colors['accent'])
         if self.active:
             self.setStyleSheet('#ecommerceTabButton {background:%s; border-radius:%dpx;}'
-                               % (_rgba(accent, 26), px(8)))
+                               % (_rgba(accent, 26), 8))
             for label in (self.name_label, self.count_label):
                 label.setStyleSheet('color:%s; background:transparent;' % accent.name())
         else:
             self.setStyleSheet('#ecommerceTabButton {background:transparent; border-radius:%dpx;}'
-                               % px(8))
+                               % 8)
             self.name_label.setStyleSheet('color:%s; background:transparent;'
                                           % colors['text2'])
             self.count_label.setStyleSheet('color:%s; background:transparent;'
@@ -719,20 +898,22 @@ class EcommerceTaskList(QWidget):
         self._manage_mode = False
         self._busy = False
         self._persistence_available = True
+        self._groups_signature = ()
+        self._chrome_signature = None
         self.cards = OrderedDict()
         self.page_size = PAGE_SIZE
         self._row_widgets = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(px(12))
+        root.setSpacing(12)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(px(12))
+        header.setSpacing(12)
         titles = QVBoxLayout()
         titles.setContentsMargins(0, 0, 0, 0)
-        titles.setSpacing(px(2))
+        titles.setSpacing(2)
         self.title_label = StrongBodyLabel(tr('电商图任务'), self)
         self.subtitle_label = _label(13)
         titles.addWidget(self.title_label)
@@ -751,7 +932,7 @@ class EcommerceTaskList(QWidget):
         self.refresh_button.clicked.connect(self.refresh_requested)
         for button in (self.manage_button, self.cancel_button, self.batch_create_button,
                        self.new_create_button, self.refresh_button):
-            button.setMinimumHeight(px(30))
+            button.setMinimumHeight(30)
             header.addWidget(button, 0, Qt.AlignVCenter)
         root.addLayout(header)
 
@@ -762,7 +943,7 @@ class EcommerceTaskList(QWidget):
 
         tabs = QHBoxLayout()
         tabs.setContentsMargins(0, 0, 0, 0)
-        tabs.setSpacing(px(2))
+        tabs.setSpacing(2)
         self.tab_buttons = OrderedDict()
         for key in TAB_KEYS:
             tab = _TabButton(key, self)
@@ -775,10 +956,12 @@ class EcommerceTaskList(QWidget):
         self.rows_host = QWidget(self)
         self.rows_layout = QVBoxLayout(self.rows_host)
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.rows_layout.setSpacing(px(10))
+        self.rows_layout.setSpacing(10)
+        # 少量卡片也保持自然高度，不把视口剩余高度平均摊进各行。
+        self.rows_layout.setAlignment(Qt.AlignTop)
         self.empty_label = _label(13, wrap=True)
         self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.setContentsMargins(0, px(28), 0, px(28))
+        self.empty_label.setContentsMargins(0, 28, 0, 28)
         self.rows_layout.addWidget(self.empty_label)
         # 卡片区独立滚动：底部批量操作条固定不随列表滚动。
         self.rows_scroll = QScrollArea(self)
@@ -790,7 +973,7 @@ class EcommerceTaskList(QWidget):
 
         pagination = QHBoxLayout()
         pagination.setContentsMargins(0, 0, 0, 0)
-        pagination.setSpacing(px(10))
+        pagination.setSpacing(10)
         pagination.addStretch(1)
         self.prev_button = PushButton(tr('上一页'), self)
         self.page_label = _label(12)
@@ -805,8 +988,8 @@ class EcommerceTaskList(QWidget):
 
         self.bottom_bar = _GlassBar(self)
         bar_layout = QHBoxLayout(self.bottom_bar)
-        bar_layout.setContentsMargins(px(14), px(10), px(14), px(10))
-        bar_layout.setSpacing(px(10))
+        bar_layout.setContentsMargins(14, 10, 14, 10)
+        bar_layout.setSpacing(10)
         self.selected_label = _label(12)
         self.select_page_button = PushButton(tr('全选本页'), self.bottom_bar)
         self.clear_selection_button = PushButton(tr('清空'), self.bottom_bar)
@@ -883,12 +1066,19 @@ class EcommerceTaskList(QWidget):
         for group in groups or ():
             if isinstance(group, dict) and group.get('group_id'):
                 normalized.append(dict(group))
-        self._groups = normalized
+        signature = tuple((group.get('group_id'), group.get('updated_at'),
+                           group.get('status'), deepcopy(group.get('totals')))
+                          for group in normalized)
         self._persistence_available = bool(persistence_available)
+        self.notice_label.setVisible(not self._persistence_available)
+        if signature == self._groups_signature:
+            return
+        self._groups = normalized
         valid = {str(group['group_id']) for group in normalized}
         self._selected &= valid
         self._page = max(0, min(self._page, self.page_count - 1))
         self._render()
+        self._groups_signature = signature
 
     def set_busy(self, busy):
         self._busy = bool(busy)
@@ -947,6 +1137,11 @@ class EcommerceTaskList(QWidget):
         self.selected_label.setStyleSheet('color:%s; background:transparent;' % colors['text1'])
         _style_danger_primary(self.delete_selected_button)
         self.bottom_bar.update()
+        self._chrome_signature = self._chrome_key()
+
+    def _chrome_key(self):
+        return (materials.THEME_ID, tuple(materials.palette().items()),
+                px(8), px(12), px(13), px(14))
 
     def retranslate_ui(self):
         """分段 4 接语言总线时调用：重建全部可见文案；不抛异常。"""
@@ -971,10 +1166,15 @@ class EcommerceTaskList(QWidget):
             return
 
     def refresh_interface_scale(self):
-        """界面缩放变化后按新的 px() 尺寸重建（位置/字号随主题 token 刷新）。"""
+        """复用已缩放的卡片，只更新依赖最终字体度量和像素尺寸的内容。"""
         try:
-            self._structure = None
-            self._render()
+            # InterfaceScaler 已调整现有控件的字体和布局。此时重建会让
+            # px() 产生的新尺寸再次被捕获、缩放，且丢失原有卡片引用。
+            for card in self.cards.values():
+                card._sync_description_height()
+                for thumb in card.thumb_labels:
+                    thumb.refresh()
+            self.rows_layout.invalidate()
         except RuntimeError:
             return
 
@@ -1008,9 +1208,9 @@ class EcommerceTaskList(QWidget):
 
     def _render(self):
         self._page = max(0, min(self._page, self.page_count - 1))
-        self.subtitle_label.setText(
-            tr('{count} 个制作任务').format(count=len(self._groups)))
-        self._retranslate_tabs()
+        subtitle = tr('{count} 个制作任务').format(count=len(self._groups))
+        if self.subtitle_label.text() != subtitle:
+            self.subtitle_label.setText(subtitle)
         counts = self._tab_counts()
         for key, tab in self.tab_buttons.items():
             tab.set_text(tab.name_label.text(), counts[key])
@@ -1032,44 +1232,60 @@ class EcommerceTaskList(QWidget):
         else:
             self._update_cards(groups)
 
-        self.empty_label.setText(self._empty_text())
+        empty_text = self._empty_text()
+        if self.empty_label.text() != empty_text:
+            self.empty_label.setText(empty_text)
         self.empty_label.setVisible(not groups)
 
-        self.page_label.setText(
-            tr('第 {current} / {total} 页').format(current=self._page + 1,
-                                                    total=self.page_count))
+        page_text = tr('第 {current} / {total} 页').format(current=self._page + 1,
+                                                                     total=self.page_count)
+        if self.page_label.text() != page_text:
+            self.page_label.setText(page_text)
         self.prev_button.setEnabled(self._page > 0)
         self.next_button.setEnabled(self._page < self.page_count - 1)
         self._sync_bottom_bar()
-        self._refresh_chrome()
+        if self._chrome_signature != self._chrome_key():
+            self._refresh_chrome()
 
     def _rebuild_cards(self, groups):
-        while self._row_widgets:
-            widget = self._row_widgets.pop()
-            self.rows_layout.removeWidget(widget)
-            widget.hide()
-            widget.deleteLater()
-        self.cards = OrderedDict()
-        for offset, group in enumerate(groups):
-            index = self._page * self.page_size + offset
-            card = EcommerceTaskCard(group, self, index=index)
-            card.set_busy(self._busy)
-            card.checkbox.setVisible(self._manage_mode)
-            card.set_selected(card.group_id in self._selected)
-            self.rows_layout.addWidget(card)
-            self._row_widgets.append(card)
-            self.cards[card.group_id] = card
+        updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            while self._row_widgets:
+                widget = self._row_widgets.pop()
+                self.rows_layout.removeWidget(widget)
+                widget.hide()
+                widget.deleteLater()
+            self.cards = OrderedDict()
+            for offset, group in enumerate(groups):
+                index = self._page * self.page_size + offset
+                card = EcommerceTaskCard(group, self, index=index)
+                card.set_busy(self._busy)
+                card.checkbox.setVisible(self._manage_mode)
+                card.set_selected(card.group_id in self._selected)
+                self.rows_layout.addWidget(card)
+                self._row_widgets.append(card)
+                self.cards[card.group_id] = card
+        finally:
+            self.setUpdatesEnabled(updates_enabled)
+            self.update()
 
     def _update_cards(self, groups):
         """可见卡片集合不变：原地更新内容，保留卡片 / 缩略图 / 引用。"""
-        for offset, group in enumerate(groups):
-            group_id = str(group['group_id'])
-            card = self.cards.get(group_id)
-            if card is None:
-                continue
-            card.update_group(dict(group), index=self._page * self.page_size + offset)
-            card.checkbox.setVisible(self._manage_mode)
-            card.set_selected(group_id in self._selected)
+        updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            for offset, group in enumerate(groups):
+                group_id = str(group['group_id'])
+                card = self.cards.get(group_id)
+                if card is None:
+                    continue
+                card.update_group(dict(group), index=self._page * self.page_size + offset)
+                card.checkbox.setVisible(self._manage_mode)
+                card.set_selected(group_id in self._selected)
+        finally:
+            self.setUpdatesEnabled(updates_enabled)
+            self.update()
 
     def _sync_bottom_bar(self):
         selected = len(self.selected_ids())
@@ -1160,7 +1376,7 @@ class EcommerceTaskList(QWidget):
         dialog.body_layout.addWidget(second)
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(px(8))
+        actions.setSpacing(8)
         actions.addStretch(1)
         cancel_button = PushButton(tr('取消'), dialog)
         confirm_button = PrimaryPushButton(tr('删除'), dialog)

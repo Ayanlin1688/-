@@ -5,20 +5,25 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import struct
 import tempfile
+import threading
+import time
 import unittest
 import zlib
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt5.QtTest import QSignalSpy
+from PyQt5.QtCore import Qt, QThreadPool
+from PyQt5.QtGui import QImage
+from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QApplication
 
 from core.i18n import set_language, tr
 from tests.qt_scale_support import reset_interface_scaling
 from ui import materials
+from ui.components import ecommerce_task_list as task_module
 from ui.components.ecommerce_task_list import (
-    RESUMABLE_STATUSES, EcommerceTaskCard, EcommerceTaskList,
+    RESUMABLE_STATUSES, EcommerceTaskCard, EcommerceTaskList, _Thumbnail,
 )
 
 
@@ -52,6 +57,8 @@ class EcommerceTaskListTestBase(unittest.TestCase):
         self.addCleanup(set_language, 'zh-CN')
         reset_interface_scaling(self.app)
         self.addCleanup(reset_interface_scaling, self.app)
+        with task_module._THUMBNAIL_LOCK:
+            task_module._THUMBNAIL_CACHE.clear()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -66,7 +73,14 @@ class EcommerceTaskListTestBase(unittest.TestCase):
     def dispose_panel(self):
         self.panel.close()
         self.panel.deleteLater()
+        QThreadPool.globalInstance().waitForDone(3000)
         self.app.processEvents()
+
+    def wait_for(self, predicate, timeout=2000):
+        deadline = time.monotonic() + timeout / 1000
+        while not predicate() and time.monotonic() < deadline:
+            QTest.qWait(20)
+        self.assertTrue(predicate(), '后台缩略图未在限定时间内完成')
 
     def make_group(self, group_id='g1', **overrides):
         now = 1700000000
@@ -101,6 +115,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         self.assertIn(tr('轮播图 {count} 张').format(count=5), card.counts_label.text())
         self.assertIn(tr('详情图 {count} 张').format(count=8), card.counts_label.text())
         self.assertEqual(card.model_label.text(), 'gpt-image-2.5-sunburst')
+        self.wait_for(lambda: card.thumb_count == 3)
         self.assertEqual(card.thumb_count, 3)
         self.assertEqual(card.thumbs, self.images[:3])
         self.assertEqual(card.index_label.text(), '1')
@@ -139,6 +154,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         ]}
         self.panel.update_groups([self.make_group(thumbs=[], manifest=manifest)])
         card = self.panel.cards['g1']
+        self.wait_for(lambda: card.thumb_count == 3)
         self.assertEqual(card.thumb_count, 3)
         self.assertEqual(card.thumbs, [self.images[0], self.images[1], self.images[4]])
 
@@ -146,6 +162,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         five = self.make_group(thumbs=list(self.images))
         empty = self.make_group('empty', thumbs=[], manifest={})
         self.panel.update_groups([five, empty])
+        self.wait_for(lambda: self.panel.cards['g1'].thumb_count == 3)
         self.assertEqual(self.panel.cards['g1'].thumb_count, 3)
         self.assertEqual(len(self.panel.cards['g1'].thumb_labels), 3)
         self.assertEqual(self.panel.cards['empty'].thumb_count, 0)
@@ -180,6 +197,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         self.assertIs(self.panel.cards['g1'], card)
         self.assertEqual(card.name_label.text(), '改名商品')
         self.assertEqual(card.status_badge.text(), tr('失败'))
+        self.wait_for(lambda: card.thumb_count == 1)
         self.assertEqual(card.thumb_count, 1)
         self.assertIn(card.group_id, self.panel.cards)
 
@@ -509,6 +527,253 @@ class EcommerceTaskListActionTests(EcommerceTaskListTestBase):
         self.assertEqual(self.panel.clear_selection_button.text(), tr('清空'))
         self.assertEqual(self.panel.prev_button.text(), tr('上一页'))
         self.assertEqual(self.panel.next_button.text(), tr('下一页'))
+
+
+class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
+    def test_identical_group_signature_preserves_cards_selection_page_and_manage_mode(self):
+        groups = [self.make_group(f'g{index}', thumbs=[]) for index in range(12)]
+        self.panel.update_groups(groups)
+        self.panel.set_page(1)
+        self.panel.set_manage_mode(True)
+        self.panel.cards['g10'].checkbox.setChecked(True)
+        cards = dict(self.panel.cards)
+        with patch.object(self.panel, '_render', wraps=self.panel._render) as render, \
+                patch.object(self.panel, '_rebuild_cards', wraps=self.panel._rebuild_cards) as rebuild:
+            self.panel.update_groups(groups, persistence_available=False)
+        render.assert_not_called()
+        rebuild.assert_not_called()
+        self.assertEqual(self.panel.page_index, 1)
+        self.assertTrue(self.panel.manage_mode)
+        self.assertEqual(self.panel.selected_ids(), ['g10'])
+        self.assertEqual(list(self.panel.cards), ['g10', 'g11'])
+        self.assertTrue(all(self.panel.cards[key] is card for key, card in cards.items()))
+        self.assertFalse(self.panel.notice_label.isHidden())
+
+    def test_unchanged_card_data_skips_labels_but_updates_index_and_selection(self):
+        group = self.make_group(thumbs=[])
+        self.panel.update_groups([group])
+        card = self.panel.cards['g1']
+        self.panel.set_manage_mode(True)
+        self.panel._selected.add('g1')
+        with patch.object(card.name_label, 'setText', wraps=card.name_label.setText) as name, \
+                patch.object(card, '_refresh_status', wraps=card._refresh_status) as status:
+            card.update_group(group, index=7)
+            self.panel._update_cards([group])
+        name.assert_not_called()
+        status.assert_not_called()
+        self.assertEqual(card.index_label.text(), '1')
+        self.assertTrue(card.selected)
+        self.assertFalse(card.checkbox.isHidden())
+
+    def test_batch_update_restores_updates_after_exception(self):
+        group = self.make_group(thumbs=[])
+        self.panel.update_groups([group])
+        card = self.panel.cards['g1']
+        with patch.object(card, 'update_group', side_effect=ValueError('fixture')):
+            with self.assertRaisesRegex(ValueError, 'fixture'):
+                self.panel._update_cards([group])
+        self.assertTrue(self.panel.updatesEnabled())
+        with patch.object(task_module, 'EcommerceTaskCard', side_effect=ValueError('fixture')):
+            with self.assertRaisesRegex(ValueError, 'fixture'):
+                self.panel._rebuild_cards([group])
+        self.assertTrue(self.panel.updatesEnabled())
+
+    def test_data_only_refresh_does_not_reapply_chrome_styles(self):
+        group = self.make_group(thumbs=[])
+        self.panel.update_groups([group])
+        with patch.object(self.panel, '_refresh_chrome', wraps=self.panel._refresh_chrome) as chrome:
+            self.panel.update_groups([dict(group, updated_at=group['updated_at'] + 1)])
+        chrome.assert_not_called()
+
+    def test_thumbnail_decodes_off_gui_thread_and_deduplicates_pending_requests(self):
+        gui_thread = threading.get_ident()
+        decoded_threads = []
+        release = threading.Event()
+        decode = task_module._decode_thumbnail
+
+        def blocked_decode(path):
+            decoded_threads.append(threading.get_ident())
+            release.wait(2)
+            return decode(path)
+
+        one = _Thumbnail(self.panel)
+        two = _Thumbnail(self.panel)
+        with patch.object(task_module, '_decode_thumbnail', side_effect=blocked_decode) as loader:
+            try:
+                one.set_source(self.images[0])
+                two.set_source(self.images[0])
+                self.assertFalse(one.has_image)
+                self.assertFalse(two.has_image)
+                self.assertFalse(one.pixmap().isNull())
+                release.set()
+                self.wait_for(lambda: one.has_image and two.has_image)
+            finally:
+                release.set()
+                QThreadPool.globalInstance().waitForDone(3000)
+                self.app.processEvents()
+            self.assertEqual(loader.call_count, 1)
+            one.refresh()
+            two.set_source(self.images[0])
+            self.assertEqual(loader.call_count, 1)
+        self.assertTrue(decoded_threads)
+        self.assertTrue(all(thread != gui_thread for thread in decoded_threads))
+        self.assertFalse(one.pixmap().isNull())
+
+    def test_thumbnail_refresh_and_cache_lookup_never_read_file_on_gui_thread(self):
+        gui_thread = threading.get_ident()
+        reads = []
+        original = Path.read_bytes
+
+        def tracked_read(path):
+            reads.append(threading.get_ident())
+            self.assertNotEqual(threading.get_ident(), gui_thread)
+            return original(path)
+
+        thumb = _Thumbnail(self.panel)
+        with patch.object(Path, 'read_bytes', tracked_read):
+            thumb.set_source(self.images[0])
+            self.wait_for(lambda: thumb.has_image)
+            for _ in range(10):
+                thumb.refresh()
+                cached = task_module._image(task_module._thumbnail_key(self.images[0]))
+                self.assertFalse(cached.isNull())
+        self.assertEqual(len(reads), 1)
+
+    def test_missing_and_corrupt_thumbnails_have_plain_text_placeholder_and_path_tooltip(self):
+        missing = str(self.root / '不存在.png')
+        invalid = self.root / 'broken.png'
+        invalid.write_bytes(b'local-invalid-image-fixture')
+        for path in (missing, str(invalid)):
+            with self.subTest(path=path):
+                thumb = _Thumbnail(self.panel)
+                thumb.set_source(path)
+                self.wait_for(lambda: thumb.text() == tr('缺失'))
+                self.assertFalse(thumb.has_image)
+                self.assertEqual(thumb.textFormat(), Qt.PlainText)
+                self.assertEqual(thumb.toolTip(), path)
+
+    def test_thumbnail_file_change_invalidates_cached_image(self):
+        thumb = _Thumbnail(self.panel)
+        path = Path(self.images[0])
+        thumb.set_source(str(path))
+        self.wait_for(lambda: thumb.has_image)
+        first_key = thumb._rendered_key
+        changed = solid_png(96, 48, (220, 20, 15))
+        previous_time = path.stat().st_mtime_ns
+        path.write_bytes(changed)
+        os.utime(path, ns=(previous_time + 1_000_000, previous_time + 1_000_000))
+        thumb.set_source(str(path))
+        self.wait_for(lambda: thumb.has_image)
+        self.assertNotEqual(thumb._rendered_key, first_key)
+        image = task_module._image(thumb._rendered_key)
+        self.assertEqual(image.pixelColor(0, 0).getRgb()[:3], (220, 20, 15))
+
+    def test_stale_thumbnail_callback_is_discarded_after_path_change_or_widget_deletion(self):
+        release = threading.Event()
+        decode = task_module._decode_thumbnail
+
+        def blocked_decode(path):
+            if path == self.images[0]:
+                release.wait(2)
+            return decode(path)
+
+        thumb = _Thumbnail(self.panel)
+        doomed = _Thumbnail(self.panel)
+        with patch.object(task_module, '_decode_thumbnail', side_effect=blocked_decode):
+            try:
+                thumb.set_source(self.images[0])
+                doomed.set_source(self.images[0])
+                thumb.set_source(self.images[1])
+                doomed.deleteLater()
+                self.wait_for(lambda: thumb.has_image)
+                release.set()
+                QThreadPool.globalInstance().waitForDone(3000)
+                self.app.processEvents()
+                self.assertEqual(thumb.path, self.images[1])
+                image = task_module._image(thumb._rendered_key)
+                self.assertEqual(image.pixelColor(0, 0).getRgb()[:3], (20, 90, 180))
+            finally:
+                release.set()
+
+    def test_prompt_like_description_falls_back_to_chinese_item_without_changing_tooltip(self):
+        raw = '[SYSTEM ROLE & PRODUCT GROUND TRUTH SPECIFICATION] You are ' + 'english rules ' * 45
+        group = self.make_group(thumbs=[], config={'product_info': raw}, manifest={
+            'items': [dict(status='failed', desc='失败项不可展示'),
+                      dict(status='succeeded', desc='第一张中文产品说明')]
+        })
+        self.panel.update_groups([group])
+        card = self.panel.cards['g1']
+        self.assertEqual(card.desc_label.text(), '第一张中文产品说明')
+        self.assertEqual(card.desc_label.toolTip(), raw[:300])
+        self.assertEqual(card.desc_label.textFormat(), Qt.PlainText)
+        self.assertTrue(card.desc_label.wordWrap())
+        self.assertEqual(card.desc_label.font().family(), materials.ui_font_family())
+        self.assertLessEqual(card.desc_label.maximumHeight(),
+                             card.desc_label.fontMetrics().lineSpacing() * 2 + 2)
+
+    def test_description_variants_are_plain_text_normalized_and_bounded(self):
+        cases = [
+            ('normal', '耐热陶瓷\r\n\t适合日常使用', '耐热陶瓷 适合日常使用'),
+            ('empty', '', tr('（未填写产品信息）')),
+            ('english', 'A durable ceramic cup', 'A durable ceramic cup'),
+            ('html', '<b>陶瓷</b>\t杯', '<b>陶瓷</b> 杯'),
+            ('long', '中文说明' * 100, ('中文说明' * 100)[:200] + '…'),
+        ]
+        groups = [self.make_group(key, thumbs=[], config={'product_info': raw})
+                  for key, raw, _expected in cases]
+        self.panel.update_groups(groups)
+        for key, raw, expected in cases:
+            with self.subTest(key=key):
+                label = self.panel.cards[key].desc_label
+                self.assertEqual(label.text(), expected)
+                self.assertEqual(label.toolTip(), raw[:300])
+                self.assertEqual(label.textFormat(), Qt.PlainText)
+                self.assertEqual(label.font().family(), materials.ui_font_family())
+
+    def test_prompt_like_summary_and_description_limits(self):
+        groups = [
+            self.make_group('counts', thumbs=[], config=dict(
+                product_info='You are a product specialist', carousel_count=5, detail_count=8)),
+            self.make_group('no-counts', thumbs=[], config=dict(product_info='[SYSTEM ROLE]')),
+            self.make_group('chinese', thumbs=[], config=dict(product_info='[SYSTEM ROLE]'),
+                            manifest={'items': [dict(status='succeeded', desc='产品说明' * 50)]}),
+            self.make_group('long-english', thumbs=[], config=dict(product_info='English specification ' * 40)),
+        ]
+        self.panel.update_groups(groups)
+        self.assertEqual(self.panel.cards['counts'].desc_label.text(),
+                         tr('提示词型产品信息 · 轮播 {carousel} 张 / 详情 {detail} 张').format(
+                             carousel=5, detail=8))
+        self.assertEqual(self.panel.cards['no-counts'].desc_label.text(), tr('已提交提示词型任务'))
+        self.assertEqual(self.panel.cards['chinese'].desc_label.text(), ('产品说明' * 50)[:140] + '…')
+        self.assertEqual(self.panel.cards['long-english'].desc_label.text(), tr('已提交提示词型任务'))
+
+    def test_retranslate_refreshes_dynamic_card_copy_despite_identical_group_data(self):
+        self.panel.update_groups([self.make_group(thumbs=[], config={})])
+        card = self.panel.cards['g1']
+        self.assertEqual(card.desc_label.text(), tr('（未填写产品信息）'))
+        set_language('en-US')
+        self.panel.retranslate_ui()
+        self.assertIs(self.panel.cards['g1'], card)
+        self.assertEqual(card.desc_label.text(), tr('（未填写产品信息）'))
+        self.assertEqual(card.status_badge.text(), tr('已完成'))
+
+    def test_fifty_group_refresh_performance_uses_visible_cards_and_signature_shortcut(self):
+        groups = []
+        for index in range(50):
+            items = [dict(kind='carousel', status='succeeded', seq=seq,
+                          file=str(self.root / f'missing-{index}-{seq}.png'))
+                     for seq in range(12)]
+            groups.append(self.make_group(f'perf-{index}', thumbs=[], manifest={'items': items}))
+        started = time.perf_counter()
+        self.panel.update_groups(groups)
+        first = time.perf_counter() - started
+        started = time.perf_counter()
+        self.panel.update_groups(groups)
+        repeated = time.perf_counter() - started
+        self.assertEqual(len(self.panel.cards), self.panel.page_size)
+        self.assertLess(first, 0.4)
+        self.assertLess(repeated, 0.1)
+        self.assertLessEqual(repeated, first * 0.5)
 
 
 class EcommerceTaskListStateTests(EcommerceTaskListTestBase):

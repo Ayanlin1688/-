@@ -1,6 +1,7 @@
 """Ecommerce form and queued Qt presentation of the existing Python pipeline."""
 from pathlib import Path
 from copy import deepcopy
+import os
 import threading
 from urllib.parse import urlsplit
 
@@ -173,6 +174,15 @@ class EcommercePage(QWidget):
         self.item_labels = {}
         self._logs = []
         self._logged_group_errors = {}
+        self._history_timer = QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.setInterval(160)
+        self._history_timer.timeout.connect(self._flush_history_refresh)
+        self._history_dirty = False
+        self._history_signature = None
+        self._history_persistence_available = None
+        self._enrich_cache = {}
+        self._history_first_show = True
         self._close_when_idle = False
         self._manager_overrides = {}
         self.product_image_paths = []
@@ -214,7 +224,7 @@ class EcommercePage(QWidget):
         task_layout.setContentsMargins(px(26), px(16), px(26), px(20))
         task_layout.setSpacing(px(12))
         self.task_list = EcommerceTaskList(_stage_text, self.task_view)
-        self.task_list.refresh_requested.connect(self._refresh_history)
+        self.task_list.refresh_requested.connect(self._queue_history_refresh)
         self.task_list.view_requested.connect(self._view_history_group)
         self.task_list.resume_requested.connect(self._run_resume)
         self.task_list.open_requested.connect(self._open_history_folder)
@@ -459,7 +469,7 @@ class EcommercePage(QWidget):
         materials.register_theme_callback(self._refresh_colors)
         self._refresh_colors()
         self._refresh_conflicts()
-        self._refresh_history()
+        self._schedule_history_refresh()
         self.body_scroll.viewport().installEventFilter(self)
 
     # —— 视图切换（QStackedWidget：任务列表 / 单个制作 / 批量制作） ——
@@ -470,7 +480,7 @@ class EcommercePage(QWidget):
 
     def show_task_list(self):
         self.stack.setCurrentIndex(self.TASK_VIEW)
-        self._refresh_history()
+        self._schedule_history_refresh()
 
     def show_single_creation(self):
         self.stack.setCurrentIndex(self.SINGLE_VIEW)
@@ -516,13 +526,14 @@ class EcommercePage(QWidget):
         self._refresh_references()
         self._clear_results()
         self.product_name.setFocus()
+        self._queue_history_refresh()
 
     def _show_platform_preview(self, group_id):
         store = self.config_manager.ecommerce_store()
         group = store.get_group(group_id)
         if not group:
             self._notice(tr('当前生成组不存在'))
-            self._refresh_history()
+            self._queue_history_refresh()
             return
         try:
             manifest = group.get('manifest')
@@ -1185,18 +1196,64 @@ class EcommercePage(QWidget):
         self.open_output_button.setEnabled(False)
         self.stage_label.setText(tr('等待开始'))
 
+    def _schedule_history_refresh(self):
+        """合并逐图进度；隐藏页只记脏状态，进入页面后再读取历史。"""
+        self._history_dirty = True
+        if self.isVisible():
+            self._history_timer.start()
+
+    def _queue_history_refresh(self):
+        """按钮回调先返回事件循环，再提交一次最终历史快照。"""
+        self._schedule_history_refresh()
+        QTimer.singleShot(0, self._flush_history_refresh)
+
+    def _flush_history_refresh(self):
+        self._history_timer.stop()
+        try:
+            if not self._history_dirty:
+                return
+            self._history_dirty = False
+            self._refresh_history()
+        except Exception:
+            # 失败的快照没有真正提交，保留脏状态让下一次入口可重试。
+            self._history_dirty = True
+            self._history_signature = None
+            self._history_persistence_available = None
+            raise
+        finally:
+            # 首帧隐藏中间态，即使数据库读取失败也不能冻结列表。
+            if not self.task_list.updatesEnabled():
+                self.task_list.setUpdatesEnabled(True)
+                self.task_list.update()
+
     def _refresh_history(self):
-        """刷新任务列表：把页面可展示的字段 enrich 到 group 字典后交给列表组件。"""
+        """只 enrich/绘制发生变化的历史快照，保留列表筛选和选中状态。"""
         store = self.config_manager.ecommerce_store()
         groups = store.list_groups(limit=50)
+        signature = tuple((group.get('group_id'), group.get('updated_at'),
+                           group.get('status')) for group in groups)
+        available = bool(store.persistence_available)
+        if (signature == self._history_signature
+                and available == self._history_persistence_available):
+            return
+        self._history_signature = signature
+        self._history_persistence_available = available
+        group_ids = {group.get('group_id', '') for group in groups}
+        for group_id in set(self._enrich_cache) - group_ids:
+            self._enrich_cache.pop(group_id, None)
         for group in groups:
             self._enrich_history_group(store, group)
         self.task_list.update_groups(redact_structure(groups, self._clean),
-                                     store.persistence_available)
+                                     available)
         self.history_records_changed.emit()
 
     def _enrich_history_group(self, store, group):
         group_id = group.get('group_id', '')
+        cached = self._enrich_cache.get(group_id)
+        if cached is not None and cached['updated_at'] == group.get('updated_at'):
+            group['thumbs'] = list(cached['thumbs'])
+            group['image_model'] = cached['image_model']
+            return
         manifest = group.get('manifest')
         items = []
         if isinstance(manifest, dict) and isinstance(manifest.get('items'), list):
@@ -1216,34 +1273,41 @@ class EcommercePage(QWidget):
         ordered = sorted(
             items, key=lambda item: (0 if item.get('kind') == 'carousel' else 1,
                                     item.get('seq') if isinstance(item.get('seq'), int) else 0))
+        checked = 0
         for item in ordered:
             if item.get('status') != 'succeeded':
                 continue
             path = item.get('file') or item.get('file_path') or ''
             if not path:
                 continue
+            checked += 1
             try:
-                if Path(path).is_file():
+                if os.path.isfile(path):
                     thumbs.append(str(path))
             except (OSError, ValueError):
-                continue
-            if len(thumbs) >= 3:
+                pass
+            if checked >= 3:
                 break
         group['thumbs'] = thumbs
         config = group.get('config') if isinstance(group.get('config'), dict) else {}
+        manifest = manifest if isinstance(manifest, dict) else {}
         group['image_model'] = (config.get('image_model')
-                                or (manifest or {}).get('image_model') or '')
+                                or manifest.get('image_model') or '')
+        self._enrich_cache[group_id] = dict(
+            updated_at=group.get('updated_at'), thumbs=list(thumbs),
+            image_model=group['image_model'])
 
     def _view_history_group(self, group_id):
         if self.busy:
             return
         if not self.config_manager.ecommerce_store().get_group(group_id):
             self._notice(tr('当前生成组不存在'))
-            self._refresh_history()
+            self._queue_history_refresh()
             return
         self.show_single_creation()
         self._clear_results()
-        self._refresh_results(group_id)
+        self._refresh_results(group_id, refresh_history=False)
+        self._queue_history_refresh()
 
     def _run_resume(self, group_id):
         if self.busy:
@@ -1288,11 +1352,12 @@ class EcommercePage(QWidget):
         for group_id in list(group_ids or ()):
             group_id = str(group_id)
             if store.get_group(group_id) and store.delete_group(group_id):
+                self._enrich_cache.pop(group_id, None)
                 if self._group and self._group['group_id'] == group_id:
                     removed_current = True
         if removed_current:
             self._clear_results()
-        self._refresh_history()
+        self._queue_history_refresh()
 
     def _run_regenerate(self, item_keys=None):
         if self.busy:
@@ -1362,7 +1427,7 @@ class EcommercePage(QWidget):
             self._append_log(tr('已请求取消；未开始的图片将跳过，等待已发出的请求结束。'), 'warning')
 
     @pyqtSlot(object)
-    def _on_group(self, record):
+    def _on_group(self, record, *, refresh_history=True):
         if (self._group and self._group['group_id'] == record['group_id']
                 and self._group.get('updated_at', 0) > record.get('updated_at', 0)):
             return
@@ -1381,7 +1446,10 @@ class EcommercePage(QWidget):
         if error and self._logged_group_errors.get(group_id) != error:
             self._logged_group_errors[group_id] = error
             self._append_log(error, 'error')
-        self._refresh_history()
+        if refresh_history:
+            self._schedule_history_refresh()
+            if status in ('succeeded', 'partial', 'failed', 'cancelled'):
+                self._flush_history_refresh()
 
     @pyqtSlot(object)
     def _on_item(self, record):
@@ -1415,15 +1483,15 @@ class EcommercePage(QWidget):
         if card is not None and record.get('model'):
             card.status_label.setText('{} · {}'.format(
                 card.status_label.text(), tr('模型：{model}').format(model=record['model'])))
-        self._refresh_history()
+        self._schedule_history_refresh()
 
-    def _refresh_results(self, group_id=None):
+    def _refresh_results(self, group_id=None, *, refresh_history=True):
         group_id = group_id or (self._group or {}).get('group_id')
         if group_id:
             store = self.config_manager.ecommerce_store()
             group = store.get_group(group_id)
             if group:
-                self._on_group(group)
+                self._on_group(group, refresh_history=refresh_history)
                 if group['status'] in ('analyzing', 'generating'):
                     for item in store.list_items(group_id):
                         self._on_item(item)
@@ -1448,8 +1516,7 @@ class EcommercePage(QWidget):
     @pyqtSlot(str, str)
     def _on_result(self, group_id, error):
         operation = getattr(self._worker, 'operation', 'start') if self._worker else 'start'
-        self._refresh_results(group_id)
-        self._refresh_history()
+        self._refresh_results(group_id, refresh_history=False)
         if operation == 'batch':
             if error:
                 self._append_log(tr('批量制作异常中断：{message}').format(message=error), 'error')
@@ -1457,6 +1524,7 @@ class EcommercePage(QWidget):
             else:
                 self._append_log(tr('批量制作结束，可在任务列表查看各任务组'), 'info')
             self.show_task_list()
+            self._flush_history_refresh()
             return
         if error:
             self.stage_label.setText(tr('失败'))
@@ -1467,12 +1535,14 @@ class EcommercePage(QWidget):
             self._notice(error)
         elif self._group:
             self._append_log(self.stage_label.text() + ' · ' + self.summary_label.text(), 'info')
+        self._schedule_history_refresh()
+        self._flush_history_refresh()
 
     @pyqtSlot()
     def _thread_stopped(self):
         # Pool callbacks may be queued from different threads. Read the final
         # database snapshot once more before enabling regeneration actions.
-        self._refresh_results()
+        self._refresh_results(refresh_history=False)
         self._worker = None
         self.cancel_event = threading.Event()
         for card in self._form_cards:
@@ -1488,6 +1558,8 @@ class EcommercePage(QWidget):
         except RuntimeError:
             pass
         self._refresh_conflicts()
+        self._schedule_history_refresh()
+        self._flush_history_refresh()
         self.idle.emit()
         if self._close_when_idle:
             self.close()
@@ -1553,6 +1625,9 @@ class EcommercePage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self._history_first_show:
+            self._history_first_show = False
+            self.task_list.setUpdatesEnabled(False)
         self._fit_model_columns()
         self._probe_closing = False
         self._probe_autostart = True
@@ -1564,7 +1639,12 @@ class EcommercePage(QWidget):
             self._schedule_auto_probe(capability)
             _picker, _dot, button = self._model_probe_controls(capability)
             button.setEnabled(not self.busy and capability not in self._model_probe_workers)
-        self._refresh_history()
+        self._history_dirty = True
+        QTimer.singleShot(0, self._flush_history_refresh)
+
+    def hideEvent(self, event):
+        self._history_timer.stop()
+        super().hideEvent(event)
 
     def closeEvent(self, event):
         if self.busy:
@@ -1573,6 +1653,7 @@ class EcommercePage(QWidget):
             event.ignore()
             return
         self._probe_autostart = False
+        self._history_timer.stop()
         for timer in getattr(self, '_model_probe_timers', {}).values():
             try:
                 timer.stop()

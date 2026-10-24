@@ -4,8 +4,8 @@ import math
 import weakref
 
 from PyQt5.QtCore import Qt, QRectF, QPointF, QPoint, QSize
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPixmap, QLinearGradient, QRadialGradient, QPen
-from PyQt5.QtWidgets import QGraphicsEffect
+from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPainter, QPainterPath, QPixmap, QLinearGradient, QRadialGradient, QPen
+from PyQt5.QtWidgets import QApplication, QGraphicsEffect
 
 from .palettes import THEMES, resolve as resolve_theme
 from .tokens import RADIUS, px
@@ -30,6 +30,27 @@ THEME = THEMES['dark']
 _LABEL_REGISTRY = []
 _BUTTON_REGISTRY = []
 _THEME_CALLBACKS = []
+_UI_FONT_FAMILY = None
+
+
+def ui_font_family():
+    """缓存界面字体族；缺少中文字体时回退到系统默认字体。"""
+    global _UI_FONT_FAMILY
+    if _UI_FONT_FAMILY is not None:
+        return _UI_FONT_FAMILY
+    app = QApplication.instance()
+    # QFontDatabase 必须在 QApplication 创建后访问；早期导入不缓存结果。
+    if app is None:
+        return QFont().family() or 'Sans Serif'
+    fallback = app.font().family() or QFont().family() or 'Sans Serif'
+    try:
+        available = set(QFontDatabase().families())
+        _UI_FONT_FAMILY = next((family for family in (
+            'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI'
+        ) if family in available), fallback)
+    except (RuntimeError, OSError):
+        _UI_FONT_FAMILY = fallback
+    return _UI_FONT_FAMILY
 
 
 def apply_theme_tokens(theme_id):
