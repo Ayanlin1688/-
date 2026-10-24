@@ -1,6 +1,7 @@
 """Ecommerce form and queued Qt presentation of the existing Python pipeline."""
 from pathlib import Path
 from copy import deepcopy
+from collections import deque
 import os
 import threading
 from urllib.parse import urlsplit
@@ -8,11 +9,11 @@ from urllib.parse import urlsplit
 from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
-    QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
+    QApplication, QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
-    CaptionLabel, CheckBox, ComboBox, InfoBar, LineEdit,
+    Action, CaptionLabel, CheckBox, ComboBox, DropDownPushButton, InfoBar, LineEdit, RoundMenu,
     PlainTextEdit, PrimaryPushButton, PushButton, SpinBox, StrongBodyLabel,
     SwitchButton, TextEdit, TitleLabel, TransparentToolButton, FluentIcon as FIF,
 )
@@ -30,6 +31,9 @@ from core.log_redaction import redact_structure, redact_text
 from .. import materials
 from ..components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ..components.ecommerce_task_list import EcommerceTaskList, RESUMABLE_STATUSES
+from ..components.ecommerce_step_bar import EcommerceStepBar
+from ..components.ecommerce_analysis_view import EcommerceAnalysisView
+from ..components.ecommerce_submission_view import EcommerceSubmissionView
 from ..components.image_lightbox import ImageLightbox
 from ..components.image_pickers import (
     GalleryPickerDialog, UsedImagePickerDialog,
@@ -172,6 +176,10 @@ class EcommercePage(QWidget):
         self._secrets = ()
         self._group = None
         self._items = {}
+        self._reasoning_chunks = deque(maxlen=200)
+        self._prompt_items = {}
+        self._right_state = 'idle'
+        self._right_launch_stage = None
         self.item_labels = {}
         self._logs = []
         self._logged_group_errors = {}
@@ -443,12 +451,26 @@ class EcommercePage(QWidget):
         actions.addWidget(self.start_button)
         root.addLayout(actions)
         root.addStretch(1)
-        progress = self._card(result_root, tr('生成进度'), form=False)
-        self.progress_card = progress.parentWidget()
+        # 旧诊断属性保留在隐藏容器中，不再占用右栏可见布局。
+        self.progress_card = QWidget(self.single_view)
+        self.progress_card.hide()
+        progress = QVBoxLayout(self.progress_card)
         self.stage_label = self._text_label(tr('等待开始'))
         self.summary_label = self._text_label()
-        progress.addWidget(self.stage_label)
-        progress.addWidget(self.summary_label)
+        self.right_state_row = QWidget(self.right_header_host)
+        status_row = QHBoxLayout(self.right_state_row)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(12)
+        status_row.addWidget(self.stage_label)
+        status_row.addWidget(self.summary_label, 1)
+        self.right_header_host.layout().addWidget(self.right_state_row)
+        self.analysis_view = EcommerceAnalysisView(self.result_content)
+        self.submission_view = EcommerceSubmissionView(self.result_content)
+        self.submission_view.cancel_requested.connect(lambda: self.cancel_generation())
+        self.submission_view.retry_requested.connect(lambda key: self._run_regenerate([key]))
+        result_root.addWidget(self.analysis_view)
+        result_root.addWidget(self.submission_view)
+        self._setup_completion_bar(result_root)
         self.items_layout = QVBoxLayout()
         progress.addLayout(self.items_layout)
         self.open_output_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
@@ -467,14 +489,17 @@ class EcommercePage(QWidget):
         self.result_panel.log_message.connect(self._append_log)
         self.result_panel.preview_requested.connect(self._open_image_lightbox)
         self.regenerate_failed_button = self.result_panel.regenerate_failed_button
+        # 完成标题由工具栏统一呈现，保留面板的选择、自适应及卡片操作。
+        self.result_panel.title_label.hide()
         result_root.addWidget(self.result_panel)
+        self._setup_completion_footer(result_root)
         result_root.addStretch(1)
         style_controls(self)
         style_page(self)
         materials.register_theme_callback(self._refresh_colors)
         self._refresh_colors()
         self._refresh_conflicts()
-        self._sync_result_columns()
+        self._sync_right_states()
         self._schedule_history_refresh()
         self.body_scroll.viewport().installEventFilter(self)
         self.single_view.installEventFilter(self)
@@ -493,7 +518,7 @@ class EcommercePage(QWidget):
         self.stack.setCurrentIndex(self.SINGLE_VIEW)
         self._fit_single_columns()
         self._fit_model_columns()
-        self._sync_result_columns()
+        self._sync_right_states()
         QTimer.singleShot(0, self._fit_model_columns)
 
     def _show_batch_view(self):
@@ -618,8 +643,10 @@ class EcommercePage(QWidget):
             area.setWidgetResizable(True)
             area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             area.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            area.setMinimumWidth(0)
             content = QWidget()
             content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            content.setMinimumWidth(0)
             layout = QVBoxLayout(content)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(16)
@@ -628,12 +655,18 @@ class EcommercePage(QWidget):
             area.setWidget(content)
             self.single_columns_layout.addWidget(area, 1)
             columns.append((area, content, layout))
+        self.single_columns_layout.setStretch(0, 1)
+        self.single_columns_layout.setStretch(1, 1)
         self.body_scroll, self.body_content, form_root = columns[0]
         self.result_scroll, self.result_content, result_root = columns[1]
 
         self.right_header_host = QWidget()
         self.right_header_host.setObjectName('ecommerceRightHeaderHost')
-        self.right_header_host.setFixedHeight(0)
+        right_header = QVBoxLayout(self.right_header_host)
+        right_header.setContentsMargins(0, 0, 0, 0)
+        right_header.setSpacing(4)
+        self.step_bar = EcommerceStepBar(self.right_header_host)
+        right_header.addWidget(self.step_bar)
         result_root.addWidget(self.right_header_host)
         self.empty_state = self._single_card('ecommerceEmptyState')
         self.empty_state.setMinimumHeight(420)
@@ -684,15 +717,176 @@ class EcommercePage(QWidget):
         direction = QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom
         if self.single_columns_layout.direction() != direction:
             self.single_columns_layout.setDirection(direction)
+            self.single_columns_layout.invalidate()
+            self.single_view.updateGeometry()
         self.single_columns_layout.setSpacing(px(24 if wide else 16))
 
-    def _sync_result_columns(self):
-        """右栏只由当前任务/结果状态决定，校验失败不改变空态。"""
-        has_results = bool(self.result_panel.cards)
-        active = self.busy or self._group is not None or has_results
-        self.empty_state.setVisible(not active)
-        self.progress_card.setVisible(active)
-        self.result_panel.setVisible(has_results or self._group is not None)
+    def _setup_completion_bar(self, root):
+        self.completion_bar = QWidget(self.result_content)
+        self.completion_bar.setObjectName('ecommerceCompletionBar')
+        toolbar = WrapLayout(self.completion_bar, spacing=px(8))
+        self.completion_title_label = self._text_label()
+        toolbar.addWidget(self.completion_title_label)
+        toolbar.addStretch(1)
+        self.completion_regenerate_button = PushButton(tr('重新生成'))
+        self.completion_open_button = PushButton()
+        self.completion_prompt_button = DropDownPushButton(tr('提示词'))
+        self.completion_prompt_button.setMinimumWidth(88)
+        self.completion_preview_button = PrimaryPushButton(tr('查看平台效果'))
+        self.completion_regenerate_button.clicked.connect(lambda: self._run_regenerate())
+        self.completion_open_button.clicked.connect(lambda: self.open_output())
+        self.completion_preview_button.clicked.connect(
+            lambda: self._show_platform_preview((self._group or {}).get('group_id', '')))
+        for button in (self.completion_regenerate_button, self.completion_open_button,
+                       self.completion_prompt_button, self.completion_preview_button):
+            button.setFixedHeight(32)
+            toolbar.addWidget(button)
+        self.prompt_menu = RoundMenu(parent=self)
+        self.prompt_actions = []
+        for source, kind in (('轮播提示词', 'carousel'), ('详情提示词', 'detail'),
+                             ('复制全部', None)):
+            action = Action(tr(source), self)
+            action.triggered.connect(lambda _checked=False, kind=kind: self._copy_prompts(kind))
+            self.prompt_menu.addAction(action)
+            self.prompt_actions.append((action, source))
+        self.completion_prompt_button.setMenu(self.prompt_menu)
+        root.addWidget(self.completion_bar)
+
+    def _setup_completion_footer(self, root):
+        self.completion_footer = QWidget(self.result_content)
+        self.completion_footer.setObjectName('ecommerceCompletionFooter')
+        self.completion_footer.setMinimumHeight(44)
+        footer = WrapLayout(self.completion_footer, spacing=px(8))
+        footer.addStretch(1)
+        self.footer_tasks_button = PushButton(tr('查看任务组'))
+        self.footer_regenerate_button = PushButton(tr('重新生成'))
+        self.footer_new_button = PushButton(tr('+ 新建制作'))
+        self.footer_done_button = PushButton(tr('已完成'))
+        self.footer_done_button.setEnabled(False)
+        self.footer_tasks_button.clicked.connect(lambda: self.show_task_list())
+        self.footer_regenerate_button.clicked.connect(lambda: self._run_regenerate())
+        self.footer_new_button.clicked.connect(lambda: self._start_new_creation())
+        for button in (self.footer_tasks_button, self.footer_regenerate_button,
+                       self.footer_new_button, self.footer_done_button):
+            button.setFixedHeight(32)
+            footer.addWidget(button)
+        root.addWidget(self.completion_footer)
+
+    def _copy_prompts(self, kind=None):
+        ordered = sorted(self._prompt_items.values(), key=lambda item: (
+            item.get('kind') != 'carousel', item.get('seq', 0)))
+        text = []
+        for item in ordered:
+            if kind is not None and item.get('kind') != kind:
+                continue
+            prompt = str(item.get('prompt') or '').strip()
+            if not prompt:
+                continue
+            source = '轮{seq} · {title}' if item.get('kind') == 'carousel' else '详{seq} · {title}'
+            text.append(tr(source).format(seq=item.get('seq', 0), title=item.get('title', ''))
+                        + '\n' + prompt)
+        if not text:
+            self._notice(tr('暂无生成提示词'))
+            return
+        QApplication.clipboard().setText('\n\n'.join(text))
+        InfoBar.success(title=tr('提示词'), content=tr('提示词已复制'), parent=self)
+
+    def _right_items(self):
+        """使用已有配置/清单补齐排队格，不读取磁盘或修改持久化状态。"""
+        group = self._group or {}
+        config = group.get('config') or {}
+        manifest = group.get('manifest') or {}
+        items = {}
+        for kind in ('carousel', 'detail'):
+            value = config.get(kind + '_count', manifest.get(kind + '_count', 0))
+            try:
+                count = max(0, min(200, int(value or 0)))
+            except (TypeError, ValueError):
+                count = 0
+            for seq in range(1, count + 1):
+                items[kind, seq] = dict(kind=kind, seq=seq, status='pending')
+        for item in manifest.get('items') or ():
+            if isinstance(item, dict):
+                items[item.get('kind'), item.get('seq')] = dict(item)
+        items.update(self._items)
+        return list(items.values())
+
+    def _right_progress(self, items):
+        counts = {status: sum(item.get('status') == status for item in items)
+                  for status in ('succeeded', 'failed')}
+        totals = (self._group or {}).get('totals') or {}
+        # 重生成期间 totals 仍可能是上轮终态，逐图快照是当前状态，不能叠加旧失败数。
+        ok = counts['succeeded'] if items else int(totals.get('succeeded') or 0)
+        failed = counts['failed'] if items else int(totals.get('failed') or 0)
+        total = max(len(items), int(totals.get('total') or 0), ok + failed)
+        return total, ok, failed
+
+    def _sync_right_states(self):
+        """唯一的右栏状态入口：数据驱动可见性，校验早退不改变空态。"""
+        group = self._group or {}
+        status = group.get('status')
+        if self._right_launch_stage:
+            state = self._right_launch_stage
+        elif status in ('succeeded', 'partial', 'failed', 'cancelled'):
+            state = 'finished'
+        elif status == 'generating':
+            state = 'generating'
+        elif status == 'analyzing' or self.busy:
+            state = 'analyzing'
+        elif self.result_panel.cards:
+            state = 'finished'
+        else:
+            state = 'idle'
+        self._right_state = state
+        items = self._right_items()
+        total, ok, failed = self._right_progress(items)
+        if state == 'generating':
+            self.submission_view.set_items(items)
+            self.submission_view.set_progress(total, ok + failed, failed)
+        self.submission_view.cancel_button.setEnabled(self.busy and not self.cancel_event.is_set())
+        incomplete = status in ('partial', 'failed', 'cancelled') or failed > 0
+        self.step_bar.set_stage('failed' if state == 'finished' and incomplete else state)
+        for widget, visible in (
+                (self.right_header_host, state != 'idle'),
+                (self.right_state_row, state in ('analyzing', 'generating')),
+                (self.empty_state, state == 'idle'),
+                (self.analysis_view, state == 'analyzing'),
+                (self.submission_view, state == 'generating'),
+                (self.completion_bar, state == 'finished'),
+                (self.result_panel, state == 'finished'),
+                (self.completion_footer, state == 'finished')):
+            widget.setVisible(visible)
+        colors_changed = self.completion_title_label.property('hasFailures') != (failed > 0)
+        if colors_changed:
+            self.completion_title_label.setProperty('hasFailures', failed > 0)
+        self.completion_title_label.setText(
+            tr('部分完成（成功 {ok} / 共 {total} 张）').format(ok=ok, total=total)
+            if incomplete else tr('全部完成（{n} 张）').format(n=ok))
+        self.completion_open_button.setText(tr('打开文件夹({n})').format(n=ok))
+        self.completion_open_button.setEnabled(bool(group.get('output_dir')))
+        self.completion_preview_button.setEnabled(bool(group.get('group_id')))
+        for button in (self.completion_regenerate_button, self.footer_regenerate_button,
+                       self.footer_new_button):
+            button.setEnabled(not self.busy)
+        if colors_changed:
+            self._refresh_right_styles()
+
+    def _refresh_right_styles(self):
+        error = self.completion_title_label.property('hasFailures')
+        self.completion_title_label.setStyleSheet(
+            'font-size: 13px; font-weight: 600; color: %s;' % (
+                materials.ecommerce_color('completion_error') if error else materials.text_color(1)))
+        for label in (self.stage_label, self.summary_label):
+            label.setStyleSheet('font-size: 12px; color: %s;' % materials.text_color(2))
+        for button in (self.completion_regenerate_button, self.completion_open_button,
+                       self.completion_prompt_button, self.footer_tasks_button,
+                       self.footer_regenerate_button, self.footer_new_button):
+            padding = '0 32px 0 12px' if button is self.completion_prompt_button else '0 12px'
+            button.setStyleSheet(
+                'QPushButton {background: transparent; color: %s; border: 1px solid %s;'
+                ' border-radius: 8px; padding: %s;}'
+                % (materials.ecommerce_color('single_button_text'),
+                   materials.ecommerce_color('single_button_border'), padding))
 
     @staticmethod
     def _field(title, widget):
@@ -964,7 +1158,8 @@ class EcommercePage(QWidget):
         self._fit_single_columns()
         self._fit_model_columns()
         self._refresh_empty_icon()
-        for attribute in ('product_grid', 'style_grid'):
+        for attribute in ('product_grid', 'style_grid', 'step_bar', 'analysis_view',
+                          'submission_view'):
             grid = getattr(self, attribute, None)
             if grid is not None:
                 grid.refresh_interface_scale()
@@ -1208,6 +1403,7 @@ class EcommercePage(QWidget):
         self._refresh_picker_button_styles()
         self.result_panel.refresh_colors()
         self.task_list.refresh_colors()
+        self._refresh_right_styles()
         if self._lightbox is not None:
             try:
                 self._lightbox._apply_theme()
@@ -1370,6 +1566,11 @@ class EcommercePage(QWidget):
 
     def _clear_results(self):
         self._group, self._items = None, {}
+        self._right_launch_stage = None
+        self._reasoning_chunks.clear()
+        self._prompt_items.clear()
+        self.analysis_view.clear()
+        self.submission_view.clear()
         self._logged_group_errors.clear()
         for label in self.item_labels.values():
             self.items_layout.removeWidget(label)
@@ -1379,7 +1580,7 @@ class EcommercePage(QWidget):
         self.summary_label.clear()
         self.open_output_button.setEnabled(False)
         self.stage_label.setText(tr('等待开始'))
-        self._sync_result_columns()
+        self._sync_right_states()
 
     def _schedule_history_refresh(self):
         """合并逐图进度；隐藏页只记脏状态，进入页面后再读取历史。"""
@@ -1493,6 +1694,7 @@ class EcommercePage(QWidget):
         self._clear_results()
         self._refresh_results(group_id, refresh_history=False)
         self._queue_history_refresh()
+        self._sync_right_states()
 
     def _run_resume(self, group_id):
         if self.busy:
@@ -1587,6 +1789,8 @@ class EcommercePage(QWidget):
         worker = EcommerceWorker(self._make_manager, arguments, self.cancel_event, self._secrets,
                                  operation=operation)
         self._worker = worker
+        # 恢复/重生成复用旧组；在首个组回调前先呈现本次生成阶段。
+        self._right_launch_stage = 'generating' if operation in ('resume', 'regenerate') else None
         _LIVE_WORKERS.add(worker)
         worker.group_changed.connect(self._on_group, Qt.QueuedConnection)
         worker.item_changed.connect(self._on_item, Qt.QueuedConnection)
@@ -1603,7 +1807,7 @@ class EcommercePage(QWidget):
         self.task_list.set_busy(True)
         self.batch_page.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self._sync_result_columns()
+        self._sync_right_states()
         worker.start()
 
     def cancel_generation(self):
@@ -1611,12 +1815,17 @@ class EcommercePage(QWidget):
             self.cancel_event.set()
             self.cancel_button.setEnabled(False)
             self._append_log(tr('已请求取消；未开始的图片将跳过，等待已发出的请求结束。'), 'warning')
+            self._sync_right_states()
 
     @pyqtSlot(object)
     def _on_group(self, record, *, refresh_history=True):
         if (self._group and self._group['group_id'] == record['group_id']
                 and self._group.get('updated_at', 0) > record.get('updated_at', 0)):
             return
+        if self._group and self._group['group_id'] != record['group_id']:
+            # 顺序批量任务进入下一组时，不能沿用上一组的格子、提示词或结果。
+            self._clear_results()
+        self._right_launch_stage = None
         self._group = redact_structure(record, self._clean)
         status = self._group['status']
         self.stage_label.setText(_stage_text(status))
@@ -1636,7 +1845,7 @@ class EcommercePage(QWidget):
             self._schedule_history_refresh()
             if status in ('succeeded', 'partial', 'failed', 'cancelled'):
                 self._flush_history_refresh()
-        self._sync_result_columns()
+        self._sync_right_states()
 
     @pyqtSlot(object)
     def _on_item(self, record):
@@ -1648,6 +1857,9 @@ class EcommercePage(QWidget):
         record = redact_structure(record, self._clean)
         record['output_dir'] = (self._group or {}).get('output_dir', '')
         self._items[key] = record
+        self._prompt_items[key] = record
+        self.analysis_view.set_prompt_items(list(self._prompt_items.values()))
+        self.submission_view.update_item(record)
         if key not in self.item_labels:
             label = self._text_label()
             self.item_labels[key] = label
@@ -1671,7 +1883,7 @@ class EcommercePage(QWidget):
             card.status_label.setText('{} · {}'.format(
                 card.status_label.text(), tr('模型：{model}').format(model=record['model'])))
         self._schedule_history_refresh()
-        self._sync_result_columns()
+        self._sync_right_states()
 
     def _refresh_results(self, group_id=None, *, refresh_history=True):
         group_id = group_id or (self._group or {}).get('group_id')
@@ -1687,6 +1899,10 @@ class EcommercePage(QWidget):
     @pyqtSlot(str, str)
     def _append_log(self, message, level='info'):
         message = self._clean(message)
+        if message.startswith('[思考中] '):
+            chunk = message[len('[思考中] '):]
+            self._reasoning_chunks.append(chunk)
+            self.analysis_view.append_reasoning(chunk)
         level = level if level in ('info', 'warning', 'error') else 'info'
         self._logs.append((message, level))
         self._logs = self._logs[-1000:]
@@ -1703,6 +1919,7 @@ class EcommercePage(QWidget):
 
     @pyqtSlot(str, str)
     def _on_result(self, group_id, error):
+        self._right_launch_stage = None
         operation = getattr(self._worker, 'operation', 'start') if self._worker else 'start'
         self._refresh_results(group_id, refresh_history=False)
         if operation == 'batch':
@@ -1713,6 +1930,7 @@ class EcommercePage(QWidget):
                 self._append_log(tr('批量制作结束，可在任务列表查看各任务组'), 'info')
             self.show_task_list()
             self._flush_history_refresh()
+            self._sync_right_states()
             return
         if error:
             self.stage_label.setText(tr('失败'))
@@ -1725,9 +1943,11 @@ class EcommercePage(QWidget):
             self._append_log(self.stage_label.text() + ' · ' + self.summary_label.text(), 'info')
         self._schedule_history_refresh()
         self._flush_history_refresh()
+        self._sync_right_states()
 
     @pyqtSlot()
     def _thread_stopped(self):
+        self._right_launch_stage = None
         # Pool callbacks may be queued from different threads. Read the final
         # database snapshot once more before enabling regeneration actions.
         self._refresh_results(refresh_history=False)
@@ -1746,7 +1966,7 @@ class EcommercePage(QWidget):
         except RuntimeError:
             pass
         self._refresh_conflicts()
-        self._sync_result_columns()
+        self._sync_right_states()
         self._schedule_history_refresh()
         self._flush_history_refresh()
         self.idle.emit()
@@ -1764,9 +1984,20 @@ class EcommercePage(QWidget):
                 (self.single_subtitle_label, '上传产品图，AI 自动生成电商轮播图与详情图'),
                 (self.history_tasks_button, '历史任务'),
                 (self.batch_creation_button, '批量制作'),
+                (self.completion_regenerate_button, '重新生成'),
+                (self.completion_prompt_button, '提示词'),
+                (self.completion_preview_button, '查看平台效果'),
+                (self.footer_tasks_button, '查看任务组'),
+                (self.footer_regenerate_button, '重新生成'),
+                (self.footer_new_button, '+ 新建制作'),
+                (self.footer_done_button, '已完成'),
                 (self.empty_title_label, '填写完左侧信息后点击「开始制作」'),
                 (self.empty_subtitle_label, 'AI 将自动分析产品并生成图片')):
             label.setText(tr(source))
+        for action, source in self.prompt_actions:
+            action.setText(tr(source))
+        for view in (self.step_bar, self.analysis_view, self.submission_view):
+            view.retranslate_ui()
         try:
             self.task_list.retranslate_ui()
         except Exception:
@@ -1784,6 +2015,7 @@ class EcommercePage(QWidget):
                 grid.retranslate_ui()
             except Exception:
                 pass
+        self._sync_right_states()
         try:
             from ..i18n_helpers import retranslate_tree
             retranslate_tree(self)
@@ -1793,7 +2025,7 @@ class EcommercePage(QWidget):
             self.refresh_effective_lines()
             self.refresh_model_pickers()
             if self._group:
-                status = self._group.get('status')
+                status = self._right_launch_stage or self._group.get('status')
                 self.stage_label.setText(_stage_text(status))
                 totals = self._group.get('totals', {})
                 self.summary_label.setText(

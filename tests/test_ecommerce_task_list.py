@@ -22,6 +22,7 @@ from core.i18n import set_language, tr
 from tests.qt_scale_support import reset_interface_scaling
 from ui import materials
 from ui.components import ecommerce_task_list as task_module
+from ui.components import image_async
 from ui.components.ecommerce_task_list import (
     RESUMABLE_STATUSES, EcommerceTaskCard, EcommerceTaskList, _Thumbnail,
 )
@@ -57,8 +58,7 @@ class EcommerceTaskListTestBase(unittest.TestCase):
         self.addCleanup(set_language, 'zh-CN')
         reset_interface_scaling(self.app)
         self.addCleanup(reset_interface_scaling, self.app)
-        with task_module._THUMBNAIL_LOCK:
-            task_module._THUMBNAIL_CACHE.clear()
+        image_async.clear_image_cache()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -589,16 +589,16 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
         gui_thread = threading.get_ident()
         decoded_threads = []
         release = threading.Event()
-        decode = task_module._decode_thumbnail
+        decode = image_async._decode_image
 
-        def blocked_decode(path):
+        def blocked_decode(path, size):
             decoded_threads.append(threading.get_ident())
             release.wait(2)
-            return decode(path)
+            return decode(path, size)
 
         one = _Thumbnail(self.panel)
         two = _Thumbnail(self.panel)
-        with patch.object(task_module, '_decode_thumbnail', side_effect=blocked_decode) as loader:
+        with patch.object(image_async, '_decode_image', side_effect=blocked_decode) as loader:
             try:
                 one.set_source(self.images[0])
                 two.set_source(self.images[0])
@@ -635,7 +635,7 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
             self.wait_for(lambda: thumb.has_image)
             for _ in range(10):
                 thumb.refresh()
-                cached = task_module._image(task_module._thumbnail_key(self.images[0]))
+                cached = image_async.cached_image(image_async.image_cache_key(self.images[0]))
                 self.assertFalse(cached.isNull())
         self.assertEqual(len(reads), 1)
 
@@ -665,21 +665,43 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
         thumb.set_source(str(path))
         self.wait_for(lambda: thumb.has_image)
         self.assertNotEqual(thumb._rendered_key, first_key)
-        image = task_module._image(thumb._rendered_key)
+        image = image_async.cached_image(thumb._rendered_key)
+        self.assertEqual(image.pixelColor(0, 0).getRgb()[:3], (220, 20, 15))
+
+    def test_thumbnail_accepts_file_replacement_between_cache_key_and_request(self):
+        original = image_async.load_image_async
+        path = Path(self.images[0])
+        previous = path.stat().st_mtime_ns
+        replaced = False
+
+        def replace_before_request(value, size, callback):
+            nonlocal replaced
+            if not replaced:
+                replaced = True
+                path.write_bytes(solid_png(96, 48, (220, 20, 15)))
+                os.utime(path, ns=(previous + 1_000_000, previous + 1_000_000))
+            return original(value, size, callback)
+
+        thumb = _Thumbnail(self.panel)
+        with patch.object(image_async, 'load_image_async', side_effect=replace_before_request):
+            thumb.set_source(str(path))
+            self.wait_for(lambda: thumb.has_image)
+        self.assertEqual(thumb._rendered_key, image_async.image_cache_key(str(path)))
+        image = image_async.cached_image(thumb._rendered_key)
         self.assertEqual(image.pixelColor(0, 0).getRgb()[:3], (220, 20, 15))
 
     def test_stale_thumbnail_callback_is_discarded_after_path_change_or_widget_deletion(self):
         release = threading.Event()
-        decode = task_module._decode_thumbnail
+        decode = image_async._decode_image
 
-        def blocked_decode(path):
+        def blocked_decode(path, size):
             if path == self.images[0]:
                 release.wait(2)
-            return decode(path)
+            return decode(path, size)
 
         thumb = _Thumbnail(self.panel)
         doomed = _Thumbnail(self.panel)
-        with patch.object(task_module, '_decode_thumbnail', side_effect=blocked_decode):
+        with patch.object(image_async, '_decode_image', side_effect=blocked_decode):
             try:
                 thumb.set_source(self.images[0])
                 doomed.set_source(self.images[0])
@@ -690,7 +712,7 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
                 QThreadPool.globalInstance().waitForDone(3000)
                 self.app.processEvents()
                 self.assertEqual(thumb.path, self.images[1])
-                image = task_module._image(thumb._rendered_key)
+                image = image_async.cached_image(thumb._rendered_key)
                 self.assertEqual(image.pixelColor(0, 0).getRgb()[:3], (20, 90, 180))
             finally:
                 release.set()

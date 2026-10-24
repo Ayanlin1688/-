@@ -17,13 +17,9 @@
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
-import os
-from pathlib import Path
 import re
-import threading
-import weakref
 
-from PyQt5.QtCore import QEvent, QObject, QPoint, QRectF, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -38,6 +34,7 @@ from .. import materials
 from ..responsive import WrapLayout
 from ..theme import style_controls
 from ..tokens import px
+from . import image_async
 from .studio_dialog import StudioDialog, safe_delete_dialog
 
 PAGE_SIZE = 10
@@ -50,13 +47,6 @@ TAB_STATUSES = {
     'issue': ('partial', 'failed', 'cancelled'),
 }
 
-_THUMBNAIL_CACHE = OrderedDict()
-_THUMBNAIL_CACHE_LIMIT = 64
-_THUMBNAIL_PENDING = {}
-_THUMBNAIL_LOCK = threading.Lock()
-_THUMBNAIL_DISPATCHER = None
-
-
 # ---------------------------------------------------------------------------
 # 小工具
 
@@ -66,92 +56,9 @@ def _rgba(color, alpha):
     return 'rgba(%d,%d,%d,%d)' % (value.red(), value.green(), value.blue(), alpha)
 
 
-def _thumbnail_key(value):
-    """路径和文件版本共同标识缓存；文件重生后不会复用旧图。"""
-    path = os.path.abspath(str(value))
-    try:
-        stat = os.stat(path)
-        return '%s\0%d\0%d' % (path, stat.st_mtime_ns, stat.st_size)
-    except (OSError, ValueError, TypeError):
-        return path + '\0missing'
-
-
 def _image(key):
     """只读取有界 QImage 缓存；界面刷新路径不读盘、不解码。"""
-    with _THUMBNAIL_LOCK:
-        cached = _THUMBNAIL_CACHE.get(key)
-        if cached is not None:
-            _THUMBNAIL_CACHE.move_to_end(key)
-        return cached
-
-
-def _decode_thumbnail(path):
-    """仅供后台任务调用：读取并降采样图片，不接触 QWidget 或 QPixmap。"""
-    try:
-        image = QImage.fromData(Path(path).read_bytes())
-        if not image.isNull() and max(image.width(), image.height()) > 240:
-            image = image.scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        return image
-    except (OSError, ValueError, TypeError):
-        return QImage()
-
-
-class _ThumbnailDispatcher(QObject):
-    """后台完成信号统一排队回 GUI 线程，再安全通知仍然存在的缩略图。"""
-
-    loaded = pyqtSignal(str, str, QImage)
-
-    def __init__(self):
-        super().__init__()
-        self.loaded.connect(self._complete, Qt.QueuedConnection)
-
-    def _complete(self, key, path, image):
-        with _THUMBNAIL_LOCK:
-            _THUMBNAIL_CACHE[key] = image
-            _THUMBNAIL_CACHE.move_to_end(key)
-            while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_LIMIT:
-                _THUMBNAIL_CACHE.popitem(last=False)
-            callbacks = _THUMBNAIL_PENDING.pop(key, ())
-        for callback in callbacks:
-            method = callback()
-            if method is not None:
-                try:
-                    method(key, path, image)
-                except RuntimeError:
-                    # 卡片可能已经翻页/删除，Qt 对象销毁后丢弃该回调。
-                    continue
-
-
-class _ThumbnailLoader(QRunnable):
-    def __init__(self, key, path, dispatcher):
-        super().__init__()
-        self.key, self.path, self.dispatcher = key, path, dispatcher
-
-    def run(self):
-        try:
-            image = _decode_thumbnail(self.path)
-        except Exception:
-            # 异常图片只回传缺失占位，不能让后台任务异常中断 GUI 进程。
-            image = QImage()
-        try:
-            self.dispatcher.loaded.emit(self.key, self.path, image)
-        except RuntimeError:
-            # 应用退出时 GUI 接收对象可能已先销毁。
-            with _THUMBNAIL_LOCK:
-                _THUMBNAIL_PENDING.pop(self.key, None)
-
-
-def _request_thumbnail(key, path, callback):
-    global _THUMBNAIL_DISPATCHER
-    if _THUMBNAIL_DISPATCHER is None:
-        _THUMBNAIL_DISPATCHER = _ThumbnailDispatcher()
-    with _THUMBNAIL_LOCK:
-        pending = _THUMBNAIL_PENDING.get(key)
-        if pending is not None:
-            pending.append(weakref.WeakMethod(callback))
-            return
-        _THUMBNAIL_PENDING[key] = [weakref.WeakMethod(callback)]
-    QThreadPool.globalInstance().start(_ThumbnailLoader(key, path, _THUMBNAIL_DISPATCHER))
+    return image_async.cached_image(key)
 
 
 def _label(size=13, bold=False, wrap=False, text=''):
@@ -306,7 +213,7 @@ class _Thumbnail(QLabel):
         """先显示占位或缓存；缺失缓存交给后台线程读取与解码。"""
         path = str(path) if path else ''
         theme = materials.THEME_ID
-        key = _thumbnail_key(path) if path else None
+        key = image_async.image_cache_key(path) if path else None
         size = (px(56), float(self.devicePixelRatioF() or 1.0))
         if (path == self._rendered_path and theme == self._rendered_theme
                 and key == self._rendered_key and size == self._rendered_size):
@@ -328,15 +235,18 @@ class _Thumbnail(QLabel):
         self._paint_thumbnail(QImage())
         if key != self._requested_key:
             self._requested_key = key
-            _request_thumbnail(key, path, self._decoded)
+            image_async.load_image_async(path, (240, 240), self._decoded)
 
     def _decoded(self, key, path, image):
-        if path != self.path or key != self._rendered_key:
+        if path != self.path:
             return
+        current_key = image_async.image_cache_key(path)
+        if current_key != key:
+            if current_key != self._rendered_key:
+                self.set_source(path)
+            return
+        self._rendered_key = key
         self._requested_key = None
-        if _thumbnail_key(path) != key:
-            self.set_source(path)
-            return
         self._paint_thumbnail(image, missing=image.isNull())
 
     def _paint_thumbnail(self, image, missing=False):

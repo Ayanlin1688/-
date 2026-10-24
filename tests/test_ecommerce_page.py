@@ -1905,11 +1905,14 @@ class EcommercePageTests(unittest.TestCase):
         worker.deleteLater()
 
     def test_responsive_form_fits_narrow_and_wide_viewports(self):
+        from tests.qt_scale_support import flush_layout
+
         self.page.show_single_creation()
         self.page.show()
         for width in (480, 1000, 1440, 1800):
             self.page.resize(width, 800)
-            QTest.qWait(20)
+            flush_layout(self.app, self.page)
+            QApplication.processEvents()
             self.assertLessEqual(self.page.body_content.width(), self.page.body_scroll.viewport().width())
             self.assertGreater(self.page.body_scroll.verticalScrollBar().maximum(), 0)
             self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
