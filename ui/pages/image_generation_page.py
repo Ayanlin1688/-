@@ -734,4 +734,3 @@ class ImageGenerationPage(QWidget):
         self.submit_button.setText(tr('开始生成')); self.cta_button.setText(tr('开始生成')); self.cta_hint.setText(tr('填写提示词并选择模型后即可生成'))
         self.quick_title.setText(tr('💡 快速提示词')); self.quick_caption.setText(tr('点击快速应用提示词')); self.custom_prompt_button.setText(tr('+ 自定义提示词'))
         self._refresh_quick_prompts(); self._update_count_hint(self.count_spin.value()); self._update_prompt_state()
-
