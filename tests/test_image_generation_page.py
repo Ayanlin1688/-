@@ -69,6 +69,9 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertFalse(self.page.submit_button.isEnabled())
 
     def test_reference_file_selection_limit_remove_clear_and_preview(self):
+        empty_tile = self.page.reference_grid.add_tile()
+        self.assertIsNotNone(empty_tile)
+        self.assertIn('最多只能上传8张图片', empty_tile.text_label.text())
         paths = [self._make_image(f'image-{index}.png') for index in range(10)]
         with patch('ui.pages.image_generation_page.QFileDialog.getOpenFileNames',
                    return_value=(paths, '')) as picker, \

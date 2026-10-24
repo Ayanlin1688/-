@@ -1450,7 +1450,8 @@ class MainWindow(FluentWindow):
                 or self.workspace_page.history_jobs.busy or self.workspace_page.log_drawer.jobs.busy
                 or self.history_page.jobs.busy
                 or bool(self.workspace_page._history_pending)
-                or self.settings_page.jobs.busy or self.model_catalog.jobs.busy)
+                or self.settings_page.jobs.busy or self.model_catalog.jobs.busy
+                or self.image_generation_page.has_running_workers())
 
     def _close_child_dialogs(self):
         """Reject all child dialogs so no modal loop can hold the app open."""
@@ -1500,6 +1501,8 @@ class MainWindow(FluentWindow):
             return
         self._close_child_dialogs()
         self.schedule_timer.stop()
+        # Cancel image-generation workers before the stacked pages are torn down.
+        self.image_generation_page.shutdown_workers()
         self.history_page.jobs.request_stop()
         self.settings_page.stop_timers()
         self.model_catalog.shutdown()

@@ -292,7 +292,8 @@ class StartupLanguageTests(unittest.TestCase):
             window = MainWindow(manager, network_time=False)
             try:
                 # 不进入事件循环：构造期 tr() 就必须解析为配置语言。
-                self.assertEqual([item.text() for item in window._nav_items], ['Workspace', 'Ecommerce Images', 'History', 'Settings'])
+                self.assertEqual([item.text() for item in window._nav_items],
+                                 ['Workspace', 'Image generation', 'Ecommerce Images', 'History', 'Settings'])
                 self.assertTrue(window.settings_page.license_status_label.text().startswith('License status'))
                 # 设置页 / 历史页（本次新增的全量重翻）启动即英文。
                 self.assertEqual(window.settings_page.sync_models_button.text(), 'Sync upstream models')

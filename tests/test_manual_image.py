@@ -266,6 +266,21 @@ class ManualImageTests(unittest.TestCase):
         self.assertLessEqual(peak, 2)
         self.assertEqual(peak, 2)
 
+    def test_repeated_tasks_use_isolated_output_directories(self):
+        tasks = self._tasks(count=2)
+        with mock.patch('core.manual_image.image_client.generate_image', return_value=_result()):
+            results = self.manager.run_tasks(tasks)
+        paths = [Path(item['files'][0]) for item in results]
+        self.assertNotEqual(paths[0].parent, paths[1].parent)
+        self.assertTrue(all(path.is_file() for path in paths))
+
+    def test_idle_cancel_does_not_cancel_next_batch(self):
+        self.manager.cancel()
+        task = self._tasks()[0]
+        with mock.patch('core.manual_image.image_client.generate_image', return_value=_result()):
+            result = self.manager.run_tasks([task])[0]
+        self.assertEqual(result['status'], 'succeeded')
+
     def test_cancellation_marks_waiting_tasks_and_notifies_history(self):
         tasks = self._tasks(count=3)
         self.callbacks.clear()

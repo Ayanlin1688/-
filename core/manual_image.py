@@ -383,11 +383,16 @@ def _preferred_protocol(config_manager, model):
     model_text = str(model or '')
     gemini_name = bool(re.search(r'gemini|imagen|nano[\s_-]?banana', model_text, re.I))
     hints = []
+    explicit_protocols = []
     config = getattr(config_manager, 'config', {})
     pool = config.get('image_model_pool', {}) if isinstance(config, dict) else {}
     for item in pool.get('models', ()) if isinstance(pool, dict) else ():
         if not isinstance(item, dict) or normalize_model_id(item.get('name')) != model_text:
             continue
+        for key in ('protocol', 'image_protocol'):
+            value = str(item.get(key) or '').strip().casefold()
+            if value:
+                explicit_protocols.append(value)
         hints.append(' '.join(str(item.get(key) or '') for key in
                               ('protocol', 'protocol_hint', 'provider', 'endpoint',
                                'family', 'description')))
@@ -398,8 +403,20 @@ def _preferred_protocol(config_manager, model):
         except Exception:
             record = {}
         if isinstance(record, dict):
+            for key in ('protocol', 'image_protocol'):
+                value = str(record.get(key) or '').strip().casefold()
+                if value:
+                    explicit_protocols.append(value)
             hints.append(' '.join(str(record.get(key) or '') for key in
                                   ('protocol', 'protocol_hint', 'provider', 'family', 'description')))
+    # A model-specific protocol is authoritative.  This matters for custom
+    # model ids whose names do not contain a provider hint (for example a
+    # relay alias configured with protocol='gemini').
+    for value in explicit_protocols:
+        if any(marker in value for marker in ('gemini', 'google', 'imagen')):
+            return 'gemini'
+        if any(marker in value for marker in ('openai', 'open_ai', 'dall', 'azure')):
+            return 'openai'
     line = resolve_line(config, 'image')
     source = str(line.get('source') or '')
     hints.append(' '.join(str(line.get(key) or '') for key in
@@ -496,6 +513,10 @@ class ManualImageManager:
         records = [deepcopy(dict(task)) for task in (tasks or ())]
         if not records:
             return []
+        # An idle cancellation request belongs to no future batch.
+        with self._state_lock:
+            if not self._active_ids:
+                self._cancel_event.clear()
         config = getattr(self.config_manager, 'config', {})
         line = resolve_line(config, 'image')
         output_root = (config.get('paths', {}).get('output') or config.get('output_dir')
@@ -599,7 +620,9 @@ class ManualImageManager:
         prompt = str(record.get('prompt_name') or 'image')
         slug = re.sub(r'[^\w-]+', '_', prompt, flags=re.UNICODE).strip('_-')[:32] or 'image'
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        folder = Path(output_root) / '单独生图' / f"{timestamp}_{slug}"
+        local_id = re.sub(r'[^A-Za-z0-9_-]+', '', str(record.get('local_id') or ''))[:12]
+        suffix = f"_{local_id}" if local_id else ''
+        folder = Path(output_root) / '单独生图' / f"{timestamp}_{slug}{suffix}"
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 

@@ -276,6 +276,11 @@ class ImageGenerationPage(QWidget):
         style_controls(self)
         register_retranslate(self)
 
+    @property
+    def busy(self):
+        """Whether a submission worker is still executing."""
+        return self.has_running_workers()
+
     # —— build ——
     def _build_ui(self):
         # The form contains long prompt examples whose size hints are wider than
@@ -396,6 +401,8 @@ class ImageGenerationPage(QWidget):
         self.reference_grid.preview_requested.connect(self._preview_reference)
         self.reference_grid.add_requested.connect(self.choose_reference_files)
         self.reference_grid.changed.connect(self._references_changed)
+        self.reference_grid.set_paths([], emit=False)
+        self._sync_reference_add_label()
         layout.addWidget(self.reference_grid)
         return box
 
@@ -478,6 +485,17 @@ class ImageGenerationPage(QWidget):
     def _references_changed(self, paths):
         self.reference_paths = list(paths or [])[:8]
         self.clear_images_button.setVisible(bool(self.reference_paths))
+        self._sync_reference_add_label()
+
+    def _sync_reference_add_label(self):
+        tile = self.reference_grid.add_tile() if hasattr(self, 'reference_grid') else None
+        if tile is None:
+            return
+        if self.reference_paths:
+            label = tr('＋ 继续添加 ({n}/8)').format(n=len(self.reference_paths))
+        else:
+            label = tr('⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
+        tile.set_label(label)
 
     def _preview_reference(self, index):
         if not self.reference_paths:
@@ -593,7 +611,19 @@ class ImageGenerationPage(QWidget):
             pass
         worker.deleteLater()
 
-    def closeEvent(self, event):
+    def has_running_workers(self):
+        """Return whether an image-generation worker is still running."""
+        for worker in tuple(self._workers):
+            try:
+                if worker.isRunning():
+                    return True
+            except RuntimeError:
+                # A finished orphan may already have been deleted by Qt.
+                continue
+        return False
+
+    def shutdown_workers(self, wait_ms=1000):
+        """Cancel workers and detach any request that outlives the page."""
         global _SHUTDOWN_HOOK_CONNECTED
         workers = tuple(self._workers)
         for worker in workers:
@@ -601,7 +631,7 @@ class ImageGenerationPage(QWidget):
             if manager is not None and hasattr(manager, 'cancel'):
                 manager.cancel()
             if worker.isRunning():
-                worker.wait(1000)
+                worker.wait(wait_ms)
             if worker.isRunning():
                 # Do not destroy a QWidget-owned QThread while a bounded HTTP
                 # request is still unwinding; keep it alive until it finishes.
@@ -618,7 +648,7 @@ class ImageGenerationPage(QWidget):
                     pass
                 with _ORPHAN_WORKERS_LOCK:
                     _ORPHAN_WORKERS.add(worker)
-                worker.finished.connect(lambda worker=worker: _dispose_orphan_worker(worker))
+                worker.finished.connect(lambda worker=worker: self._orphan_worker_finished(worker))
             else:
                 try:
                     self._workers.remove(worker)
@@ -630,6 +660,18 @@ class ImageGenerationPage(QWidget):
             if app is not None:
                 app.aboutToQuit.connect(_wait_for_orphan_workers)
                 _SHUTDOWN_HOOK_CONNECTED = True
+
+        return self.has_running_workers()
+
+    def _orphan_worker_finished(self, worker):
+        try:
+            self._workers.remove(worker)
+        except ValueError:
+            pass
+        _dispose_orphan_worker(worker)
+
+    def closeEvent(self, event):
+        self.shutdown_workers()
         super().closeEvent(event)
 
     def _on_submitted(self, result):
@@ -676,7 +718,7 @@ class ImageGenerationPage(QWidget):
 
     # —— host integration ——
     def refresh_interface_scale(self):
-        self._refresh_quick_prompts(); self.reference_grid.refresh_interface_scale()
+        self._refresh_quick_prompts(); self.reference_grid.refresh_interface_scale(); self._sync_reference_add_label()
 
     def refresh_colors(self):
         self.form_card.refresh_colors()
