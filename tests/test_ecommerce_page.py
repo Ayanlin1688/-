@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import Qt, QThread, QTimer
+from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QApplication, QLabel
@@ -424,6 +424,229 @@ class EcommercePageTests(unittest.TestCase):
             changed = dict(groups[0], updated_at=2)
             self.page._enrich_history_group(store, changed)
             self.assertEqual(exists.call_count, 3)
+
+    def test_history_touch_invalidates_cached_empty_thumbnail_before_group_finishes(self):
+        group, items = self.seed_history('live-touch', 'generating', states=('pending',))
+        store = self.config.ecommerce_store()
+        with patch.object(self.page.task_list, 'update_groups',
+                          wraps=self.page.task_list.update_groups) as update:
+            self.page._history_dirty = True
+            self.page._flush_history_refresh()
+            card = self.history_card(group['group_id'])
+            self.assertEqual(card.group['thumbs'], [])
+            self.assertFalse(card.thumb_labels[0].has_image)
+            previous_signature = self.page._history_signature
+
+            image = self.root / 'live-touch.png'
+            image.write_bytes(solid_png(120, 120, (66, 134, 120)))
+            store.upsert_item(dict(items[0], status='succeeded', file_path=str(image)))
+            # Item 行变化本身不改变组签名：保留这个断言，避免只测了最终整组刷新。
+            self.page._history_dirty = True
+            self.page._flush_history_refresh()
+            self.assertEqual(update.call_count, 1)
+            self.assertEqual(card.group['thumbs'], [])
+
+            touched = store.touch_group(group['group_id'], totals=store.item_counts(group['group_id']))
+            self.assertEqual(touched['status'], 'generating')
+            self.page._history_dirty = True
+            self.page._flush_history_refresh()
+            self.assertEqual(update.call_count, 2)
+            self.assertNotEqual(self.page._history_signature, previous_signature)
+            self.assertIs(self.history_card(group['group_id']), card)
+            self.assertEqual(card.thumb_labels[0].path, str(image))
+            self.assertEqual(self.page._enrich_cache[group['group_id']]['updated_at'],
+                             touched['updated_at'])
+            self.wait_until(lambda: card.thumb_labels[0].has_image, timeout=300)
+            self.assertFalse(card.thumb_labels[0].pixmap().isNull())
+
+    def test_item_success_becomes_visible_in_task_list_within_one_refresh_window(self):
+        group, items = self.seed_history('live-event', 'generating', states=('pending',))
+        store = self.config.ecommerce_store()
+        self.page.show()
+        QTest.qWait(20)
+        self.page._on_group(group)
+        self.page._on_item(items[0])
+        self.page._flush_history_refresh()
+        card = self.history_card(group['group_id'])
+        self.assertFalse(card.thumb_labels[0].has_image)
+        image = self.root / 'live-event.png'
+        image.write_bytes(solid_png(120, 120, (80, 140, 120)))
+        saved = store.upsert_item(dict(items[0], status='succeeded', file_path=str(image),
+                                       updated_at=time.time()))
+
+        started = time.monotonic()
+        self.page._on_item(saved)
+        # manager 发出 item 回调后才 touch；延迟快照必须读取 touch 后的新组记录。
+        store.touch_group(group['group_id'], totals=store.item_counts(group['group_id']))
+        self.assertTrue(self.page._history_timer.isActive())
+        self.wait_until(lambda: card.thumb_labels[0].has_image, timeout=400)
+        self.assertLessEqual(time.monotonic() - started, 0.4)
+        self.assertEqual(card.thumb_labels[0].path, str(image))
+        self.assertEqual(card.group['status'], 'generating')
+
+    def test_group_notification_after_delayed_touch_recovers_consumed_item_refresh(self):
+        group, items = self.seed_history('live-touch-race', 'generating', states=('pending',))
+        store = self.config.ecommerce_store()
+        self.page.show()
+        self.app.processEvents()
+        self.page._on_group(group)
+        self.page._on_item(items[0])
+        self.page._flush_history_refresh()
+        card = self.history_card(group['group_id'])
+        signature = self.page._history_signature
+        self.assertFalse(card.thumb_labels[0].has_image)
+
+        class QueuedProgress(QObject):
+            item = pyqtSignal(object)
+            group = pyqtSignal(object)
+
+        bridge = QueuedProgress()
+        bridge.item.connect(self.page._on_item, Qt.QueuedConnection)
+        bridge.group.connect(self.page._on_group, Qt.QueuedConnection)
+        manager = self.make_manager()
+        manager.on_item = bridge.item.emit
+        manager.on_group = bridge.group.emit
+        entered, release = threading.Event(), threading.Event()
+        touch = store.touch_group
+
+        def delayed_touch(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('离线 touch 屏障未释放')
+            return touch(*args, **kwargs)
+
+        worker = threading.Thread(target=manager._generate,
+                                  args=(group, items[0], threading.Event()))
+        with patch.object(store, 'touch_group', side_effect=delayed_touch):
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2), '图片回调后未进入 touch 屏障')
+                self.wait_until(lambda: self.page._items.get(('carousel', 1), {}).get(
+                    'status') == 'succeeded', timeout=300)
+                self.assertTrue(self.page._history_dirty)
+                # 精确模拟旧 timer 在 touch 完成前触发：旧签名跳过绘制并消耗 dirty。
+                self.page._flush_history_refresh()
+                self.assertFalse(self.page._history_dirty)
+                self.assertFalse(self.page._history_timer.isActive())
+                self.assertEqual(self.page._history_signature, signature)
+                self.assertFalse(card.thumb_labels[0].has_image)
+
+                started = time.monotonic()
+                release.set()
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.wait_until(lambda: card.thumb_labels[0].has_image, timeout=400)
+                self.assertLessEqual(time.monotonic() - started, 0.4)
+            finally:
+                release.set()
+                worker.join(3)
+        saved = store.list_items(group['group_id'])[0]
+        self.assertEqual(saved['status'], 'succeeded')
+        self.assertEqual(card.thumb_labels[0].path, saved['file_path'])
+        self.assertIs(self.history_card(group['group_id']), card)
+        self.assertEqual(card.group['status'], 'generating')
+        self.assertGreater(card.group['updated_at'], group['updated_at'])
+        self.assertFalse(card.thumb_labels[0].pixmap().isNull())
+
+    def assert_final_group_visible_with_nonadvancing_clock(self, *, rollback=False):
+        self.page.show_single_creation()
+        self.page.show()
+        self.app.processEvents()
+
+        class QueuedProgress(QObject):
+            item = pyqtSignal(object)
+            group = pyqtSignal(object)
+
+        bridge = QueuedProgress()
+        bridge.item.connect(self.page._on_item, Qt.QueuedConnection)
+        bridge.group.connect(self.page._on_group, Qt.QueuedConnection)
+        manager = self.make_manager()
+        clock = [1700000000.]
+        groups = []
+
+        def notify_group(record):
+            groups.append(record)
+            bridge.group.emit(record)
+            # 图片成功后的 touch 已完成；此时模拟用户/系统将墙上时钟回拨。
+            if (rollback and record['status'] == 'generating'
+                    and record.get('totals', {}).get('succeeded')):
+                clock[0] = 1699999940.
+
+        manager.on_group = notify_group
+        manager.on_item = bridge.item.emit
+        try:
+            with patch('core.ecommerce.manager.time.time', side_effect=lambda: clock[0]):
+                group_id = manager.start_group(
+                    ['douyin'], '同刻茶杯', '离线时序验证', 'zh', 1, 0, '1:1', '3:4', '1K')
+            self.app.processEvents()
+            self.assertEqual(groups[-1]['status'], 'succeeded')
+            self.assertEqual(self.config.ecommerce_store().get_group(group_id)['status'], 'succeeded')
+            # 直接检查组信号，避免 _on_result 的最终读取掩盖过期判断导致的终态丢失。
+            self.assertEqual(self.page._group['status'], 'succeeded')
+            self.assertEqual(self.page._right_state, 'finished')
+            self.assertTrue(self.page.result_panel.isVisible())
+            self.assertEqual(len(self.page.result_panel.cards), 1)
+            self.assertEqual(next(iter(self.page.result_panel.cards.values())).record['status'], 'succeeded')
+        finally:
+            manager.on_group = manager.on_item = None
+            bridge.group.disconnect(self.page._on_group)
+            bridge.item.disconnect(self.page._on_item)
+            bridge.deleteLater()
+            self.app.processEvents()
+
+    def test_same_clock_tick_final_group_is_not_discarded_after_live_touch(self):
+        self.assert_final_group_visible_with_nonadvancing_clock()
+
+    def test_clock_rollback_final_group_is_not_discarded_after_live_touch(self):
+        self.assert_final_group_visible_with_nonadvancing_clock(rollback=True)
+
+    def test_success_item_updates_submission_cell_immediately_then_decodes_within_200ms(self):
+        group, items = self.seed_history('live-grid', 'generating', states=('pending',))
+        self.page.show_single_creation()
+        self.page.show()
+        QTest.qWait(20)
+        self.page._on_group(group)
+        self.page._on_item(items[0])
+        image = self.root / 'live-grid.png'
+        image.write_bytes(solid_png(120, 120, (85, 148, 130)))
+        saved = self.config.ecommerce_store().upsert_item(
+            dict(items[0], status='succeeded', file_path=str(image), updated_at=time.time()))
+
+        started = time.monotonic()
+        self.page._on_item(saved)
+        cell = self.page.submission_view.cells[('carousel', 1)]
+        self.assertEqual(cell.property('cellState'), 'succeeded')
+        self.wait_until(lambda: cell.thumbnail.has_image, timeout=200)
+        self.assertLessEqual(time.monotonic() - started, 0.2)
+        self.assertFalse(cell.thumbnail.pixmap().isNull())
+        self.assertEqual(cell.thumbnail.path, str(image))
+
+    def test_history_refresh_timer_does_not_restart_for_continuous_item_progress(self):
+        self.page.show()
+        QTest.qWait(20)
+        self.page._schedule_history_refresh()
+        QTest.qWait(80)
+        remaining = self.page._history_timer.remainingTime()
+        self.assertGreater(remaining, 0)
+        self.page._schedule_history_refresh()
+        self.assertLessEqual(self.page._history_timer.remainingTime(), remaining)
+
+    def test_generating_history_uses_live_items_instead_of_previous_manifest(self):
+        group, items = self.seed_history('live-manifest', 'generating', states=('pending',))
+        store = self.config.ecommerce_store()
+        store.upsert_group(dict(group, manifest={'items': [
+            dict(kind='carousel', seq=1, status='failed', title='旧结果')]}))
+        self.page._history_dirty = True
+        self.page._flush_history_refresh()
+        self.assertEqual(self.history_card(group['group_id']).group['thumbs'], [])
+
+        image = self.root / 'live-manifest.png'
+        image.write_bytes(solid_png(120, 120, (91, 155, 135)))
+        store.upsert_item(dict(items[0], status='succeeded', file_path=str(image)))
+        store.touch_group(group['group_id'], totals=store.item_counts(group['group_id']))
+        self.page._history_dirty = True
+        self.page._flush_history_refresh()
+        self.assertEqual(self.history_card(group['group_id']).thumb_labels[0].path, str(image))
 
     def test_hidden_history_waits_for_show_and_first_frame_flush_is_deferred(self):
         self.seed_history('show-group', 'succeeded', states=())

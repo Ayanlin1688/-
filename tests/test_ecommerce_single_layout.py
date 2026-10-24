@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import QPoint, QRect, Qt
-from PyQt5.QtTest import QTest
+from PyQt5.QtCore import QEvent, QObject, QPoint, QRect, Qt
+from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtWidgets import QBoxLayout, QLabel, QScrollArea
 
 from core.i18n import set_language, tr
@@ -16,6 +16,23 @@ from tests.qt_scale_support import flush_layout, reset_interface_scaling
 from tests.test_interface_scaling import FakeScreen
 from ui.scaling import apply_interface_scale
 from ui.tokens import px
+
+
+class _RightColumnGeometryEvents(QObject):
+    """Record viewport feedback rather than accepting transient equal sizes."""
+
+    def __init__(self, widgets, parent):
+        super().__init__(parent)
+        self.events = []
+        self.names = {widget: name for name, widget in widgets.items()}
+        for widget in self.names:
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Resize, QEvent.Show, QEvent.Hide):
+            self.events.append((self.names[watched], int(event.type()),
+                                watched.size().width(), watched.size().height()))
+        return False
 
 
 class EcommerceSingleLayoutTests(unittest.TestCase):
@@ -510,6 +527,114 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
                             for button in buttons:
                                 rect = self.mapped_rect(button, self.page.completion_footer)
                                 self.assertTrue(self.page.completion_footer.rect().contains(rect))
+
+    def test_right_scrollbar_reserved_only_for_finished_state_with_results(self):
+        scroll = self.page.result_scroll
+        self.assertEqual(self.page._right_state, 'idle')
+        self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+
+        finished, _ = self.seed_history(status='succeeded',
+                                        states=('succeeded', 'succeeded'))
+        self.page._view_history_group(finished['group_id'])
+        flush_layout(self.app, self.page)
+        self.assertTrue(self.page.result_panel.cards)
+        self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAlwaysOn)
+        self.assertTrue(scroll.verticalScrollBar().isVisible())
+
+        # Existing result cards may remain in memory during active callbacks;
+        # they must not keep a reserved scrollbar on the analysis/submission UI.
+        for offset, status in enumerate(('analyzing', 'generating'), 1):
+            with self.subTest(status=status):
+                self.page._on_group(dict(finished, status=status,
+                                         updated_at=finished['updated_at'] + offset))
+                flush_layout(self.app, self.page)
+                self.assertTrue(self.page.result_panel.cards)
+                self.assertEqual(self.page._right_state, status)
+                self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+                self.assert_scrolls_fit()
+
+        self.page._clear_results()
+        flush_layout(self.app, self.page)
+        self.assertEqual(self.page._right_state, 'idle')
+        self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+        self.assertFalse(scroll.verticalScrollBar().isVisible())
+
+        empty_finished, _ = self.seed_history(group_id='finished-without-items',
+                                              status='failed', states=())
+        self.page._view_history_group(empty_finished['group_id'])
+        flush_layout(self.app, self.page)
+        self.assertEqual(self.page._right_state, 'finished')
+        self.assertFalse(self.page.result_panel.cards)
+        self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+        self.assert_scrolls_fit()
+
+    def _right_scroll_snapshot(self):
+        scroll = self.page.result_scroll
+        bar = scroll.verticalScrollBar()
+        return dict(
+            policy=int(scroll.verticalScrollBarPolicy()),
+            scrollbar_visible=bar.isVisible(), scrollbar_width=bar.width(),
+            scrollbar_geometry=bar.geometry().getRect(),
+            scrollbar_range=(bar.minimum(), bar.maximum()),
+            viewport_geometry=scroll.viewport().geometry().getRect(),
+            content_geometry=scroll.widget().geometry().getRect(),
+            result_panel_geometry=self.page.result_panel.geometry().getRect())
+
+    def test_finished_scrollbar_geometry_converges_at_100_125_150_175_percent(self):
+        self.right_scroll_stability_samples = []
+        for scale in ('1.0', '1.25', '1.5', '1.75'):
+            with self.subTest(scale=scale):
+                self.page._clear_results()
+                apply_interface_scale(self.app, FakeScreen(), scale)
+                self.page.resize(px(1440), px(900))
+                flush_layout(self.app, self.page)
+                scroll = self.page.result_scroll
+                self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+                recorder = _RightColumnGeometryEvents(dict(
+                    viewport=scroll.viewport(), content=scroll.widget(),
+                    result_panel=self.page.result_panel,
+                    scrollbar=scroll.verticalScrollBar()), self.page)
+                ranges = QSignalSpy(scroll.verticalScrollBar().rangeChanged)
+                group, _ = self.seed_history(group_id='stable-completion-' + scale,
+                                             status='succeeded',
+                                             states=('succeeded', 'succeeded'))
+                self.page._view_history_group(group['group_id'])
+                flush_layout(self.app, self.page)
+                # Cover the submission grid's 100ms deferred layout and queued
+                # scrollbar events before defining the settled baseline.
+                QTest.qWait(120)
+                flush_layout(self.app, self.page)
+                self.app.processEvents()
+                first = self._right_scroll_snapshot()
+                transition_events, transition_ranges = len(recorder.events), len(ranges)
+                self.assertEqual(len(self.page.result_panel.cards), 2)
+                self.assertEqual(first['policy'], int(Qt.ScrollBarAlwaysOn))
+                self.assertTrue(first['scrollbar_visible'])
+                self.assertGreater(first['scrollbar_width'], 0)
+                self.assert_scrolls_fit()
+
+                for _ in range(3):
+                    self.page._sync_right_states()
+                    flush_layout(self.app, self.page)
+                QTest.qWait(120)
+                flush_layout(self.app, self.page)
+                self.app.processEvents()
+                second = self._right_scroll_snapshot()
+                self.assertEqual(second, first)
+                self.assertEqual(len(recorder.events), transition_events,
+                                 recorder.events[transition_events:])
+                self.assertEqual(len(ranges), transition_ranges,
+                                 list(ranges)[transition_ranges:])
+                self.assert_scrolls_fit()
+                self.right_scroll_stability_samples.append(dict(
+                    scale=float(scale), first=first, second=second,
+                    transition_geometry_events=transition_events,
+                    transition_range_changes=transition_ranges,
+                    settled_geometry_events=len(recorder.events) - transition_events,
+                    settled_range_changes=len(ranges) - transition_ranges))
+                for widget in recorder.names:
+                    widget.removeEventFilter(recorder)
+                recorder.deleteLater()
 
     def test_supported_scales_keep_header_cards_and_scrolls_inside_page(self):
         for scale in ('1.0', '1.25', '1.5', '1.75'):

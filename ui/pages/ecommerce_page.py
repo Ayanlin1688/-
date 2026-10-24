@@ -838,6 +838,11 @@ class EcommercePage(QWidget):
         else:
             state = 'idle'
         self._right_state = state
+        scroll_policy = (Qt.ScrollBarAlwaysOn
+                         if state == 'finished' and self.result_panel.cards
+                         else Qt.ScrollBarAsNeeded)
+        if self.result_scroll.verticalScrollBarPolicy() != scroll_policy:
+            self.result_scroll.setVerticalScrollBarPolicy(scroll_policy)
         items = self._right_items()
         total, ok, failed = self._right_progress(items)
         if state == 'generating':
@@ -1585,7 +1590,8 @@ class EcommercePage(QWidget):
     def _schedule_history_refresh(self):
         """合并逐图进度；隐藏页只记脏状态，进入页面后再读取历史。"""
         self._history_dirty = True
-        if self.isVisible():
+        # 持续到达的逐图事件不能重置等待窗口，否则列表会一直等到整组结束。
+        if self.isVisible() and not self._history_timer.isActive():
             self._history_timer.start()
 
     def _queue_history_refresh(self):
@@ -1642,7 +1648,9 @@ class EcommercePage(QWidget):
             return
         manifest = group.get('manifest')
         items = []
-        if isinstance(manifest, dict) and isinstance(manifest.get('items'), list):
+        # 重生成时 manifest 仍是上次完成的快照；进行中的图片以实时 item 行为准。
+        if (group.get('status') not in ('analyzing', 'generating')
+                and isinstance(manifest, dict) and isinstance(manifest.get('items'), list)):
             items = [item for item in manifest['items'] if isinstance(item, dict)]
         else:
             try:

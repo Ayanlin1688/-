@@ -1,4 +1,5 @@
 import json
+import math
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -78,6 +79,134 @@ class EcommercePersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.item_counts('g'), dict.fromkeys(ITEM_STATUSES, 0))
         self.assertEqual(len(self.store.list_items('other')), 1)
         self.assertFalse(self.store.delete_group('absent'))
+
+    def test_touch_group_advances_timestamp_without_replacing_other_fields(self):
+        before = self.group(status='generating', updated_at=10,
+                            totals={'succeeded': 1}, manifest={'items': [{'title': '茶杯'}]},
+                            error='保留诊断')
+        with patch('core.ecommerce.persistence.time.time', return_value=20):
+            touched = self.store.touch_group('g')
+        self.assertGreater(touched['updated_at'], before['updated_at'])
+        self.assertEqual(touched, dict(before, updated_at=20))
+        touched['config']['tier'] = '4K'
+        touched['manifest']['items'][0]['title'] = '不应保留'
+        self.assertEqual(self.store.get_group('g'), dict(before, updated_at=20))
+
+    def test_touch_group_updates_totals_and_copies_inputs_and_result(self):
+        self.group(updated_at=10)
+        totals = {'succeeded': 1, 'failed': 2}
+        touched = self.store.touch_group('g', totals=totals, updated_at=25)
+        self.assertEqual(touched['updated_at'], 25)
+        self.assertEqual(touched['totals'], totals)
+        totals['succeeded'] = 99
+        touched['totals']['failed'] = 99
+        self.assertEqual(self.store.get_group('g')['totals'], {'succeeded': 1, 'failed': 2})
+        self.assertEqual(self.store.touch_group('g', totals={}, updated_at=30)['totals'], {})
+
+    def assert_default_touch_timestamp_advances(self, clock_time):
+        for memory in (False, True):
+            for supplied_time in (None, 0):
+                with self.subTest(memory=memory, supplied_time=supplied_time, clock_time=clock_time):
+                    path = self.path.with_name(f'touch-clock-{memory}-{supplied_time}.sqlite3')
+                    store = EcommerceImageStore(path)
+                    self.addCleanup(store.close)
+                    before = store.upsert_group(dict(
+                        group_id='g', status='partial', updated_at=1000,
+                        product_name='保留的产品', config={'tier': '2K'},
+                        totals={'succeeded': 2, 'failed': 1},
+                        manifest={'items': [{'title': '保留的说明'}]}, error='保留诊断'))
+                    if memory:
+                        store._disable(sqlite3.OperationalError('readonly database'))
+                    previous = before['updated_at']
+                    with patch('core.ecommerce.persistence.time.time', return_value=clock_time):
+                        for _ in range(2):
+                            touched = store.touch_group('g', updated_at=supplied_time)
+                            self.assertEqual(touched['updated_at'], math.nextafter(previous, math.inf))
+                            self.assertGreater(touched['updated_at'], previous)
+                            self.assertEqual(touched, dict(before, updated_at=touched['updated_at']))
+                            self.assertEqual(store.get_group('g'), touched)
+                            previous = touched['updated_at']
+                    if not memory:
+                        store.close()
+                        reopened = EcommerceImageStore(path)
+                        self.addCleanup(reopened.close)
+                        self.assertEqual(reopened.get_group('g'), touched)
+
+    def test_touch_group_advances_timestamp_with_same_windows_clock_tick(self):
+        self.assert_default_touch_timestamp_advances(1000)
+
+    def test_touch_group_advances_timestamp_when_system_clock_moves_backwards(self):
+        self.assert_default_touch_timestamp_advances(900)
+
+    def test_touch_group_respects_explicit_nonzero_timestamp_before_previous(self):
+        for memory in (False, True):
+            with self.subTest(memory=memory):
+                path = self.path.with_name(f'touch-explicit-{memory}.sqlite3')
+                store = EcommerceImageStore(path)
+                self.addCleanup(store.close)
+                before = store.upsert_group(dict(
+                    group_id='g', status='succeeded', product_name='保留的产品',
+                    config={'tier': '2K'}, totals={'succeeded': 2}, updated_at=1000))
+                if memory:
+                    store._disable(sqlite3.OperationalError('readonly database'))
+                with patch('core.ecommerce.persistence.time.time') as clock:
+                    touched = store.touch_group('g', updated_at=900)
+                clock.assert_not_called()
+                self.assertEqual(touched, dict(before, updated_at=900))
+                self.assertEqual(store.get_group('g'), touched)
+                if not memory:
+                    store.close()
+                    reopened = EcommerceImageStore(path)
+                    self.addCleanup(reopened.close)
+                    self.assertEqual(reopened.get_group('g'), touched)
+
+    def test_touch_missing_group_returns_none_without_writing(self):
+        with patch.object(self.store, '_write', wraps=self.store._write) as write:
+            self.assertIsNone(self.store.touch_group('absent', totals={'failed': 1}))
+        write.assert_not_called()
+        self.assertEqual(self.store.list_groups(), [])
+
+    def test_touch_group_in_memory_fallback_does_not_open_database(self):
+        before = self.group(updated_at=10, status='generating', totals={'succeeded': 0})
+        self.store._disable(sqlite3.OperationalError('readonly database'))
+        with patch.object(self.store, '_open', side_effect=AssertionError('must not open')):
+            touched = self.store.touch_group('g', totals={'succeeded': 1}, updated_at=20)
+            self.assertEqual(self.store.get_group('g'), touched)
+        self.assertEqual(touched, dict(before, updated_at=20, totals={'succeeded': 1}))
+        touched['totals']['succeeded'] = 99
+        self.assertEqual(self.store.get_group('g')['totals'], {'succeeded': 1})
+
+    def test_touch_group_reloads_latest_fields_before_writing_and_persists(self):
+        self.group(updated_at=10, status='generating')
+        other = EcommerceImageStore(self.path)
+        self.addCleanup(other.close)
+        other.upsert_group(dict(group_id='g', status='succeeded', product_name='最新产品',
+                                config={'tier': '2K'}, error='最新诊断', updated_at=15))
+        touched = self.store.touch_group('g', totals={'succeeded': 2}, updated_at=20)
+        self.assertEqual(touched['status'], 'succeeded')
+        self.assertEqual(touched['product_name'], '最新产品')
+        self.assertEqual(touched['config'], {'tier': '2K'})
+        self.assertEqual(touched['error'], '最新诊断')
+        self.store.close()
+        other.close()
+        reopened = EcommerceImageStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.get_group('g'), touched)
+
+    def test_touch_group_write_failure_keeps_new_values_in_memory(self):
+        self.group(updated_at=10, status='generating')
+        original_write = self.store._write
+
+        def fail_write(table, records):
+            with patch.object(self.store, '_open', side_effect=sqlite3.OperationalError('readonly database')):
+                original_write(table, records)
+
+        with patch.object(self.store, '_write', side_effect=fail_write):
+            touched = self.store.touch_group('g', totals={'failed': 1}, updated_at=20)
+        self.assertFalse(self.store.persistence_available)
+        self.assertEqual(self.store.get_group('g'), touched)
+        self.assertEqual(touched['totals'], {'failed': 1})
+        self.assertEqual(touched['updated_at'], 20)
 
     def test_concurrent_batch_upserts_keep_groups_and_sequences_separate(self):
         barrier = threading.Barrier(6)

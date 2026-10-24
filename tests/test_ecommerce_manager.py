@@ -469,10 +469,10 @@ class EcommerceManagerTests(unittest.TestCase):
         from core.ecommerce import manager as manager_module
         original_write = manager_module._atomic_write
 
-        def fail_image_write(path, content):
+        def fail_image_write(path, content, *, durable=False):
             if Path(path).name != 'manifest.json':
                 raise OSError('offline disk failure')
-            return original_write(path, content)
+            return original_write(path, content, durable=durable)
 
         with patch.object(manager_module, '_atomic_write', side_effect=fail_image_write):
             group_id = manager.start_group(
@@ -882,10 +882,10 @@ class EcommerceManagerTests(unittest.TestCase):
         from core.ecommerce import manager as manager_module
         original_write = manager_module._atomic_write
 
-        def reject_manifest(path, content):
+        def reject_manifest(path, content, *, durable=False):
             if Path(path).name == 'manifest.json':
                 raise PermissionError('fixture denied ' + TEST_KEY)
-            return original_write(path, content)
+            return original_write(path, content, durable=durable)
         with patch('core.ecommerce.manager._atomic_write', side_effect=reject_manifest):
             group_id = self.start()
         group = self.store.get_group(group_id)
@@ -921,6 +921,299 @@ class EcommerceManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager.resume_group('no-items')
         self.image.assert_not_called()
+
+    def test_each_finished_image_touches_group_after_item_callback_with_current_counts(self):
+        self.manager = self.make_manager(concurrency=1)
+        events = []
+        touch = self.store.touch_group
+
+        def on_item(item):
+            self.items.append(item)
+            if item['status'] in ('succeeded', 'failed'):
+                events.append(('item', item['seq']))
+
+        def on_touch(group_id, *, totals=None):
+            events.append(('touch', deepcopy(totals)))
+            if events[-2][0] == 'item':
+                self.assertGreaterEqual(totals['succeeded'] + totals['failed'], 1)
+                self.assertEqual(self.store.get_group(group_id)['status'], 'generating')
+            return touch(group_id, totals=totals)
+
+        self.manager.on_item = on_item
+        with patch.object(self.store, 'touch_group', side_effect=on_touch) as touched:
+            group_id = self.start()
+        self.assertEqual(touched.call_count, 4)  # Each image, then the settling pass.
+        self.assertEqual([event[0] for event in events],
+                         ['item', 'touch', 'item', 'touch', 'item', 'touch', 'touch'])
+        self.assertEqual([event[1]['succeeded'] for event in events if event[0] == 'touch'],
+                         [1, 2, 3, 3])
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+
+    def test_failed_images_touch_current_failure_counts_without_extra_requests(self):
+        self.image.side_effect = EcommerceImageError('离线失败', 400)
+        self.manager = self.make_manager(concurrency=1)
+        with patch.object(self.store, 'touch_group', wraps=self.store.touch_group) as touched:
+            group_id = self.start()
+        self.assertEqual(self.image.call_count, 3)
+        self.assertEqual([call.kwargs['totals']['failed'] for call in touched.call_args_list],
+                         [1, 2, 3, 3])
+        self.assertEqual(self.store.get_group(group_id)['status'], 'failed')
+
+    def test_cancellation_touches_after_all_unstarted_items_are_settled(self):
+        cancel = threading.Event()
+
+        def image(*args, **kwargs):
+            cancel.set()
+            return fake_image(*args, **kwargs)
+
+        self.image.side_effect = image
+        self.manager = self.make_manager(concurrency=1)
+        with patch.object(self.store, 'touch_group', wraps=self.store.touch_group) as touched:
+            group_id = self.start(cancel_event=cancel)
+        self.assertEqual(touched.call_count, 2)
+        self.assertEqual(touched.call_args.kwargs['totals']['skipped'], 2)
+        self.assertEqual(touched.call_args.kwargs['totals']['succeeded'], 1)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'partial')
+
+    def test_touch_preserves_latest_group_state_and_never_upserts_a_stale_group(self):
+        self.store.upsert_group(dict(group_id='touch', status='generating',
+                                     product_name='茶杯', config={'keep': 'original'}))
+        other = EcommerceImageStore(self.store.path)
+        self.addCleanup(other.close)
+        updated = other.upsert_group(dict(group_id='touch', status='partial', error='并发状态',
+                                          config={'keep': 'latest'}))
+        with patch.object(self.store, 'upsert_group', wraps=self.store.upsert_group) as upsert:
+            touched = self.manager._touch_group('touch', totals={'succeeded': 1})
+        upsert.assert_not_called()
+        for name in ('status', 'error', 'product_name', 'config', 'created_at', 'manifest'):
+            self.assertEqual(touched[name], updated[name])
+        self.assertEqual(touched['totals'], {'succeeded': 1})
+        self.assertGreaterEqual(touched['updated_at'], updated['updated_at'])
+        self.assertEqual(self.groups, [touched])
+
+    def test_touch_notifies_after_persistence_and_keeps_callbacks_isolated(self):
+        self.store.upsert_group(dict(group_id='touch-notify', status='generating',
+                                     config={'keep': 'saved'}))
+        received = []
+
+        def on_group(record):
+            received.append(deepcopy(record))
+            self.assertEqual(self.store.get_group('touch-notify'), record)
+            record['config']['keep'] = 'presentation-only'
+            raise RuntimeError('offline presentation failure')
+
+        self.manager.on_group = on_group
+        touched = self.manager._touch_group('touch-notify', totals={'succeeded': 1})
+        self.assertEqual(received, [touched])
+        self.assertEqual(touched['config'], {'keep': 'saved'})
+        self.assertEqual(self.store.get_group('touch-notify'), touched)
+        self.assertEqual(self.logs, [])
+
+    def test_terminal_group_timestamp_strictly_follows_item_touch_in_same_clock_tick(self):
+        for status in ('succeeded', 'failed'):
+            with self.subTest(status=status), patch('core.ecommerce.manager.time.time', return_value=100.0):
+                group_id = f'same-tick-{status}'
+                generating = self.store.upsert_group(dict(
+                    group_id=group_id, status='generating', updated_at=100.0))
+                self.manager._item(dict(group_id=group_id, kind='carousel', seq=1, status=status))
+                touched = self.manager._touch_group(group_id)
+                self.assertGreater(touched['updated_at'], generating['updated_at'])
+                self.assertEqual(touched['status'], 'generating')
+
+                terminal = self.manager._group(dict(generating, status=status))
+
+                self.assertGreater(terminal['updated_at'], touched['updated_at'])
+                self.assertEqual(terminal['status'], status)
+                self.assertEqual(self.groups[-1], terminal)
+                latest = self.store.get_group(group_id)
+                self.assertEqual(latest['updated_at'], terminal['updated_at'])
+                self.assertEqual(latest['status'], status)
+
+    def test_missing_or_failed_touch_does_not_emit_group_notification(self):
+        self.assertIsNone(self.manager._touch_group('absent', totals={}))
+        with patch.object(self.store, 'touch_group', side_effect=OSError('offline database')):
+            self.assertIsNone(self.manager._touch_group('absent', totals={}))
+        self.assertEqual(self.groups, [])
+
+    def test_touch_failure_warns_once_and_does_not_turn_saved_images_into_failures(self):
+        with patch.object(self.store, 'touch_group', side_effect=OSError('offline database')) as touched:
+            group_id = self.start()
+        self.assertEqual(touched.call_count, 4)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertEqual(self.image.call_count, 3)
+        warnings = [message for message, level in self.logs if level == 'warning' and '组刷新失败' in message]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(self.manifest(group_id)['totals']['succeeded'], 3)
+
+    def test_touch_count_failure_is_also_contained_and_warned_once(self):
+        with patch.object(self.store, 'item_counts', side_effect=OSError('offline counts')), \
+                patch.object(self.store, 'touch_group') as touched:
+            self.assertIsNone(self.manager._touch_group('group'))
+            self.assertIsNone(self.manager._touch_group('group'))
+        touched.assert_not_called()
+        self.assertEqual(len([message for message, level in self.logs
+                              if level == 'warning' and '组刷新失败' in message]), 1)
+
+    def test_missing_touch_method_skips_without_upserting_or_counting(self):
+        old_store = Mock(spec=['item_counts', 'upsert_group'])
+        self.manager.store = old_store
+        self.assertIsNone(self.manager._touch_group('group'))
+        old_store.item_counts.assert_not_called()
+        old_store.upsert_group.assert_not_called()
+        self.assertEqual(self.logs, [])
+
+    def test_image_writes_skip_fsync_while_manifest_remains_durable(self):
+        from core.ecommerce import manager as manager_module
+        write = manager_module._atomic_write
+        writes = []
+        self.manager = self.make_manager(concurrency=1)
+        with patch.object(manager_module.os, 'fsync') as fsync:
+            def observed_write(path, content, *, durable=False):
+                before = fsync.call_count
+                write(path, content, durable=durable)
+                writes.append((Path(path).suffix, durable, fsync.call_count - before))
+
+            with patch.object(manager_module, '_atomic_write', side_effect=observed_write):
+                group_id = self.start()
+        self.assertEqual(writes, [('.png', False, 0)] * 3 + [('.json', True, 1)])
+        self.assertEqual(fsync.call_count, 1)
+        self.assertEqual(self.manifest(group_id)['status'], 'succeeded')
+        for item in self.store.list_items(group_id):
+            self.assertEqual(Path(item['file_path']).read_bytes(), PNG)
+
+    def test_durable_atomic_write_fsync_failure_preserves_old_file_and_cleans_temp(self):
+        from core.ecommerce.manager import _atomic_write
+        path = self.root / 'durable.json'
+        path.write_bytes(b'old-content')
+        with patch('core.ecommerce.manager.os.fsync', side_effect=OSError('offline flush')) as fsync:
+            with self.assertRaisesRegex(OSError, 'offline flush'):
+                _atomic_write(path, b'new-content', durable=True)
+            self.assertEqual(path.read_bytes(), b'old-content')
+            self.assertEqual(list(self.root.glob('*.tmp')), [])
+            _atomic_write(path, PNG)
+        self.assertEqual(fsync.call_count, 1)
+        self.assertEqual(path.read_bytes(), PNG)
+
+    def test_timings_measure_request_and_write_before_ui_callback_without_default_log_noise(self):
+        from core.ecommerce import manager as manager_module
+        clock = [10.]
+        write = manager_module._atomic_write
+
+        def image(*args, **kwargs):
+            clock[0] += 2.5
+            result = fake_image(*args, **kwargs)
+            return ImageResult(result.png_bytes, result.model, result.size, result.tier_used,
+                               result.quality, result.endpoint, delivery='url')
+
+        def observed_write(path, content, *, durable=False):
+            write(path, content, durable=durable)
+            if Path(path).suffix == '.png':
+                clock[0] += .005
+
+        def callback(item):
+            if item['status'] == 'succeeded':
+                clock[0] += 100  # UI callback time is excluded from item processing.
+
+        self.image.side_effect = image
+        self.manager.on_item = callback
+        with patch.object(manager_module.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(manager_module, '_atomic_write', side_effect=observed_write):
+            self.start(carousel_count=1, detail_count=0)
+        timing, = self.manager.timings_snapshot()
+        self.assertEqual((timing['kind'], timing['seq'], timing['model'], timing['delivery'], timing['status']),
+                         ('carousel', 1, self.manager.image_model, 'url', 'succeeded'))
+        self.assertEqual(timing['request_seconds'], 2.5)
+        self.assertAlmostEqual(timing['write_seconds'], .005)
+        self.assertAlmostEqual(timing['total_seconds'], 2.505)
+        self.assertIsNone(timing['decode_seconds'])
+        self.assertFalse(any(level == 'debug' for _, level in self.logs))
+
+    def test_timings_record_one_failure_for_a_failed_request_with_no_write_time(self):
+        from core.ecommerce import manager as manager_module
+        clock = [10.]
+
+        def image(*args, **kwargs):
+            clock[0] += 3
+            raise EcommerceImageError('离线失败', 400)
+
+        self.image.side_effect = image
+        with patch.object(manager_module.time, 'monotonic', side_effect=lambda: clock[0]):
+            self.start(carousel_count=1, detail_count=0)
+        timing, = self.manager.timings_snapshot()
+        self.assertEqual(timing['status'], 'failed')
+        self.assertEqual(timing['request_seconds'], 3)
+        self.assertEqual(timing['total_seconds'], 3)
+        self.assertEqual(timing['write_seconds'], 0)
+        self.assertIsNone(timing['delivery'])
+        self.assertIsNone(timing['decode_seconds'])
+
+    def test_timings_record_write_failure_without_issuing_a_second_request(self):
+        from core.ecommerce import manager as manager_module
+        clock = [10.]
+        write = manager_module._atomic_write
+
+        def image(*args, **kwargs):
+            clock[0] += 2
+            return fake_image(*args, **kwargs)
+
+        def fail_image_write(path, content, *, durable=False):
+            if Path(path).suffix == '.png':
+                clock[0] += .125
+                raise OSError('offline disk failure')
+            return write(path, content, durable=durable)
+
+        self.image.side_effect = image
+        with patch.object(manager_module.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(manager_module, '_atomic_write', side_effect=fail_image_write):
+            self.start(carousel_count=1, detail_count=0)
+        timing, = self.manager.timings_snapshot()
+        self.assertEqual(timing['status'], 'failed')
+        self.assertEqual(timing['delivery'], 'b64')
+        self.assertEqual(timing['request_seconds'], 2)
+        self.assertEqual(timing['write_seconds'], .125)
+        self.assertEqual(timing['total_seconds'], 2.125)
+        self.assertEqual(self.image.call_count, 1)
+
+    def test_timing_covers_the_existing_failover_chain_once_with_the_used_model(self):
+        from core.ecommerce import manager as manager_module
+        clock = [10.]
+
+        def image(*args, **kwargs):
+            clock[0] += 2
+            if args[2] == 'chosen-image':
+                raise EcommerceImageError('offline unavailable', 503)
+            return fake_image(*args, **kwargs)
+
+        self.image.side_effect = image
+        manager = self.build_pool_manager(image_pool={
+            'enabled': True, 'models': [{'name': 'fallback-image', 'enabled': True}]})
+        with patch.object(manager_module.time, 'monotonic', side_effect=lambda: clock[0]):
+            manager.start_group(['douyin'], '商品', '商品信息', 'zh', 1, 0, '1:1', '3:4', '1K')
+        timing, = manager.timings_snapshot()
+        self.assertEqual(timing['model'], 'fallback-image')
+        self.assertEqual(timing['request_seconds'], 4)
+        self.assertEqual(timing['status'], 'succeeded')
+        self.assertEqual(self.image.call_count, 2)
+
+    def test_timing_snapshots_are_independent_and_keep_only_latest_200_items(self):
+        group = {'group_id': 'bounded', 'output_dir': str(self.root)}
+        with patch.object(self.manager, '_item', side_effect=lambda item: item), \
+                patch.object(self.manager, '_touch_group'), \
+                patch('core.ecommerce.manager._atomic_write'), \
+                patch('core.ecommerce.manager._valid_file', return_value=True):
+            for seq in range(1, 206):
+                item = dict(item_id=f'bounded:carousel:{seq}', group_id='bounded', kind='carousel',
+                            seq=seq, model=self.manager.image_model, prompt='offline fixture',
+                            ratio='1:1', tier='1K', reference_paths=[])
+                self.manager._generate(group, item, None)
+        snapshot = self.manager.timings_snapshot()
+        self.assertEqual(len(snapshot), 200)
+        self.assertEqual([record['seq'] for record in snapshot], list(range(6, 206)))
+        snapshot[0]['status'] = 'changed'
+        snapshot.clear()
+        current = self.manager.timings_snapshot()
+        self.assertEqual(len(current), 200)
+        self.assertEqual(current[0]['status'], 'succeeded')
 
 
 class EcommerceConfigTests(unittest.TestCase):

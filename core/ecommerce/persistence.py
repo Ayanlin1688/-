@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import math
 from pathlib import Path
 import sqlite3
 import threading
@@ -216,6 +217,27 @@ class EcommerceImageStore:
         with self.lock:
             self._refresh('product_image_groups')
             return deepcopy(self._cache['product_image_groups'].get(group_id))
+
+    def touch_group(self, group_id, *, totals=None, updated_at=None):
+        """Advance list invalidation data without replacing the group's state."""
+        with self.lock:
+            table = 'product_image_groups'
+            self._refresh(table)
+            previous = self._cache[table].get(group_id)
+            if previous is None:
+                return None
+            record = deepcopy(previous)
+            record['updated_at'] = updated_at or time.time()
+            # Windows wall-clock ticks can repeat or move backwards after a clock sync.
+            if not updated_at and record['updated_at'] <= previous['updated_at']:
+                record['updated_at'] = math.nextafter(previous['updated_at'], math.inf)
+            if totals is not None:
+                record['totals'] = deepcopy(totals)
+            if self.persistence_available:
+                self._write(table, [record])
+            else:
+                self._cache[table][group_id] = deepcopy(record)
+            return deepcopy(record)
 
     def list_groups(self, limit=None):
         with self.lock:

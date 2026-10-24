@@ -1,10 +1,12 @@
 """Pure Python ecommerce pipeline; callers choose their own UI/thread boundary."""
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -34,7 +36,7 @@ def _valid_file(path):
         return False
 
 
-def _atomic_write(path, content):
+def _atomic_write(path, content, *, durable=False):
     """Publish only a complete file, leaving the previous result intact on failure."""
     if not content:
         raise OSError('输出内容为空')
@@ -44,7 +46,8 @@ def _atomic_write(path, content):
         with os.fdopen(fd, 'wb') as stream:
             stream.write(content)
             stream.flush()
-            os.fsync(stream.fileno())
+            if durable:
+                os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
@@ -79,6 +82,9 @@ class EcommerceImageManager:
         self.image_func = image_func if image_func is not None else generate_image
         self.on_group, self.on_item, self.on_log = on_group, on_item, on_log
         self._warned_persistence = False
+        self._warned_touch = False
+        self._diagnostics_lock = threading.Lock()
+        self.timings = deque(maxlen=200)
         self._deliveries = {}
 
     @classmethod
@@ -292,7 +298,12 @@ class EcommerceImageManager:
             self._log('电商图数据库不可用，记录暂存于内存；文件输出继续，但重启后无法保证恢复。', 'warning')
 
     def _group(self, record):
-        saved = self.store.upsert_group(self._safe_copy(dict(record, updated_at=time.time())))
+        with self.store.lock:
+            previous = self.store.get_group(record['group_id'])
+            updated_at = time.time()
+            if previous and updated_at <= previous['updated_at']:
+                updated_at = math.nextafter(previous['updated_at'], math.inf)
+            saved = self.store.upsert_group(self._safe_copy(dict(record, updated_at=updated_at)))
         self._check_persistence()
         self._callback(self.on_group, deepcopy(saved))
         return saved
@@ -302,6 +313,31 @@ class EcommerceImageManager:
         self._check_persistence()
         self._callback(self.on_item, deepcopy(saved))
         return saved
+
+    def _touch_group(self, group_id, *, totals=None):
+        try:
+            touch = getattr(self.store, 'touch_group', None)
+            if touch is None:
+                return None
+            if totals is None:
+                totals = self.store.item_counts(group_id)
+            saved = touch(group_id, totals=totals)
+            if saved is not None:
+                # Item 的通知可能已被界面消费；提交新时间戳后再通知，避免漏掉缓存失效。
+                self._callback(self.on_group, self._safe_copy(saved))
+            return saved
+        except Exception:
+            with self._diagnostics_lock:
+                warn = not self._warned_touch
+                self._warned_touch = True
+            if warn:
+                self._log('电商图组刷新失败，文件输出继续；任务列表将在任务结束后更新。', 'warning')
+            return None
+
+    def timings_snapshot(self):
+        """Return independent diagnostic records without exposing live worker state."""
+        with self._diagnostics_lock:
+            return deepcopy(list(self.timings))
 
     @contextmanager
     def _running(self, group_id):
@@ -438,21 +474,45 @@ class EcommerceImageManager:
         if cancel_event is not None and cancel_event.is_set():
             self._item(dict(item, status='skipped', error='已取消，未发起图片请求'))
             return
+        started = time.monotonic()
+        requested = None
+        write_started = None
+        timing = dict(kind=item['kind'], seq=item['seq'], model=item.get('model') or self.image_model,
+                      delivery=None, request_seconds=0., decode_seconds=None,
+                      write_seconds=0., total_seconds=0., status='failed')
         try:
             result, used_model = self._request_image(item)
+            requested = time.monotonic()
+            timing.update(model=used_model, delivery=getattr(result, 'delivery', 'b64'),
+                          request_seconds=requested - started)
             item = dict(item, model=used_model)
             name = ('轮' if item['kind'] == 'carousel' else '详') + str(item['seq']) + '.png'
             path = Path(group['output_dir']).resolve() / name
+            write_started = time.monotonic()
             _atomic_write(path, result.png_bytes)
             if not _valid_file(path):
                 raise OSError('图片输出文件不存在或为空')
+            written = time.monotonic()
+            timing.update(write_seconds=written - write_started, total_seconds=written - started,
+                          status='succeeded')
             self._deliveries[item['item_id']] = getattr(result, 'delivery', 'b64')
             self._item(dict(item, status='succeeded', file_path=str(path), size=result.size,
                             image_tokens=result.image_tokens, warnings=list(result.warnings), error=''))
+            self._touch_group(group['group_id'])
         except Exception as error:
+            finished = time.monotonic()
+            timing.update(total_seconds=finished - started, status='failed')
+            if requested is None:
+                timing['request_seconds'] = finished - started
+            elif write_started is not None:
+                timing['write_seconds'] = finished - write_started
             message = self._clean(str(error))
             self._item(dict(item, status='failed', error=message))
+            self._touch_group(group['group_id'])
             self._log(f'{item["kind"]} {item["seq"]} 出图失败：{message}', 'error')
+        finally:
+            with self._diagnostics_lock:
+                self.timings.append(timing)
 
     def _execute(self, group_id, items, cancel_event):
         group = self._group(dict(group_id=group_id, status='generating', error=''))
@@ -478,6 +538,7 @@ class EcommerceImageManager:
                 status = 'skipped' if cancelled or item['status'] == 'pending' else 'failed'
                 message = error or ('已取消，未发起图片请求' if cancelled else '图片任务未完成')
                 self._item(dict(item, status=status, error=message))
+        self._touch_group(group_id)
         self._finalize(group_id, error=error)
 
     def _finalize(self, group_id, *, error=''):
@@ -525,7 +586,8 @@ class EcommerceImageManager:
             manifest['error'] = error
         try:
             _atomic_write(Path(group['output_dir']) / 'manifest.json',
-                          (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+                          (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf-8'),
+                          durable=True)
         except OSError as exc:
             status, error = 'failed', error or self._clean(f'输出清单写入失败：{exc}')
             manifest.update(status=status, error=error)

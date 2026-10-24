@@ -3,6 +3,7 @@
 覆盖用户需求第 8 条：切到 English 后整个界面立即跟随，切回中文恢复，
 重复切换稳定且 retranslate_ui 幂等。
 """
+import gc
 import os
 import re
 import tempfile
@@ -11,11 +12,14 @@ from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PyQt5 import sip
+from PyQt5.QtCore import QCoreApplication, QEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
 
 from core import i18n
 from core.config_manager import ConfigManager
+from tests.qt_scale_support import reset_interface_scaling
 
 CJK = re.compile(r'[\u4e00-\u9fff]')
 
@@ -62,6 +66,8 @@ class LanguageSwitchTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        reset_interface_scaling(self.app)
+        self._collect_deleted_widgets()
         i18n.set_language('简体中文')
         self.temp = tempfile.TemporaryDirectory()
         self.manager = ConfigManager(Path(self.temp.name) / 'config.json')
@@ -77,8 +83,25 @@ class LanguageSwitchTests(unittest.TestCase):
             self.window.close()
             self.window.deleteLater()
         finally:
-            QTest.qWait(60)
+            self._collect_deleted_widgets()
+            reset_interface_scaling(self.app)
+            self._collect_deleted_widgets()
             self.temp.cleanup()
+
+    def _collect_deleted_widgets(self):
+        """Clear previous tests' Qt deletions and Python cycles before counting."""
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+
+    def _registered_window_ids(self):
+        # Keep identities only: retaining the widgets would mask weak-reference
+        # removals and invalidate the language-bus lifetime assertion.
+        return {id(widget) for widget in i18n._REGISTERED
+                if isinstance(widget, QWidget) and not sip.isdeleted(widget)
+                and (widget is self.window or self.window.isAncestorOf(widget))}
 
     # ------------------------------------------------------------------
     def _language_combo(self):
@@ -136,14 +159,18 @@ class LanguageSwitchTests(unittest.TestCase):
         self.assertEqual(self.history.table.horizontalHeaderItem(1).text(), '序号')
 
     def test_repeated_switch_is_stable_and_retranslate_idempotent(self):
+        self._collect_deleted_widgets()
         baseline_nav = [item.text() for item in self.window._nav_items]
         registry = i18n.registered_retranslate_count()
+        window_registry = self._registered_window_ids()
+        self.assertTrue(window_registry)
         for _ in range(3):
             self._switch('English')
             self._switch('简体中文')
         self.assertEqual([item.text() for item in self.window._nav_items], baseline_nav)
         # 语言总线登记不随切换次数堆叠（同控件弱引用集合去重）。
         self.assertEqual(i18n.registered_retranslate_count(), registry)
+        self.assertEqual(self._registered_window_ids(), window_registry)
 
         # retranslate_ui 反复调用必须幂等。
         self._switch('English')
