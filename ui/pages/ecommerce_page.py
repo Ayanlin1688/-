@@ -37,6 +37,7 @@ from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from core.model_catalog import normalize_model_id
 from ..components.platform_preview_dialog import PlatformPreviewDialog
 from ..components.studio_dialog import StudioDialog, safe_delete_dialog
+from .ecommerce_batch_page import EcommerceBatchPage
 from ..file_actions import open_local
 from ..responsive import WrapLayout, scrollable_body
 from ..theme import style_controls, style_page
@@ -101,6 +102,24 @@ class EcommerceWorker(QThread):
                 'regenerate': manager.regenerate_items,
                 'resume': manager.resume_group,
             }
+            if self.operation == 'batch':
+                groups = [dict(item) for item in (self.arguments.get('groups') or ())
+                          if isinstance(item, dict)]
+                last_error = ''
+                for position, group_arguments in enumerate(groups):
+                    if self.cancel_event.is_set():
+                        break
+                    group_arguments.pop('row_index', None)
+                    try:
+                        group_arguments.pop('group_id', None)
+                        runners['start'](**group_arguments, cancel_event=self.cancel_event)
+                    except Exception as error:  # noqa: BLE001 - 单行失败不阻断后续行
+                        last_error = self._clean(error)
+                        self.log_message.emit(
+                            tr('批量第 {index} 行失败：{message}').format(
+                                index=position + 1, message=last_error), 'error')
+                self.finished.emit(group_id, last_error)
+                return
             group_id = runners[self.operation](**self.arguments, cancel_event=self.cancel_event)
             self.finished.emit(group_id, '')
         except Exception as error:
@@ -207,21 +226,17 @@ class EcommercePage(QWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        # 视图 2：批量制作（段3 接入完整表单，本段先占位并可切换）
+        # 视图 2：批量制作（共享默认 + 30 行表格 + 草稿持久化）
+        self.batch_page = EcommerceBatchPage(self.config_manager, self)
+        self.batch_page.submit_requested.connect(self._start_batch)
+        self.batch_page.history_requested.connect(self.show_task_list)
+        self.batch_page.single_requested.connect(self.show_single_creation)
         self.batch_view = QWidget()
         self.batch_view.setObjectName('ecommerceBatchView')
         batch_layout = QVBoxLayout(self.batch_view)
-        batch_layout.setContentsMargins(px(26), px(16), px(26), px(20))
-        batch_layout.setSpacing(px(12))
-        self.batch_title_label = TitleLabel(tr('电商图批量制作'))
-        batch_layout.addWidget(self.batch_title_label)
-        self.batch_hint_label = CaptionLabel(tr(
-            '每行一个商品，提交后在历史任务中各自显示为独立任务组'))
-        self.batch_hint_label.setWordWrap(True)
-        batch_layout.addWidget(self.batch_hint_label)
-        self.batch_placeholder_label = CaptionLabel(tr('批量制作页将在下一段接入'))
-        batch_layout.addWidget(self.batch_placeholder_label)
-        batch_layout.addStretch(1)
+        batch_layout.setContentsMargins(0, 0, 0, 0)
+        batch_layout.setSpacing(0)
+        batch_layout.addWidget(self.batch_page)
         self.stack.addWidget(self.batch_view)
         self.stack.setCurrentIndex(0)
         for view in (self.task_view, self.single_view, self.batch_view):
@@ -437,6 +452,31 @@ class EcommercePage(QWidget):
 
     def _show_batch_view(self):
         self.stack.setCurrentIndex(self.BATCH_VIEW)
+
+    # —— 批量制作（顺序队列：每行独立 group_id） ——
+    def _start_batch(self, groups):
+        if self.busy:
+            return
+        groups = [dict(item) for item in (groups or ()) if isinstance(item, dict)]
+        if not groups:
+            self._notice(tr('没有可提交的行'))
+            return
+        config = self.config_manager.config
+        lines = (resolve_line(config, 'chat'), resolve_line(config, 'image'))
+        if any(not str(line.get('base_url') or '').strip()
+               or not str(line.get('api_key') or '').strip() for line in lines):
+            self._notice(tr('请先到“设置”页填写 API 地址与密钥；AI 分析需要含文本模型权限的密钥'))
+            return
+        # 批量页的模型选择已写入 config，管理器按 config 构建；不使用单制作页覆盖值。
+        self._manager_overrides = {}
+        self._secrets = tuple(resolve_line(config, capability).get('api_key', '')
+                              for capability in ('chat', 'image'))
+        self._logs.clear()
+        self.log_box.clear()
+        self._append_log(tr('批量制作：共 {count} 行，按顺序逐行提交').format(
+            count=len(groups)), 'info')
+        self.show_task_list()
+        self._launch_worker(dict(groups=groups), operation='batch')
 
     def _start_new_creation(self):
         """「+ 新建制作」：切到单个制作视图并清空当前制作内容。"""
@@ -749,6 +789,10 @@ class EcommercePage(QWidget):
                 grid.refresh_interface_scale()
         try:
             self.task_list.refresh_interface_scale()
+        except RuntimeError:
+            pass
+        try:
+            self.batch_page.refresh_interface_scale()
         except RuntimeError:
             pass
 
@@ -1225,6 +1269,7 @@ class EcommercePage(QWidget):
         self.start_button.setEnabled(False)
         self.result_panel.set_busy(True)
         self.task_list.set_busy(True)
+        self.batch_page.setEnabled(False)
         self.cancel_button.setEnabled(True)
         worker.start()
 
@@ -1320,8 +1365,17 @@ class EcommercePage(QWidget):
 
     @pyqtSlot(str, str)
     def _on_result(self, group_id, error):
+        operation = getattr(self._worker, 'operation', 'start') if self._worker else 'start'
         self._refresh_results(group_id)
         self._refresh_history()
+        if operation == 'batch':
+            if error:
+                self._append_log(tr('批量制作异常中断：{message}').format(message=error), 'error')
+                self._notice(error)
+            else:
+                self._append_log(tr('批量制作结束，可在任务列表查看各任务组'), 'info')
+            self.show_task_list()
+            return
         if error:
             self.stage_label.setText(tr('失败'))
             group_id = group_id or (self._group or {}).get('group_id')
@@ -1347,6 +1401,10 @@ class EcommercePage(QWidget):
         self.cancel_button.setEnabled(False)
         self.result_panel.set_busy(False)
         self.task_list.set_busy(False)
+        try:
+            self.batch_page.setEnabled(True)
+        except RuntimeError:
+            pass
         self._refresh_conflicts()
         self.idle.emit()
         if self._close_when_idle:

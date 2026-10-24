@@ -33,6 +33,7 @@ from ui import materials
 from ui.tokens import px
 from ui.components.ecommerce_result_panel import EcommerceResultCard, EcommerceResultPanel
 from ui.pages.ecommerce_page import EcommercePage, EcommerceWorker, _LIVE_WORKERS
+from ui.pages.ecommerce_batch_page import EcommerceBatchPage
 
 
 # The networking fixture only checks PNG magic; Qt thumbnails need valid CRCs.
@@ -370,7 +371,8 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(page.current_view_index(), page.TASK_VIEW)
         page.task_list.batch_create_button.click()
         self.assertEqual(page.current_view_index(), page.BATCH_VIEW)
-        self.assertIn('批量制作', page.batch_title_label.text())
+        self.assertIsInstance(page.batch_page, EcommerceBatchPage)
+        self.assertIn('批量制作', page.batch_page.title_label.text())
         self.assertEqual(page.task_list.manage_mode, False)
 
     def test_history_lists_latest_groups_names_platforms_stages_times_and_totals(self):
@@ -682,6 +684,81 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(ledger.selected_ids(), [])
         ledger.set_manage_mode(False)
         self.assertFalse(ledger.bottom_bar.isVisible())
+
+    def _batch_ready_rows(self, count=2):
+        page = self.page
+        page._show_batch_view()
+        batch = page.batch_page
+        batch.select_platform(['douyin'])
+        batch.carousel_check.setChecked(True)
+        batch.detail_check.setChecked(True)
+        batch.carousel_spin.setValue(1)
+        batch.detail_spin.setValue(1)
+        while len(batch.rows) < count:
+            batch.add_row()
+        for index, row in enumerate(batch.rows[:count]):
+            path = str(self.root / f'batch-{index}.png')
+            Path(path).write_bytes(PNG)
+            row.set_name(f'批量商品{index}')
+            row.set_info(f'批量信息{index}')
+            row.set_images([path])
+        return batch
+
+    def test_batch_submit_runs_rows_sequentially_with_independent_groups(self):
+        page = self.page
+        batch = self._batch_ready_rows(2)
+        submissions = batch.build_submissions()
+        self.assertEqual(len(submissions), 2)
+        self.assertEqual([item['product_name'] for item in submissions],
+                         ['批量商品0', '批量商品1'])
+        idle = QSignalSpy(page.idle)
+        batch.submit_button.click()
+        self.assertIsNotNone(page._worker)
+        self.assertEqual(page._worker.operation, 'batch')
+        self.wait_until(lambda: len(idle) == 1)
+        self.assertEqual(self.analysis.call_count, 2)
+        store = self.config.ecommerce_store()
+        saved = store.list_groups(limit=10)
+        self.assertEqual(len(saved), 2)
+        self.assertEqual({group['product_name'] for group in saved},
+                         {'批量商品0', '批量商品1'})
+        self.assertEqual(len({group['group_id'] for group in saved}), 2)
+        self.assertTrue(all(group['status'] == 'succeeded' for group in saved))
+        self.assertEqual(len(page.task_list.groups()), 2)
+        self.assertEqual(page.current_view_index(), page.TASK_VIEW)
+        self.assertEqual(self.image.call_count, 4)
+        self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_batch_submit_without_ready_rows_is_rejected(self):
+        page = self.page
+        page._show_batch_view()
+        batch = page.batch_page
+        self.assertEqual(batch.ready_count(), 0)
+        self.assertFalse(batch.submit_button.isEnabled())
+        page._start_batch([])
+        self.assertIsNone(page._worker)
+        self.notices.assert_called()
+        self.assertIn('没有可提交', self.notices.call_args.args[1])
+
+    def test_batch_cancel_skips_all_remaining_rows(self):
+        page = self.page
+        batch = self._batch_ready_rows(2)
+        idle = QSignalSpy(page.idle)
+        page.cancel_event.set()
+        batch.submit_button.click()
+        self.wait_until(lambda: len(idle) == 1)
+        self.analysis.assert_not_called()
+        self.image.assert_not_called()
+        self.assertEqual(page.task_list.groups(), [])
+
+    def test_batch_page_header_buttons_switch_views(self):
+        page = self.page
+        page._show_batch_view()
+        page.batch_page.history_button.click()
+        self.assertEqual(page.current_view_index(), page.TASK_VIEW)
+        page._show_batch_view()
+        page.batch_page.single_button.click()
+        self.assertEqual(page.current_view_index(), page.SINGLE_VIEW)
 
     def test_platform_preview_opens_with_group_manifest(self):
         group, items = self.seed_history('preview-group', 'succeeded',
@@ -1725,3 +1802,4 @@ class EcommercePageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
