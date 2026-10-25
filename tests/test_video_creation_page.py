@@ -108,6 +108,34 @@ class VideoCreationPageTests(unittest.TestCase):
         self.page.count_spin.setValue(3)
         self.assertIn('×3', self.page.generate_button.text())
 
+    def test_duration_shortcuts_fit_separate_row_at_all_scales_and_narrow_width(self):
+        for scale in ('1.0', '1.25', '1.5', '1.75'):
+            apply_interface_scale(self.app, FakeScreen(), scale)
+            for width in (px(1440), 1000):
+                with self.subTest(scale=scale, width=width):
+                    self.page.resize(width, 900)
+                    flush_layout(self.app, self.page)
+                    buttons = self.page.duration_buttons
+                    self.assertEqual([button.text() for button in buttons], ['5秒', '10秒', '15秒'])
+                    self.assertEqual(self.page.settings_body.parentWidget().width(), px(372))
+                    self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+                    self.assertLessEqual(self.page.body_content.width(), self.page.body_scroll.viewport().width())
+                    self.assertLess(self.page.duration_spin.geometry().bottom(), buttons[0].geometry().top())
+                    self.assertLessEqual(max(button.width() for button in buttons) - min(button.width() for button in buttons), 1)
+                    for index, button in enumerate(buttons):
+                        self.assertGreaterEqual(button.width(), button.minimumSizeHint().width())
+                        self.assertGreaterEqual(button.width(), max(px(56), button.fontMetrics().horizontalAdvance(button.text()) + px(24)))
+                        self.assertTrue(button.isVisible())
+                        self.assertTrue(self.page.parameters_content.rect().contains(button.geometry()))
+                        self.assertEqual(button.y(), buttons[0].y())
+                        if index:
+                            self.assertGreaterEqual(button.x() - buttons[index - 1].geometry().right() - 1, px(8))
+                        button.click()
+                        self.assertEqual(self.page.duration_spin.value(), (5, 10, 15)[index])
+                        self.assertEqual([item.isChecked() for item in buttons], [i == index for i in range(3)])
+                    self.page.duration_spin.setValue(4)
+                    self.assertFalse(any(button.isChecked() for button in buttons))
+
     def test_model_change_refreshes_supported_options(self):
         self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('veo-3'))
         self.assertEqual([self.page.ratio_combo.itemText(i) for i in range(self.page.ratio_combo.count())], ['16:9'])
