@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QLabel
 from qfluentwidgets import TransparentToolButton
@@ -26,6 +27,10 @@ class _ManualStore:
 
     def delete(self, local_id):
         return self.records.pop(local_id, None) is not None
+
+
+class _HistoryNotifier(QObject):
+    changed = pyqtSignal()
 
 
 class HistoryPageManualImageTests(unittest.TestCase):
@@ -143,6 +148,9 @@ class HistoryPageManualImageTests(unittest.TestCase):
         self.assertEqual(task['product'], 'A quiet product reveal')
         self.assertEqual(task['task_id'], 'remote-1')
         self.assertEqual(task['size_bytes'], video.stat().st_size)
+        row = self.row_for('video:video-1')
+        self.assertNotEqual(self.page.table.item(row, 8).text(), '—')
+        self.assertNotEqual(self.page.table.item(row, 9).text(), '—')
         self.assertEqual(self.page._type_text(task), tr('视频生成'))
         self.page.type_filter_box.setCurrentText(tr('视频生成'))
         visible = [record for row, record in enumerate(self.page.records)
@@ -165,6 +173,78 @@ class HistoryPageManualImageTests(unittest.TestCase):
         self.assertTrue(video.is_file())
         self.assertFalse(any(record.get('kind') == 'manual_video'
                              for record in self.page.records))
+
+    def test_manual_video_downloading_state_and_persisted_size_are_mapped(self):
+        expected_size = 5 * 1024 * 1024
+        video_store = _ManualStore([dict(
+            local_id='video-downloading', kind='video', prompt='Downloading clip',
+            prompt_name='Downloading clip', model='video-v2', status='downloading',
+            video_url='https://relay.example/video.mp4', file_path='', size_bytes=expected_size,
+            created_at=datetime(2026, 10, 24, 12, 2).timestamp(), finished_at=None,
+        )])
+        self.page._manual_video_store = lambda: video_store
+        self.page.refresh_records()
+        task = next(record for record in self.page.records
+                    if record.get('kind') == 'manual_video')
+        self.assertEqual(task['status'], 'downloading')
+        self.assertEqual(task['manual_status'], 'downloading')
+        self.assertEqual(task['size_bytes'], expected_size)
+        row = self.row_for('video:video-downloading')
+        status_tag = self.page.table.cellWidget(row, 6).findChild(QLabel)
+        self.assertEqual(status_tag.text(), tr('下载中'))
+        self.assertEqual(self.page.table.item(row, 9).text(), '5.0 MB')
+
+    def test_video_completion_signal_refreshes_history_without_manual_refresh(self):
+        from core.manual_video import ManualVideoStore
+
+        store_path = self.root / 'background-video-history.sqlite3'
+        video_store = ManualVideoStore(store_path)
+        self.addCleanup(video_store.close)
+        self.page._manual_video_store = lambda: video_store
+        self.page.refresh_records()
+        self.assertFalse(self.page.isVisible())
+        notifier = _HistoryNotifier()
+        notifier.changed.connect(self.page.refresh_records)
+        video_store.upsert(dict(
+            local_id='video-auto', kind='video', prompt='Auto history clip',
+            prompt_name='Auto history clip', model='video-v2', status='succeeded',
+            video_url='https://relay.example/video.mp4', file_path='',
+            output_dir=str(self.output_dir), task_id='remote-auto', duration=5,
+            output_size='1920x1088', size_bytes=12,
+            created_at=datetime(2026, 10, 24, 12, 3).timestamp(),
+            finished_at=datetime(2026, 10, 24, 12, 3, 1).timestamp(),
+        ))
+        reopened = ManualVideoStore(store_path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.get('video-auto')['status'], 'succeeded')
+        notifier.changed.emit()
+        QTest.qWait(20)
+        task = next(record for record in self.page.records
+                    if record.get('local_id') == 'video:video-auto')
+        row = self.row_for('video:video-auto')
+        self.assertIn('12:03', self.page.table.item(row, 8).text())
+        self.assertEqual(task['size_bytes'], 12)
+
+    def test_manual_video_and_image_rows_share_tag_and_action_geometry(self):
+        video_store = _ManualStore([dict(
+            local_id='video-style', kind='video', prompt='Style clip',
+            prompt_name='Style clip', model='video-v2', status='succeeded',
+            video_url='https://relay.example/video.mp4', file_path='',
+            output_dir=str(self.output_dir), task_id='remote-style',
+            created_at=datetime(2026, 10, 24, 12, 4).timestamp(),
+            finished_at=datetime(2026, 10, 24, 12, 4, 1).timestamp(),
+        )])
+        self.page._manual_video_store = lambda: video_store
+        self.page.refresh_records()
+        image_row = self.row_for('image:manual-1')
+        video_row = self.row_for('video:video-style')
+        image_tag = self.page.table.cellWidget(image_row, 2).findChild(QLabel)
+        video_tag = self.page.table.cellWidget(video_row, 2).findChild(QLabel)
+        self.assertEqual(image_tag.objectName(), video_tag.objectName())
+        self.assertEqual(self.page.table.rowHeight(image_row), self.page.table.rowHeight(video_row))
+        image_actions = self.page.table.cellWidget(image_row, 10).layout()
+        video_actions = self.page.table.cellWidget(video_row, 10).layout()
+        self.assertEqual(image_actions.spacing(), video_actions.spacing())
 
 
 if __name__ == '__main__':

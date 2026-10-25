@@ -65,6 +65,8 @@ EN_ECOMMERCE = {
     '生成中…': 'Generating…',
     '生成完成后显示视频路径或 URL': 'The video path or URL appears when generation finishes',
     '下载视频': 'Download video',
+    '已保存到本地': 'Saved locally',
+    '下载中…': 'Downloading…',
     '复制链接': 'Copy link',
     '已打开历史视频详情': 'Historical video details are open',
     '温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。':

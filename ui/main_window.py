@@ -526,15 +526,20 @@ class MainWindow(FluentWindow):
         self.navigationInterface.addWidget('userAvatar', self.user_avatar, onClick=self.show_about,
                                            position=NavigationItemPosition.BOTTOM,
                                            tooltip='当前用户 · 版本信息')
-        routes = [self.workspace_page.objectName(), self.ecommerce_page.objectName(), self.history_page.objectName(),
-                  self.settings_page.objectName(), 'about']
+        # Keep every primary page in the same rail geometry.  The image and
+        # video pages are registered by _setup_navigation(), so omitting them
+        # here leaves the native item sizing/margins in effect for only those
+        # two entries.
+        routes = [self.workspace_page.objectName(), self.image_generation_page.objectName(),
+                  self.video_creation_page.objectName(), self.ecommerce_page.objectName(),
+                  self.history_page.objectName(), self.settings_page.objectName(), 'about']
         self._nav_rail_items = []
         for route in routes:
             try:
                 item = self.navigationInterface.widget(route)
             except Exception:
                 continue
-            item.setFixedHeight(44)
+            item.setFixedHeight(px(44))
             inner = getattr(item, 'itemWidget', item)
             original = inner._margins
             self._nav_rail_items.append((item, inner, original))
@@ -553,14 +558,10 @@ class MainWindow(FluentWindow):
             self._guard_leaf_nav_item(item, inner)
             # 点击后延迟一拍校正尺寸：吸收原生在两态切换边缘的任何小动作（幂等）。
             item.clicked.connect(lambda *args, _self=self: QTimer.singleShot(300, _self._settle_nav_pane))
-        # 分组：在「设置」前插入分隔符（创作 / 系统 两组）。
-        try:
-            settings_item = self.navigationInterface.widget(self.settings_page.objectName())
-            index = panel.topLayout.indexOf(settings_item)
-            if index > 0:
-                panel.insertSeparator(index)
-        except Exception:
-            pass
+        # Keep the six primary entries on one uniform rhythm.  A separator
+        # before settings adds an extra layout item and makes that gap differ
+        # from every other adjacent pair, which is especially visible in the
+        # compact rail at high interface scales.
         # 应用初始折叠样式。
         self._sync_nav_pane(True)
         # 恢复上次的展开状态（记忆化）。
@@ -578,13 +579,14 @@ class MainWindow(FluentWindow):
                 QTimer.singleShot(120, _restore_expanded_pane)
         except Exception:
             pass
-        # 图标项之间的呼吸感：加大顶部布局间距并统一底部留白。
+        # Uniform spacing keeps all primary entries aligned in collapsed and
+        # expanded states.  The row itself supplies the visual breathing room.
         panel = self.navigationInterface.panel
         for layout_name, spacing in (('topLayout', design.SPACE['sm']),):
             layout = getattr(panel, layout_name, None)
             try:
                 if layout is not None:
-                    layout.setSpacing(spacing)
+                    layout.setSpacing(0)
             except Exception:
                 pass
         try:
@@ -703,6 +705,11 @@ class MainWindow(FluentWindow):
         try:
             if collapsed:
                 panel.setFixedWidth(design.NAV_COLLAPSED_WIDTH)
+                # The panel is hosted by NavigationInterface; at scaled
+                # sizes the native expand animation can leave the host at its
+                # previous collapsed width.  Keep the host and panel in lock
+                # step so the page stack always starts after the rail.
+                self.navigationInterface.setFixedWidth(design.NAV_COLLAPSED_WIDTH)
             else:
                 panel.setMinimumWidth(0)
                 panel.setMaximumWidth(16777215)
@@ -735,6 +742,8 @@ class MainWindow(FluentWindow):
                     if not collapsed and not panel.isCollapsed():
                         panel.expandAni.stop()
                         panel.expand(useAni=False)
+                if not collapsed:
+                    self.navigationInterface.setFixedWidth(expanded_width)
         except Exception:
             pass
         try:

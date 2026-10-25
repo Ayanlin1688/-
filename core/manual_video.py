@@ -32,7 +32,7 @@ from .model_catalog import family_for
 from .video_downloader import VideoDownloader, safe_filename
 
 
-TASK_STATUSES = ('pending', 'running', 'succeeded', 'failed', 'cancelled')
+TASK_STATUSES = ('pending', 'running', 'downloading', 'succeeded', 'failed', 'cancelled')
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS video_tasks (
@@ -578,24 +578,30 @@ class ManualVideoManager:
             record.update(video_url=result.get('video_url', ''), progress=100)
             folder = self._task_output_dir(output_root, record)
             filename = folder / f"video_{int(record.get('count_index') or 1)}.mp4"
-            if result.get('video_bytes'):
-                _atomic_write(filename, result['video_bytes'])
-            elif result.get('video_url'):
-                downloader = VideoDownloader(api_key=api_key, acceleration=False,
-                                             check_cancel=lambda: self._check_cancel(cancel_event))
-                try:
-                    downloaded = downloader.download_video(result['video_url'], folder,
-                                                          filename.name,
-                                                          generation_key=record.get('task_id') or record.get('local_id'))
-                    filename = Path(downloaded)
-                finally:
-                    downloader.close()
-            else:
+            if not result.get('video_bytes') and not result.get('video_url'):
                 raise ManualVideoError('视频服务没有返回下载地址', category='empty_result')
+            existing = self._existing_video_path(record.get('file_path'), filename)
+            if existing is not None:
+                filename = existing
+                download_started = time.monotonic()
+            else:
+                record.update(status='downloading', progress=None, file_path='', output_dir=str(folder))
+                self._publish(record)
+                download_started = time.monotonic()
+                if result.get('video_bytes'):
+                    _atomic_write(filename, result['video_bytes'])
+                else:
+                    filename = self._download_with_retries(
+                        result['video_url'], folder, filename.name, api_key,
+                        record.get('task_id') or record.get('local_id'), cancel_event)
             if self._is_cancelled(cancel_event):
                 return self._finish(record, started, 'cancelled', '任务已取消')
             self._validate_mp4(filename)
-            record.update(status='succeeded', file_path=str(filename), output_dir=str(folder), error='')
+            download_ms = max(0, int((time.monotonic() - download_started) * 1000))
+            size_bytes = filename.stat().st_size
+            record.update(status='succeeded', file_path=str(filename), output_dir=str(folder), error='',
+                          size_bytes=size_bytes, download_ms=download_ms,
+                          throughput_bps=size_bytes / max(download_ms / 1000.0, 0.001))
             return self._finish(record, started, 'succeeded', '')
         except Exception as error:
             if isinstance(error, ManualVideoError) and error.category == 'cancelled':
@@ -789,6 +795,45 @@ class ManualVideoManager:
         if b'ftyp' not in header:
             raise OSError('视频文件格式无效（缺少 MP4 标识）')
 
+    @classmethod
+    def _existing_video_path(cls, *paths):
+        for value in paths:
+            if not value:
+                continue
+            path = Path(value)
+            try:
+                cls._validate_mp4(path)
+                return path
+            except (OSError, ValueError):
+                continue
+        return None
+
+    def _download_with_retries(self, url, folder, filename, api_key, generation_key,
+                               cancel_event=None):
+        """Stream a completed video immediately, retrying only the local download."""
+        last_error = None
+        for attempt in range(3):
+            self._check_cancel(cancel_event)
+            downloader = VideoDownloader(api_key=api_key, acceleration=False,
+                                         check_cancel=lambda: self._check_cancel(cancel_event))
+            try:
+                downloaded = Path(downloader.download_video(
+                    url, folder, filename, generation_key=generation_key))
+                self._validate_mp4(downloaded)
+                return downloaded
+            except (Cancelled, ManualVideoError):
+                raise
+            except Exception as error:
+                last_error = error
+                if attempt >= 2:
+                    break
+                time.sleep(attempt + 1)
+            finally:
+                downloader.close()
+        if last_error is not None:
+            raise last_error
+        raise OSError('视频下载失败')
+
     def download_task(self, record, cancel_event=None):
         """Download a completed remote result and persist its local path.
 
@@ -797,9 +842,19 @@ class ManualVideoManager:
         validation and are never fetched again.
         """
         value = deepcopy(dict(record or {}))
-        local_path = Path(str(value.get('file_path') or '')) if value.get('file_path') else None
-        if local_path and local_path.is_file():
-            self._validate_mp4(local_path)
+        started = time.monotonic()
+        local_path = self._existing_video_path(value.get('file_path'))
+        if local_path is not None:
+            download_started = time.monotonic()
+            value.update(status='downloading', progress=None, file_path=str(local_path),
+                         output_dir=str(local_path.parent))
+            self._publish(value)
+            size_bytes = local_path.stat().st_size
+            value.update(size_bytes=size_bytes,
+                         download_ms=max(0, int((time.monotonic() - download_started) * 1000)),
+                         throughput_bps=float(size_bytes),
+                         video_url=str(value.get('video_url') or ''))
+            self._finish(value, started, 'succeeded', '')
             return str(local_path)
         url = str(value.get('video_url') or '').strip()
         if not url:
@@ -811,19 +866,36 @@ class ManualVideoManager:
         folder = Path(value.get('output_dir') or self._task_output_dir(Path(output_root), value))
         filename = f"video_{int(value.get('count_index') or 1)}.mp4"
         line = resolve_line(getattr(self.config_manager, 'config', {}) or {}, 'video')
-        downloader = VideoDownloader(api_key=line.get('api_key') or '', acceleration=False,
-                                     check_cancel=lambda: self._check_cancel(cancel_event))
-        try:
-            downloaded = Path(downloader.download_video(url, folder, filename,
-                                                        generation_key=value.get('task_id') or value.get('local_id')))
-        finally:
-            downloader.close()
-        if self._is_cancelled(cancel_event):
-            raise ManualVideoError('任务已取消', category='cancelled')
-        self._validate_mp4(downloaded)
-        value.update(file_path=str(downloaded), output_dir=str(downloaded.parent))
+        value.update(status='downloading', progress=None, file_path='', output_dir=str(folder))
         self._publish(value)
-        return str(downloaded)
+        download_started = time.monotonic()
+        try:
+            downloaded = self._download_with_retries(
+                url, folder, filename, line.get('api_key') or '',
+                value.get('task_id') or value.get('local_id'), cancel_event)
+            if self._is_cancelled(cancel_event):
+                raise ManualVideoError('任务已取消', category='cancelled')
+            self._validate_mp4(downloaded)
+            size_bytes = downloaded.stat().st_size
+            value.update(file_path=str(downloaded), output_dir=str(downloaded.parent),
+                         size_bytes=size_bytes,
+                         download_ms=max(0, int((time.monotonic() - download_started) * 1000)),
+                         throughput_bps=size_bytes / max((time.monotonic() - download_started), 0.001),
+                         video_url=url)
+            self._finish(value, started, 'succeeded', '')
+            return str(downloaded)
+        except ManualVideoError as error:
+            status = 'cancelled' if error.category == 'cancelled' else 'failed'
+            self._finish(value, started, status, str(error))
+            raise
+        except Exception as error:
+            message, category, status_code, retryable = self._classify_failure(error)
+            value.update(error_category=category, retryable=retryable)
+            if status_code is not None:
+                value['error_status_code'] = status_code
+            self._finish(value, started, 'failed', message)
+            raise ManualVideoError(message, status_code, retryable=retryable,
+                                   category=category) from error
 
     download_result = download_task
 

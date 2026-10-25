@@ -160,6 +160,9 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertEqual(row.findChild(PushButton, 'videoHistoryFolder').toolTip(), '打开文件夹')
         self.assertEqual(row.findChild(PushButton, 'videoHistoryDelete').toolTip(), '删除记录')
         row.deleteLater()
+        downloading = _HistoryRow({'local_id': 'downloading-1', 'status': 'downloading'}, self.page)
+        self.assertEqual(downloading.status.text(), '下载中')
+        downloading.deleteLater()
 
     def test_reference_mode_shows_reference_panel_and_disables_unavailable_media(self):
         self.assertFalse(self.page.reference_panel.isVisible())
@@ -272,7 +275,42 @@ class VideoCreationPageTests(unittest.TestCase):
         self.page._on_task({'local_id': 'task-1', 'status': 'succeeded', 'file_path': str(self.root / 'movie.mp4')})
         self.assertEqual(self.page.preview_stack.currentIndex(), 2)
         self.assertEqual(self.page.url_edit.text(), str(self.root / 'movie.mp4'))
-        self.assertEqual(self.page.history_detail_hint.text(), '')
+        self.assertEqual(self.page.history_detail_hint.text(), '已保存到本地')
+
+    def test_downloading_state_and_saved_download_metrics_are_visible(self):
+        self.page._render_task({'local_id': 'task-download', 'task_id': 'remote-1',
+                                'status': 'downloading', 'model': 'video-v2'})
+        self.assertEqual(self.page.status_badge.text(), '下载中')
+        self.assertEqual(self.page.preview_stack.currentIndex(), 1)
+        self.assertEqual((self.page.progress_bar.minimum(), self.page.progress_bar.maximum()), (0, 0))
+        self.assertIn('下载中…', self.page.progress_label.text())
+        self.page._set_preview_done({
+            'local_id': 'task-download', 'status': 'succeeded', 'file_path': str(self.root / 'movie.mp4'),
+            'size_bytes': 12 * 1024**2 + 400 * 1024, 'download_ms': 1000,
+            'throughput_bps': 18 * 1024**2 + 300 * 1024,
+        })
+        self.assertIn('已保存到本地', self.page.preview_done.text())
+        self.assertIn('12.4 MB · 18.3 MB/s', self.page.preview_done.text())
+        self.assertEqual(self.page.history_detail_hint.text(), '已保存到本地 · 12.4 MB · 18.3 MB/s')
+
+    def test_download_button_reports_existing_local_file_without_redownloading(self):
+        path = self.root / 'saved.mp4'
+        path.write_bytes(b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00fixture-video')
+        self.page._current_record = {'local_id': 'saved-1', 'file_path': str(path)}
+        with patch('ui.pages.video_creation_page.InfoBar.success') as success, \
+                patch.object(self.page, '_download_record') as download:
+            self.assertFalse(self.page._download_current())
+        download.assert_not_called()
+        success.assert_called_once()
+
+    def test_download_button_retries_invalid_existing_file(self):
+        path = self.root / 'invalid.mp4'
+        path.write_bytes(b'not an mp4')
+        self.page._current_record = {'local_id': 'invalid-1', 'file_path': str(path),
+                                     'video_url': 'https://relay.example/video.mp4'}
+        with patch.object(self.page, '_download_record', return_value=True) as download:
+            self.assertTrue(self.page._download_current())
+        download.assert_called_once()
 
     def test_history_running_and_failed_states_are_preserved_for_retry(self):
         self.page._load_history_record({'local_id': 'running-1', 'status': 'running',

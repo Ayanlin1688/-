@@ -215,6 +215,97 @@ class ManualVideoTests(unittest.TestCase):
         self.assertEqual(call[3]['resolution'], '1080p')
         self.assertEqual(_FakeDownloader.api_keys, ['fixture-secret'])
         self.assertEqual([item['status'] for item in self.callbacks][:2], ['pending', 'running'])
+        self.assertIn('downloading', [item['status'] for item in self.callbacks])
+        self.assertGreater(result['size_bytes'], 0)
+        self.assertGreaterEqual(result['download_ms'], 0)
+        self.assertGreater(result['throughput_bps'], 0)
+
+    def test_success_result_starts_streaming_immediately_and_records_download_metrics(self):
+        task = self._tasks()[0]
+        ready_at = []
+        download_started = []
+
+        def complete_generation(*_args):
+            ready_at.append(time.monotonic())
+            return {'video_url': 'https://relay.example/video.mp4'}
+
+        class _SlowDownloader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def download_video(self, _url, save_dir, filename, **kwargs):
+                download_started.append(time.monotonic())
+                time.sleep(.2)
+                path = Path(save_dir) / filename
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(MP4)
+                return str(path)
+
+            def close(self):
+                pass
+
+        with mock.patch.object(self.manager, '_run_openai', side_effect=complete_generation), \
+                mock.patch('core.manual_video.VideoDownloader', _SlowDownloader):
+            result = self.manager.run_tasks([task])[0]
+
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertLess(download_started[0] - ready_at[0], .05)
+        self.assertGreaterEqual(result['download_ms'], 180)
+        self.assertEqual(result['size_bytes'], len(MP4))
+        self.assertAlmostEqual(result['throughput_bps'],
+                               result['size_bytes'] / (result['download_ms'] / 1000.0),
+                               delta=result['size_bytes'] / max(result['download_ms'], 1))
+        self.assertEqual(result['video_url'], 'https://relay.example/video.mp4')
+        self.assertEqual([item['status'] for item in self.callbacks[-3:]],
+                         ['running', 'downloading', 'succeeded'])
+
+    def test_download_failure_retries_twice_without_resubmitting_remote_task(self):
+        task = self._tasks()[0]
+        attempts = []
+        delays = []
+
+        class _FlakyDownloader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def download_video(self, _url, save_dir, filename, **kwargs):
+                attempts.append(filename)
+                if len(attempts) < 3:
+                    raise OSError('temporary stream failure')
+                path = Path(save_dir) / filename
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(MP4)
+                return str(path)
+
+            def close(self):
+                pass
+
+        with mock.patch.object(self.manager, '_run_openai', return_value={
+                'video_url': 'https://relay.example/video.mp4'}) as generate, \
+                mock.patch('core.manual_video.VideoDownloader', _FlakyDownloader), \
+                mock.patch('core.manual_video.time.sleep', side_effect=delays.append):
+            result = self.manager.run_tasks([task])[0]
+
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(delays, [1, 2])
+        generate.assert_called_once()
+        self.assertEqual(result['video_url'], 'https://relay.example/video.mp4')
+
+    def test_auto_download_reuses_existing_valid_mp4(self):
+        task = self._tasks()[0]
+        folder = self.root / 'existing-output'
+        folder.mkdir()
+        existing = folder / 'video_1.mp4'
+        existing.write_bytes(MP4)
+        with mock.patch.object(self.manager, '_task_output_dir', return_value=folder), \
+                mock.patch.object(self.manager, '_run_openai', return_value={
+                    'video_url': 'https://relay.example/video.mp4'}), \
+                mock.patch('core.manual_video.VideoDownloader') as downloader:
+            result = self.manager.run_tasks([task])[0]
+        downloader.assert_not_called()
+        self.assertEqual(Path(result['file_path']), existing)
+        self.assertEqual(result['size_bytes'], len(MP4))
 
     def test_runtime_video_catalog_is_passed_to_api_client(self):
         catalog = {
@@ -398,6 +489,42 @@ class ManualVideoTests(unittest.TestCase):
         self.assertEqual(stored['file_path'], path)
         self.assertEqual(Path(path).read_bytes(), MP4)
         self.assertEqual(_FakeDownloader.api_keys, ['fixture-secret'])
+        self.assertEqual(stored['status'], 'succeeded')
+        self.assertEqual(stored['size_bytes'], len(MP4))
+        self.assertGreaterEqual(stored['download_ms'], 0)
+        self.assertGreater(stored['throughput_bps'], 0)
+        self.assertEqual([item['status'] for item in self.callbacks[-2:]],
+                         ['downloading', 'succeeded'])
+
+    def test_manual_download_retries_and_publishes_failed_record(self):
+        record = dict(local_id='remote-retry', status='failed', task_id='remote-2',
+                      video_url='https://relay.example/output.mp4', count_index=1,
+                      prompt_name='fixture video', output_dir='', file_path='')
+        attempts = []
+
+        class _FlakyDownloader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def download_video(self, _url, save_dir, filename, **kwargs):
+                attempts.append(1)
+                if len(attempts) < 3:
+                    raise OSError('temporary stream failure')
+                target = Path(save_dir) / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(MP4)
+                return str(target)
+
+            def close(self):
+                pass
+
+        with mock.patch('core.manual_video.VideoDownloader', _FlakyDownloader), \
+                mock.patch('core.manual_video.time.sleep') as pause:
+            path = self.manager.download_task(record)
+        self.assertTrue(Path(path).is_file())
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(pause.call_args_list, [mock.call(1), mock.call(2)])
+        self.assertEqual(self.store.get('remote-retry')['status'], 'succeeded')
 
     def test_cancel_during_download_does_not_publish_success(self):
         task = self._tasks()[0]

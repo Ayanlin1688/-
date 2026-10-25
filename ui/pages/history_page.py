@@ -381,7 +381,11 @@ class HistoryPage(QWidget):
                 continue
             path = str(record.get('file_path') or '')
             size_bytes = 0
-            if path:
+            try:
+                size_bytes = max(0, int(record.get('size_bytes') or 0))
+            except (TypeError, ValueError, OverflowError):
+                size_bytes = 0
+            if not size_bytes and path:
                 try:
                     size_bytes = os.path.getsize(path)
                 except OSError:
@@ -391,7 +395,7 @@ class HistoryPage(QWidget):
             raw_status = str(record.get('status') or 'pending')
             status = {
                 'pending': 'waiting', 'running': 'processing', 'succeeded': 'completed',
-                'failed': 'failed', 'cancelled': 'cancelled',
+                'downloading': 'downloading', 'failed': 'failed', 'cancelled': 'cancelled',
             }.get(raw_status, raw_status)
             result.append(dict(
                 kind='manual_video', local_id='video:' + local_id, manual_id=local_id,
@@ -403,6 +407,7 @@ class HistoryPage(QWidget):
                 task_id=record.get('task_id') or '', video_url=record.get('video_url') or '',
                 error=record.get('error') or '', duration=record.get('duration'),
                 output_size=record.get('output_size') or '',
+                download_ms=record.get('download_ms'), throughput_bps=record.get('throughput_bps'),
             ))
         return result
 
@@ -608,6 +613,7 @@ class HistoryPage(QWidget):
             delete.setToolTip(tr('删除记录'))
             delete.setEnabled(self._is_deletable(task))
             delete.clicked.connect(lambda _, t=task: self._request_manual_delete(t))
+            layout.setSpacing(4)
             layout.addWidget(open_file); layout.addWidget(open_folder); layout.addWidget(delete)
             return action
         if self._is_manual_video(task):
@@ -631,6 +637,7 @@ class HistoryPage(QWidget):
             delete.setToolTip(tr('删除记录'))
             delete.setEnabled(self._is_deletable(task))
             delete.clicked.connect(lambda _, t=task: self._request_manual_delete(t))
+            layout.setSpacing(4)
             layout.addWidget(open_file); layout.addWidget(open_folder)
             layout.addWidget(copy_link); layout.addWidget(delete)
             return action

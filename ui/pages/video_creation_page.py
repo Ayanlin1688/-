@@ -186,7 +186,7 @@ class _HistoryRow(QFrame):
             stamp = str(created or '').replace('T', ' ')[:16]
         meta = QLabel(' · '.join(filter(None, [stamp, f"{self.record.get('duration', '')}s" if self.record.get('duration') else '', str(self.record.get('output_size') or ''), str(self.record.get('model') or '')])), self); meta.setObjectName('videoHistoryMeta'); text_box.addWidget(meta)
         layout.addLayout(text_box, 1)
-        status_text = {'pending': tr('等待中'), 'running': tr('生成中'), 'processing': tr('生成中'), 'succeeded': tr('已完成'), 'completed': tr('已完成'), 'failed': tr('失败'), 'cancelled': tr('已取消')}
+        status_text = {'pending': tr('等待中'), 'running': tr('生成中'), 'processing': tr('生成中'), 'downloading': tr('下载中'), 'succeeded': tr('已完成'), 'completed': tr('已完成'), 'failed': tr('失败'), 'cancelled': tr('已取消')}
         self.status = QLabel(status_text.get(str(self.record.get('status') or '').lower(), tr('等待中')), self); self.status.setObjectName('videoHistoryStatus'); layout.addWidget(self.status)
         actions = (
             (FIF.PLAY, self.regenerate_requested, 'videoHistoryRegenerate', tr('重新生成')),
@@ -249,9 +249,23 @@ class _DownloadWorker(QThread):
                 path = self.manager.download_result(self.record)
             else:
                 path = self.record.get('file_path') or self.record.get('video_url') or ''
-            self.completed.emit(str(path or ''), self.record)
+            updated = self._latest_record()
+            self.completed.emit(str(path or ''), updated)
         except Exception as error:  # noqa: BLE001
-            self.failed.emit(str(error), self.record)
+            self.failed.emit(str(error), self._latest_record())
+
+    def _latest_record(self):
+        local_id = str(self.record.get('local_id') or '')
+        store = getattr(self.manager, 'store', None)
+        getter = getattr(store, 'get', None)
+        if local_id and callable(getter):
+            try:
+                updated = getter(local_id)
+                if isinstance(updated, dict):
+                    return updated
+            except Exception:
+                pass
+        return dict(self.record)
 
 
 def _video_records(config_manager):
@@ -656,16 +670,25 @@ class VideoCreationPage(QWidget):
         if status in {'succeeded', 'completed'}: self._set_preview_done(record)
     def _render_task(self, record):
         status = str(record.get('status') or 'pending').lower(); progress = record.get('progress'); task_id = str(record.get('task_id') or record.get('local_id') or ''); model = str(record.get('model') or '')
-        self.status_badge.setText({'running': tr('生成中'), 'processing': tr('生成中'), 'succeeded': tr('已完成'), 'completed': tr('已完成'), 'failed': tr('失败'), 'cancelled': tr('已取消')}.get(status, '')); self.status_badge.setProperty('status', status); self.status_badge.setStyleSheet(self._status_badge_style(status)); self.progress_label.setText(f"{int(progress)}% · ID: {task_id}" if progress is not None else (f"ID: {task_id}" if task_id else '')); self.progress_model_label.setText(model); self.progress_model_label.setVisible(bool(model)); self._current_task_id = task_id; self.copy_task_id_button.setVisible(bool(task_id));
-        if progress is None and status in {'pending', 'running', 'processing'}:
+        self.status_badge.setText({'running': tr('生成中'), 'processing': tr('生成中'), 'downloading': tr('下载中'), 'succeeded': tr('已完成'), 'completed': tr('已完成'), 'failed': tr('失败'), 'cancelled': tr('已取消')}.get(status, '')); self.status_badge.setProperty('status', status); self.status_badge.setStyleSheet(self._status_badge_style(status));
+        if status == 'downloading':
+            progress_text = tr('下载中…')
+            if progress is not None:
+                progress_text += f' {int(progress)}%'
+            if task_id:
+                progress_text += f' · ID: {task_id}'
+        else:
+            progress_text = f"{int(progress)}% · ID: {task_id}" if progress is not None else (f"ID: {task_id}" if task_id else '')
+        self.progress_label.setText(progress_text); self.progress_model_label.setText(model); self.progress_model_label.setVisible(bool(model)); self._current_task_id = task_id; self.copy_task_id_button.setVisible(bool(task_id));
+        if progress is None and status in {'pending', 'running', 'processing', 'downloading'}:
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(max(0, min(100, int(float(progress if progress is not None else (100 if status in {'succeeded', 'completed'} else 0))))))
-        self.preview_stack.setCurrentIndex(1 if status in {'pending', 'running', 'processing'} else 3 if status in {'failed', 'error'} else 2 if status in {'succeeded', 'completed'} else 0); self.preview_failed.setText(str(record.get('error') or tr('视频生成失败')))
+        self.preview_stack.setCurrentIndex(1 if status in {'pending', 'running', 'processing', 'downloading'} else 3 if status in {'failed', 'error'} else 2 if status in {'succeeded', 'completed'} else 0); self.preview_failed.setText(str(record.get('error') or tr('视频生成失败')))
 
     def _status_badge_style(self, status):
-        color = _color('video_creation_primary') if status in {'pending', 'running', 'processing'} else _color('video_creation_success') if status in {'succeeded', 'completed'} else _color('video_creation_error') if status in {'failed', 'error', 'cancelled'} else _color('video_creation_muted')
+        color = _color('video_creation_primary') if status in {'pending', 'running', 'processing', 'downloading'} else _color('video_creation_success') if status in {'succeeded', 'completed'} else _color('video_creation_error') if status in {'failed', 'error', 'cancelled'} else _color('video_creation_muted')
         return 'QLabel#videoStatusBadge { color:%s; border:1px solid %s; border-radius:%dpx; padding:0 %dpx; font-weight:600; }' % (color, color, px(10), px(8))
 
     @staticmethod
@@ -731,13 +754,42 @@ class VideoCreationPage(QWidget):
         if self.media_controls is not None:
             self.media_controls.setVisible(False)
         self.preview_done.setVisible(True)
-        self.preview_done.setText(tr('视频已生成\n{path}').format(path=path or tr('暂无视频文件')))
+        self.preview_done.setText(self._preview_done_text(record, path))
         self.open_video_button.setVisible(bool(path and os.path.isfile(path)))
+
+    @staticmethod
+    def _download_details(record):
+        try:
+            size_bytes = int(record.get('size_bytes') or 0)
+            throughput = float(record.get('throughput_bps') or 0)
+            if throughput <= 0:
+                download_ms = float(record.get('download_ms') or 0)
+                if download_ms > 0 and size_bytes > 0:
+                    throughput = size_bytes * 1000 / download_ms
+            if size_bytes <= 0 or throughput <= 0:
+                return ''
+            return f'{size_bytes / 1024**2:.1f} MB · {throughput / 1024**2:.1f} MB/s'
+        except (TypeError, ValueError, OverflowError):
+            return ''
+
+    @classmethod
+    def _preview_done_text(cls, record, path):
+        if path and record.get('file_path'):
+            details = cls._download_details(record)
+            suffix = f'\n{details}' if details else ''
+            return f'{tr("已保存到本地")}\n{path}{suffix}'
+        return tr('视频已生成\n{path}').format(path=path or tr('暂无视频文件'))
 
     def _set_preview_done(self, record, *, from_history=False):
         self._current_record = dict(record or {})
         path = str(record.get('file_path') or record.get('video_url') or '')
-        self.url_edit.setText(path); self.preview_done.setText(tr('视频已生成\n{path}').format(path=path or tr('暂无视频文件'))); self.history_detail_hint.setText(tr('已打开历史视频详情') if from_history else '')
+        self.url_edit.setText(path); self.preview_done.setText(self._preview_done_text(record, path))
+        detail = self._download_details(record)
+        if path and record.get('file_path'):
+            detail = tr('已保存到本地') + (f' · {detail}' if detail else '')
+        if from_history:
+            detail = tr('已打开历史视频详情') + (f' · {detail}' if detail else '')
+        self.history_detail_hint.setText(detail)
         if self.media_player is not None and path:
             try:
                 self.media_available = True
@@ -756,9 +808,24 @@ class VideoCreationPage(QWidget):
     def _download_current(self):
         record = getattr(self, '_current_record', None)
         if record:
+            existing = str(record.get('file_path') or '')
+            if existing and self._is_valid_local_video(existing):
+                InfoBar.success(tr('已保存到本地'), existing, parent=self, duration=3500)
+                return False
             return self._download_record(record)
         path = self.url_edit.text().strip()
-        if path and os.path.exists(path): QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        if path and self._is_valid_local_video(path):
+            InfoBar.success(tr('已保存到本地'), path, parent=self, duration=3500)
+            return False
+
+    @staticmethod
+    def _is_valid_local_video(path):
+        try:
+            from core.manual_video import ManualVideoManager
+            ManualVideoManager._validate_mp4(path)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _download_record(self, record):
         manager = self._manager_instance()
@@ -768,10 +835,21 @@ class VideoCreationPage(QWidget):
 
     def _on_download_completed(self, path, record):
         if path:
-            self.url_edit.setText(path); self._current_record = dict(record or {}, file_path=path)
+            updated = dict(record or {})
+            updated.update(file_path=path, status='succeeded')
+            self._current_record = updated
+            self._render_task(updated)
+            self._set_preview_done(updated)
+            self.refresh_history()
+            self.history_changed.emit()
             if os.path.isfile(path): QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
-    def _on_download_failed(self, error, _record):
+    def _on_download_failed(self, error, record):
+        if isinstance(record, dict):
+            self._current_record = dict(record)
+            self._render_task(record)
+            self.refresh_history()
+            self.history_changed.emit()
         self._warning(tr('下载视频失败：{message}').format(message=error or tr('请稍后重试')))
     def _copy_url(self):
         app = QApplication.instance()
