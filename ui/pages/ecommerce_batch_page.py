@@ -50,6 +50,8 @@ from ..components.image_pickers import (
     image_cache_dir, is_image_file, resolve_input_entries,
 )
 from ..components.image_upload_grid import ImageUploadGrid
+from ..components.image_lightbox import ImageLightbox
+from ..components.platform_multi_select import PlatformMultiSelect
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from ..components.studio_dialog import safe_delete_dialog
 from ..responsive import WrapLayout
@@ -865,7 +867,6 @@ class EcommerceBatchPage(QWidget):
         self.draft_load_error = ''
         defaults = config_manager.config.get('ecommerce', {}) or {}
         self.thinking_enabled = bool(defaults.get('thinking', False))
-        self._platform_group_labels = []
         self._build_ui(defaults)
         materials.register_theme_callback(self.refresh_colors)
         style_controls(self)
@@ -1009,36 +1010,11 @@ class EcommerceBatchPage(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.platform_hint_label = hint
-        groups = QHBoxLayout()
-        groups.setContentsMargins(0, 0, 0, 0)
-        groups.setSpacing(px(18))
-        self.platform_checkboxes = {}
-        for label_key, records in (('domestic', domestic()),
-                                   ('overseas', overseas())):
-            group = QWidget(panel)
-            group_layout = QVBoxLayout(group)
-            group_layout.setContentsMargins(0, 0, 0, 0)
-            group_layout.setSpacing(px(6))
-            header = StrongBodyLabel(
-                tr('国内') if label_key == 'domestic' else tr('海外'), group)
-            self._platform_group_labels.append((header, label_key))
-            group_layout.addWidget(header)
-            grid = QGridLayout()
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setHorizontalSpacing(px(14))
-            grid.setVerticalSpacing(px(6))
-            for index, record in enumerate(records):
-                checkbox = CheckBox(record['name'], group)
-                checkbox.setObjectName('batchPlatform_' + record['id'])
-                checkbox.toggled.connect(
-                    lambda checked, pid=record['id']:
-                    self._platform_changed(pid, checked))
-                self.platform_checkboxes[record['id']] = checkbox
-                grid.addWidget(checkbox, index // 2, index % 2)
-            group_layout.addLayout(grid)
-            groups.addWidget(group, 0, Qt.AlignTop)
-        groups.addStretch(1)
-        layout.addLayout(groups)
+        self.platform_selector = PlatformMultiSelect(panel)
+        self.platform_selector.changed.connect(self._platform_changed)
+        self.platform_selector.limit_reached.connect(
+            lambda count: self._notice(tr('最多选择 {count} 个平台').format(count=count), warning=True))
+        layout.addWidget(self.platform_selector)
 
         # —— 图片文字语言 ——
         self.language_combo = ComboBox(panel)
@@ -1164,7 +1140,7 @@ class EcommerceBatchPage(QWidget):
         style_header.setContentsMargins(0, 0, 0, 0)
         style_header.setSpacing(px(8))
         self.style_label = StrongBodyLabel(
-            tr('风格参考图（可选，整批共用）'), panel)
+            tr('风格参考图（可选，最多3张，整批共用）'), panel)
         style_header.addWidget(self.style_label)
         style_header.addStretch(1)
         self.style_used_button = PushButton(tr('已用图片'), panel)
@@ -1184,10 +1160,12 @@ class EcommerceBatchPage(QWidget):
         style_header.addWidget(self.style_used_button)
         style_header.addWidget(self.style_gallery_button)
         layout.addLayout(style_header)
-        self.style_grid = ImageUploadGrid('style', 1, panel)
+        self.style_grid = ImageUploadGrid('style', 3, panel, columns=4, uniform=True,
+                                          add_label_provider=lambda *_: tr('上传参考图'))
         self.style_grid.setObjectName('batchStyleGrid')
         self.style_grid.changed.connect(self._on_style_changed)
         self.style_grid.add_requested.connect(self.pick_style_file)
+        self.style_grid.preview_requested.connect(self._preview_style_image)
         layout.addWidget(self.style_grid)
 
         self._body_layout.addWidget(panel)
@@ -1275,20 +1253,8 @@ class EcommerceBatchPage(QWidget):
         text = self.tier_combo.currentText()
         return text if text in TIER_SHORT_EDGE else FALLBACK_TIER
 
-    def style_image_path(self):
-        paths = self.style_grid.paths()
-        return paths[0] if paths else None
-
     def selected_platforms(self):
-        selected = []
-        for platform_id in self._platform_selection_order:
-            checkbox = self.platform_checkboxes.get(platform_id)
-            if checkbox is not None and checkbox.isChecked():
-                selected.append(platform_id)
-        for platform_id, checkbox in self.platform_checkboxes.items():
-            if checkbox.isChecked() and platform_id not in selected:
-                selected.append(platform_id)
-        return selected
+        return self.platform_selector.selected_platforms()
 
     def shared_defaults(self):
         return {
@@ -1303,7 +1269,7 @@ class EcommerceBatchPage(QWidget):
             'analysis_model': self.analysis_model_value(),
             'image_model': self.image_model_value(),
             'tier': self.tier_value(),
-            'style_image_path': self.style_image_path() or '',
+            'style_image_paths': self.style_grid.paths(),
             'thinking': bool(self.thinking_enabled),
         }
 
@@ -1341,7 +1307,7 @@ class EcommerceBatchPage(QWidget):
         'image_model': 'image_model',
         'tier': 'tier',
         'style_image_path': 'style_image_path',
-        'style_image_paths': 'style_image_path',
+        'style_image_paths': 'style_image_paths',
         'thinking': 'thinking',
     }
 
@@ -1374,9 +1340,9 @@ class EcommerceBatchPage(QWidget):
             text = str(value or '')
             if text in TIER_SHORT_EDGE:
                 self.tier_combo.setCurrentText(text)
-        elif target == 'style_image_path':
+        elif target in ('style_image_path', 'style_image_paths'):
             paths = _string_list(
-                value if isinstance(value, (list, tuple)) else [value], 1)
+                value if isinstance(value, (list, tuple)) else [value], 3)
             self.style_grid.set_paths(paths, emit=False)
         elif target == 'thinking':
             self.thinking_enabled = bool(value)
@@ -1388,7 +1354,7 @@ class EcommerceBatchPage(QWidget):
         wanted = []
         for platform_id in ids or []:
             key = _as_str(platform_id)
-            if key in self.platform_checkboxes and key not in wanted:
+            if key in self.platform_selector.records and key not in wanted:
                 wanted.append(key)
         if len(wanted) > MAX_PLATFORMS:
             self._notice(tr('最多选择 {count} 个平台').format(
@@ -1397,10 +1363,9 @@ class EcommerceBatchPage(QWidget):
         was_loading = self._loading
         self._loading = True
         try:
-            for platform_id, checkbox in self.platform_checkboxes.items():
-                blocker = QSignalBlocker(checkbox)
-                checkbox.setChecked(platform_id in wanted)
-                del blocker
+            blocker = QSignalBlocker(self.platform_selector)
+            self.platform_selector.set_platforms(wanted)
+            del blocker
             self._platform_selection_order = list(wanted)
             if apply_defaults and wanted:
                 self._apply_first_platform_defaults()
@@ -1437,32 +1402,11 @@ class EcommerceBatchPage(QWidget):
         except (RuntimeError, TypeError, ValueError):
             pass
 
-    def _platform_changed(self, platform_id, checked):
+    def _platform_changed(self, selected):
         if self._loading:
             return
-        if checked:
-            if platform_id not in self._platform_selection_order:
-                self._platform_selection_order.append(platform_id)
-            if len(self.selected_platforms()) > MAX_PLATFORMS:
-                checkbox = self.platform_checkboxes.get(platform_id)
-                if checkbox is not None:
-                    blocker = QSignalBlocker(checkbox)
-                    checkbox.setChecked(False)
-                    del blocker
-                try:
-                    self._platform_selection_order.remove(platform_id)
-                except ValueError:
-                    pass
-                self._notice(tr('最多选择 {count} 个平台').format(
-                    count=MAX_PLATFORMS), warning=True)
-                self._refresh_summary()
-                return
-            self._apply_first_platform_defaults()
-        else:
-            try:
-                self._platform_selection_order.remove(platform_id)
-            except ValueError:
-                pass
+        self._platform_selection_order = list(selected)
+        self._apply_first_platform_defaults()
         self._shared_changed()
 
     def _persist_model(self, key, value):
@@ -1676,6 +1620,8 @@ class EcommerceBatchPage(QWidget):
 
     def build_submissions(self):
         shared = self.shared_defaults()
+        if len(shared['style_image_paths']) > 3:
+            raise ValueError(tr('风格图最多3张'))
         submissions = []
         for index, row in enumerate(self.rows, start=1):
             if not row.ready:
@@ -1694,15 +1640,18 @@ class EcommerceBatchPage(QWidget):
                 'tier': shared['tier'],
                 'product_image_paths': [_resolved(path)
                                         for path in row.product_image_paths],
-                'style_image_path': _resolved(shared['style_image_path'])
-                if shared['style_image_path'] else None,
+                'style_image_paths': [_resolved(p) for p in shared['style_image_paths']],
                 'thinking': bool(shared['thinking']),
                 'row_index': index,
             })
         return submissions
 
     def submit(self):
-        payload = self.build_submissions()
+        try:
+            payload = self.build_submissions()
+        except ValueError as error:
+            self._notice(str(error), warning=True)
+            return False
         if not payload:
             self._notice(tr('没有可提交的行'), warning=True)
             return False
@@ -1767,19 +1716,30 @@ class EcommerceBatchPage(QWidget):
         finally:
             safe_delete_dialog(dialog)
 
+    def _merge_style_images(self, paths):
+        merged = list(dict.fromkeys(self.style_grid.paths() + list(paths)))
+        if len(merged) > 3:
+            self._notice(tr('风格图最多3张，请移除后再添加'), warning=True)
+        self.style_grid.set_paths(merged[:3])
+
+    def _preview_style_image(self, index):
+        paths = self.style_grid.paths()
+        if paths:
+            self._lightbox = ImageLightbox.show_images(self, paths, index)
+
     def pick_style_file(self):
-        path, _filter = QFileDialog.getOpenFileName(
+        paths, _filter = QFileDialog.getOpenFileNames(
             self, tr('选择风格图'), '', _image_filter())
-        if path:
-            self.style_grid.set_paths([str(Path(path).resolve())])
+        if paths:
+            self._merge_style_images([str(Path(p).resolve()) for p in paths])
 
     def pick_style_used(self):
         dialog = None
         try:
             dialog = UsedImagePickerDialog(
-                self, self.config_manager.ecommerce_store(), max_count=1)
+                self, self.config_manager.ecommerce_store(), max_count=3)
             if dialog.exec_() == dialog.Accepted:
-                self.style_grid.set_paths(dialog.result_paths[:1])
+                self._merge_style_images(dialog.result_paths)
         finally:
             safe_delete_dialog(dialog)
 
@@ -1787,9 +1747,9 @@ class EcommerceBatchPage(QWidget):
         dialog = None
         try:
             dialog = GalleryPickerDialog(
-                self, self.config_manager, max_count=1)
+                self, self.config_manager, max_count=3)
             if dialog.exec_() == dialog.Accepted:
-                self.style_grid.set_paths(dialog.result_paths[:1])
+                self._merge_style_images(dialog.result_paths)
         finally:
             safe_delete_dialog(dialog)
 
@@ -1983,6 +1943,7 @@ class EcommerceBatchPage(QWidget):
                    materials.ECOMMERCE['white'], px(6), px(8), px(12)))
         self.carousel_ratios.apply_scale()
         self.detail_ratios.apply_scale()
+        self.platform_selector.refresh_interface_scale()
         self.style_grid.refresh_interface_scale()
         for row in self.rows:
             row.apply_scale()
@@ -2010,6 +1971,7 @@ class EcommerceBatchPage(QWidget):
                 continue
 
     def refresh_colors(self):
+        self.platform_selector.refresh_colors()
         self._refresh_colors()
         self._refresh_summary()
         self.update()
@@ -2029,6 +1991,7 @@ class EcommerceBatchPage(QWidget):
         self._refresh_summary()
 
     def retranslate_ui(self):
+        self.platform_selector.retranslate_ui()
         self.title_label.setText(tr('电商图批量制作'))
         self.subtitle_label.setText(
             tr('每行一个商品，提交后在历史任务中各自显示为独立任务组'))
@@ -2039,7 +2002,7 @@ class EcommerceBatchPage(QWidget):
             tr('建议只选一个平台，多平台可能存在规则冲突（最多5个）'))
         self.carousel_check.setText(tr('轮播图'))
         self.detail_check.setText(tr('详情图'))
-        self.style_label.setText(tr('风格参考图（可选，整批共用）'))
+        self.style_label.setText(tr('风格参考图（可选，最多3张，整批共用）'))
         self.style_used_button.setText(tr('已用图片'))
         self.style_gallery_button.setText(tr('画廊选图'))
         self.add_one_button.setText(tr('新增 1 行'))
@@ -2062,9 +2025,6 @@ class EcommerceBatchPage(QWidget):
             catalog_snapshot(self.config_manager, 'image'),
             self.image_model_value(), kind='image')
         self.platform_caption.setText(tr('电商平台'))
-        for label, group_key in self._platform_group_labels:
-            label.setText(tr('国内') if group_key == 'domestic'
-                         else tr('海外'))
         self.language_caption.setText(tr('图片文字语言'))
         self.analysis_caption.setText(tr('AI 分析模型'))
         self.image_caption.setText(tr('图片生成模型'))

@@ -671,14 +671,15 @@ class ImageClientHTTPTests(unittest.TestCase):
         self.assertEqual(files[0]['body'], content)
         self.assertTrue(any('参考图压缩失败，按原图发送' in line for line in logs.output))
 
-    def test_seven_reference_files_are_accepted(self):
+    def test_nine_reference_files_are_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = self.make_references(directory, [f'product-{i}.png' for i in range(6)] + ['style.png'])
+            paths = self.make_references(directory, [f'product-{i}.png' for i in range(6)] + [f'style-{i}.png' for i in range(3)])
             with LocalImageServer() as server:
                 self.generate(server, reference_paths=paths)
             files = [part for part in multipart_parts(server.calls[0]) if part['filename']]
-        self.assertEqual(len(files), 7)
-        self.assertEqual(files[-1]['filename'], 'style.png')
+        self.assertEqual(len(files), 9)
+        self.assertEqual([p['filename'] for p in files],
+                         [f'product-{i}.png' for i in range(6)] + [f'style-{i}.png' for i in range(3)])
 
     def test_invalid_prompt_rejected_before_network(self):
         with LocalImageServer() as server:
@@ -690,8 +691,8 @@ class ImageClientHTTPTests(unittest.TestCase):
 
     def test_too_many_references_rejected_before_read_or_network(self):
         with LocalImageServer() as server:
-            with self.assertRaises(ValueError):
-                self.generate(server, reference_paths=['does-not-exist.png'] * 8)
+            with self.assertRaisesRegex(ValueError, '参考图最多9张（产品图最多6张，风格图最多3张）'):
+                self.generate(server, reference_paths=['does-not-exist.png'] * 10)
         self.assertEqual(server.calls, [])
 
     def test_missing_and_unreadable_reference_files_are_image_errors(self):

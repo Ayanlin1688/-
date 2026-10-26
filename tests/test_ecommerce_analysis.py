@@ -242,6 +242,31 @@ class AnalysisStreamTests(unittest.TestCase):
             result = analyze_stream(base_url, FIXTURE_KEY, model, 'system', 'user', thinking=thinking)
         return result, captured_urls
 
+    def test_reference_payload_keeps_all_nine_in_order_for_both_protocols(self):
+        import base64
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f'image-{i}.png' for i in range(9)]
+            for i, path in enumerate(paths):
+                path.write_bytes(bytes([i + 1]) * 5)
+            for gemini in (False, True):
+                with self.subTest(gemini=gemini), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+                    base = server.base_url.replace('/v1', '/v1beta') if gemini else server.base_url
+                    analyze_stream(base, FIXTURE_KEY, 'gemini' if gemini else 'fixture-model',
+                                   'system', 'user', reference_paths=paths)
+                    self.assertEqual(len(server.calls), 1)
+                    body = server.calls[0][3]
+                    if gemini:
+                        parts = body['contents'][0]['parts']
+                        data = [part['inlineData']['data'] for part in parts[1:]]
+                        self.assertEqual(parts[0], {'text': 'user'})
+                    else:
+                        parts = body['messages'][1]['content']
+                        data = [part['image_url']['url'].split(',', 1)[1] for part in parts[1:]]
+                        self.assertEqual(parts[0], {'type': 'text', 'text': 'user'})
+                    self.assertEqual([base64.b64decode(item) for item in data],
+                                     [path.read_bytes() for path in paths])
+
     def test_sse_joins_frame_fragments_reasoning_and_skips_usage(self):
         text = json.dumps(prompt_items(), ensure_ascii=False)
         content, reasoning = [], []

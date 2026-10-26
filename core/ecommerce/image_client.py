@@ -360,8 +360,8 @@ def generate_image(base_url, api_key, model, prompt, ratio, tier, *,
     if (not isinstance(reference_paths, Sequence)
             or isinstance(reference_paths, (str, bytes, bytearray))):
         raise ValueError('参考图必须以有序路径列表提供')
-    if len(reference_paths) > 7:
-        raise ValueError('参考图最多 7 张（产品图最多 6 张，风格图 1 张）')
+    if len(reference_paths) > 9:
+        raise ValueError('参考图最多9张（产品图最多6张，风格图最多3张）')
     plan = build_size_plan(ratio, tier)
     client = HttpClient(api_key=api_key, timeout=timeout)
     status_code = None

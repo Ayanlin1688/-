@@ -5,7 +5,7 @@ from PyQt5.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtS
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QRegion
 from PyQt5.QtWidgets import (
     QBoxLayout, QHBoxLayout, QLabel, QLayout, QPushButton, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import Action, LineEdit, PushButton, RoundMenu
 from qframelesswindow import FramelessDialog
@@ -14,6 +14,7 @@ from core.i18n import register_retranslate, tr
 from .. import materials
 from ..tokens import px
 from .preview_selection_panel import PreviewSelectionPanel
+from .platform_profiles import get_profile
 
 _PREVIEW_CACHE = {}
 _PREVIEW_CACHE_LIMIT = 32
@@ -147,11 +148,12 @@ class PreviewImage(QWidget):
 
     clicked = pyqtSignal()
 
-    def __init__(self, path='', height=220, parent=None, *, edge=0):
+    def __init__(self, path='', height=220, parent=None, *, edge=0, missing_text=None):
         super().__init__(parent)
         self.image_path = str(path) if path else ''
         self.has_image = False
         self._edge = int(edge)
+        self.missing_text = missing_text
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setFixedHeight(int(height))
         self.setMinimumWidth(0)
@@ -188,7 +190,7 @@ class PreviewImage(QWidget):
                 painter.drawImage(target, source, QRectF(source.rect()))
             elif self.image_path:
                 painter.setPen(QColor(materials.ecommerce_color('preview_muted')))
-                painter.drawText(self.rect(), Qt.AlignCenter, tr('缺失'))
+                painter.drawText(self.rect(), Qt.AlignCenter, self.missing_text or tr('缺失'))
         finally:
             painter.end()
 
@@ -345,7 +347,55 @@ class _StatusBar(QWidget):
 # ---------------------------------------------------------------------------
 # 两套外壳
 
-class _PhoneShell(QWidget):
+class _ProfileShell:
+    def _text(self, widget, source, prefix=''):
+        widget.setText(prefix + self.profile.text(source))
+        return widget
+
+    def _storefront_info(self, layout):
+        self.store_label = self._text(_label(12, bold=True), '店铺')
+        self.rating_label = self._text(_label(11), '星级')
+        self.variant_label = self._text(_label(11), '规格')
+        self.quantity_label = self._text(_label(11), '数量')
+        self.discount_label = self._text(_label(11), '折扣')
+        for label in (self.store_label, self.rating_label, self.variant_label,
+                      self.discount_label):
+            label.setMinimumWidth(0)
+            label.setWordWrap(True)
+            _preview_style(label, lambda: 'color:%s;background:%s;border-radius:6px;padding:5px;'
+                           % (materials.ecommerce_color('preview_text'),
+                              materials.ecommerce_color('preview_input')))
+            layout.addWidget(label)
+        variants = QHBoxLayout()
+        self.variant_chips = []
+        for source in ('经典款', '标准'):
+            chip = self._text(QPushButton(), source)
+            chip.setCheckable(True)
+            chip.setChecked(True)
+            _preview_style(chip, lambda: 'QPushButton {color:%s;background:%s;border:1px solid %s;'
+                           'border-radius:4px;padding:4px 8px;}'
+                           % (materials.ecommerce_color('preview_text'),
+                              materials.ecommerce_color('preview_input'), self.primary.name()))
+            self.variant_chips.append(chip)
+            variants.addWidget(chip)
+        variants.addStretch(1)
+        layout.addLayout(variants)
+        quantity = QHBoxLayout()
+        quantity.addWidget(self.quantity_label)
+        self.quantity_input = QSpinBox()
+        self.quantity_input.setRange(1, 99)
+        self.quantity_input.setFixedWidth(px(72))
+        _preview_style(self.quantity_input, lambda: 'QSpinBox {color:%s;background:%s;'
+                       'border:1px solid %s;border-radius:4px;padding:4px;}'
+                       % (materials.ecommerce_color('preview_text'),
+                          materials.ecommerce_color('preview_input'),
+                          materials.ecommerce_color('preview_line')))
+        quantity.addWidget(self.quantity_input)
+        quantity.addStretch(1)
+        layout.addLayout(quantity)
+
+
+class _PhoneShell(_ProfileShell, QWidget):
     """海外商品页；内部内容滚动，底部操作条留在手机壳内。"""
 
     kind = 'mobile'
@@ -353,7 +403,8 @@ class _PhoneShell(QWidget):
     def __init__(self, platform, product_name, carousel, detail, parent=None):
         super().__init__(parent)
         self.platform = dict(platform or {})
-        self.product_name = product_name
+        self.profile = get_profile(platform)
+        self.product_name = self.profile.title(product_name)
         self.carousel_paths, self.detail_paths = list(carousel), list(detail)
         self.primary = _platform_color(self.platform, 'primaryColor')
         self.accent = _platform_color(self.platform, 'accentColor')
@@ -385,7 +436,7 @@ class _PhoneShell(QWidget):
         nav.setContentsMargins(14, 0, 14, 0)
         nav.setSpacing(8)
         self.back_label = _label(22, text='‹')
-        self.name_label = _preview_text(_label(14, bold=True), 'Product Details')
+        self.name_label = self._text(_label(14, bold=True), 'Product Details')
         self.name_label.setAlignment(Qt.AlignCenter)
         self.cart_label = _label(20, text='⋯')
         for label in (self.back_label, self.name_label, self.cart_label):
@@ -417,20 +468,20 @@ class _PhoneShell(QWidget):
         image_layout.setContentsMargins(0, 0, 0, 0)
         image_layout.setSpacing(0)
         if self.carousel_paths:
-            self.main_image = PreviewImage(self.carousel_paths[0], height=340)
+            self.main_image = PreviewImage(self.carousel_paths[0], height=340, missing_text=self.profile.text('缺失'))
             self.main_image.clicked.connect(self._next_image)
             image_layout.addWidget(self.main_image)
         else:
             self.main_image = None
-            self.placeholder = PreviewPlaceholder(height=340)
+            self.placeholder = PreviewPlaceholder(height=340, text=self.profile.text('暂无生成图片'))
             image_layout.addWidget(self.placeholder)
-            self.selection_hint = _preview_text(_label(12), '请勾选轮播图')
+            self.selection_hint = self._text(_label(12), '请勾选轮播图')
             self.selection_hint.setAlignment(Qt.AlignCenter)
             _preview_style(self.selection_hint, lambda: 'color:%s; background:transparent;'
                                              % materials.ecommerce_color('preview_muted'))
             image_layout.addWidget(self.selection_hint)
         self.dots = _CarouselDots(len(self.carousel_paths), self.image_area,
-                                  materials.ecommerce_color('preview_sale'))
+                                  self.primary.name())
         self.dots.setVisible(len(self.carousel_paths) > 1)
         image_layout.addWidget(self.dots)
         self.counter_label = _label(11, text=self._counter_text(), parent=self.image_area)
@@ -451,18 +502,18 @@ class _PhoneShell(QWidget):
         info_layout = QVBoxLayout(info)
         info_layout.setContentsMargins(16, 10, 16, 14)
         info_layout.setSpacing(7)
-        self.sale_label = _preview_text(_label(10, bold=True), 'SALE')
+        self.sale_label = self._text(_label(10, bold=True), 'SALE')
         self.sale_label.setAlignment(Qt.AlignCenter)
         _preview_style(self.sale_label, lambda: 'color:%s; background:%s; border-radius:9px; padding:3px 6px;'
                                      % (materials.ecommerce_color('preview_white'),
-                                        materials.ecommerce_color('preview_sale')))
+                                        self.primary.name()))
         prices = QHBoxLayout()
         prices.setSpacing(8)
         prices.addWidget(self.sale_label, 0, Qt.AlignVCenter)
         self.price_label = _label(25, bold=True, text=self._price_text())
         _preview_style(self.price_label, lambda: 'color:%s; background:transparent;'
-                                      % materials.ecommerce_color('preview_sale'))
-        self.old_price_label = _label(12, text='$29.98')
+                                      % self.primary.name())
+        self.old_price_label = _label(12, text=self.profile.price(old=True))
         font = self.old_price_label.font()
         font.setStrikeOut(True)
         self.old_price_label.setFont(font)
@@ -472,7 +523,7 @@ class _PhoneShell(QWidget):
         prices.addWidget(self.old_price_label)
         prices.addStretch(1)
         info_layout.addLayout(prices)
-        self.sold_label = _preview_text(_label(11), '12.8K sold')
+        self.sold_label = self._text(_label(11), '12.8K sold')
         _preview_style(self.sold_label, lambda: 'color:%s; background:transparent;'
                                      % materials.ecommerce_color('preview_muted'))
         info_layout.addWidget(self.sold_label)
@@ -482,10 +533,12 @@ class _PhoneShell(QWidget):
         _preview_style(self.product_label, lambda: 'color:%s; background:transparent;'
                                         % materials.ecommerce_color('preview_text'))
         info_layout.addWidget(self.product_label)
+        self._storefront_info(info_layout)
+
         services = QHBoxLayout()
         services.setSpacing(6)
         for source in ('Free Shipping', '30-day Returns', 'Fast Delivery'):
-            badge = _preview_text(_label(9), source)
+            badge = self._text(_label(9), source)
             badge.setAlignment(Qt.AlignCenter)
             badge.setMinimumWidth(0)
             badge.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -495,18 +548,18 @@ class _PhoneShell(QWidget):
             services.addWidget(badge, 1)
         info_layout.addLayout(services)
         body.addWidget(info)
-        self.detail_title = _preview_text(_label(13, bold=True), '商品详情')
+        self.detail_title = self._text(_label(13, bold=True), '商品详情')
         _preview_style(self.detail_title, lambda: 'color:%s; background:%s; padding:8px 14px;'
                                        % (materials.ecommerce_color('preview_text'),
                                           materials.ecommerce_color('preview_input')))
         body.addWidget(self.detail_title)
         self.detail_images = []
         for path in self.detail_paths:
-            image = PreviewImage(path, height=300)
+            image = PreviewImage(path, height=300, missing_text=self.profile.text('缺失'))
             self.detail_images.append(image)
             body.addWidget(image)
         if not self.detail_images:
-            self.detail_placeholder = PreviewPlaceholder(height=180)
+            self.detail_placeholder = PreviewPlaceholder(height=180, text=self.profile.text('暂无生成图片'))
             self.detail_images.append(self.detail_placeholder)
             body.addWidget(self.detail_placeholder)
         body.addStretch(1)
@@ -520,24 +573,24 @@ class _PhoneShell(QWidget):
         bottom = QHBoxLayout(self.bottom_bar)
         bottom.setContentsMargins(10, 8, 10, 8)
         bottom.setSpacing(6)
-        for symbol, source in (('⌂', 'Home'), ('♧', 'Chat'), ('♡', 'Save')):
-            label = _preview_text(_label(9), source, symbol + '\n')
+        for source in ('Home', 'Chat', 'Save'):
+            label = self._text(_label(9), source)
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumWidth(0)
             label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             _preview_style(label, lambda: 'color:%s; background:transparent;'
                                % materials.ecommerce_color('preview_text'))
             bottom.addWidget(label, 1)
-        self.cart_button = _preview_text(QPushButton(self.bottom_bar), 'Add to Cart')
-        self.buy_button = _preview_text(QPushButton(self.bottom_bar), 'Buy Now')
+        self.cart_button = self._text(QPushButton(self.bottom_bar), 'Add to Cart')
+        self.buy_button = self._text(QPushButton(self.bottom_bar), 'Buy Now')
         for button, filled in ((self.cart_button, False), (self.buy_button, True)):
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
             _preview_style(button, lambda filled=filled: 'QPushButton {border:1px solid %s; border-radius:6px; '
                                  'color:%s; background:%s; font-size:11px; font-weight:600;}'
-                                 % (materials.ecommerce_color('preview_sale'),
-                                    materials.ecommerce_color('preview_white' if filled else 'preview_sale'),
-                                    materials.ecommerce_color('preview_sale' if filled else 'preview_card')))
+                                 % (self.primary.name(),
+                                    materials.ecommerce_color('preview_white') if filled else self.primary.name(),
+                                    self.primary.name() if filled else materials.ecommerce_color('preview_card')))
             bottom.addWidget(button, 3)
         root.addWidget(self.bottom_bar)
 
@@ -558,7 +611,7 @@ class _PhoneShell(QWidget):
         return '%d/%d' % (self.carousel_index + 1, len(self.carousel_paths)) if self.carousel_paths else ''
 
     def _price_text(self):
-        return '$19.99'
+        return self.profile.price()
 
     def _next_image(self):
         self.set_carousel_index((self.carousel_index + 1) % max(1, len(self.carousel_paths)))
@@ -600,7 +653,7 @@ class _PhoneShell(QWidget):
             painter.end()
 
 
-class _DesktopShell(QWidget):
+class _DesktopShell(_ProfileShell, QWidget):
     """国内平台：平台名顶栏 + 搜索框 + 主图 + 详情堆叠的通用桌面壳。"""
 
     kind = 'desktop'
@@ -608,7 +661,8 @@ class _DesktopShell(QWidget):
     def __init__(self, platform, product_name, carousel, detail, parent=None):
         super().__init__(parent)
         self.platform = dict(platform or {})
-        self.product_name = product_name
+        self.profile = get_profile(platform)
+        self.product_name = self.profile.title(product_name)
         self.carousel_paths = list(carousel)
         self.detail_paths = list(detail)
         self.primary = _platform_color(self.platform, 'primaryColor')
@@ -642,7 +696,7 @@ class _DesktopShell(QWidget):
             ' color:%s; padding:0 %dpx; font-size:%dpx;}'
             % (self.primary.name(), 8, materials.ecommerce_color('preview_input'),
                materials.ecommerce_color('preview_text'), 10, 12))
-        self.search_button = _preview_text(PushButton(self.nav_bar), '搜索')
+        self.search_button = self._text(PushButton(self.nav_bar), '搜索')
         self.search_button.setMinimumHeight(32)
         _preview_style(self.search_button, lambda: 'QPushButton {border:0; border-radius:%dpx; background:%s; color:%s;'
             ' padding:0 %dpx; font-size:%dpx; font-weight:600;}'
@@ -651,6 +705,8 @@ class _DesktopShell(QWidget):
         nav.addWidget(self.name_label)
         nav.addWidget(self.search_edit, 1)
         nav.addWidget(self.search_button)
+        for source in ('购物车', '登录'):
+            nav.addWidget(self._text(_label(11), source))
         root.addWidget(self.nav_bar)
 
         main = QWidget(self)
@@ -665,17 +721,18 @@ class _DesktopShell(QWidget):
         gallery.setContentsMargins(0, 0, 0, 0)
         gallery.setSpacing(6)
         if self.carousel_paths:
-            self.main_image = PreviewImage(self.carousel_paths[0], height=320, edge=6)
+            self.main_image = PreviewImage(self.carousel_paths[0], height=320, edge=6, missing_text=self.profile.text('缺失'))
             self.main_image.clicked.connect(self._next_image)
             gallery.addWidget(self.main_image)
         else:
             self.main_image = None
-            self.placeholder = PreviewPlaceholder(height=320)
+            self.placeholder = PreviewPlaceholder(height=320, text=self.profile.text('暂无生成图片'))
             gallery.addWidget(self.placeholder)
         self.small_images = []
-        for path in self.carousel_paths[:4]:
-            small = PreviewImage(path, height=64, edge=4)
+        for index, path in enumerate(self.carousel_paths[:4]):
+            small = PreviewImage(path, height=64, edge=4, missing_text=self.profile.text('缺失'))
             small.setFixedWidth(64)
+            small.clicked.connect(lambda index=index: self.set_carousel_index(index))
             self.small_images.append(small)
         thumbs = QHBoxLayout()
         thumbs.setContentsMargins(0, 0, 0, 0)
@@ -691,19 +748,28 @@ class _DesktopShell(QWidget):
         self.product_label = _label(17, bold=True, wrap=True, text=self.product_name)
         _preview_style(self.product_label, lambda: 'color:%s; background:transparent;'
             % materials.ecommerce_color('preview_text'))
-        self.price_label = _label(26, bold=True, text='¥ 199.00')
+        self.price_label = _label(26, bold=True, text=self.profile.price())
         self.price_label.setStyleSheet('color:%s; background:transparent;'
                                        % self.accent.name())
-        self.meta_label = _preview_text(_label(11), '已售 1000+ · 好评率 98%')
+        self.meta_label = self._text(_label(11), '已售 1000+ · 好评率 98%')
         _preview_style(self.meta_label, lambda: 'color:%s; background:transparent;'
             % materials.ecommerce_color('preview_muted'))
         self.product_label.setMinimumWidth(0)
         self.product_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info.addWidget(self.product_label)
         info.addWidget(self.price_label)
+        self.old_price_label = _label(12, text=self.profile.price(old=True))
+        old_font = self.old_price_label.font()
+        old_font.setStrikeOut(True)
+        self.old_price_label.setFont(old_font)
+        _preview_style(self.old_price_label, lambda: 'color:%s;background:transparent;'
+                       % materials.ecommerce_color('preview_muted'))
+        info.addWidget(self.old_price_label)
         info.addWidget(self.meta_label)
+        self._storefront_info(info)
+
         for source, filled in (('加入购物车', False), ('立即购买', True)):
-            button = _preview_text(PushButton(main), source)
+            button = self._text(PushButton(main), source)
             button.setMinimumHeight(34)
             if filled:
                 _preview_style(button, lambda: 'QPushButton {border:0; border-radius:%dpx; background:%s; color:%s;'
@@ -718,9 +784,11 @@ class _DesktopShell(QWidget):
             info.addWidget(button)
         info.addStretch(1)
         main_layout.addLayout(info, 2)
+        self.breadcrumb = self._text(_label(11), '路径')
+        root.addWidget(self.breadcrumb)
         root.addWidget(main)
 
-        self.detail_title = _preview_text(_label(14, bold=True), '商品详情')
+        self.detail_title = self._text(_label(14, bold=True), '商品详情')
         _preview_style(self.detail_title, lambda: 'color:%s; background:%s; padding:%dpx %dpx; border-top:1px solid %s;'
             % (materials.ecommerce_color('preview_text'),
                materials.ecommerce_color('preview_page'), 10, 18,
@@ -729,11 +797,11 @@ class _DesktopShell(QWidget):
         self.detail_images = []
         if self.detail_paths:
             for path in self.detail_paths:
-                image = PreviewImage(path, height=300, edge=0)
+                image = PreviewImage(path, height=300, edge=0, missing_text=self.profile.text('缺失'))
                 self.detail_images.append(image)
                 root.addWidget(image)
         else:
-            self.detail_placeholder = PreviewPlaceholder(height=180)
+            self.detail_placeholder = PreviewPlaceholder(height=180, text=self.profile.text('暂无生成图片'))
             self.detail_images = [self.detail_placeholder]
             root.addWidget(self.detail_placeholder)
         root.addStretch(1)

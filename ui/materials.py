@@ -464,6 +464,7 @@ ECOMMERCE_UI = {
     # 单个制作页：浅色参考布局与深色主题共用语义键。
     'single_card': ('#FFFFFF', '#181C28'),
     'single_card_border': ('#E9EDF5', '#303545'),
+    'selector_shadow': ('#40000000', '#80000000'),
     'single_button_border': ('#E5E8EF', '#41485B'),
     'single_button_text': ('#1677FF', '#8DBBFF'),
     'single_button_hover': ('#F0F6FF', '#25364F'),

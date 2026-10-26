@@ -159,7 +159,7 @@ class _BatchCase(unittest.TestCase):
 
     def test_shared_defaults_render_from_config(self):
         page = self.page
-        self.assertEqual(len(page.platform_checkboxes), 25)
+        self.assertEqual(len(page.platform_selector.chips), 25)
         self.assertEqual(page.language_combo.currentData(), 'zh')
         self.assertEqual((page.carousel_spin.minimum(), page.carousel_spin.maximum()), (1, 6))
         self.assertEqual((page.detail_spin.minimum(), page.detail_spin.maximum()), (1, 15))
@@ -350,9 +350,9 @@ class _BatchCase(unittest.TestCase):
         self.assertIn(tr('最多选择 {count} 个平台').format(count=MAX_PLATFORMS),
                       page.last_notice)
         # 用户再勾选第 6 个平台：自动回退并提示。
-        page.platform_checkboxes[ids[5]].setChecked(True)
+        page.platform_selector.chips[ids[5]].setChecked(True)
         self.assertEqual(len(page.selected_platforms()), MAX_PLATFORMS)
-        self.assertFalse(page.platform_checkboxes[ids[5]].isChecked())
+        self.assertFalse(page.platform_selector.chips[ids[5]].isChecked())
 
     def test_output_toggles_disable_controls_and_zero_payload(self):
         page = self.page
@@ -410,7 +410,7 @@ class _BatchCase(unittest.TestCase):
             'platforms', 'product_name', 'product_info', 'language',
             'carousel_count', 'detail_count', 'carousel_ratio',
             'detail_ratio', 'tier', 'product_image_paths',
-            'style_image_path', 'thinking', 'row_index'})
+            'style_image_paths', 'thinking', 'row_index'})
         self.assertEqual(submission['platforms'], ['taobao'])
         self.assertEqual(submission['product_name'], '陶瓷茶杯')
         self.assertEqual(submission['product_info'], ready_row.info_text())
@@ -422,7 +422,7 @@ class _BatchCase(unittest.TestCase):
         self.assertEqual(submission['row_index'], 1)
         self.assertEqual(submission['product_image_paths'],
                          ready_row.product_image_paths)
-        self.assertIsNone(submission['style_image_path'])
+        self.assertEqual(submission['style_image_paths'], [])
         self.assertFalse(submission['thinking'])
 
     def test_submit_emits_payload(self):
@@ -463,9 +463,25 @@ class _BatchCase(unittest.TestCase):
         self.assertEqual(page.style_grid.paths(), [style])
         row = self.make_ready()
         submission = page.build_submissions()[0]
-        self.assertEqual(submission['style_image_path'], style)
+        self.assertEqual(submission['style_image_paths'], [style])
         self.assertTrue(submission['thinking'])
         self.assertTrue(row.ready)
+
+    def test_three_shared_styles_draft_payload_fourth_rejected_and_lightbox(self):
+        styles = [self.png_file(f'style-{n}.png') for n in range(3)]
+        self.page.set_shared_defaults(style_image_paths=styles)
+        self.make_ready()
+        self.assertEqual(self.page.build_submissions()[0]['style_image_paths'], styles)
+        self.page._merge_style_images([self.png_file('fourth.png')])
+        self.assertEqual(self.page.style_grid.paths(), styles)
+        self.assertIn('最多3张', self.page.last_notice)
+        with patch('ui.pages.ecommerce_batch_page.ImageLightbox.show_images') as show:
+            self.page.style_grid.tile_at(1).clicked.emit(1)
+        self.assertEqual(show.call_args.args[1:], (styles, 1))
+        self.assertTrue(self.page.save_draft())
+        restored = self.make_page()
+        self.assertEqual(restored.style_grid.paths(), styles)
+        self.assertEqual(restored.build_submissions()[0]['style_image_paths'], styles)
 
     def test_language_selection_and_payload(self):
         page = self.page
@@ -513,7 +529,7 @@ class _BatchCase(unittest.TestCase):
         self.assertEqual(shared['detail_count'], 9)
         self.assertEqual(shared['detail_ratio'], '2:3')
         self.assertEqual(shared['tier'], '4K')
-        self.assertEqual(shared['style_image_path'], style)
+        self.assertEqual(shared['style_image_paths'], [style])
         self.assertTrue(shared['thinking'])
         self.assertEqual(restored.language_combo.currentData(), 'en')
 
@@ -631,7 +647,8 @@ class _BatchCase(unittest.TestCase):
             calls.append(str(text))
             return '«%s»' % text
 
-        with patch.object(batch_module, 'tr', fake_tr):
+        with patch.object(batch_module, 'tr', fake_tr), \
+                patch('ui.components.platform_multi_select.tr', fake_tr):
             page = self.make_page_in('translate')
             page.retranslate_ui()
         self.assertTrue(calls)

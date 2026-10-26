@@ -97,7 +97,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
                 card.deleteLater()
                 self.app.processEvents()
 
-    def test_thumbnail_uses_responsive_four_to_five_cover_and_shared_placeholder_size(self):
+    def test_thumbnail_uses_responsive_square_cover_and_shared_placeholder_size(self):
         from tests.qt_scale_support import reset_interface_scaling
         from tests.test_interface_scaling import FakeScreen
         from ui.scaling import apply_interface_scale
@@ -111,19 +111,19 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
             base = dict(item_id='portrait-item', kind='carousel', seq=1,
                         file_path=str(image_path), status='succeeded')
             card = EcommerceResultCard(base)
-            card.resize(280, 760)
+            card.resize(280, 280)
             card.show()
             self.app.processEvents()
             wait_until(lambda: not card.thumbnail._resize_timer.isActive())
 
             initial = card.thumbnail.size()
             self.assertGreater(initial.width(), 0)
-            self.assertAlmostEqual(initial.width() / initial.height(), 4 / 5, delta=0.04)
+            self.assertAlmostEqual(initial.width() / initial.height(), 1, delta=0.04)
             pixmap = card.thumbnail.pixmap()
             self.assertIsNotNone(pixmap)
             self.assertAlmostEqual((pixmap.width() / pixmap.devicePixelRatioF()) /
                                    (pixmap.height() / pixmap.devicePixelRatioF()),
-                                   4 / 5, delta=0.04)
+                                   1, delta=0.04)
 
             # Ignore the rounded edge and sample the image canvas for uncovered pixels.
             rendered = pixmap.toImage()
@@ -141,7 +141,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
             self.assertGreaterEqual(covered / max(total, 1), 0.99)
 
             old_size = card.thumbnail.size()
-            card.resize(420, 760)
+            card.resize(420, 420)
             self.app.processEvents()
             wait_until(lambda: not card.thumbnail._resize_timer.isActive())
             self.assertGreater(card.thumbnail.width(), old_size.width())
@@ -149,7 +149,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
 
             failed = EcommerceResultCard(dict(base, item_id='failed-item', status='failed',
                                               error='失败'))
-            failed.resize(420, 760)
+            failed.resize(420, 420)
             failed.show()
             self.app.processEvents()
             self.assertEqual(card.thumbnail.size(), failed.thumbnail.size())
@@ -158,13 +158,13 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
                     apply_interface_scale(self.app, FakeScreen(), '1.0')
                     self.app._interface_scaler.apply(scale)
                     for entry in (card, failed):
-                        entry.resize(round(280 * scale), round(760 * scale))
+                        entry.resize(round(280 * scale), round(280 * scale))
                     self.app.processEvents()
                     wait_until(lambda: all(not entry.thumbnail._resize_timer.isActive()
                                            for entry in (card, failed)))
                     self.assertEqual(card.thumbnail.size(), failed.thumbnail.size())
                     self.assertAlmostEqual(card.thumbnail.width() / card.thumbnail.height(),
-                                           4 / 5, delta=0.04)
+                                           1, delta=0.04)
                     pixmap = card.thumbnail.pixmap()
                     self.assertAlmostEqual(pixmap.width() / pixmap.devicePixelRatioF(),
                                            card.thumbnail.width(), delta=1)
@@ -201,8 +201,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
                 for card in panel.ordered_cards():
                     self.assertGreaterEqual(card.geometry().top(), button_rect.bottom())
                     self.assertFalse(card.geometry().intersects(button_rect))
-                    expected_height = min(
-                        px(360), max(px(180), round(card.thumbnail.width() * 5 / 4)))
+                    expected_height = card.thumbnail.width()
                     self.assertEqual(card.thumbnail.height(), expected_height)
         finally:
             panel.close()
@@ -285,7 +284,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertTrue(predicate(), '等待电商图后台线程超时')
 
     def fill_valid(self):
-        self.page.platform_checkboxes['douyin'].setChecked(True)
+        self.page.platform_selector.chips['douyin'].setChecked(True)
         self.page.product_name.setText('陶瓷茶杯')
         self.page.product_info.setPlainText('耐热陶瓷，便携易清洁')
         self.page.carousel_count.setValue(2)
@@ -1285,13 +1284,13 @@ class EcommercePageTests(unittest.TestCase):
     def test_form_uses_all_platforms_and_catalog_options_and_config_defaults(self):
         page = self.page
         self.assertEqual(page.objectName(), 'ecommercePage')
-        self.assertEqual(len(page.platform_checkboxes), 25)
-        self.assertEqual(set(page.platform_groups), {'国内', '海外'})
+        self.assertEqual(len(page.platform_selector.chips), 25)
+        self.assertEqual(set(page.platform_selector.group_labels), {'recent', 'domestic', 'overseas'})
         for group, records in (('国内', domestic()), ('海外', overseas())):
             for record in records:
-                checkbox = page.platform_checkboxes[record['id']]
+                checkbox = page.platform_selector.chips[record['id']]
                 self.assertEqual(checkbox.text(), record['name'])
-                self.assertTrue(page.platform_groups[group].isAncestorOf(checkbox))
+                self.assertTrue(page.platform_selector.popup.isAncestorOf(checkbox))
         self.assertEqual([page.language.itemData(i) for i in range(page.language.count())], list(LANGUAGE_TEXT))
         self.assertEqual([page.language.itemText(i) for i in range(page.language.count())], list(LANGUAGE_TEXT.values()))
         for combo in (page.carousel_ratio, page.detail_ratio):
@@ -1308,17 +1307,17 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual((page.detail_count.minimum(), page.detail_count.maximum()), (1, 15))
 
     def test_sixth_platform_cannot_be_checked(self):
-        keys = list(self.page.platform_checkboxes)
+        keys = list(self.page.platform_selector.chips)
         for key in keys[:MAX_PLATFORMS + 1]:
-            self.page.platform_checkboxes[key].setChecked(True)
+            self.page.platform_selector.chips[key].setChecked(True)
         self.assertEqual(len(self.page.selected_platforms()), MAX_PLATFORMS)
-        self.assertFalse(self.page.platform_checkboxes[keys[MAX_PLATFORMS]].isChecked())
+        self.assertFalse(self.page.platform_selector.chips[keys[MAX_PLATFORMS]].isChecked())
         self.warnings.assert_called_once()
 
     def test_background_conflict_is_red_and_blocks_start(self):
         self.fill_valid()
-        self.page.platform_checkboxes['amazon'].setChecked(True)
-        self.page.platform_checkboxes['xiaohongshu'].setChecked(True)
+        self.page.platform_selector.chips['amazon'].setChecked(True)
+        self.page.platform_selector.chips['xiaohongshu'].setChecked(True)
         label = self.page.background_conflict
         self.assertIn('白底', label.text())
         self.assertIn(materials.palette()['error'], label.styleSheet())
@@ -1332,7 +1331,7 @@ class EcommercePageTests(unittest.TestCase):
         base = next(p for p in records if p['id'] == 'douyin')
         other = next(p for p in records if p['bgRule'] != 'white' and
                      p['defaultCarouselRatio'] != base['defaultCarouselRatio'])
-        self.page.platform_checkboxes[other['id']].setChecked(True)
+        self.page.platform_selector.chips[other['id']].setChecked(True)
         # 勾选第二个平台后仍以最先选中的平台为准自动套用比例。
         applied = get_platform('douyin')
         self.page.carousel_ratio.setCurrentText(other['defaultCarouselRatio'])
@@ -1345,7 +1344,7 @@ class EcommercePageTests(unittest.TestCase):
     def test_platform_check_applies_first_selected_platform_defaults(self):
         page = self.page
         record = get_platform('taobao')
-        page.platform_checkboxes['taobao'].setChecked(True)
+        page.platform_selector.chips['taobao'].setChecked(True)
         self.assertEqual(page.carousel_count.value(), record['defaultCarouselCount'])
         self.assertEqual(page.detail_count.value(), record['defaultDetailCount'])
         self.assertEqual(page.carousel_ratio.currentText(), record['defaultCarouselRatio'])
@@ -1355,13 +1354,13 @@ class EcommercePageTests(unittest.TestCase):
                   and (item['defaultCarouselRatio'] != record['defaultCarouselRatio']
                        or item['defaultCarouselCount'] != record['defaultCarouselCount'])]
         second = others[0]
-        page.platform_checkboxes[second['id']].setChecked(True)
+        page.platform_selector.chips[second['id']].setChecked(True)
         self.assertEqual(page.carousel_count.value(), record['defaultCarouselCount'])
         self.assertEqual(page.carousel_ratio.currentText(), record['defaultCarouselRatio'])
-        page.platform_checkboxes['taobao'].setChecked(False)
+        page.platform_selector.chips['taobao'].setChecked(False)
         self.assertEqual(page.carousel_count.value(), second['defaultCarouselCount'])
         self.assertEqual(page.carousel_ratio.currentText(), second['defaultCarouselRatio'])
-        page.platform_checkboxes[second['id']].setChecked(False)
+        page.platform_selector.chips[second['id']].setChecked(False)
         self.assertEqual(page._platform_selection_order, [])
 
     def test_no_platform_blocks_before_worker_creation(self):
@@ -1369,10 +1368,7 @@ class EcommercePageTests(unittest.TestCase):
 
     def test_validation_also_rejects_injected_excess_platform_selection(self):
         self.fill_valid()
-        for checkbox in list(self.page.platform_checkboxes.values())[:MAX_PLATFORMS + 1]:
-            checkbox.blockSignals(True)
-            checkbox.setChecked(True)
-            checkbox.blockSignals(False)
+        self.page.platform_selector._selected = list(self.page.platform_selector.records)[:MAX_PLATFORMS + 1]
         self.assert_blocked()
 
     def test_empty_product_name_blocks_before_worker_creation(self):
@@ -1411,7 +1407,7 @@ class EcommercePageTests(unittest.TestCase):
         self.page.product_image_paths = [str(self.root / f'{i}.png') for i in range(7)]
         self.assert_blocked()
         self.page.product_image_paths = []
-        self.page.style_image_paths = [str(self.root / f'style{i}.png') for i in range(2)]
+        self.page.style_image_paths = [str(self.root / f'style{i}.png') for i in range(4)]
         self.assert_blocked()
 
     def test_success_pipeline_updates_main_thread_progress_files_and_summary(self):
@@ -1474,17 +1470,23 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.product_image_paths, [])
         self.assertEqual(self.page.product_grid.count(), 0)
 
-        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[0], '')):
+        styles = [str(self.root / f'style-{i}.png') for i in range(4)]
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames', return_value=(styles[:2], '')):
             self.page.style_grid.add_tile().clicked.emit()
-        self.assertEqual(self.page.style_image_paths, [paths[0]])
-        self.assertEqual(self.page.style_grid.count(), 1)
-        self.assertEqual(self.page.style_grid.tile_at(0).path, paths[0])
-        self.assertIsNone(self.page.style_grid.add_tile())
-        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileName', return_value=(paths[1], '')):
+        self.assertEqual(self.page.style_image_paths, styles[:2])
+        self.assertEqual(self.page.style_grid.count(), 2)
+        self.assertIsNotNone(self.page.style_grid.add_tile())
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames', return_value=(styles[2:3], '')):
             self.page._choose_style()
-        self.assertEqual(self.page.style_image_paths, [paths[1]])
-        self.assertEqual(self.page.style_grid.count(), 1)
-        self.assertEqual(self.page.style_grid.tile_at(0).path, paths[1])
+        self.assertEqual(self.page.style_image_paths, styles[:3])
+        self.assertIsNone(self.page.style_grid.add_tile())
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames', return_value=(styles[3:], '')):
+            self.page._choose_style()
+        self.assertEqual(self.page.style_image_paths, styles[:3])
+        self.notices.assert_called_once()
+        self.assertIn('风格图最多3张', self.notices.call_args.args[1])
+        self.page.style_grid.tile_at(1).remove_button.clicked.emit()
+        self.assertEqual(self.page.style_image_paths, [styles[0], styles[2]])
         self.page._clear_style()
         self.assertEqual(self.page.style_image_paths, [])
         self.assertEqual(self.page.style_grid.count(), 0)
@@ -1513,7 +1515,46 @@ class EcommercePageTests(unittest.TestCase):
         self.page._refresh_references()
         arguments = self.page._arguments()
         self.assertEqual(arguments['product_image_paths'], [str(Path(path).resolve()) for path in products])
-        self.assertEqual(arguments['style_image_path'], str(Path(style).resolve()))
+        self.assertEqual(arguments['style_image_paths'], [str(Path(style).resolve())])
+
+    def test_three_style_uploads_reject_fourth_preview_and_restore_history(self):
+        self.fill_valid()
+        products = [str(self.root / f'product{i}.png') for i in range(4)]
+        styles = [str(self.root / f'style{i}.png') for i in range(3)]
+        self.page.product_image_paths = products
+        self.page.style_image_paths = styles.copy()
+        self.page._refresh_references()
+        with patch('ui.pages.ecommerce_page.QFileDialog.getOpenFileNames',
+                   return_value=([str(self.root / 'fourth.png')], '')):
+            self.page._choose_style()
+        self.assertEqual(self.page.style_image_paths, styles)
+        self.notices.assert_called_once()
+        with patch('ui.pages.ecommerce_page.ImageLightbox.show_images') as show:
+            self.page.style_grid.tile_at(2).clicked.emit(2)
+        self.assertEqual(show.call_args.args[1:], (styles, 2))
+        self.assertEqual(self.page.style_grid.max_count, 3)
+        self.assertIsNone(self.page.style_grid.add_tile())
+        self.assertEqual(self.page.product_grid.columns, 4)
+        for grid in (self.page.product_grid, self.page.style_grid):
+            grid.resize(460, 300)
+        self.app.processEvents()
+        self.assertEqual(self.page.product_grid.tile_at(0).size(), self.page.style_grid.tile_at(0).size())
+        self.run_to_idle()
+        group_id = self.page._group['group_id']
+        self.page.style_image_paths = []
+        self.page._view_history_group(group_id)
+        self.assertEqual(self.page.style_image_paths, styles)
+        self.assertEqual(self.page.product_image_paths, products)
+
+    def test_legacy_history_reference_suffix_restores_single_style(self):
+        from core.ecommerce.prompt_builder import append_reference_order
+        group, _ = self.seed_history()
+        group['config']['reference_paths'] = ['product.png', 'legacy-style.png']
+        group['manifest'] = {'items': [{'prompt': append_reference_order('old prompt', 1, True)}]}
+        self.config.ecommerce_store().upsert_group(group)
+        self.page._view_history_group(group['group_id'])
+        self.assertEqual(self.page.style_image_paths, ['legacy-style.png'])
+        self.assertEqual(self.page.product_image_paths, ['product.png'])
 
     def test_product_picker_rejects_seventh_image_without_changing_order(self):
         paths = [str(self.root / f'{i}.png') for i in range(6)]
@@ -1683,7 +1724,8 @@ class EcommercePageTests(unittest.TestCase):
             self.assertEqual(card.record['status'], 'succeeded')
             self.assertFalse(card.thumbnail.pixmap().isNull())
             self.assertIn('1024x1024', card.size_label.text())
-            self.assertEqual(card.status_label.text(), '成功 · 模型：gpt-image-2.5-sunburst')
+            self.assertEqual(card.status_label.text(), '成功')
+            self.assertIn('gpt-image-2.5-sunburst', card.status_label.toolTip())
             self.assertTrue(card.regenerate_button.isEnabled())
             self.assertTrue(card.folder_button.isEnabled())
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
@@ -1703,10 +1745,12 @@ class EcommercePageTests(unittest.TestCase):
         self.page.show_single_creation()
         self.page.show()
         self.assertTrue(self.page.result_scroll.widget().isAncestorOf(panel))
-        for width, multiple in ((480, False), (1800, True)):
+        for width in (480, 1800):
             self.page.resize(width, 800)
             QTest.qWait(30)
-            self.assertEqual(panel.grid.columns > 1, multiple)
+            self.assertGreaterEqual(panel.grid.columns, 1)
+            self.assertTrue(all(c.width() >= px(90) for c in panel.ordered_cards()))
+            self.assertTrue(all(abs(c.width() - c.height()) <= 1 for c in panel.ordered_cards()))
             self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
             self.assertEqual(self.page.result_scroll.horizontalScrollBar().maximum(), 0)
         self.assertNotIn(TEST_KEY, self.ui_text())
@@ -1716,7 +1760,8 @@ class EcommercePageTests(unittest.TestCase):
         self.run_to_idle()
         card = self.page.result_panel.ordered_cards()[0]
         path = Path(card.record['file_path'])
-        previous = card.thumbnail.pixmap().toImage().pixelColor(px(110), px(90))
+        canvas = card.thumbnail.pixmap().toImage()
+        previous = canvas.pixelColor(canvas.width() // 2, canvas.height() // 2)
         image = QImage(1, 1, QImage.Format_ARGB32)
         color = QColor('#12ab56')
         self.assertNotEqual(previous, color)
@@ -1724,7 +1769,8 @@ class EcommercePageTests(unittest.TestCase):
         self.assertTrue(image.save(str(path), 'PNG'))
         self.page._refresh_results()
         self.assertIs(self.page.result_panel.ordered_cards()[0], card)
-        self.assertEqual(card.thumbnail.pixmap().toImage().pixelColor(px(110), px(90)), color)
+        canvas = card.thumbnail.pixmap().toImage()
+        self.assertEqual(canvas.pixelColor(canvas.width() // 2, canvas.height() // 2), color)
 
     def test_failed_cards_redact_errors_and_retry_only_failed_items(self):
         self.fill_valid()
@@ -1739,7 +1785,8 @@ class EcommercePageTests(unittest.TestCase):
         cards = self.page.result_panel.ordered_cards()
         failed = cards[0]
         self.assertEqual(failed.record['status'], 'failed')
-        self.assertEqual(failed.status_label.text(), '失败 · 模型：gpt-image-2.5-sunburst')
+        self.assertEqual(failed.status_label.text(), '失败')
+        self.assertIn('gpt-image-2.5-sunburst', failed.status_label.toolTip())
         self.assertIn('[REDACTED]', failed.error_label.text())
         self.assertNotIn(TEST_KEY, failed.error_label.text())
         self.assertTrue(failed.regenerate_button.isEnabled())
@@ -2233,7 +2280,7 @@ class EcommercePageTests(unittest.TestCase):
                 return manager
 
             page._make_manager = factory
-            page.platform_checkboxes['douyin'].setChecked(True)
+            page.platform_selector.chips['douyin'].setChecked(True)
             page.product_name.setText('茶杯')
             page.product_info.setPlainText('耐热陶瓷')
             page.start_generation()

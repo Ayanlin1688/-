@@ -39,6 +39,7 @@ from ..components.image_pickers import (
     GalleryPickerDialog, UsedImagePickerDialog,
 )
 from ..components.image_upload_grid import ImageUploadGrid
+from ..components.platform_multi_select import PlatformMultiSelect
 from ..components.model_selector import ModelPickComboBox, catalog_snapshot
 from core.model_catalog import normalize_model_id
 from ..components.platform_preview_dialog import PlatformPreviewDialog
@@ -275,23 +276,11 @@ class EcommercePage(QWidget):
         self._upload_card(root)
         platform_layout = self._card(root, tr('电商平台*'))
         self.platform_card = platform_layout.parentWidget()
-        self.platform_checkboxes = {}
-        self.platform_groups = {}
-        for label, records in ((tr('国内'), domestic()), (tr('海外'), overseas())):
-            section = QWidget()
-            layout = QVBoxLayout(section)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(StrongBodyLabel(tr(label)))
-            choices = WrapLayout(spacing=px(12))
-            for record in records:
-                checkbox = CheckBox(record['name'])
-                checkbox.setObjectName('platform_' + record['id'])
-                self.platform_checkboxes[record['id']] = checkbox
-                checkbox.toggled.connect(lambda checked, key=record['id']: self._platform_changed(key, checked))
-                choices.addWidget(checkbox)
-            layout.addLayout(choices)
-            self.platform_groups[label] = section
-            platform_layout.addWidget(section)
+        self.platform_selector = PlatformMultiSelect(self.platform_card)
+        self.platform_selector.changed.connect(self._platform_changed)
+        self.platform_selector.limit_reached.connect(
+            lambda count: self._notice(tr('最多选择 {count} 个平台').format(count=count), warning=True))
+        platform_layout.addWidget(self.platform_selector)
         self.background_conflict = self._text_label()
         self.ratio_conflict = self._text_label()
         platform_layout.addWidget(self.background_conflict)
@@ -713,7 +702,7 @@ class EcommercePage(QWidget):
     def _fit_single_columns(self):
         if not hasattr(self, 'single_columns_layout'):
             return
-        wide = self.single_view.width() >= px(1240)
+        wide = self.single_view.width() >= px(1080)
         direction = QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom
         if self.single_columns_layout.direction() != direction:
             self.single_columns_layout.setDirection(direction)
@@ -931,7 +920,7 @@ class EcommercePage(QWidget):
         product.addLayout(self._upload_header(
             tr('产品图'), target='product', required=True,
             hint=tr('上传产品白底图，最多 6 张')))
-        self.product_grid = ImageUploadGrid('product', 6, self)
+        self.product_grid = ImageUploadGrid('product', 6, self, columns=4, uniform=True)
         self.product_grid.changed.connect(self._on_product_images_changed)
         self.product_grid.preview_requested.connect(self._preview_product_image)
         self.product_grid.add_requested.connect(self._choose_products)
@@ -942,9 +931,10 @@ class EcommercePage(QWidget):
         style.setContentsMargins(20, 18, 20, 18)
         style.setSpacing(16)
         style.addLayout(self._upload_header(
-            tr('风格参考图'), target='style', optional=True,
+            tr('风格参考图（可选，最多3张）'), target='style', optional=True,
             hint=tr('可选，上传参考图来指定风格')))
-        self.style_grid = ImageUploadGrid('style', 1, self)
+        self.style_grid = ImageUploadGrid('style', 3, self, columns=4, uniform=True,
+                                          add_label_provider=lambda *_: tr('上传参考图'))
         self.style_grid.changed.connect(self._on_style_images_changed)
         self.style_grid.preview_requested.connect(self._preview_style_image)
         self.style_grid.add_requested.connect(self._choose_style)
@@ -1015,13 +1005,13 @@ class EcommercePage(QWidget):
         self.product_image_paths = [str(path) for path in (paths or [])][:6]
 
     def _on_style_images_changed(self, paths):
-        self.style_image_paths = [str(path) for path in (paths or [])][:1]
+        self.style_image_paths = [str(path) for path in (paths or [])][:3]
 
     def _pick_used_images(self, target):
         try:
             dialog = UsedImagePickerDialog(
                 self, self.config_manager.ecommerce_store(),
-                max_count=6 if target == 'product' else 1)
+                max_count=6 if target == 'product' else 3)
             if dialog.exec_() == dialog.Accepted:
                 self._merge_images(target, dialog.result_paths)
         finally:
@@ -1030,7 +1020,7 @@ class EcommercePage(QWidget):
     def _pick_gallery_images(self, target):
         try:
             dialog = GalleryPickerDialog(
-                self, self.config_manager, max_count=6 if target == 'product' else 1)
+                self, self.config_manager, max_count=6 if target == 'product' else 3)
             if dialog.exec_() == dialog.Accepted:
                 self._merge_images(target, dialog.result_paths)
         finally:
@@ -1047,9 +1037,10 @@ class EcommercePage(QWidget):
                 merged = merged[:6]
             self.product_image_paths = merged
         else:
-            if len(paths) > 1:
-                self._notice(tr('风格图最多 1 张，已使用第一张'))
-            self.style_image_paths = [paths[0]]
+            merged = list(dict.fromkeys(self.style_image_paths + paths))
+            if len(merged) > 3:
+                self._notice(tr('风格图最多3张，请移除后再添加'))
+            self.style_image_paths = merged[:3]
         self._refresh_references()
 
     def _preview_product_image(self, index):
@@ -1163,7 +1154,7 @@ class EcommercePage(QWidget):
         self._fit_single_columns()
         self._fit_model_columns()
         self._refresh_empty_icon()
-        for attribute in ('product_grid', 'style_grid', 'step_bar', 'analysis_view',
+        for attribute in ('platform_selector', 'product_grid', 'style_grid', 'step_bar', 'analysis_view',
                           'submission_view'):
             grid = getattr(self, attribute, None)
             if grid is not None:
@@ -1327,36 +1318,15 @@ class EcommercePage(QWidget):
             button.setEnabled(not self.busy and not self._probe_closing)
 
     def selected_platforms(self):
-        return [key for key, checkbox in self.platform_checkboxes.items() if checkbox.isChecked()]
+        return self.platform_selector.selected_platforms()
 
     def _notice(self, message, warning=False):
         method = InfoBar.warning if warning else InfoBar.error
         method(tr('电商图'), self._clean(message), parent=self, duration=5000)
 
-    def _platform_changed(self, key, checked):
-        if checked:
-            if key not in self._platform_selection_order:
-                self._platform_selection_order.append(key)
-            if len(self.selected_platforms()) > MAX_PLATFORMS:
-                checkbox = self.platform_checkboxes[key]
-                checkbox.blockSignals(True)
-                checkbox.setChecked(False)
-                checkbox.blockSignals(False)
-                try:
-                    self._platform_selection_order.remove(key)
-                except ValueError:
-                    pass
-                self._notice(tr('最多选择 {count} 个平台').format(count=MAX_PLATFORMS),
-                             warning=True)
-                self._refresh_conflicts()
-                return
-        else:
-            try:
-                self._platform_selection_order.remove(key)
-            except ValueError:
-                pass
+    def _platform_changed(self, selected):
+        self._platform_selection_order = list(selected)
         self._refresh_conflicts()
-        # 参考软件行为：已选平台数组变化且表单空闲时，套用第一个选中平台的默认值。
         self._apply_first_platform_defaults()
 
     def _apply_first_platform_defaults(self):
@@ -1405,6 +1375,7 @@ class EcommercePage(QWidget):
             label.setStyleSheet('color: %s;' % colors['text1'])
         self.product_grid.refresh_colors()
         self.style_grid.refresh_colors()
+        self.platform_selector.refresh_colors()
         self._refresh_picker_button_styles()
         self.result_panel.refresh_colors()
         self.task_list.refresh_colors()
@@ -1493,10 +1464,9 @@ class EcommercePage(QWidget):
         self._refresh_references()
 
     def _choose_style(self):
-        path, _ = QFileDialog.getOpenFileName(self, tr('选择风格图'), '', _image_filter())
-        if path:
-            self.style_image_paths = [str(Path(path).resolve())]
-            self._refresh_references()
+        paths, _ = QFileDialog.getOpenFileNames(self, tr('选择风格图'), '', _image_filter())
+        if paths:
+            self._merge_images('style', [str(Path(path).resolve()) for path in paths])
 
     def _clear_style(self):
         self.style_image_paths = []
@@ -1506,7 +1476,7 @@ class EcommercePage(QWidget):
         self.product_image_paths = [str(path) for path in self.product_image_paths
                                     if str(path or '').strip()][:6]
         self.style_image_paths = [str(path) for path in self.style_image_paths
-                                  if str(path or '').strip()][:1]
+                                  if str(path or '').strip()][:3]
         self.product_grid.set_paths(self.product_image_paths, emit=False)
         self.style_grid.set_paths(self.style_image_paths, emit=False)
 
@@ -1530,8 +1500,8 @@ class EcommercePage(QWidget):
         d, g = self.carousel_count.value(), self.detail_count.value()
         if d + g < 1:
             raise ValueError(tr('至少生成 1 张图'))
-        if len(self.product_image_paths) > 6 or len(self.style_image_paths) > 1:
-            raise ValueError(tr('产品图最多 6 张，风格图最多 1 张'))
+        if len(self.product_image_paths) > 6 or len(self.style_image_paths) > 3:
+            raise ValueError(tr('产品图最多6张，风格图最多3张'))
         config = self.config_manager.config
         lines = (resolve_line(config, 'chat'), resolve_line(config, 'image'))
         if any(not str(line.get('base_url') or '').strip()
@@ -1542,7 +1512,7 @@ class EcommercePage(QWidget):
                     carousel_ratio=self.carousel_ratio.currentText(), detail_ratio=self.detail_ratio.currentText(),
                     tier=self.tier.currentText(),
                     product_image_paths=[str(Path(p).resolve()) for p in self.product_image_paths],
-                    style_image_path=str(Path(self.style_image_paths[0]).resolve()) if self.style_image_paths else None)
+                    style_image_paths=[str(Path(p).resolve()) for p in self.style_image_paths])
 
     def _make_manager(self):
         # Model values are snapshotted on the UI thread before the worker starts.
@@ -1694,11 +1664,30 @@ class EcommercePage(QWidget):
     def _view_history_group(self, group_id):
         if self.busy:
             return
-        if not self.config_manager.ecommerce_store().get_group(group_id):
+        group = self.config_manager.ecommerce_store().get_group(group_id)
+        if not group:
             self._notice(tr('当前生成组不存在'))
             self._queue_history_refresh()
             return
         self.show_single_creation()
+        config = group.get('config') or {}
+        self.product_name.setText(group.get('product_name') or '')
+        self.product_info.setPlainText(config.get('product_info') or '')
+        references = config.get('reference_paths') or []
+        styles = config.get('style_image_paths')
+        if styles is None:
+            legacy = config.get('style_image_path')
+            styles = [legacy] if legacy else []
+            if not styles and references:
+                # Pre-plural records kept the ordered references and prompt suffix only.
+                prompts = [item.get('prompt', '') for item in
+                           (group.get('manifest') or {}).get('items', [])]
+                if any('is style reference only' in prompt for prompt in prompts):
+                    styles = [references[-1]]
+        self.style_image_paths = list(styles)[:3]
+        self.product_image_paths = list(config.get('product_image_paths') or
+                                       [p for p in references if p not in styles])[:6]
+        self._refresh_references()
         self._clear_results()
         self._refresh_results(group_id, refresh_history=False)
         self._queue_history_refresh()
@@ -1886,10 +1875,6 @@ class EcommercePage(QWidget):
         self.item_labels[key].setText(' · '.join(parts))
         self.item_labels[key].setToolTip(error_tooltip)
         self.result_panel.update_item(record)
-        card = self.result_panel.cards.get(record.get('item_id'))
-        if card is not None and record.get('model'):
-            card.status_label.setText('{} · {}'.format(
-                card.status_label.text(), tr('模型：{model}').format(model=record['model'])))
         self._schedule_history_refresh()
         self._sync_right_states()
 
@@ -1986,6 +1971,7 @@ class EcommercePage(QWidget):
             self._open_folder(self._group['output_dir'])
 
     def retranslate_ui(self):
+        self.platform_selector.retranslate_ui()
         """语言切换：重翻本页静态控件与子组件/动态状态（幂等，异常兜底）。"""
         for label, source in (
                 (self.single_title_label, '电商图制作'),

@@ -602,6 +602,86 @@ class EcommerceManagerTests(unittest.TestCase):
             self.assertTrue(item['prompt'].endswith('Images 1-2 are all product references.'))
             self.assertEqual(item['reference_paths'], expected_paths)
 
+    def test_three_styles_order_persistence_reopen_and_regeneration(self):
+        products = [self.root / f'product-{n}.png' for n in range(6)]
+        styles = [self.root / f'style-{n}.png' for n in range(3)]
+        expected = [str(p.resolve()) for p in products + styles]
+        group_id = self.start(product_image_paths=products, style_image_paths=styles,
+                              carousel_count=1, detail_count=0)
+        self.assertEqual(self.analysis.call_args.kwargs['reference_paths'], expected)
+        self.assertEqual(self.image.call_args.kwargs['reference_paths'], expected)
+        self.assertIn('最后 3 张为风格参考图', self.image.call_args.args[3])
+        self.store = EcommerceImageStore(self.root / 'history.sqlite3')
+        self.manager = self.make_manager()
+        config = self.store.get_group(group_id)['config']
+        self.assertEqual(config['style_image_paths'], expected[6:])
+        self.assertEqual(config['product_image_paths'], expected[:6])
+        self.image.reset_mock()
+        self.manager.regenerate_items(group_id, [self.store.list_items(group_id)[0]['item_id']])
+        self.assertEqual(self.image.call_args.kwargs['reference_paths'], expected)
+
+    def test_legacy_single_style_record_reopens_and_regenerates_without_analysis(self):
+        group_id = self.start(product_image_paths=['p.png'], style_image_path='style.png',
+                              carousel_count=1, detail_count=0)
+        group = self.store.get_group(group_id)
+        references = group['config']['reference_paths']
+        for key in ('style_image_paths', 'product_image_paths'):
+            group['config'].pop(key)
+        self.store.upsert_group(group)
+        self.manager = self.make_manager()
+        self.analysis.reset_mock()
+        self.image.reset_mock()
+        self.manager.regenerate_items(group_id, [self.store.list_items(group_id)[0]['item_id']])
+        self.analysis.assert_not_called()
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(self.image.call_args.kwargs['reference_paths'], references)
+
+    def test_analysis_multimage_rejection_stops_after_reduced_attempt_even_if_retryable(self):
+        self.analysis.side_effect = EcommerceAnalysisError('多图限制', 400, 'too many images', retryable=True)
+        with self.assertRaises(EcommerceAnalysisError):
+            self.start(style_image_paths=['a', 'b', 'c'], carousel_count=1, detail_count=0)
+        self.assertEqual(self.analysis.call_count, 2)
+        self.wait_mock.assert_not_called()
+        self.image.assert_not_called()
+        self.assertEqual(self.store.list_groups()[0]['status'], 'failed')
+
+    def test_four_styles_rejected_before_store_or_requests(self):
+        with self.assertRaisesRegex(ValueError, '风格图最多3张'):
+            self.start(style_image_paths=['a', 'b', 'c', 'd'])
+        self.assertEqual(self.store.list_groups(), [])
+        self.analysis.assert_not_called()
+        self.image.assert_not_called()
+
+    def test_multimage_400_falls_back_once_for_analysis_and_generation(self):
+        products, styles = ['product.png'], ['style1.png', 'style2.png', 'style3.png']
+        self.analysis.side_effect = [EcommerceAnalysisError('多图限制', 400, 'too many images'),
+                                     fake_analysis(None, None, None, None, None, 1, 0)]
+        self.image.side_effect = [EcommerceImageError('多图限制', 400, 'unsupported image count'),
+                                  fake_image(None, None, 'model', None, None, '1K')]
+        group_id = self.start(product_image_paths=products, style_image_paths=styles,
+                              carousel_count=1, detail_count=0)
+        full = [str(Path(p).resolve()) for p in products + styles]
+        for client in (self.analysis, self.image):
+            self.assertEqual(client.call_count, 2)
+            self.assertEqual(client.call_args_list[0].kwargs['reference_paths'], full)
+            self.assertEqual(client.call_args_list[1].kwargs['reference_paths'], full[:2])
+            self.assertIn('最后 1 张为风格参考图', client.call_args_list[1].args[4 if client is self.analysis else 3])
+        self.assertEqual(self.store.get_group(group_id)['status'], 'succeeded')
+        self.assertIn(('中转站限制多图，本次仅使用第1张风格图', 'warning'), self.logs)
+
+    def test_multimage_fallback_not_repeated_and_unrelated_errors_never_reduce(self):
+        for status, body, calls in ((400, 'too many images', 2),
+                                    (400, 'content policy unsupported images', 1),
+                                    (401, 'unsupported images', 1),
+                                    (429, 'too many images', 1),
+                                    (200, 'unsupported image count', 1),
+                                    (400, 'unsupported image model', 1)):
+            with self.subTest(status=status, body=body):
+                self.image.reset_mock()
+                self.image.side_effect = EcommerceImageError('请求被拒绝', status, body)
+                self.start(style_image_paths=['a', 'b', 'c'], carousel_count=1, detail_count=0)
+                self.assertEqual(self.image.call_count, calls)
+
     def test_style_only_uses_one_style_reference_and_no_references_keep_prompt(self):
         style = self.root / '风格.png'
         self.start(style_image_path=style)

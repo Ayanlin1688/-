@@ -1,13 +1,7 @@
-"""参考软件同款图片上传区：方形缩略图 + 序号角标 + 红色删除钮 + 虚线添加格。
+"""图片上传区：方形缩略图、序号、删除钮和虚线添加格。
 
-参考软件（Electron 版电商图制作页）的上传区规格：
-- 产品图 6 列等宽方格，100% 正方形的 cover 缩略图；右下角黑底编号 1-6；
-  右上角 24px 红色圆形删除钮（2px 白边）；末尾虚线「继续添加 n/6」格；
-- 风格参考图固定 80×80 圆角格，虚线「+ 上传参考图」格；
-- 外层虚线容器 1.5px dashed、圆角 10、padding 8、gap 8。
-
-组件只负责呈现与交互（点击预览、删除、请求添加），文件选择/网络下载由页面层
-picker 接管，保证 offscreen 可测且不阻塞 UI。
+产品图与风格图可使用统一四列布局；点击预览、删除与添加由页面处理。
+旧调用方仍可指定列数与固定尺寸样式。
 """
 from pathlib import Path
 
@@ -134,7 +128,7 @@ class _ImageTile(QWidget):
         self.remove_button.move(
             max(0, self.width() - button_size.width() - margin), margin)
         self.number_label.move(
-            max(0, self.width() - self.number_label.width() - offset),
+            offset if getattr(self.parentWidget(), 'uniform', False) else max(0, self.width() - self.number_label.width() - offset),
             max(0, self.height() - self.number_label.height() - offset))
 
     def paintEvent(self, event):
@@ -153,11 +147,16 @@ class _ImageTile(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, tr('无法预览'))
         else:
             size = self.size()
-            scaled = self._pixmap.scaled(size, Qt.KeepAspectRatioByExpanding,
+            scaled = self._pixmap.scaled(size, Qt.KeepAspectRatio if getattr(self.parentWidget(), 'uniform', False) else Qt.KeepAspectRatioByExpanding,
                                          Qt.SmoothTransformation)
             left = max(0, (scaled.width() - size.width()) // 2)
             top = max(0, (scaled.height() - size.height()) // 2)
-            painter.drawPixmap(0, 0, scaled, left, top, size.width(), size.height())
+            if getattr(self.parentWidget(), 'uniform', False):
+                painter.fillPath(clip, QColor(colors['bg2']))
+                painter.drawPixmap((size.width() - scaled.width()) // 2,
+                                   (size.height() - scaled.height()) // 2, scaled)
+            else:
+                painter.drawPixmap(0, 0, scaled, left, top, size.width(), size.height())
         painter.setClipping(False)
         pen = QPen(QColor(materials.ECOMMERCE['brand_blue'])
                    if self._hover else QColor(*colors['border']))
@@ -278,7 +277,8 @@ class _AddTile(QWidget):
 class ImageUploadGrid(QWidget):
     """上传区网格容器。
 
-    variant='product'：6 列等宽正方形格；variant='style'：固定 80×80 一行。
+    uniform=True：产品图与风格图使用相同的四列正方形格。
+    其他调用保持原有六列产品图/80px 风格图布局。
     signals:
         changed(list[str])          当前路径顺序变化
         preview_requested(int)      点击缩略图（参数为序号）
@@ -290,11 +290,12 @@ class ImageUploadGrid(QWidget):
     add_requested = pyqtSignal()
 
     def __init__(self, variant='product', max_count=PRODUCT_MAX, parent=None,
-                 add_label_provider=None, columns=PRODUCT_COLUMNS):
+                 add_label_provider=None, columns=PRODUCT_COLUMNS, uniform=False):
         super().__init__(parent)
         self.variant = 'style' if variant == 'style' else 'product'
         self.max_count = max(1, int(max_count))
         self.columns = max(1, int(columns))
+        self.uniform = bool(uniform)
         # Optional page-owned label generation.  Existing callers keep the
         # built-in product/style labels when this is omitted.
         self.add_label_provider = add_label_provider
@@ -351,7 +352,7 @@ class ImageUploadGrid(QWidget):
     # —— 内部 ——
     def _apply_style(self):
         colors = materials.palette()
-        if self.variant == 'product':
+        if self.variant == 'product' and not self.uniform:
             self.setStyleSheet(
                 'QWidget#imageUploadGrid {background: transparent;'
                 ' border: 1.5px dashed %s; border-radius: %dpx;}'
@@ -370,7 +371,7 @@ class ImageUploadGrid(QWidget):
         self._tiles = []
         self._add_tile = None
         show_add = len(self._paths) < self.max_count
-        if self.variant == 'style':
+        if self.variant == 'style' and not self.uniform:
             for index, path in enumerate(self._paths):
                 tile = _ImageTile(path, index, px(STYLE_CELL) - px(2), self)
                 tile.clicked.connect(self.preview_requested)
@@ -411,11 +412,12 @@ class ImageUploadGrid(QWidget):
         width = self.width()
         if width <= 1:
             width = px(900)
-        available = max(1, width - GRID_PADDING * 2)
-        return max(px(56), (available - GRID_GAP * (self.columns - 1)) // self.columns)
+        available = max(1, width - px(GRID_PADDING) * 2)
+        cell = max(px(56), (available - px(10 if self.uniform else GRID_GAP) * (self.columns - 1)) // self.columns)
+        return min(px(96), cell) if self.uniform else cell
 
     def _relayout(self):
-        if self.variant == 'style':
+        if self.variant == 'style' and not self.uniform:
             x = GRID_PADDING
             widgets = list(self._tiles) + ([self._add_tile] if self._add_tile else [])
             for widget in widgets:
@@ -425,15 +427,16 @@ class ImageUploadGrid(QWidget):
             height = GRID_PADDING * 2 + px(STYLE_CELL) if widgets else 0
         else:
             cell = self._product_cell()
+            gap = px(10 if self.uniform else GRID_GAP)
             widgets = list(self._tiles) + ([self._add_tile] if self._add_tile else [])
             for index, widget in enumerate(widgets):
                 widget.setFixedSize(cell, cell)
                 row, column = divmod(index, self.columns)
-                widget.move(GRID_PADDING + column * (cell + GRID_GAP),
-                            GRID_PADDING + row * (cell + GRID_GAP))
+                widget.move(px(GRID_PADDING) + column * (cell + gap),
+                            px(GRID_PADDING) + row * (cell + gap))
             rows = ((len(widgets) + self.columns - 1) // self.columns
                     if widgets else 0)
-            height = (GRID_PADDING * 2 + rows * cell + max(0, rows - 1) * GRID_GAP
+            height = (px(GRID_PADDING) * 2 + rows * cell + max(0, rows - 1) * gap
                       if widgets else 0)
         if self.minimumHeight() != height:
             self.setMinimumHeight(height)

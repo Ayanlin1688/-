@@ -166,27 +166,41 @@ class EcommerceImageManager:
                 raise Cancelled('已取消 AI 分析')
 
     def _run_analysis(self, system, user, carousel_count, detail_count, thinking, log_reasoning,
-                      cancel_event=None):
+                      cancel_event=None, reference_paths=(), fallback_paths=None):
         candidates = self._analysis_candidates()
+        reference_paths = list(reference_paths)
+        reduced = False
         attempted, retries, failures = [], 0, []
         for position, model in enumerate(candidates):
             attempted.append(model)
             failed = False
-            for attempt in range(3):
+            attempt = 0
+            while attempt < 3:
                 if cancel_event is not None and cancel_event.is_set():
                     raise Cancelled('已取消 AI 分析')
                 try:
                     raw_items, reasoning = self.analysis_func(
                         self.analysis_base_url, self.analysis_api_key, model, system, user,
-                        carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning)
+                        carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning,
+                        **({'reference_paths': reference_paths} if reference_paths else {}))
                     break
                 except EcommerceAnalysisError as error:
                     failures.append(error)
-                    if error.retryable and attempt < 2:
+                    if not reduced and fallback_paths is not None and self._multi_image_rejection(error):
+                        reference_paths = list(fallback_paths)
+                        user = append_reference_order(
+                            user.split('\n\nReference image order (critical):')[0],
+                            len(reference_paths) - 1, style_count=1)
+                        reduced = True
+                        self._log(tr('中转站限制多图，本次仅使用第1张风格图'), 'warning')
+                        continue
+                    if error.retryable and not self._multi_image_rejection(error) and attempt < 2:
                         self._wait_analysis_retry(2 ** (attempt + 1), cancel_event)
                         retries += 1
+                        attempt += 1
                         continue
-                    if position + 1 < len(candidates) and self._can_skip_to_next(error):
+                    if (not self._multi_image_rejection(error)
+                            and position + 1 < len(candidates) and self._can_skip_to_next(error)):
                         next_model = candidates[position + 1]
                         self._log(tr('分析模型 {old} 不可用（{reason}），切换 {new}').format(
                             old=model, reason=error.user_message, new=next_model), 'warning')
@@ -230,19 +244,61 @@ class EcommerceImageManager:
     def _image_candidates(self, model):
         return self._unique_models([model, self.image_model, *self.image_model_candidates])
 
+    @staticmethod
+    def _multi_image_rejection(error):
+        if getattr(error, 'status_code', None) != 400:
+            return False
+        body = str(getattr(error, 'body_excerpt', '') or error).lower()
+        category = classify_http_error(400, body, kind='image')['category']
+        if category in ('authentication', 'content_policy', 'rate_limit'):
+            return False
+        if any(word in body for word in ('unauthorized', 'api key', 'authentication',
+                                         'rate limit', 'quota', 'permission', '限流', '鉴权')):
+            return False
+        return bool(re.search(
+            r'image[s]?\s*(count|number|limit)|'
+            r'(too many|maximum|only one|single).{0,40}image|'
+            r'image.{0,40}(too many|maximum|only one|single)|'
+            r'(unsupported|not support).{0,20}(multiple|multi[- ]?|more than one)\s*image|'
+            r'(multiple|multi[- ]?)\s*image.{0,30}(unsupported|not support)|'
+            r'图片.{0,20}(数量|过多|上限)|不支持多图', body))
+
     def _request_image(self, item):
         candidates = self._image_candidates(item.get('model') or self.image_model)
+        group = self.store.get_group(item['group_id']) if item.get('group_id') else None
+        config = (group or {}).get('config') or {}
+        styles = config.get('style_image_paths') or []
+        references = list(item['reference_paths'])
+        fallback = references[:len(references) - len(styles) + 1] if len(styles) > 1 else None
+        reduced = False
         attempted, failures = [], []
         for position, model in enumerate(candidates):
             attempted.append(model)
             try:
-                result = self.image_func(
-                    self.image_base_url, self.image_api_key, model, item['prompt'], item['ratio'], item['tier'],
-                    reference_paths=list(item['reference_paths']))
+                while True:
+                    try:
+                        prompt = item['prompt']
+                        if reduced:
+                            prompt = append_reference_order(prompt.split('\n\nReference image order (critical):')[0],
+                                                            len(references) - 1, style_count=1)
+                        result = self.image_func(
+                            self.image_base_url, self.image_api_key, model, prompt, item['ratio'], item['tier'],
+                            reference_paths=references)
+                        if reduced:
+                            result.warnings = list(result.warnings) + [tr('中转站限制多图，本次仅使用第1张风格图')]
+                        break
+                    except EcommerceImageError as error:
+                        if not reduced and fallback is not None and self._multi_image_rejection(error):
+                            references = fallback
+                            reduced = True
+                            self._log(tr('中转站限制多图，本次仅使用第1张风格图'), 'warning')
+                            continue
+                        raise
                 return result, model
             except EcommerceImageError as error:
                 failures.append(error)
-                if position + 1 < len(candidates) and self._can_skip_to_next(error):
+                if (not self._multi_image_rejection(error)
+                        and position + 1 < len(candidates) and self._can_skip_to_next(error)):
                     next_model = candidates[position + 1]
                     self._log(tr('图片模型 {old} 不可用（{reason}），切换 {new}').format(
                         old=model, reason=self._clean(error), new=next_model), 'warning')
@@ -372,7 +428,7 @@ class EcommerceImageManager:
     def start_group(self, platforms, product_name, product_info, language,
                     carousel_count, detail_count, carousel_ratio, detail_ratio, tier,
                     product_image_paths=None, style_image_path=None, *, cancel_event=None,
-                    thinking=False):
+                    thinking=False, style_image_paths=None):
         """Run synchronously; image callbacks execute on the pool's worker threads."""
         selected = _resolve_platforms(platforms)
         conflicts = detect_conflicts(selected)
@@ -392,10 +448,15 @@ class EcommerceImageManager:
             raise ValueError('产品图最多 6 张')
         if style_image_path is not None and not isinstance(style_image_path, (str, os.PathLike)):
             raise ValueError('风格图最多 1 张，必须提供单个路径')
-        has_style = bool(style_image_path)
+        if isinstance(style_image_paths, (str, bytes, os.PathLike)):
+            raise ValueError('风格图必须以有序路径列表提供')
+        styles = list(style_image_paths if style_image_paths is not None else
+                      ([style_image_path] if style_image_path else []))
+        if len(styles) > 3:
+            raise ValueError('风格图最多3张')
+        styles = [str(Path(p).expanduser().resolve()) for p in styles]
         references = [str(Path(p).expanduser().resolve()) for p in products]
-        if has_style:
-            references.append(str(Path(style_image_path).expanduser().resolve()))
+        references.extend(styles)
         for conflict in conflicts:
             self._log(conflict['tip'] + ' 本次使用显式指定的比例。', 'warning')
 
@@ -409,7 +470,8 @@ class EcommerceImageManager:
                             carousel_ratio=carousel_ratio, detail_ratio=detail_ratio, tier=tier,
                             carousel_count=carousel_count, detail_count=detail_count,
                             language=language, product_info=product_info,
-                            reference_paths=references, thinking=bool(thinking))))
+                            reference_paths=references, style_image_paths=styles,
+                            product_image_paths=references[:len(products)], thinking=bool(thinking))))
             try:
                 self._log(
                     tr('分析线路：{host} · 模型 {model}').format(
@@ -429,7 +491,10 @@ class EcommerceImageManager:
                     self._log('[思考中] ' + str(chunk)[:200], 'info')
 
                 items, _reasoning = self._run_analysis(
-                    system, user, carousel_count, detail_count, thinking, log_reasoning, cancel_event)
+                    system, append_reference_order(user, len(products), style_count=len(styles)),
+                    carousel_count, detail_count, thinking, log_reasoning, cancel_event,
+                    reference_paths=references,
+                    fallback_paths=references[:len(products) + 1] if len(styles) > 1 else None)
             except Cancelled:
                 # No prompts exist yet. Keep every planned output visibly skipped,
                 # with a manifest, without submitting analysis or image requests.
@@ -454,7 +519,7 @@ class EcommerceImageManager:
             for item in items:
                 records.append(dict(
                     group_id=group_id, kind=item['type'], seq=item['index'], title=item['desc'],
-                    prompt=append_reference_order(item['prompt'], len(products), has_style),
+                    prompt=append_reference_order(item['prompt'], len(products), style_count=len(styles)),
                     reference_paths=references,
                     ratio=carousel_ratio if item['type'] == 'carousel' else detail_ratio,
                     tier=tier, model=self.image_model, status='pending'))

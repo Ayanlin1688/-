@@ -81,7 +81,8 @@ def build_user(product_name: str, product_info: str, platform_names: Iterable[st
             f'请严格按配置生成 {d + g} 条电商图提示词（{quantity}）。')
 
 
-def build_reference_order(product_count: int, has_style_reference: bool | None = None) -> str:
+def build_reference_order(product_count: int, has_style_reference: bool | None = None,
+                          *, style_count: int | None = None) -> str:
     """Return reference-image instructions for the supplied image layout.
 
     ``None`` preserves the historical one-argument helper contract (a positive
@@ -91,6 +92,20 @@ def build_reference_order(product_count: int, has_style_reference: bool | None =
     """
     if type(product_count) is not int or product_count < 0:
         raise ValueError('产品图数量必须为非负整数')
+    if style_count is not None:
+        if type(style_count) is not int or not 0 <= style_count <= 3:
+            raise ValueError('风格图最多3张，数量必须为非负整数')
+        if style_count == 0:
+            return build_reference_order(product_count, False)
+        if style_count == 1:
+            return build_reference_order(product_count, True) + '（最后 1 张为风格参考图）'
+        products = (f'Images 1-{product_count} are product photos; preserve their appearance, '
+                    'shape, colors, materials, branding and text. ' if product_count else '')
+        return ('Reference image order (critical): ' + products +
+                f'The last {style_count} images are style references only '
+                f'(最后 {style_count} 张为风格参考图). Match their palette, lighting, mood, '
+                'composition and visual atmosphere; do not copy objects, products, logos or text '
+                'from the style references.')
     legacy_layout = has_style_reference is None
     has_style = True if legacy_layout else bool(has_style_reference)
     if product_count == 0 and (legacy_layout or not has_style):
@@ -118,7 +133,8 @@ def build_reference_order(product_count: int, has_style_reference: bool | None =
 
 
 def append_reference_order(prompt: str, product_count: int,
-                           has_style_reference: bool = False) -> str:
+                           has_style_reference: bool | None = False, *,
+                           style_count: int | None = None) -> str:
     """Append reference-image instructions when either reference type is present."""
-    suffix = build_reference_order(product_count, has_style_reference)
+    suffix = build_reference_order(product_count, has_style_reference, style_count=style_count)
     return f'{prompt}\n\n{suffix}' if suffix else prompt

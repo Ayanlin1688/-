@@ -276,6 +276,22 @@ class PromptBuilderTests(unittest.TestCase):
             with self.subTest(count=count), self.assertRaises(ValueError):
                 build_reference_order(count)
 
+    def test_style_counts_zero_to_three_and_legacy_bool_contract(self):
+        for count in range(4):
+            with self.subTest(count=count):
+                text = build_reference_order(6, style_count=count)
+                self.assertIn('Images 1-6', text)
+                if count:
+                    self.assertIn(f'最后 {count} 张为风格参考图', text)
+                else:
+                    self.assertNotIn('style reference', text)
+                self.assertEqual(append_reference_order('prompt', 6, style_count=count),
+                                 'prompt\n\n' + text)
+        self.assertEqual(build_reference_order(6), build_reference_order(6, True))
+        for count in (-1, 4, True, 1.5):
+            with self.subTest(invalid=count), self.assertRaises(ValueError):
+                build_reference_order(6, style_count=count)
+
 
 if __name__ == '__main__':
     unittest.main()

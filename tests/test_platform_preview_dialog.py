@@ -140,6 +140,36 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
 
 
 class PlatformPreviewShellTests(PlatformPreviewDialogTestBase):
+    def test_all_profiles_have_correct_shell_locale_currency_and_missing_text(self):
+        import re
+        from core.ecommerce.platforms import all_platforms
+        from ui.components.platform_profiles import PLATFORM_PROFILES
+        self.assertEqual(set(PLATFORM_PROFILES), {p['id'] for p in all_platforms()})
+        for platform in all_platforms():
+            with self.subTest(platform=platform['id']):
+                profile = PLATFORM_PROFILES[platform['id']]
+                domestic = platform['group'] == 'domestic'
+                self.assertEqual(profile.shell, 'desktop' if domestic else 'phone')
+                self.assertEqual(profile.language, 'zh' if domestic else 'en')
+                self.assertTrue(profile.price().startswith(profile.currency + ' '))
+                if not domestic:
+                    self.assertFalse(re.search(r'[\u3400-\u9fff]', ' '.join(profile.labels.values())))
+                else:
+                    self.assertEqual(profile.text('加入购物车'), '加入购物车')
+                    self.assertEqual(profile.text('商品详情'), '商品详情')
+                cls = _DesktopShell if domestic else _PhoneShell
+                shell = cls(platform, '陶瓷茶杯', ['missing.png'], [])
+                self.parents.append(shell)
+                self.assertEqual(shell.price_label.text(), profile.price())
+                self.assertEqual(shell.old_price_label.text(), profile.price(old=True))
+                self.assertTrue(shell.old_price_label.font().strikeOut())
+                self.assertEqual(shell.main_image.missing_text, profile.text('缺失'))
+                self.assertEqual(len(shell.variant_chips), 2)
+                self.assertEqual(shell.quantity_input.value(), 1)
+                if not domestic:
+                    text = self.label_texts(shell)
+                    self.assertFalse(re.search(r'[\u3400-\u9fff]', text), text)
+
     def test_dialog_uses_overlay_chrome_and_exact_disclaimer(self):
         dialog = self.dialog(self.make_group(platforms=[get_platform('taobao')]))
         self.assertEqual(dialog.disclaimer_label.text(), DISCLAIMER)
@@ -327,7 +357,7 @@ class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
         try:
             dialog.retranslate_ui()
             self.assertIs(dialog.shell, shell)
-            self.assertEqual(shell.search_button.text(), tr('搜索'))
+            self.assertEqual(shell.search_button.text(), '搜索')
             self.assertEqual(dialog.disclaimer_label.text(), tr(DISCLAIMER))
             self.assertEqual(dialog.shell_kind, 'desktop')
             self.assertEqual(len(dialog.platform_menu.actions()), 2)
@@ -343,7 +373,7 @@ class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
             phone = dialog.shell
             set_language('zh-CN')
             self.assertIs(dialog.shell, phone)
-            self.assertEqual(phone.cart_button.text(), tr('Add to Cart'))
+            self.assertEqual(phone.cart_button.text(), 'Add to Cart')
         finally:
             set_language('zh-CN')
             dialog.retranslate_ui()
@@ -504,7 +534,7 @@ class PlatformPreviewSelectionTests(PlatformPreviewDialogTestBase):
         self.assertEqual(dialog.selected_images('carousel'), [])
         self.assertIsNone(dialog.shell.main_image)
         self.assertTrue(dialog.shell.counter_label.isHidden())
-        self.assertIn(tr('请勾选轮播图'), self.label_texts(dialog.shell))
+        self.assertIn('Select carousel images', self.label_texts(dialog.shell))
         self.assertEqual(dialog.selected_count('detail'), 1)
 
     def test_detail_selection_only_changes_detail_images(self):

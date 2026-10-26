@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import base64
+import mimetypes
+from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
@@ -126,7 +129,8 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
 
 
 def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
-                   timeout=(15, 120), on_content=None, on_reasoning=None, thinking=False):
+                   timeout=(15, 120), on_content=None, on_reasoning=None, thinking=False,
+                   reference_paths=None):
     """Return complete content and reasoning, notifying callbacks per delta.
 
     Reuse the shared requests session and redaction. POST is sent once; a failed
@@ -160,6 +164,25 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
     else:
         # 矩阵参数按模型名映射；OpenAI 兼容线路上的 claude 不再盲发 thinking。
         payload = apply_thinking_to_payload(payload, 'openai', request_model, thinking)
+    if reference_paths:
+        images = []
+        for path in reference_paths:
+            file = Path(path)
+            mime = mimetypes.guess_type(str(file))[0] or 'image/png'
+            try:
+                encoded = base64.b64encode(file.read_bytes()).decode('ascii')
+            except OSError:
+                client.close()
+                raise EcommerceAnalysisError('参考图无法读取，请重新选择图片') from None
+            images.append((mime, encoded))
+        if gemini:
+            payload['contents'][0]['parts'].extend(
+                {'inlineData': {'mimeType': mime, 'data': data}} for mime, data in images)
+        else:
+            payload['messages'][1]['content'] = [
+                {'type': 'text', 'text': user_prompt},
+                *({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{data}'}}
+                  for mime, data in images)]
     try:
         with client.request(
             'POST', url,
@@ -266,10 +289,12 @@ def parse_prompt_items(text, carousel_count, detail_count):
 
 
 def analyze_and_parse(base_url, api_key, model, system_prompt, user_prompt,
-                      carousel_count, detail_count, *, on_content=None, on_reasoning=None, thinking=False):
+                      carousel_count, detail_count, *, on_content=None, on_reasoning=None, thinking=False,
+                      reference_paths=None):
     full_text, reasoning_text = analyze_stream(
         base_url, api_key, model, system_prompt, user_prompt,
-        on_content=on_content, on_reasoning=on_reasoning, thinking=thinking)
+        on_content=on_content, on_reasoning=on_reasoning, thinking=thinking,
+        **({'reference_paths': reference_paths} if reference_paths else {}))
     try:
         items = parse_prompt_items(full_text, carousel_count, detail_count)
     except EcommerceAnalysisError as error:

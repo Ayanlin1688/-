@@ -71,7 +71,8 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
             self.assertLess(rect.right(), self.page.width())
         # The single view has two independently bounded scroll areas and no
         # third scroll container capable of introducing page-level overflow.
-        self.assertEqual(set(self.page.single_view.findChildren(QScrollArea)),
+        self.assertEqual({s for s in self.page.single_view.findChildren(QScrollArea)
+                          if s.window() is self.page.window()},
                          {self.page.body_scroll, self.page.result_scroll})
 
     def test_wide_view_has_two_independent_columns_with_bounded_contents(self):
