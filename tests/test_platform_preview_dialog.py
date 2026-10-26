@@ -27,6 +27,7 @@ from ui.components.preview_selection_panel import PREVIEW_IMAGE_MIME
 from ui.scaling import apply_interface_scale
 from ui.tokens import px
 from ui import materials
+from ui.theme import apply_ui_mode
 
 
 DISCLAIMER = ('仅供图片效果预览，界面布局模拟自各平台公开商品页，'
@@ -488,6 +489,63 @@ class PlatformPreviewOverlayLayoutTests(PlatformPreviewDialogTestBase):
         shell_rect = self.rect_in(dialog.shell, scroll.viewport())
         self.assertLessEqual(shell_rect.bottom(), scroll.viewport().height())
         self.assert_no_horizontal_overflow(dialog)
+
+
+class PlatformPreviewFooterGeometryTests(PlatformPreviewDialogTestBase):
+    def test_phone_footer_and_scrolling_rows_stay_inside_shell_at_all_scales(self):
+        for scale in (1.0, 1.25, 1.5, 1.75):
+            apply_interface_scale(self.app, FakeScreen(), scale)
+            for mode in ('light', 'dark'):
+                with self.subTest(scale=scale, theme=mode):
+                    apply_ui_mode(mode)
+                    dialog = self.mobile_dialog(parent=self.parent_window(), show=True)
+                    shell = dialog.shell
+                    footer = self.rect_in(shell.bottom_bar, shell)
+                    viewport = self.rect_in(shell.scroll.viewport(), shell)
+                    self.assertEqual(footer.height(), px(60))
+                    self.assertTrue(shell.rect().contains(footer))
+                    self.assertLess(viewport.bottom(), footer.top())
+                    self.assertLess(self.rect_in(shell.nav_bar, shell).bottom(), viewport.top())
+                    self.assertFalse(shell.mask().isEmpty())
+                    self.assertFalse(shell.mask().contains(QPoint(0, 0)))
+                    before = shell.bottom_bar.geometry()
+                    shell.scroll.ensureWidgetVisible(shell.variant_row, 0, px(8))
+                    flush_layout(self.app, dialog)
+                    for chip in shell.variant_chips:
+                        self.assertTrue(shell.scroll.viewport().rect().contains(
+                            self.rect_in(chip, shell.scroll.viewport())))
+                        self.assertGreaterEqual(chip.height(), px(30))
+                        self.assertGreaterEqual(chip.width(), chip.minimumSizeHint().width())
+                        self.assertGreaterEqual(chip.width(), chip.fontMetrics().horizontalAdvance(chip.text()) + px(16))
+                    self.assertEqual(shell.bottom_bar.geometry(), before)
+                    for button in (shell.cart_button, shell.buy_button):
+                        self.assertTrue(shell.bottom_bar.rect().contains(self.rect_in(button, shell.bottom_bar)))
+                        self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()))
+                    for row in (shell.store_label, shell.rating_label, shell.variant_label, shell.discount_label):
+                        self.assertIn('background:transparent', row.styleSheet())
+                    for child in shell.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
+                        if child.isVisible():
+                            self.assertTrue(shell.rect().contains(child.geometry()), (child.objectName(), child.geometry()))
+                    self.assert_no_horizontal_overflow(dialog)
+                    dialog.close()
+
+    def test_domestic_info_buttons_and_details_do_not_overlap_at_100_and_175(self):
+        for scale in (1.0, 1.75):
+            apply_interface_scale(self.app, FakeScreen(), scale)
+            for mode in ('light', 'dark'):
+                with self.subTest(scale=scale, theme=mode):
+                    apply_ui_mode(mode)
+                    dialog = self.dialog(self.make_group(platforms=[get_platform('taobao')]),
+                                         parent=self.parent_window(), show=True)
+                    shell = dialog.shell
+                    main = shell.main_layout.parentWidget()
+                    self.assertLess(self.rect_in(main, shell).bottom(), self.rect_in(shell.detail_title, shell).top())
+                    for parent in (shell, main):
+                        for child in parent.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
+                            if child.isVisible():
+                                self.assertTrue(parent.rect().contains(child.geometry()), (child.objectName(), child.geometry()))
+                    self.assert_no_horizontal_overflow(dialog)
+                    dialog.close()
 
 
 class PlatformPreviewSelectionTests(PlatformPreviewDialogTestBase):

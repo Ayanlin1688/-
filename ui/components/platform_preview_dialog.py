@@ -362,16 +362,23 @@ class _ProfileShell:
                       self.discount_label):
             label.setMinimumWidth(0)
             label.setWordWrap(True)
-            _preview_style(label, lambda: 'color:%s;background:%s;border-radius:6px;padding:5px;'
-                           % (materials.ecommerce_color('preview_text'),
-                              materials.ecommerce_color('preview_input')))
+            _preview_style(label, lambda: 'color:%s;background:transparent;'
+                           % materials.ecommerce_color('preview_text'))
             layout.addWidget(label)
-        variants = QHBoxLayout()
+        self.variant_row = QWidget()
+        self.variant_row.setObjectName('previewVariantRow')
+        variants = QHBoxLayout(self.variant_row)
+        variants.setContentsMargins(0, 0, 0, 0)
+        variants.setSpacing(8)
         self.variant_chips = []
         for source in ('经典款', '标准'):
             chip = self._text(QPushButton(), source)
             chip.setCheckable(True)
             chip.setChecked(True)
+            chip.setObjectName('previewVariantChip')
+            chip.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            chip.setMinimumHeight(30)
+            chip.setMinimumWidth(chip.sizeHint().width())
             _preview_style(chip, lambda: 'QPushButton {color:%s;background:%s;border:1px solid %s;'
                            'border-radius:4px;padding:4px 8px;}'
                            % (materials.ecommerce_color('preview_text'),
@@ -379,7 +386,7 @@ class _ProfileShell:
             self.variant_chips.append(chip)
             variants.addWidget(chip)
         variants.addStretch(1)
-        layout.addLayout(variants)
+        layout.addWidget(self.variant_row)
         quantity = QHBoxLayout()
         quantity.addWidget(self.quantity_label)
         self.quantity_input = QSpinBox()
@@ -451,6 +458,8 @@ class _PhoneShell(_ProfileShell, QWidget):
         self.scroll.setObjectName('previewPhoneScroll')
         self.scroll.setMinimumWidth(0)
         self.scroll.setWidgetResizable(True)
+        self.scroll.setMinimumHeight(0)
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet('QScrollArea {background:transparent; border:0;}')
@@ -461,6 +470,9 @@ class _PhoneShell(_ProfileShell, QWidget):
         _preview_style(content, lambda: '#previewPhoneBody {background:%s;}'
                              % materials.ecommerce_color('preview_card'))
         body = QVBoxLayout(content)
+        # The body keeps every row's natural height; only the viewport shrinks
+        # when the fixed footer reserves its own row in the phone shell.
+        body.setSizeConstraint(QLayout.SetMinimumSize)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         self.image_area = QWidget(content)
@@ -567,8 +579,10 @@ class _PhoneShell(_ProfileShell, QWidget):
         root.addWidget(self.scroll, 1)
 
         self.bottom_bar = QWidget(self)
+        self.bottom_bar.setObjectName('previewPhoneBottomBar')
         self.bottom_bar.setFixedHeight(60)
-        _preview_style(self.bottom_bar, lambda: 'background:%s;'
+        self.bottom_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        _preview_style(self.bottom_bar, lambda: '#previewPhoneBottomBar {background:%s;}'
                                      % materials.ecommerce_color('preview_card'))
         bottom = QHBoxLayout(self.bottom_bar)
         bottom.setContentsMargins(10, 8, 10, 8)
@@ -593,6 +607,10 @@ class _PhoneShell(_ProfileShell, QWidget):
                                     self.primary.name() if filled else materials.ecommerce_color('preview_card')))
             bottom.addWidget(button, 3)
         root.addWidget(self.bottom_bar)
+
+    def refresh_interface_scale(self):
+        self.bottom_bar.setFixedHeight(px(60))
+        _round_mask(self, px(20))
 
     def sizeHint(self):
         width = px(400)

@@ -11,7 +11,7 @@ import logging
 
 from PyQt5.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath
 from PyQt5.QtCore import QAbstractEventDispatcher, QElapsedTimer, QMargins, Qt, QTimer, QRect, QRectF, QEvent, QPointF, QSizeF
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget, QSizePolicy
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
 from core.config_manager import ConfigManager
@@ -489,8 +489,13 @@ class MainWindow(FluentWindow):
         """导航栏底色跟随当前主题。"""
         from qfluentwidgets import setCustomStyleSheet
         from . import materials
-        style = 'NavigationPanel {background:%s; border:0;}' % materials.nav_background()
+        style = ('NavigationPanel[menu=true], NavigationPanel[menu=false] '
+                 '{background:%s; border:0; padding:0; border-radius:12px;}'
+                 % materials.nav_background())
         setCustomStyleSheet(self.navigationInterface.panel, style, style)
+        separator = getattr(self, '_nav_group_line', None)
+        if separator is not None:
+            separator.setStyleSheet('background:%s;' % materials.rgba(materials.palette()['border']))
 
     def _apply_blur_setting(self, config=None):
         if getattr(self, '_closing', False):
@@ -589,6 +594,9 @@ class MainWindow(FluentWindow):
                 continue
             item.setFixedHeight(px(44))
             inner = getattr(item, 'itemWidget', item)
+            font = inner.font()
+            font.setPixelSize(14)
+            item.setFont(font)
             original = inner._margins
             self._nav_rail_items.append((item, inner, original))
             inner._margins = lambda original=original: self._rail_margins(original())
@@ -599,6 +607,8 @@ class MainWindow(FluentWindow):
                 setter(th['accent'], th['accent'])
                 self._rail_indicator_setters.append(setter)
             self._decorate_rail_item(inner)
+            item.hitRect = item.rect
+            inner.hitRect = inner.rect
             # 指示条只由原生 setIndicatorColor 绘制；这里只校正其几何：
             # 44px 导航行内垂直居中，并随界面缩放（原生硬编码 10/16 不随缩放）。
             for target in (item, inner):
@@ -606,10 +616,32 @@ class MainWindow(FluentWindow):
             self._guard_leaf_nav_item(item, inner)
             # 点击后延迟一拍校正尺寸：吸收原生在两态切换边缘的任何小动作（幂等）。
             item.clicked.connect(lambda *args, _self=self: QTimer.singleShot(300, _self._settle_nav_pane))
-        # Keep the six primary entries on one uniform rhythm.  A separator
-        # before settings adds an extra layout item and makes that gap differ
-        # from every other adjacent pair, which is especially visible in the
-        # compact rail at high interface scales.
+        # Keep brand/menu at their native full rail width; only the page rows
+        # receive the symmetric 8px inset, including in the 64px compact rail.
+        self._nav_rows = QWidget(panel)
+        self._nav_rows.setObjectName('navigationRows')
+        self._nav_rows.setMinimumWidth(0)
+        self._nav_rows.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._nav_rows_layout = QVBoxLayout(self._nav_rows)
+        self._nav_rows_layout.setContentsMargins(8, 0, 8, 0)
+        self._nav_rows_layout.setSpacing(4)
+        self._nav_group_separator = QWidget(self._nav_rows)
+        self._nav_group_separator.setObjectName('navigationGroupSeparator')
+        # 4px layout spacing + 9px separator + 4px spacing = 16px + 1px line.
+        self._nav_group_separator.setFixedHeight(9)
+        line_layout = QVBoxLayout(self._nav_group_separator)
+        line_layout.setContentsMargins(0, 4, 0, 4)
+        self._nav_group_line = QWidget(self._nav_group_separator)
+        self._nav_group_line.setObjectName('navigationGroupLine')
+        line_layout.addWidget(self._nav_group_line)
+        for index, route in enumerate(routes[:6]):
+            item = self.navigationInterface.widget(route)
+            panel.topLayout.removeWidget(item)
+            if index == 5:
+                self._nav_rows_layout.addWidget(self._nav_group_separator)
+            self._nav_rows_layout.addWidget(item)
+        panel.topLayout.addWidget(self._nav_rows)
+        self._nav_rows.setFixedHeight(6 * 44 + 4 * 4 + 16 + 1)
         # 应用初始折叠样式。
         self._sync_nav_pane(True)
         # 恢复上次的展开状态（记忆化）。
@@ -627,18 +659,20 @@ class MainWindow(FluentWindow):
                 QTimer.singleShot(120, _restore_expanded_pane)
         except Exception:
             pass
-        # Uniform spacing keeps all primary entries aligned in collapsed and
-        # expanded states.  The row itself supplies the visual breathing room.
         panel = self.navigationInterface.panel
+        panel.setContentsMargins(0, 0, 0, 0)
         for layout_name, spacing in (('topLayout', design.SPACE['sm']),):
             layout = getattr(panel, layout_name, None)
             try:
                 if layout is not None:
                     layout.setSpacing(0)
+                    layout.setContentsMargins(0, 0, 0, 0)
             except Exception:
                 pass
         try:
-            panel.bottomLayout.setContentsMargins(0, 0, 0, 10)
+            panel.bottomLayout.setContentsMargins(8, 12, 8, 10)
+            self.user_avatar.setMinimumWidth(0)
+            self.user_avatar.setMaximumWidth(px(48))
         except Exception:
             pass
         # 标题栏呼吸位：等窗口标题写入后再应用图标/标题间距。
@@ -765,9 +799,12 @@ class MainWindow(FluentWindow):
             pass
         for item, inner, original in getattr(self, '_nav_rail_items', []):
             try:
+                font = inner.font()
+                font.setPixelSize(px(14))
+                item.setFont(font)
                 if collapsed:
-                    item.setMinimumSize(0, px(44)); item.setMaximumSize(px(56), px(44))
-                    inner.setMinimumSize(0, px(44)); inner.setMaximumSize(px(56), px(44))
+                    item.setMinimumSize(0, px(44)); item.setMaximumSize(px(48), px(44))
+                    inner.setMinimumSize(0, px(44)); inner.setMaximumSize(px(48), px(44))
                     inner._margins = lambda original=original: self._rail_margins(original())
                 else:
                     item.setMinimumSize(0, px(44)); item.setMaximumSize(16777215, px(44))
@@ -780,6 +817,16 @@ class MainWindow(FluentWindow):
             panel.menuButton.setToolTip(tr('展开 / 收起导航'))
         except Exception:
             pass
+        rows = getattr(self, '_nav_rows', None)
+        if rows is not None:
+            rows.setFixedHeight(6 * px(44) + 4 * px(4) + px(16) + px(1))
+            self._nav_rows_layout.setContentsMargins(px(8), 0, px(8), 0)
+            self._nav_rows_layout.setSpacing(px(4))
+            self._nav_group_separator.setFixedHeight(px(16) + px(1) - 2 * px(4))
+            self._nav_group_separator.layout().setContentsMargins(0, px(4), 0, px(4))
+            from . import materials
+            self._nav_group_line.setStyleSheet('background:%s;' % materials.rgba(materials.palette()['border']))
+            self.user_avatar.setFixedWidth(px(48))
         try:
             brand = getattr(self, 'brand_logo', None)
             if brand is not None and hasattr(brand, 'set_expanded'):
@@ -823,17 +870,24 @@ class MainWindow(FluentWindow):
                 painter.drawRoundedRect(QRectF(inner.rect()), px(8), px(8))
             color = (materials.ecommerce_color('navigation_selected_text')
                      if inner.isSelected else materials.text_color(1))
-            side = px(16)
-            x = (inner.width() - side) / 2 if inner.isCompacted else px(16)
-            rect = QRectF(x, (inner.height() - side) / 2, side, side)
+            box = inner.iconRect()
+            # The built-in SVGs include their own inset. A 15px drawing box
+            # keeps their visible outline about 14px without losing thin strokes.
+            inset = (px(16) - px(15)) / 2
+            rect = box.adjusted(inset, inset, -inset, -inset)
             drawIcon(inner._icon, painter, rect, fill=color)
             if not inner.isCompacted:
                 painter.setFont(inner.font()); painter.setPen(QColor(color))
-                painter.drawText(QRectF(px(44), 0, inner.width() - px(52), inner.height()),
-                                 Qt.AlignVCenter | Qt.AlignLeft, inner.text())
+                text_rect = inner.textRect()
+                text = inner.fontMetrics().elidedText(inner.text(), Qt.ElideRight, int(text_rect.width()))
+                painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
             painter.end()
 
         inner.paintEvent = paint
+        inner.iconRect = lambda: QRectF(
+            (inner.width() - px(16)) / 2 if inner.isCompacted else px(12),
+            (inner.height() - px(16)) / 2, px(16), px(16))
+        inner.textRect = lambda: QRectF(px(38), 0, max(0, inner.width() - px(50)), inner.height())
 
     @staticmethod
     def _rail_indicator_rect(widget) -> QRectF:
@@ -917,7 +971,7 @@ class MainWindow(FluentWindow):
 
     @staticmethod
     def _rail_margins(margins: QMargins) -> QMargins:
-        # Centre the compact icon inside the 56px rail button.
+        # Preserve native margins inside the compact row's 48px click area.
         return QMargins(margins.left() + px(8), margins.top(), margins.right(), margins.bottom())
 
     def _apply_windows_material(self) -> str:

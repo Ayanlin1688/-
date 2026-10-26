@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
@@ -126,10 +127,10 @@ class NavSelectionSingletonTests(unittest.TestCase):
                        for y in range(px(10), image.height() - px(10))
                        if min(image.pixelColor(x, y).getRgb()[:3]) >= 235)
 
-        icon_left = (inner.width() - px(16)) // 2 if inner.isCompacted else px(16)
+        icon_left = (inner.width() - px(16)) // 2 if inner.isCompacted else px(12)
         self.assertGreater(white_pixels(icon_left, icon_left + px(16)), px(5), route)
         if not inner.isCompacted:
-            self.assertGreater(white_pixels(px(44), image.width() - px(8)), px(10), route)
+            self.assertGreater(white_pixels(px(38), image.width() - px(12)), px(10), route)
         selected = []
         for page in (self.window.workspace_page, self.window.image_generation_page,
                      self.window.video_creation_page, self.window.ecommerce_page,
@@ -194,6 +195,32 @@ class NavSelectionSingletonTests(unittest.TestCase):
         self.window.switchTo(self.window.workspace_page)
         QTest.qWait(80)
         self._assert_single_selection('workspacePage')
+
+    def test_full_row_edges_click_through_at_all_scales_in_both_modes(self):
+        panel = self.window.navigationInterface.panel
+        pages = (self.window.workspace_page, self.window.image_generation_page,
+                 self.window.video_creation_page, self.window.ecommerce_page,
+                 self.window.history_page, self.window.settings_page)
+        for scale in ('1.0', '1.25', '1.5', '1.75'):
+            self.manager.config['appearance']['ui_scale'] = scale
+            self.window._apply_interface_scale()
+            for collapsed in (True, False):
+                if panel.isCollapsed() != collapsed:
+                    self.window._toggle_navigation()
+                    QTest.qWait(350)
+                self.window._sync_nav_pane(collapsed)
+                for page in pages:
+                    inner = self.window.navigationInterface.widget(page.objectName()).itemWidget
+                    for point in (QPoint(1, inner.height() // 2),
+                                  QPoint(inner.width() - 2, inner.height() // 2),
+                                  QPoint(inner.width() // 2, inner.height() - 2)):
+                        with self.subTest(scale=scale, collapsed=collapsed,
+                                          route=page.objectName(), point=point):
+                            self.window.switchTo(pages[1] if page is pages[0] else pages[0])
+                            QTest.mouseClick(inner, Qt.LeftButton, pos=point)
+                            self.assertIs(self.window.stackedWidget.currentWidget(), page)
+                            self.assertEqual(inner.height(), px(44))
+                            self.assertEqual(inner.size(), inner.parentWidget().size())
 
 
 if __name__ == '__main__':
