@@ -116,7 +116,7 @@ class EcommerceResultPanelTests(unittest.TestCase):
         self.assertIn(str(first.resolve()), paths)
         self.assertNotIn(str(Path(self.temporary.name, '0.png').resolve()), paths)
 
-    def test_adaptive_cover_and_fixed_height_contain_preserve_rounding_and_image(self):
+    def test_square_cover_and_contain_preserve_rounding_and_image(self):
         card = self._card(self._image())
         card.resize(360, 800)
         card.show()
@@ -127,9 +127,10 @@ class EcommerceResultPanelTests(unittest.TestCase):
         self.assertEqual(cover.pixelColor(0, 0).alpha(), 0)
         card.apply_adaptive(False)
         self._settle(card)
-        self.assertFalse(card.thumbnail.hasHeightForWidth())
-        self.assertFalse(card.thumbnail.sizePolicy().hasHeightForWidth())
-        self.assertEqual(card.thumbnail.height(), px(260))
+        self.assertTrue(card.thumbnail.hasHeightForWidth())
+        self.assertTrue(card.thumbnail.sizePolicy().hasHeightForWidth())
+        self.assertEqual(card.thumbnail.height(), card.thumbnail.width())
+        self.assertEqual(card.thumbnail.height(), min(card.width(), card.height()) - 4)
         contained = card.thumbnail.pixmap().toImage()
         self.assertEqual(contained.pixelColor(10, contained.height() // 2),
                          QColor(materials.palette()['bg2']))
@@ -148,24 +149,38 @@ class EcommerceResultPanelTests(unittest.TestCase):
             panel.update_item(dict(item_id=str(index), kind='carousel', seq=index + 1,
                                    status=status, file_path=str(self._image(f'{index}.png'))))
         self.assertFalse(panel.adaptive_switch.isChecked())
-        self.assertTrue(all(not card.thumbnail.hasHeightForWidth() for card in panel.cards.values()))
+        self.assertTrue(all(not card._adaptive for card in panel.cards.values()))
+        self.assertTrue(all(card.thumbnail.hasHeightForWidth() for card in panel.cards.values()))
         panel.adaptive_switch.setChecked(True)
         manager.update.assert_called_once_with(('ecommerce', 'thumbnail_adaptive'), True)
         self.assertTrue(all(card.thumbnail.hasHeightForWidth() for card in panel.cards.values()))
         panel.set_adaptive(False)
-        self.assertTrue(all(card.thumbnail.minimumHeight() == px(260) == card.thumbnail.maximumHeight()
+        self.assertTrue(all(not card._adaptive and card.thumbnail.hasHeightForWidth()
                             for card in panel.cards.values()))
+        panel.resize(px(700), px(400))
+        panel.show()
+        self.app.processEvents()
+        for card in panel.cards.values():
+            self.assertEqual(card.width(), card.height())
+            self.assertEqual(card.thumbnail.width(), card.thumbnail.height())
         self.assertEqual(manager.update.call_count, 2)
 
-    def test_fixed_height_is_reapplied_at_each_interface_scale(self):
+    def test_square_geometry_and_minimum_are_reapplied_at_each_interface_scale(self):
         card = self._card(self._image())
         card.apply_adaptive(False)
         for scale in (1.0, 1.25, 1.5, 1.75):
             with self.subTest(scale=scale):
                 set_interface_scale(scale)
                 card.refresh_interface_scale()
-                self.assertEqual(card.thumbnail.minimumHeight(), round(260 * scale))
-                self.assertEqual(card.thumbnail.maximumHeight(), round(260 * scale))
+                side = px(140)
+                card.resize(side, card.heightForWidth(side))
+                card.show()
+                self.app.processEvents()
+                self.assertEqual(card.minimumHeight(), px(90))
+                self.assertEqual(card.height(), card.width())
+                self.assertEqual(card.thumbnail.width(), card.width() - 4)
+                self.assertEqual(card.thumbnail.height(), card.thumbnail.width())
+                self.assertTrue(card.thumbnail.sizePolicy().hasHeightForWidth())
 
     def test_dpr_render_uses_physical_pixels_with_logical_thumbnail_dimensions(self):
         card = self._card(self._image())

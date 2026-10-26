@@ -243,9 +243,11 @@ class PlatformMultiSelect(QWidget):
     def refresh_colors(self):
         c = materials.ecommerce_color
         self.shadow.setColor(QColor(c('selector_shadow')))
-        self.setStyleSheet('QPushButton#platformSelectButton {background:%s;color:%s;border:1px solid %s;border-radius:%dpx;}'
-                           % (c('single_card'), materials.palette()['text1'], c('single_button_border'), px(8)))
-        self.popup.setStyleSheet(
+        button_rules = ('QPushButton#platformSelectButton {background:%s;color:%s;border:1px solid %s;border-radius:%dpx;}'
+                        % (c('single_card'), materials.palette()['text1'], c('single_button_border'), px(8)))
+        if self.styleSheet() != button_rules:
+            self.setStyleSheet(button_rules)
+        popup_rules = (
             'QFrame#platformSelectPopup {background:%s;border:1px solid %s;border-radius:%dpx;}'
             'QLabel {color:%s;background:transparent;border:0;}'
             'QScrollArea, QScrollArea > QWidget > QWidget {background:%s;border:0;}'
@@ -254,6 +256,10 @@ class PlatformMultiSelect(QWidget):
             % (c('single_card'), c('single_button_border'), px(12), materials.palette()['text1'],
                c('single_card'), c('single_card'), materials.palette()['text2'], c('single_button_border'), px(8),
                c('tag_bg'), c('single_button_text'), c('single_button_text')))
+        # The owning page and theme bus both notify this shared component.
+        # Reapplying identical popup QSS would repolish every platform chip.
+        if self.popup.styleSheet() != popup_rules:
+            self.popup.setStyleSheet(popup_rules)
         for chip in self.selected_chips:
             chip.setStyleSheet('background:%s;color:%s;border-radius:%dpx;padding:2px 3px;font-size:%dpx;'
                               % (c('tag_bg'), c('single_button_text'), px(4), px(11)))

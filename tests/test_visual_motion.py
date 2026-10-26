@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtCore import QEvent, Qt, QPoint
@@ -179,8 +180,10 @@ class VisualMotionTests(unittest.TestCase):
         new_marker.setStyleSheet('background:#00ff00;')
         new_marker.setGeometry(550, 60, 30, 30); new_marker.show(); new_marker.raise_()
         QTest.qWait(50)
-        self.window.switchTo(self.window.history_page)
         fade = self.window.page_transition
+        # Normal navigation is immediate since segment 10. Exercise the cached
+        # compositor explicitly; it remains available to callers that opt in.
+        fade.set_current_widget(self.window.history_page)
         fade.animation.stop()
         old_point = old_marker.mapTo(workspace, QPoint(15, 15))
         new_point = new_marker.mapTo(self.window.history_page, QPoint(15, 15))
@@ -189,10 +192,15 @@ class VisualMotionTests(unittest.TestCase):
             fade.blend = blend
             image = fade.grab().toImage()
             samples.append((image.pixelColor(old_point), image.pixelColor(new_point)))
-        self.assertGreater(samples[0][0].red(), samples[1][0].red()+80)
-        self.assertGreater(samples[1][0].red(), samples[2][0].red()+80)
-        self.assertLess(samples[0][1].green()+80, samples[1][1].green())
-        self.assertLess(samples[1][1].green()+80, samples[2][1].green())
+        self.assertEqual(samples[0][0].getRgb(), (255, 0, 0, 255))
+        self.assertEqual(samples[2][1].getRgb(), (0, 255, 0, 255))
+        # Compare all channels: a red marker over a light background has little
+        # red-channel change, whereas its green/blue still fade substantially.
+        for position in (0, 1):
+            start, middle, end = [sample[position].getRgb() for sample in samples]
+            self.assertGreater(sum(abs(a - b) for a, b in zip(start[:3], end[:3])), 160)
+            for a, b, c in zip(start[:3], middle[:3], end[:3]):
+                self.assertAlmostEqual(b, (a + c) / 2, delta=2)
         fade.finish()
 
     def test_long_press_near_original_edge_still_clicks_once(self):
@@ -205,25 +213,41 @@ class VisualMotionTests(unittest.TestCase):
         QTest.mouseRelease(button, Qt.LeftButton, pos=button.mapFromGlobal(global_press)); QTest.qWait(250)
         self.assertEqual(hits, [1])
 
-    def test_router_back_retargets_an_active_transition(self):
+    def test_router_back_selects_page_immediately_without_snapshot_overlay(self):
         from qfluentwidgets import qrouter
         self.window.switchTo(self.window.history_page); QTest.qWait(350)
         self.window.switchTo(self.window.settings_page); QTest.qWait(60)
-        qrouter.pop()
+        with patch.object(self.window.settings_page, 'grab', wraps=self.window.settings_page.grab) as old_grab, \
+                patch.object(self.window.history_page, 'grab', wraps=self.window.history_page.grab) as new_grab:
+            qrouter.pop()
+            old_grab.assert_not_called()
+            new_grab.assert_not_called()
         self.assertIs(self.window.stackedWidget.currentWidget(), self.window.history_page)
-        self.assertTrue(self.window.page_transition.isVisible())
-        wait_until(lambda: not self.window.page_transition.isVisible(), timeout=5000)
         self.assertFalse(self.window.page_transition.isVisible())
+        self.assertTrue(self.window.page_transition.old.isNull())
+        self.assertTrue(self.window.page_transition.new.isNull())
 
-    def test_match_dialog_has_opaque_dark_material(self):
+    def test_match_dialog_has_opaque_material_matching_both_themes(self):
         from ui.components.match_dialog import MatchDialog
+        from ui import materials
+        from ui.theme import apply_ui_mode
+        from PyQt5.QtGui import QColor
         dialog = MatchDialog(self.window, config_manager=self.config)
         try:
-            dialog.show(); QTest.qWait(100)
-            image = dialog.grab().toImage()
-            background = image.pixelColor(10, image.height()//2)
-            self.assertEqual(background.alpha(), 255)
-            self.assertLess(background.lightness(), 30)
+            dialog.show()
+            for mode in ('light', 'dark'):
+                with self.subTest(mode=mode):
+                    apply_ui_mode(mode)
+                    QTest.qWait(100)
+                    image = dialog.grab().toImage()
+                    background = image.pixelColor(10, image.height()//2)
+                    base = QColor(materials.palette()['bg1']).lighter(104 if mode == 'light' else 118)
+                    self.assertEqual(background.alpha(), 255)
+                    self.assertAlmostEqual(background.lightness(), base.lightness(), delta=20)
+                    if mode == 'light':
+                        self.assertGreater(background.lightness(), 220)
+                    else:
+                        self.assertLess(background.lightness(), 30)
         finally:
             dialog.close(); dialog.deleteLater(); QTest.qWait(30)
 

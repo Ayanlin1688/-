@@ -3,6 +3,8 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import statistics
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -243,6 +245,20 @@ class ThemeConsistencyTests(unittest.TestCase):
         self.assertFalse(w.video_creation_page._history_dirty)
 
     def test_switch_and_theme_latency_without_growth(self):
+        # QApplication palettes and Fluent's global style registry include
+        # standalone controls left alive by other test fixtures. Benchmark one
+        # real app in a fresh interpreter so suite order cannot change its load.
+        result = subprocess.run(
+            [sys.executable, '-X', 'utf8', '-m', 'tests.theme_performance_probe'],
+            cwd=Path(__file__).resolve().parent.parent,
+            env=dict(os.environ, QT_QPA_PLATFORM='offscreen'),
+            capture_output=True, text=True, encoding='utf-8', timeout=45)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('SEG10_GATE', result.stdout)
+        print(result.stdout.strip())
+
+    def measure_switch_and_theme_latency_without_growth(self):
+        """Same interaction counts and budgets, called by the isolated probe."""
         samples = []
         # First show is included: lazy lists must still fit the click budget.
         for _ in range(20):

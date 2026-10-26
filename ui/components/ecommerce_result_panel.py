@@ -79,7 +79,7 @@ class _Thumbnail(QLabel):
         self.setMaximumHeight(16777215)
 
     def hasHeightForWidth(self):
-        return self._adaptive
+        return True
 
     def heightForWidth(self, width):
         return max(1, width)
@@ -365,7 +365,9 @@ class EcommerceResultCard(CardWidget):
             self.updateGeometry()
 
     def refresh_interface_scale(self):
+        self.setMinimumHeight(px(90))
         self.thumbnail.apply_adaptive(self._adaptive)
+        self._place_content()
         self.thumbnail._resize_timer.start()
         self.updateGeometry()
 

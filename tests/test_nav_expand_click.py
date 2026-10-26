@@ -3,8 +3,8 @@
 实测复现：展开态点击「历史记录/设置/工作台」→ setExpanded 动画按 sizeHint（宽 0）设置尺寸，
 被点击项宽度归零从界面消失；用户侧表现为“点击后就消失了”。
 
-另含导航指示条单例回归（需求9）：自绘 3px accent 竖条 + 原生 setIndicatorColor 同时绘制
-= 展开态每个导航项左侧两根竖杆。修复后只保留原生指示条，这里用像素统计守住该不变量。
+选中态按段10改为蓝色实心圆角条、白色图标/文字；像素回归同时守住单一选中项，
+展开/折叠和四档缩放不得叠加旧竖线或丢失选中背景。
 """
 import os
 import tempfile
@@ -80,8 +80,8 @@ class NavExpandClickTests(unittest.TestCase):
             temp.cleanup()
 
 
-class NavIndicatorSingletonTests(unittest.TestCase):
-    """需求9：导航指示条只能由原生 setIndicatorColor 画一次（像素级回归）。"""
+class NavSelectionSingletonTests(unittest.TestCase):
+    """段10：蓝色圆角条只标识当前页，白色图标/文字在两态均可读。"""
 
     @classmethod
     def setUpClass(cls):
@@ -108,60 +108,46 @@ class NavIndicatorSingletonTests(unittest.TestCase):
         self.window.deleteLater()
         QTest.qWait(100)
 
-    @staticmethod
-    def _is_accent(color, accent):
-        return ((color.red() - accent.red()) ** 2
-                + (color.green() - accent.green()) ** 2
-                + (color.blue() - accent.blue()) ** 2) <= 2500
-
-    def _accent_runs(self, inner, accent):
-        image = inner.grab().toImage()
-        columns = []
-        for x in range(min(image.width(), 40)):
-            rows = [y for y in range(image.height())
-                    if self._is_accent(QColor(image.pixel(x, y)), accent)]
-            if len(rows) >= 2:
-                columns.append((x, min(rows), max(rows)))
-        runs = []
-        for x, top, bottom in columns:
-            if runs and x - runs[-1][1] <= 1:
-                runs[-1][1] = x
-                runs[-1][2] = min(runs[-1][2], top)
-                runs[-1][3] = max(runs[-1][3], bottom)
-            else:
-                runs.append([x, x, top, bottom])
-        return runs
-
-    def _assert_single_indicator(self, route):
+    def _assert_single_selection(self, route):
         item = self.window.navigationInterface.widget(route)
         inner = item.itemWidget
-        self.assertTrue(item.isSelected, f'{route} 未处于选中态，无法校验指示条')
-        accent = QColor(materials.palette()['accent'])
-        runs = self._accent_runs(inner, accent)
-        self.assertEqual(len(runs), 1,
-                         f'{route} 应只有一根原生指示条，实际 {len(runs)} 根：{runs}')
-        left, right, top, bottom = runs[0]
-        expected_width = max(1, px(3))
-        expected_height = max(2, px(16))
-        margins = inner._margins()
-        self.assertLessEqual(abs(left - margins.left()), 2,
-                             f'{route} 指示条未贴左内边距：left={left} margins={margins.left()}')
-        self.assertLessEqual(right - left + 1, expected_width + 2,
-                             f'{route} 指示条过宽：{right - left + 1}px（期望 {expected_width}px）')
-        height = bottom - top + 1
-        self.assertLessEqual(abs(height - expected_height), 2,
-                             f'{route} 指示条高度异常：{height}px（期望 {expected_height}px）')
-        center = (top + bottom) / 2.0
-        self.assertLessEqual(abs(center - (inner.height() - 1) / 2.0), 2,
-                             f'{route} 指示条未垂直居中：center={center} inner_height={inner.height()}')
-        return runs
+        self.assertTrue(item.isSelected, route)
+        self.assertEqual(inner.height(), px(44))
+        image = inner.grab().toImage()
+        blue = QColor(materials.ecommerce_color('navigation_selected'))
+        # Away from glyphs the entire row is filled, including both edges.
+        for y in (px(5), image.height() - px(5)):
+            for x in range(px(9), image.width() - px(9)):
+                self.assertEqual(image.pixelColor(x, y), blue, (route, x, y))
+        self.assertNotEqual(image.pixelColor(0, 0), blue, 'selection must have rounded corners')
 
-    def test_default_collapsed_rail_has_single_indicator(self):
+        def white_pixels(left, right):
+            return sum(1 for x in range(left, right)
+                       for y in range(px(10), image.height() - px(10))
+                       if min(image.pixelColor(x, y).getRgb()[:3]) >= 235)
+
+        icon_left = (inner.width() - px(16)) // 2 if inner.isCompacted else px(16)
+        self.assertGreater(white_pixels(icon_left, icon_left + px(16)), px(5), route)
+        if not inner.isCompacted:
+            self.assertGreater(white_pixels(px(44), image.width() - px(8)), px(10), route)
+        selected = []
+        for page in (self.window.workspace_page, self.window.image_generation_page,
+                     self.window.video_creation_page, self.window.ecommerce_page,
+                     self.window.history_page, self.window.settings_page):
+            other = self.window.navigationInterface.widget(page.objectName())
+            if other.isSelected:
+                selected.append(page.objectName())
+            else:
+                snapshot = other.itemWidget.grab().toImage()
+                self.assertNotEqual(snapshot.pixelColor(snapshot.width() // 2, px(5)), blue)
+        self.assertEqual(selected, [route])
+
+    def test_default_collapsed_rail_has_single_filled_selection(self):
         self.window.switchTo(self.window.workspace_page)
         QTest.qWait(60)
-        self._assert_single_indicator('workspacePage')
+        self._assert_single_selection('workspacePage')
 
-    def test_expanded_and_collapsed_toggles_keep_single_indicator(self):
+    def test_expanded_and_collapsed_toggles_keep_single_filled_selection(self):
         self.window.switchTo(self.window.workspace_page)
         QTest.qWait(60)
         for round_index in range(10):
@@ -172,9 +158,9 @@ class NavIndicatorSingletonTests(unittest.TestCase):
             self.window._sync_nav_pane(self.window.navigationInterface.panel.isCollapsed())
             self.window.switchTo(self.window.workspace_page)
             QTest.qWait(40)
-            self._assert_single_indicator('workspacePage')
+            self._assert_single_selection('workspacePage')
 
-    def test_ten_page_switch_rounds_never_stack_indicators(self):
+    def test_ten_page_switch_rounds_never_stack_selections(self):
         pages = {
             'workspacePage': self.window.workspace_page,
             'settingsPage': self.window.settings_page,
@@ -186,9 +172,9 @@ class NavIndicatorSingletonTests(unittest.TestCase):
             for route in groups[round_index % len(groups)]:
                 self.window.switchTo(pages[route])
                 QTest.qWait(30)
-                self._assert_single_indicator(route)
+                self._assert_single_selection(route)
 
-    def test_indicator_geometry_tracks_interface_scale(self):
+    def test_filled_selection_tracks_interface_scale(self):
         panel = self.window.navigationInterface.panel
         for choice in ('1.0', '1.25', '1.5', '1.75'):
             with self.subTest(scale=choice):
@@ -200,14 +186,14 @@ class NavIndicatorSingletonTests(unittest.TestCase):
                 self.window._sync_nav_pane(True)
                 self.window.switchTo(self.window.workspace_page)
                 QTest.qWait(80)
-                self._assert_single_indicator('workspacePage')
-                self.assertEqual(px(3), round(3 * float(choice)))
+                self._assert_single_selection('workspacePage')
+                self.assertEqual(px(44), round(44 * float(choice)))
         self.manager.config['appearance']['ui_scale'] = '1.0'
         self.window._apply_interface_scale()
         self.window._sync_nav_pane(True)
         self.window.switchTo(self.window.workspace_page)
         QTest.qWait(80)
-        self._assert_single_indicator('workspacePage')
+        self._assert_single_selection('workspacePage')
 
 
 if __name__ == '__main__':

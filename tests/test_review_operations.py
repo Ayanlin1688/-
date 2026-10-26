@@ -188,6 +188,7 @@ class OperationsReviewTests(unittest.TestCase):
                 'r6_unattended_defaults': True,
                 'r12_model_id_cleanup': True,
                 'history_to_sqlite': True,
+                'r10_theme_auto': True,
             }
             manager.config['paths'].update(prompts=str(prompts), output=str(root / 'output'))
             manager.config['api'].update(base_url=server.base, api_key='local-fixture-only')
