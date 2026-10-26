@@ -11,22 +11,21 @@
     methods: update_groups(groups, persistence_available=True) / set_busy(bool) /
              refresh_colors() / selected_ids() / set_manage_mode(bool) /
              retranslate_ui()
-    attrs:   cards(当前页 group_id -> EcommerceTaskCard) / current_tab /
-             page_index / page_size
+    attrs:   cards(当前可见 group_id -> EcommerceTaskCard) / current_tab
 """
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 import re
 
-from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QBoxLayout, QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     Action, CardWidget, CheckBox, FluentIcon as FIF, PrimaryPushButton,
-    PushButton, RoundMenu, StrongBodyLabel, TransparentToolButton,
+    PushButton, RoundMenu, StrongBodyLabel,
 )
 
 from core.i18n import tr
@@ -37,7 +36,7 @@ from ..tokens import px
 from . import image_async
 from .studio_dialog import StudioDialog, safe_delete_dialog
 
-PAGE_SIZE = 10
+MAX_GROUPS = 50
 RESUMABLE_STATUSES = frozenset(('partial', 'failed', 'analyzing', 'generating'))
 TAB_KEYS = ('all', 'generating', 'done', 'issue')
 TAB_STATUSES = {
@@ -46,6 +45,16 @@ TAB_STATUSES = {
     'done': ('succeeded',),
     'issue': ('partial', 'failed', 'cancelled'),
 }
+
+
+def _base_px(value):
+    """Return an immutable 100% baseline for newly constructed widgets.
+
+    InterfaceScaler applies the active scale to widget bounds after
+    construction.  Keeping this value unscaled makes cards rebuilt at 125%
+    match cards that were present before the scale change.
+    """
+    return round(float(value))
 
 # ---------------------------------------------------------------------------
 # 小工具
@@ -82,9 +91,9 @@ def _platform_name(platform):
 
 def _status_tone(status):
     colors = materials.palette()
-    if status == 'analyzing':
+    if status in ('analyzing', 'generating'):
         return colors['accent']
-    if status in ('generating', 'partial'):
+    if status == 'partial':
         return colors['warning']
     if status == 'succeeded':
         return colors['success']
@@ -194,7 +203,7 @@ class _Thumbnail(QLabel):
         super().__init__(parent)
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(56, 56)
+        self.setFixedSize(_base_px(88), _base_px(88))
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.has_image = False
         self.path = ''
@@ -214,7 +223,7 @@ class _Thumbnail(QLabel):
         path = str(path) if path else ''
         theme = materials.THEME_ID
         key = image_async.image_cache_key(path) if path else None
-        size = (px(56), float(self.devicePixelRatioF() or 1.0))
+        size = (px(88), float(self.devicePixelRatioF() or 1.0))
         if (path == self._rendered_path and theme == self._rendered_theme
                 and key == self._rendered_key and size == self._rendered_size):
             return
@@ -250,7 +259,7 @@ class _Thumbnail(QLabel):
         self._paint_thumbnail(image, missing=image.isNull())
 
     def _paint_thumbnail(self, image, missing=False):
-        size = px(56)
+        size = px(88)
         ratio = max(1.0, float(self.devicePixelRatioF() or 1.0))
         self.has_image = not image.isNull()
         self.setProperty('thumbLoaded', self.has_image)
@@ -301,20 +310,17 @@ class _IndexBox(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(24)
-        self.setFixedHeight(24)
+        self.setFixedSize(_base_px(24), _base_px(24))
         font = self.font()
         font.setFamily(materials.ui_font_family())
-        font.setPixelSize(13)
-        font.setBold(True)
+        font.setPixelSize(12)
         self.setFont(font)
         self.setTextFormat(Qt.PlainText)
 
     def refresh_colors(self):
         colors = materials.palette()
-        self.setStyleSheet(
-            'color:%s; background:%s; border-radius:%dpx; padding:0 %dpx;'
-            % (colors['text2'], materials.ecommerce_color('index_bg'), 6, 6))
+        self.setStyleSheet('color:%s; background:transparent; border:0; padding:0;'
+                           % colors['text2'])
 
 
 # ---------------------------------------------------------------------------
@@ -330,11 +336,13 @@ class EcommerceTaskCard(CardWidget):
         self.group_id = str(self.group.get('group_id') or '')
         self.index = int(index)
         self._selected = False
+        self.setProperty('selected', False)
         self._hover = False
         self._styled = False
         self._theme_id = None
         self._chip_names = []
         self._data_initialized = False
+        self._narrow_actions = None
         self._description_timer = QTimer(self)
         self._description_timer.setSingleShot(True)
         self._description_timer.timeout.connect(self._sync_description_height)
@@ -342,12 +350,13 @@ class EcommerceTaskCard(CardWidget):
         self.setObjectName('ecommerceTaskCard')
         self.setBorderRadius(12)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setMinimumHeight(_base_px(170))
         root = QHBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(_base_px(18), _base_px(16), _base_px(18), _base_px(16))
+        root.setSpacing(_base_px(12))
 
         self.checkbox = CheckBox(self)
-        self.checkbox.setFixedSize(18, 18)
+        self.checkbox.setFixedSize(_base_px(18), _base_px(18))
         self.checkbox.setToolTip(tr('选择该记录'))
         self.checkbox.toggled.connect(self._on_checkbox)
         self.checkbox.setVisible(False)
@@ -359,18 +368,22 @@ class EcommerceTaskCard(CardWidget):
         self.thumb_host = QWidget(self)
         thumb_layout = QHBoxLayout(self.thumb_host)
         thumb_layout.setContentsMargins(0, 0, 0, 0)
-        thumb_layout.setSpacing(4)
+        thumb_layout.setSpacing(_base_px(6))
         self.thumb_labels = [_Thumbnail(self.thumb_host) for _ in range(3)]
         for thumb in self.thumb_labels:
             thumb_layout.addWidget(thumb)
         root.addWidget(self.thumb_host, 0, Qt.AlignVCenter)
 
+        self.content_host = QWidget(self)
+        self.content_layout = QBoxLayout(QBoxLayout.LeftToRight, self.content_host)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(_base_px(12))
         info = QVBoxLayout()
         info.setContentsMargins(0, 0, 0, 0)
-        info.setSpacing(4)
+        info.setSpacing(_base_px(4))
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(8)
+        top_row.setSpacing(_base_px(8))
         self.time_label = _label(12)
         self.time_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_badge = QLabel(self)
@@ -396,7 +409,7 @@ class EcommerceTaskCard(CardWidget):
         info.addWidget(chips_host)
         output_row = QHBoxLayout()
         output_row.setContentsMargins(0, 0, 0, 0)
-        output_row.setSpacing(8)
+        output_row.setSpacing(_base_px(8))
         self.counts_label = _label(12)
         self.counts_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.model_label = QLabel(self)
@@ -406,34 +419,27 @@ class EcommerceTaskCard(CardWidget):
         output_row.addWidget(self.counts_label, 1)
         output_row.addWidget(self.model_label, 0)
         info.addLayout(output_row)
-        root.addLayout(info, 1)
+        self.content_layout.addLayout(info, 1)
 
-        actions = QVBoxLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(6)
+        self.actions_host = QWidget(self.content_host)
+        self.actions_layout = QBoxLayout(QBoxLayout.TopToBottom, self.actions_host)
+        self.actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.actions_layout.setSpacing(_base_px(6))
         self.view_button = PushButton(tr('查看结果'), self)
         self.preview_button = PushButton(tr('平台预览'), self)
         self.delete_button = PushButton(tr('删除'), self)
         for button in (self.view_button, self.preview_button, self.delete_button):
-            button.setFixedHeight(28)
-            button.setMinimumWidth(88)
-            actions.addWidget(button)
-        self.more_button = TransparentToolButton(FIF.MORE, self)
-        self.more_button.setFixedSize(28, 28)
-        self.more_button.setToolTip(tr('更多操作'))
-        more_row = QHBoxLayout()
-        more_row.setContentsMargins(0, 0, 0, 0)
-        more_row.addStretch(1)
-        more_row.addWidget(self.more_button)
-        more_row.addStretch(1)
-        actions.addLayout(more_row)
-        root.addLayout(actions, 0)
+            button.setFixedSize(_base_px(88), _base_px(30))
+            self.actions_layout.addWidget(button)
+        self.actions_host.setFixedSize(_base_px(88), self.actions_host.sizeHint().height())
+        self.content_layout.addWidget(self.actions_host, 0, Qt.AlignRight)
+        root.addWidget(self.content_host, 1)
 
-        self.more_menu = RoundMenu(parent=self)
-        self.resume_action = Action(tr('继续生成（断点恢复）'), self.more_menu)
-        self.open_action = Action(tr('打开文件夹'), self.more_menu)
-        self.more_menu.addAction(self.resume_action)
-        self.more_menu.addAction(self.open_action)
+        self.context_menu = RoundMenu(parent=self)
+        self.resume_action = Action(tr('继续生成（断点恢复）'), self.context_menu)
+        self.open_action = Action(tr('打开文件夹'), self.context_menu)
+        self.context_menu.addAction(self.resume_action)
+        self.context_menu.addAction(self.open_action)
         self.resume_action.triggered.connect(
             lambda _checked=False: self.panel.resume_requested.emit(self.group_id))
         self.open_action.triggered.connect(
@@ -445,7 +451,7 @@ class EcommerceTaskCard(CardWidget):
             lambda: self.panel.preview_requested.emit(self.group_id))
         self.delete_button.clicked.connect(
             lambda: self.panel.request_delete([self.group_id]))
-        self.more_button.clicked.connect(self._show_more_menu)
+        self.setContextMenuPolicy(Qt.DefaultContextMenu)
 
         self.update_group(group, index=index)
         # 新卡片会先被全局缩放器处理，再按最终字体度量校正两行上限。
@@ -539,7 +545,6 @@ class EcommerceTaskCard(CardWidget):
         self.view_button.setText(tr('查看结果'))
         self.preview_button.setText(tr('平台预览'))
         self.delete_button.setText(tr('删除'))
-        self.more_button.setToolTip(tr('更多操作'))
         self.checkbox.setToolTip(tr('选择该记录'))
         self.resume_action.setText(tr('继续生成（断点恢复）'))
         self.open_action.setText(tr('打开文件夹'))
@@ -555,19 +560,29 @@ class EcommerceTaskCard(CardWidget):
         if error == interrupted and status in ('failed', 'analyzing', 'generating'):
             text = interrupted
         else:
-            stage_text = getattr(self.panel, 'stage_text', None)
-            try:
-                value = stage_text(status) if callable(stage_text) else status
-                text = '' if value is None else str(value)
-            except Exception:
-                text = str(status or '')
+            text = {
+                'succeeded': tr('已完成'),
+                'generating': tr('生成中'),
+                'analyzing': tr('分析中'),
+                'partial': tr('部分·失败'),
+                'failed': tr('出错'),
+                'cancelled': tr('已取消'),
+            }.get(status, str(status or ''))
         self.status_label = self.status_badge
         self.status_badge.setText(str(text))
         self._tone = _status_tone(status)
+        background = {
+            'succeeded': materials.ecommerce_color('task_done_bg'),
+            'generating': materials.ecommerce_color('task_active_bg'),
+            'analyzing': materials.ecommerce_color('task_active_bg'),
+            'partial': materials.ecommerce_color('task_issue_bg'),
+            'failed': materials.ecommerce_color('task_failed_bg'),
+            'cancelled': materials.ecommerce_color('task_cancelled_bg'),
+        }.get(status, materials.ecommerce_color('task_cancelled_bg'))
         self.status_badge.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
             ' font-size:%dpx; font-weight:600;'
-            % (self._tone, _rgba(self._tone, 26), 10, 1, 8, 11))
+            % (self._tone, background, px(6), px(3), px(8), px(11)))
 
     # -- 状态 ---------------------------------------------------------
     @property
@@ -587,6 +602,7 @@ class EcommerceTaskCard(CardWidget):
         if selected == self._selected:
             return
         self._selected = selected
+        self.setProperty('selected', selected)
         self.checkbox.blockSignals(True)
         self.checkbox.setChecked(selected)
         self.checkbox.blockSignals(False)
@@ -594,8 +610,7 @@ class EcommerceTaskCard(CardWidget):
 
     def set_busy(self, busy):
         busy = bool(busy)
-        for button in (self.view_button, self.preview_button, self.delete_button,
-                       self.more_button):
+        for button in (self.view_button, self.preview_button, self.delete_button):
             button.setEnabled(not busy)
         self.checkbox.setEnabled(not busy)
         self.resume_action.setEnabled(
@@ -603,13 +618,44 @@ class EcommerceTaskCard(CardWidget):
         self.open_action.setEnabled(not busy)
 
     def _on_checkbox(self, checked):
-        self._selected = bool(checked)
-        self.update()
+        self.set_selected(bool(checked))
         self.panel._set_group_selected(self.group_id, bool(checked))
 
-    def _show_more_menu(self):
-        self.more_menu.exec_(self.more_button.mapToGlobal(
-            QPoint(0, self.more_button.height())))
+    def context_actions(self):
+        return [tr('继续生成（断点恢复）'), tr('打开文件夹')]
+
+    def trigger_context_action(self, name):
+        name = str(name or '')
+        if name == tr('继续生成（断点恢复）') and self.resume_action.isEnabled():
+            self.resume_action.trigger()
+            return True
+        if name == tr('打开文件夹') and self.open_action.isEnabled():
+            self.open_action.trigger()
+            return True
+        return False
+
+    def contextMenuEvent(self, event):
+        self.context_menu.exec_(event.globalPos())
+
+    def resizeEvent(self, event):
+        host = self.panel.window()
+        width = host.width() if host is not None else self.panel.width()
+        narrow = width < px(1080)
+        if narrow != self._narrow_actions:
+            self._narrow_actions = narrow
+            if narrow:
+                self.content_layout.setDirection(QBoxLayout.TopToBottom)
+                self.actions_layout.setDirection(QBoxLayout.LeftToRight)
+                self.actions_host.setMinimumWidth(0)
+                self.actions_host.setMaximumWidth(16777215)
+                self.actions_host.setFixedHeight(px(30))
+                self.content_layout.setAlignment(self.actions_host, Qt.AlignRight)
+            else:
+                self.content_layout.setDirection(QBoxLayout.LeftToRight)
+                self.actions_layout.setDirection(QBoxLayout.TopToBottom)
+                self.actions_host.setFixedSize(px(88), self.actions_host.sizeHint().height())
+            self.content_layout.invalidate()
+        super().resizeEvent(event)
 
     # -- 外观 ---------------------------------------------------------
     def enterEvent(self, event):
@@ -669,7 +715,16 @@ class EcommerceTaskCard(CardWidget):
         self.status_badge.setStyleSheet(
             'color:%s; background:%s; border-radius:%dpx; padding:%dpx %dpx;'
             ' font-size:%dpx; font-weight:600;'
-            % (self._tone, _rgba(self._tone, 26), 10, 1, 8, 11))
+            % (self._tone,
+               {
+                   'succeeded': materials.ecommerce_color('task_done_bg'),
+                   'generating': materials.ecommerce_color('task_active_bg'),
+                   'analyzing': materials.ecommerce_color('task_active_bg'),
+                   'partial': materials.ecommerce_color('task_issue_bg'),
+                   'failed': materials.ecommerce_color('task_failed_bg'),
+                   'cancelled': materials.ecommerce_color('task_cancelled_bg'),
+               }.get(self.group.get('status'), materials.ecommerce_color('task_cancelled_bg')),
+               px(6), px(3), px(8), px(11)))
         self._styled = True
         self._theme_id = materials.THEME_ID
         self.update()
@@ -726,8 +781,10 @@ class _TabButton(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 5, 12, 5)
-        layout.setSpacing(8)
+        layout.setContentsMargins(px(14), 0, px(14), 0)
+        layout.setSpacing(px(8))
+        self.icon = _TabIcon(key, self)
+        layout.addWidget(self.icon)
         self.name_label = _label(13, bold=False)
         self.count_label = _label(13, bold=True)
         layout.addWidget(self.name_label)
@@ -735,8 +792,6 @@ class _TabButton(QWidget):
         self.set_active(False)
 
     def set_text(self, name, count):
-        if self.name_label.text() == str(name) and self.count_label.text() == str(count):
-            return
         self.name_label.setText(str(name))
         self.count_label.setText(str(count))
 
@@ -745,20 +800,31 @@ class _TabButton(QWidget):
         if active == self.active and not force:
             return
         self.active = active
+        self.setProperty('active', self.active)
+        self.style().unpolish(self)
+        self.style().polish(self)
         colors = materials.palette()
         accent = QColor(colors['accent'])
         if self.active:
-            self.setStyleSheet('#ecommerceTabButton {background:%s; border-radius:%dpx;}'
-                               % (_rgba(accent, 26), 8))
+            self.setStyleSheet(
+                '#ecommerceTabButton {background:%s; border:%dpx solid %s; border-radius:%dpx;}'
+                % (_rgba(accent, 20), px(1), accent.name(), px(8)))
             for label in (self.name_label, self.count_label):
                 label.setStyleSheet('color:%s; background:transparent;' % accent.name())
         else:
-            self.setStyleSheet('#ecommerceTabButton {background:transparent; border-radius:%dpx;}'
-                               % 8)
+            self.setStyleSheet(
+                '#ecommerceTabButton {background:%s; border:%dpx solid %s; border-radius:%dpx;}'
+                % (materials.surface_fill(0).name(), px(1),
+                   materials.ecommerce_color('task_border'), px(8)))
             self.name_label.setStyleSheet('color:%s; background:transparent;'
                                           % colors['text2'])
             self.count_label.setStyleSheet('color:%s; background:transparent;'
-                                           % colors['text1'])
+                                           % accent.name())
+        self.icon.set_active(self.active)
+
+    def resizeEvent(self, event):
+        self.setFixedHeight(px(40))
+        super().resizeEvent(event)
 
     def click(self):
         self.clicked.emit(self.key)
@@ -767,6 +833,59 @@ class _TabButton(QWidget):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
             self.clicked.emit(self.key)
         super().mouseReleaseEvent(event)
+
+
+class _TabIcon(QWidget):
+    """Painter icons avoid platform-dependent emoji glyph rendering."""
+
+    def __init__(self, key, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.setProperty('tabIcon', key)
+        self.setFixedSize(px(16), px(16))
+        self.active = False
+
+    def set_active(self, active):
+        self.active = bool(active)
+        self.setProperty('active', self.active)
+        self.update()
+
+    def paintEvent(self, event):
+        colors = materials.palette()
+        color = QColor(colors['accent'] if self.active else colors['text2'])
+        if not self.active and self.key == 'done':
+            color = QColor(materials.ecommerce_color('task_done'))
+        elif not self.active and self.key == 'issue':
+            color = QColor(materials.ecommerce_color('task_issue'))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(color, max(1, px(1.5)), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        bounds = QRectF(px(2), px(1), px(12), px(14))
+        if self.key == 'all':
+            painter.drawRoundedRect(bounds, px(2), px(2))
+            painter.drawLine(px(5), px(5), px(11), px(5))
+            painter.drawLine(px(5), px(8), px(11), px(8))
+            painter.drawLine(px(5), px(11), px(9), px(11))
+        elif self.key == 'generating':
+            painter.drawArc(QRectF(px(3), px(2), px(10), px(12)), 0, 180 * 16)
+            painter.drawArc(QRectF(px(3), px(2), px(10), px(12)), 180 * 16, 180 * 16)
+            painter.drawLine(px(5), px(4), px(11), px(4))
+            painter.drawLine(px(5), px(12), px(11), px(12))
+        elif self.key == 'done':
+            painter.drawRect(bounds)
+            painter.drawLine(px(4), px(8), px(7), px(11))
+            painter.drawLine(px(7), px(11), px(12), px(5))
+        else:
+            triangle = QPainterPath()
+            triangle.moveTo(px(8), px(1))
+            triangle.lineTo(px(15), px(14))
+            triangle.lineTo(px(1), px(14))
+            triangle.closeSubpath()
+            painter.drawPath(triangle)
+            painter.drawLine(px(8), px(5), px(8), px(9))
+            painter.drawPoint(px(8), px(12))
+        painter.end()
 
 
 class _GlassBar(CardWidget):
@@ -803,7 +922,6 @@ class EcommerceTaskList(QWidget):
         self.stage_text = stage_text if callable(stage_text) else (lambda status: str(status or ''))
         self._groups = []
         self._selected = set()
-        self._page = 0
         self._tab = 'all'
         self._manage_mode = False
         self._busy = False
@@ -811,19 +929,18 @@ class EcommerceTaskList(QWidget):
         self._groups_signature = ()
         self._chrome_signature = None
         self.cards = OrderedDict()
-        self.page_size = PAGE_SIZE
         self._row_widgets = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setSpacing(px(12))
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(12)
+        header.setSpacing(px(12))
         titles = QVBoxLayout()
         titles.setContentsMargins(0, 0, 0, 0)
-        titles.setSpacing(2)
+        titles.setSpacing(px(2))
         self.title_label = StrongBodyLabel(tr('电商图任务'), self)
         self.subtitle_label = _label(13)
         titles.addWidget(self.title_label)
@@ -833,16 +950,14 @@ class EcommerceTaskList(QWidget):
         self.cancel_button = PushButton(tr('取消'), self)
         self.batch_create_button = PushButton(tr('批量制作'), self)
         self.new_create_button = PrimaryPushButton(tr('+ 新建制作'), self)
-        self.refresh_button = PushButton(tr('刷新'), self)
         self.cancel_button.setVisible(False)
         self.manage_button.clicked.connect(lambda: self.set_manage_mode(True))
         self.cancel_button.clicked.connect(lambda: self.set_manage_mode(False))
         self.batch_create_button.clicked.connect(self.batch_create_requested)
         self.new_create_button.clicked.connect(self.new_create_requested)
-        self.refresh_button.clicked.connect(self.refresh_requested)
         for button in (self.manage_button, self.cancel_button, self.batch_create_button,
-                       self.new_create_button, self.refresh_button):
-            button.setMinimumHeight(30)
+                       self.new_create_button):
+            button.setFixedHeight(px(36))
             header.addWidget(button, 0, Qt.AlignVCenter)
         root.addLayout(header)
 
@@ -853,7 +968,7 @@ class EcommerceTaskList(QWidget):
 
         tabs = QHBoxLayout()
         tabs.setContentsMargins(0, 0, 0, 0)
-        tabs.setSpacing(2)
+        tabs.setSpacing(px(12))
         self.tab_buttons = OrderedDict()
         for key in TAB_KEYS:
             tab = _TabButton(key, self)
@@ -866,7 +981,7 @@ class EcommerceTaskList(QWidget):
         self.rows_host = QWidget(self)
         self.rows_layout = QVBoxLayout(self.rows_host)
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.rows_layout.setSpacing(10)
+        self.rows_layout.setSpacing(px(12))
         # 少量卡片也保持自然高度，不把视口剩余高度平均摊进各行。
         self.rows_layout.setAlignment(Qt.AlignTop)
         self.empty_label = _label(13, wrap=True)
@@ -879,27 +994,14 @@ class EcommerceTaskList(QWidget):
         self.rows_scroll.setFrameShape(QFrame.NoFrame)
         self.rows_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;}')
         self.rows_scroll.setWidget(self.rows_host)
+        self.rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root.addWidget(self.rows_scroll, 1)
-
-        pagination = QHBoxLayout()
-        pagination.setContentsMargins(0, 0, 0, 0)
-        pagination.setSpacing(10)
-        pagination.addStretch(1)
-        self.prev_button = PushButton(tr('上一页'), self)
-        self.page_label = _label(12)
-        self.next_button = PushButton(tr('下一页'), self)
-        self.prev_button.clicked.connect(lambda: self.set_page(self._page - 1))
-        self.next_button.clicked.connect(lambda: self.set_page(self._page + 1))
-        pagination.addWidget(self.prev_button)
-        pagination.addWidget(self.page_label)
-        pagination.addWidget(self.next_button)
-        pagination.addStretch(1)
-        root.addLayout(pagination)
 
         self.bottom_bar = _GlassBar(self)
         bar_layout = QHBoxLayout(self.bottom_bar)
-        bar_layout.setContentsMargins(14, 10, 14, 10)
-        bar_layout.setSpacing(10)
+        bar_layout.setContentsMargins(px(16), px(10), px(16), px(10))
+        bar_layout.setSpacing(px(10))
+        self.bottom_bar.setFixedHeight(px(52))
         self.selected_label = _label(12)
         self.select_page_button = PushButton(tr('全选本页'), self.bottom_bar)
         self.clear_selection_button = PushButton(tr('清空'), self.bottom_bar)
@@ -939,14 +1041,6 @@ class EcommerceTaskList(QWidget):
         self.set_tab(key)
 
     @property
-    def page_index(self):
-        return self._page
-
-    @property
-    def page_count(self):
-        return max(1, (len(self.filtered_groups()) + self.page_size - 1) // self.page_size)
-
-    @property
     def selection_total(self):
         return len(self._groups)
 
@@ -957,8 +1051,7 @@ class EcommerceTaskList(QWidget):
         return [group for group in self._groups if group.get('status') in statuses]
 
     def page_groups(self):
-        start = self._page * self.page_size
-        return self.filtered_groups()[start:start + self.page_size]
+        return self.filtered_groups()[:MAX_GROUPS]
 
     def groups(self):
         return list(self._groups)
@@ -976,8 +1069,10 @@ class EcommerceTaskList(QWidget):
         for group in groups or ():
             if isinstance(group, dict) and group.get('group_id'):
                 normalized.append(dict(group))
-        signature = tuple((group.get('group_id'), group.get('updated_at'),
-                           group.get('status'), deepcopy(group.get('totals')))
+        normalized = normalized[:MAX_GROUPS]
+        # Detect late edits that reuse an updated_at value while retaining
+        # the existing card widgets and their asynchronous thumbnail state.
+        signature = tuple((str(group.get('group_id')), repr(group))
                           for group in normalized)
         self._persistence_available = bool(persistence_available)
         self.notice_label.setVisible(not self._persistence_available)
@@ -986,7 +1081,6 @@ class EcommerceTaskList(QWidget):
         self._groups = normalized
         valid = {str(group['group_id']) for group in normalized}
         self._selected &= valid
-        self._page = max(0, min(self._page, self.page_count - 1))
         self._render()
         self._groups_signature = signature
 
@@ -1004,7 +1098,6 @@ class EcommerceTaskList(QWidget):
         if not enabled:
             self._selected.clear()
         self.manage_button.setVisible(not enabled)
-        self.refresh_button.setVisible(not enabled)
         self.cancel_button.setVisible(enabled)
         self.bottom_bar.setVisible(enabled)
         for card in self.cards.values():
@@ -1018,14 +1111,6 @@ class EcommerceTaskList(QWidget):
         if key not in TAB_STATUSES or key == self._tab:
             return
         self._tab = key
-        self._page = 0
-        self._render()
-
-    def set_page(self, index):
-        page = max(0, min(int(index), self.page_count - 1))
-        if page == self._page:
-            return
-        self._page = page
         self._render()
 
     def refresh_colors(self):
@@ -1043,7 +1128,6 @@ class EcommerceTaskList(QWidget):
         self.subtitle_label.setStyleSheet('color:%s; background:transparent;' % colors['text2'])
         self.notice_label.setStyleSheet('color:%s; background:transparent;' % colors['warning'])
         self.empty_label.setStyleSheet('color:%s; background:transparent;' % colors['text2'])
-        self.page_label.setStyleSheet('color:%s; background:transparent;' % colors['text2'])
         self.selected_label.setStyleSheet('color:%s; background:transparent;' % colors['text1'])
         _style_danger_primary(self.delete_selected_button)
         self.bottom_bar.update()
@@ -1061,10 +1145,7 @@ class EcommerceTaskList(QWidget):
             self.cancel_button.setText(tr('取消'))
             self.batch_create_button.setText(tr('批量制作'))
             self.new_create_button.setText(tr('+ 新建制作'))
-            self.refresh_button.setText(tr('刷新'))
             self.notice_label.setText(tr('数据库不可用，仅展示本次会话结果'))
-            self.prev_button.setText(tr('上一页'))
-            self.next_button.setText(tr('下一页'))
             self.select_page_button.setText(tr('全选本页'))
             self.clear_selection_button.setText(tr('清空'))
             self.empty_label.setText(self._empty_text())
@@ -1117,7 +1198,6 @@ class EcommerceTaskList(QWidget):
         return counts
 
     def _render(self):
-        self._page = max(0, min(self._page, self.page_count - 1))
         subtitle = tr('{count} 个制作任务').format(count=len(self._groups))
         if self.subtitle_label.text() != subtitle:
             self.subtitle_label.setText(subtitle)
@@ -1133,7 +1213,7 @@ class EcommerceTaskList(QWidget):
 
         groups = self.page_groups()
         ids = tuple(str(group['group_id']) for group in groups)
-        structure = (self._tab, self._page, ids)
+        structure = (self._tab, ids)
         if (structure != getattr(self, '_structure', None)
                 or len(self.cards) != len(ids)
                 or any(card_id not in self.cards for card_id in ids)):
@@ -1147,12 +1227,6 @@ class EcommerceTaskList(QWidget):
             self.empty_label.setText(empty_text)
         self.empty_label.setVisible(not groups)
 
-        page_text = tr('第 {current} / {total} 页').format(current=self._page + 1,
-                                                                     total=self.page_count)
-        if self.page_label.text() != page_text:
-            self.page_label.setText(page_text)
-        self.prev_button.setEnabled(self._page > 0)
-        self.next_button.setEnabled(self._page < self.page_count - 1)
         self._sync_bottom_bar()
         if self._chrome_signature != self._chrome_key():
             self._refresh_chrome()
@@ -1168,8 +1242,7 @@ class EcommerceTaskList(QWidget):
                 widget.deleteLater()
             self.cards = OrderedDict()
             for offset, group in enumerate(groups):
-                index = self._page * self.page_size + offset
-                card = EcommerceTaskCard(group, self, index=index)
+                card = EcommerceTaskCard(group, self, index=offset)
                 card.set_busy(self._busy)
                 card.checkbox.setVisible(self._manage_mode)
                 card.set_selected(card.group_id in self._selected)
@@ -1190,12 +1263,19 @@ class EcommerceTaskList(QWidget):
                 card = self.cards.get(group_id)
                 if card is None:
                     continue
-                card.update_group(dict(group), index=self._page * self.page_size + offset)
+                card.update_group(dict(group), index=offset)
                 card.checkbox.setVisible(self._manage_mode)
                 card.set_selected(group_id in self._selected)
         finally:
             self.setUpdatesEnabled(updates_enabled)
             self.update()
+
+    def resizeEvent(self, event):
+        # Cards may be constructed before the top-level window is shown; a
+        # panel resize gives them the final width needed for the narrow layout.
+        for card in self.cards.values():
+            card.resize(card.size())
+        super().resizeEvent(event)
 
     def _sync_bottom_bar(self):
         selected = len(self.selected_ids())

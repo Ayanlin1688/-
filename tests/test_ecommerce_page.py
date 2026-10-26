@@ -745,14 +745,14 @@ class EcommercePageTests(unittest.TestCase):
                                              name='' if index == 3 else f'商品{index}',
                                              states=('succeeded',) if status == 'succeeded' else ('failed',))
             records.append(group)
-        self.page.task_list.refresh_button.click()
+        self.page._refresh_history()
         QTest.qWait(10)
         groups = self.page.task_list.groups()
         self.assertEqual([group['group_id'] for group in groups],
                          [group['group_id'] for group in records[::-1]])
         cards = self.history_cards()
         self.assertEqual([card.status_badge.text() for card in cards],
-                         ['AI分析中', '失败', '部分成功', '已完成'])
+                         ['分析中', '出错', '部分·失败', '已完成'])
         self.assertEqual(cards[0].name_label.text(), records[-1]['group_id'][:8])
         self.assertEqual(cards[1].name_label.text(), '商品2')
         self.assertEqual([chip.text() for chip in cards[0].platform_chips],
@@ -798,7 +798,7 @@ class EcommercePageTests(unittest.TestCase):
 
         status = self.history_card(group['group_id']).status_badge.text()
         self.assertEqual(status, tr('上次运行未正常结束（程序中断）'))
-        self.assertNotEqual(status, tr('AI分析中'))
+        self.assertNotEqual(status, tr('分析中'))
 
     def test_history_item_progress_summarizes_raw_errors_and_preserves_diagnostics(self):
         cases = (
@@ -847,7 +847,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(len(groups), 50)
         self.assertEqual(groups[0]['group_id'], 'group-51')
         self.assertNotIn('group-00', [group['group_id'] for group in groups])
-        self.assertEqual(len(self.page.task_list.cards), self.page.task_list.page_size)
+        self.assertEqual(len(self.page.task_list.cards), 50)
         self.assertTrue(self.page.task_list.empty_label.isHidden())
         self.factory.assert_not_called()
 
@@ -933,7 +933,7 @@ class EcommercePageTests(unittest.TestCase):
         self.wait_until(entered.is_set)
         self.assertEqual(self.page.current_view_index(), self.page.SINGLE_VIEW)
         card = self.history_card(group['group_id'])
-        self.assertEqual(card.status_badge.text(), '图片生成中')
+        self.assertEqual(card.status_badge.text(), '生成中')
         self.assertFalse(card.view_button.isEnabled())
         self.assertFalse(card.resume_action.isEnabled())
         self.assertFalse(card.delete_button.isEnabled())
@@ -947,7 +947,7 @@ class EcommercePageTests(unittest.TestCase):
         self.wait_until(lambda: not self.page.busy)
         self.assertEqual(self.image.call_count, 1)
         card = self.history_card(group['group_id'])
-        self.assertEqual(card.status_badge.text(), '部分成功')
+        self.assertEqual(card.status_badge.text(), '部分·失败')
         self.assertIn('轮播图 3 张', card.counts_label.text())
         self.assertTrue(card.view_button.isEnabled())
         self.assertTrue(all(t == self.app.thread() for t in callback_threads))

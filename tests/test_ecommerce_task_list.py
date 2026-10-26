@@ -42,9 +42,9 @@ def solid_png(width, height, rgb):
 
 def stage_text(status):
     return {
-        'analyzing': tr('AI分析中'), 'generating': tr('图片生成中'),
-        'succeeded': tr('已完成'), 'partial': tr('部分成功'),
-        'failed': tr('失败'), 'cancelled': tr('已取消'),
+        'analyzing': tr('分析中'), 'generating': tr('生成中'),
+        'succeeded': tr('已完成'), 'partial': tr('部分·失败'),
+        'failed': tr('出错'), 'cancelled': tr('已取消'),
     }.get(status, status)
 
 
@@ -99,6 +99,20 @@ class EcommerceTaskListTestBase(unittest.TestCase):
 
 
 class EcommerceTaskCardTests(EcommerceTaskListTestBase):
+    def test_card_geometry_matches_reference_spec(self):
+        self.panel.update_groups([self.make_group(thumbs=[])])
+        self.panel.resize(1200, 900)
+        card = self.panel.cards['g1']
+        self.panel.show()
+        self.app.processEvents()
+        self.assertGreaterEqual(card.minimumHeight(), 170)
+        self.assertEqual([(thumb.width(), thumb.height()) for thumb in card.thumb_labels],
+                         [(88, 88)] * 3)
+        self.assertIn('background:transparent', card.index_label.styleSheet())
+        self.assertEqual(card.actions_host.width(), 88)
+        self.assertEqual([button.height() for button in (
+            card.view_button, card.preview_button, card.delete_button)], [30, 30, 30])
+
     def test_card_renders_name_platform_badge_counts_model_and_thumbs(self):
         group = self.make_group()
         self.panel.update_groups([group])
@@ -124,7 +138,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         colors = materials.palette()
         cases = (
             ('analyzing', 'accent'),
-            ('generating', 'warning'),
+            ('generating', 'accent'),
             ('succeeded', 'success'),
             ('partial', 'warning'),
             ('failed', 'error'),
@@ -196,7 +210,7 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
         self.panel.update_groups([refreshed])
         self.assertIs(self.panel.cards['g1'], card)
         self.assertEqual(card.name_label.text(), '改名商品')
-        self.assertEqual(card.status_badge.text(), tr('失败'))
+        self.assertEqual(card.status_badge.text(), tr('出错'))
         self.wait_for(lambda: card.thumb_count == 1)
         self.assertEqual(card.thumb_count, 1)
         self.assertIn(card.group_id, self.panel.cards)
@@ -214,6 +228,18 @@ class EcommerceTaskCardTests(EcommerceTaskListTestBase):
 
 
 class EcommerceTaskListFilterTests(EcommerceTaskListTestBase):
+    def test_filter_tabs_expose_painter_icon_and_active_properties(self):
+        self.panel.update_groups([self.make_group(thumbs=[])])
+        self.assertEqual(
+            [self.panel.tab_buttons[key].icon.property('tabIcon') for key in (
+                'all', 'generating', 'done', 'issue')],
+            ['all', 'generating', 'done', 'issue'])
+        self.assertTrue(self.panel.tab_buttons['all'].property('active'))
+        self.assertFalse(self.panel.tab_buttons['done'].property('active'))
+        self.panel.tab_buttons['done'].click()
+        self.assertTrue(self.panel.tab_buttons['done'].property('active'))
+        self.assertFalse(self.panel.tab_buttons['all'].property('active'))
+
     def test_tab_counts_and_filtering(self):
         statuses = ('analyzing', 'generating', 'succeeded', 'partial',
                     'failed', 'cancelled')
@@ -246,7 +272,7 @@ class EcommerceTaskListFilterTests(EcommerceTaskListTestBase):
         self.panel.update_groups([self.make_group(thumbs=[])])
         accent = materials.palette()['accent']
         rgba = 'rgba(%d,%d,%d,%d)' % (
-            int(accent[1:3], 16), int(accent[3:5], 16), int(accent[5:7], 16), 26)
+            int(accent[1:3], 16), int(accent[3:5], 16), int(accent[5:7], 16), 20)
         active = self.panel.tab_buttons['all']
         self.assertIn(rgba, active.styleSheet())
         self.assertNotIn(rgba, self.panel.tab_buttons['done'].styleSheet())
@@ -267,41 +293,16 @@ class EcommerceTaskListFilterTests(EcommerceTaskListTestBase):
 
 
 class EcommerceTaskListPaginationTests(EcommerceTaskListTestBase):
-    def test_pagination_navigation_and_page_offsets(self):
+    def test_full_list_is_scrollable_and_capped_at_fifty_groups(self):
         groups = [self.make_group(f'g{index:02d}', thumbs=[])
-                  for index in range(12)]
+                  for index in range(52)]
         self.panel.update_groups(groups)
-        self.assertEqual(self.panel.page_count, 2)
-        self.assertEqual(len(self.panel.cards), 10)
-        self.assertEqual(self.panel.page_label.text(),
-                         tr('第 {current} / {total} 页').format(current=1, total=2))
-        self.assertFalse(self.panel.prev_button.isEnabled())
-        self.assertTrue(self.panel.next_button.isEnabled())
+        self.assertEqual(len(self.panel.groups()), 50)
+        self.assertEqual(len(self.panel.cards), 50)
         self.assertEqual(self.panel.cards['g00'].index_label.text(), '1')
-        self.assertEqual(self.panel.cards['g09'].index_label.text(), '10')
-
-        self.panel.next_button.click()
-        self.assertEqual(self.panel.page_index, 1)
-        self.assertEqual(len(self.panel.cards), 2)
-        self.assertEqual(list(self.panel.cards), ['g10', 'g11'])
-        self.assertEqual(self.panel.cards['g10'].index_label.text(), '11')
-        self.assertEqual(self.panel.page_label.text(),
-                         tr('第 {current} / {total} 页').format(current=2, total=2))
-        self.assertTrue(self.panel.prev_button.isEnabled())
-        self.assertFalse(self.panel.next_button.isEnabled())
-
-        self.panel.prev_button.click()
-        self.assertEqual(len(self.panel.cards), 10)
-        self.assertEqual(self.panel.page_index, 0)
-
-    def test_page_clamped_when_groups_shrink(self):
-        groups = [self.make_group(f'g{index:02d}', thumbs=[]) for index in range(12)]
-        self.panel.update_groups(groups)
-        self.panel.next_button.click()
-        self.panel.update_groups(groups[:3])
-        self.assertEqual(self.panel.page_index, 0)
-        self.assertEqual(self.panel.page_label.text(),
-                         tr('第 {current} / {total} 页').format(current=1, total=1))
+        self.assertEqual(self.panel.cards['g49'].index_label.text(), '50')
+        self.assertEqual(self.panel.rows_scroll.horizontalScrollBarPolicy(),
+                         Qt.ScrollBarAlwaysOff)
 
 
 class EcommerceTaskListManageModeTests(EcommerceTaskListTestBase):
@@ -312,14 +313,12 @@ class EcommerceTaskListManageModeTests(EcommerceTaskListTestBase):
         self.panel.update_groups([self.manage_group()])
         self.assertFalse(self.panel.manage_button.isHidden())
         self.assertTrue(self.panel.cancel_button.isHidden())
-        self.assertFalse(self.panel.refresh_button.isHidden())
         self.assertTrue(self.panel.bottom_bar.isHidden())
 
         self.panel.manage_button.click()
         self.assertTrue(self.panel.manage_mode)
         self.assertTrue(self.panel.manage_button.isHidden())
         self.assertFalse(self.panel.cancel_button.isHidden())
-        self.assertTrue(self.panel.refresh_button.isHidden())
         self.assertFalse(self.panel.batch_create_button.isHidden())
         self.assertFalse(self.panel.new_create_button.isHidden())
         self.assertFalse(self.panel.bottom_bar.isHidden())
@@ -335,23 +334,18 @@ class EcommerceTaskListManageModeTests(EcommerceTaskListTestBase):
         self.panel.update_groups(groups)
         self.panel.set_manage_mode(True)
         self.panel._select_current_page()
-        self.assertEqual(len(self.panel.selected_ids()), 10)
+        self.assertEqual(len(self.panel.selected_ids()), 12)
         self.assertEqual(self.panel.selected_label.text(),
-                         tr('已选 {selected} / {total}').format(selected=10, total=12))
+                         tr('已选 {selected} / {total}').format(selected=12, total=12))
         self.assertEqual(self.panel.delete_selected_button.text(),
-                         tr('删除 {count} 个').format(count=10))
+                         tr('删除 {count} 个').format(count=12))
         self.assertTrue(self.panel.delete_selected_button.isEnabled())
-
-        self.panel.next_button.click()
-        self.assertEqual(len(self.panel.selected_ids()), 10)
-        self.panel._select_current_page()
         self.assertEqual(len(self.panel.selected_ids()), 12)
 
         self.panel.clear_selection_button.click()
         self.assertEqual(self.panel.selected_ids(), [])
         self.assertFalse(self.panel.delete_selected_button.isEnabled())
 
-        self.panel.prev_button.click()
         self.panel.cards['g03'].checkbox.setChecked(True)
         self.assertEqual(self.panel.selected_ids(), ['g03'])
         self.panel.set_tab('done')
@@ -458,17 +452,25 @@ class EcommerceTaskListDeleteTests(EcommerceTaskListTestBase):
 
 
 class EcommerceTaskListActionTests(EcommerceTaskListTestBase):
-    def test_overflow_menu_emits_resume_and_open(self):
+    def test_context_actions_emit_resume_and_open(self):
         self.panel.update_groups([self.make_group(status='partial', thumbs=[])])
         card = self.panel.cards['g1']
         resume = QSignalSpy(self.panel.resume_requested)
         opened = QSignalSpy(self.panel.open_requested)
-        self.assertIn(tr('继续生成（断点恢复）'), card.resume_action.text())
-        self.assertIn(tr('打开文件夹'), card.open_action.text())
-        card.resume_action.trigger()
-        card.open_action.trigger()
+        self.assertEqual(card.context_actions(), [tr('继续生成（断点恢复）'), tr('打开文件夹')])
+        self.assertTrue(card.trigger_context_action(tr('继续生成（断点恢复）')))
+        self.assertTrue(card.trigger_context_action(tr('打开文件夹')))
         self.assertEqual(list(resume[0]), ['g1'])
         self.assertEqual(list(opened[0]), ['g1'])
+
+    def test_selected_card_exposes_manage_state_property(self):
+        self.panel.update_groups([self.make_group(thumbs=[])])
+        card = self.panel.cards['g1']
+        self.assertFalse(card.property('selected'))
+        self.panel.set_manage_mode(True)
+        card.checkbox.setChecked(True)
+        self.assertTrue(card.property('selected'))
+        self.assertTrue(card.selected)
 
     def test_resume_action_only_enabled_for_resumable_statuses(self):
         self.panel.update_groups([
@@ -494,7 +496,7 @@ class EcommerceTaskListActionTests(EcommerceTaskListTestBase):
         card = self.panel.cards['g1']
         self.panel.set_busy(True)
         for button in (card.view_button, card.preview_button, card.delete_button,
-                       card.more_button):
+                       card.resume_action, card.open_action):
             self.assertFalse(button.isEnabled())
         self.assertFalse(card.resume_action.isEnabled())
         self.assertFalse(card.open_action.isEnabled())
@@ -507,13 +509,10 @@ class EcommerceTaskListActionTests(EcommerceTaskListTestBase):
         self.assertTrue(card.checkbox.isEnabled())
 
     def test_header_actions_emit(self):
-        refresh = QSignalSpy(self.panel.refresh_requested)
         batch = QSignalSpy(self.panel.batch_create_requested)
         new = QSignalSpy(self.panel.new_create_requested)
-        self.panel.refresh_button.click()
         self.panel.batch_create_button.click()
         self.panel.new_create_button.click()
-        self.assertEqual(len(refresh), 1)
         self.assertEqual(len(batch), 1)
         self.assertEqual(len(new), 1)
 
@@ -522,18 +521,14 @@ class EcommerceTaskListActionTests(EcommerceTaskListTestBase):
         self.assertEqual(self.panel.manage_button.text(), tr('管理'))
         self.assertEqual(self.panel.batch_create_button.text(), tr('批量制作'))
         self.assertEqual(self.panel.new_create_button.text(), tr('+ 新建制作'))
-        self.assertEqual(self.panel.refresh_button.text(), tr('刷新'))
         self.assertEqual(self.panel.select_page_button.text(), tr('全选本页'))
         self.assertEqual(self.panel.clear_selection_button.text(), tr('清空'))
-        self.assertEqual(self.panel.prev_button.text(), tr('上一页'))
-        self.assertEqual(self.panel.next_button.text(), tr('下一页'))
 
 
 class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
-    def test_identical_group_signature_preserves_cards_selection_page_and_manage_mode(self):
+    def test_identical_group_signature_preserves_cards_selection_and_manage_mode(self):
         groups = [self.make_group(f'g{index}', thumbs=[]) for index in range(12)]
         self.panel.update_groups(groups)
-        self.panel.set_page(1)
         self.panel.set_manage_mode(True)
         self.panel.cards['g10'].checkbox.setChecked(True)
         cards = dict(self.panel.cards)
@@ -542,10 +537,9 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
             self.panel.update_groups(groups, persistence_available=False)
         render.assert_not_called()
         rebuild.assert_not_called()
-        self.assertEqual(self.panel.page_index, 1)
         self.assertTrue(self.panel.manage_mode)
         self.assertEqual(self.panel.selected_ids(), ['g10'])
-        self.assertEqual(list(self.panel.cards), ['g10', 'g11'])
+        self.assertEqual(len(self.panel.cards), 12)
         self.assertTrue(all(self.panel.cards[key] is card for key, card in cards.items()))
         self.assertFalse(self.panel.notice_label.isHidden())
 
@@ -804,8 +798,8 @@ class EcommerceTaskListSmoothnessTests(EcommerceTaskListTestBase):
         started = time.perf_counter()
         self.panel.update_groups(groups)
         repeated = time.perf_counter() - started
-        self.assertEqual(len(self.panel.cards), self.panel.page_size)
-        self.assertLess(first, 0.4)
+        self.assertEqual(len(self.panel.cards), 50)
+        self.assertLess(first, 0.9)
         self.assertLess(repeated, 0.1)
         self.assertLessEqual(repeated, first * 0.5)
 
@@ -821,8 +815,6 @@ class EcommerceTaskListStateTests(EcommerceTaskListTestBase):
                          tr('数据库不可用，仅展示本次会话结果'))
         self.assertEqual(self.panel.subtitle_label.text(),
                          tr('{count} 个制作任务').format(count=0))
-        self.assertEqual(self.panel.page_label.text(),
-                         tr('第 {current} / {total} 页').format(current=1, total=1))
 
         self.panel.update_groups([self.make_group(thumbs=[])], persistence_available=True)
         self.assertTrue(self.panel.empty_label.isHidden())

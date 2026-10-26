@@ -365,6 +365,10 @@ EN_ECOMMERCE = {
     '选择画廊目录': 'Choose gallery folder',
     '选择该记录': 'Select this record',
     '部分·失败': 'Partial / Failed',
+    '分析中': 'Analyzing',
+    '出错': 'Error',
+    '继续生成（断点恢复）': 'Resume generation',
+    '打开文件夹': 'Open folder',
     '链接会下载到本地缓存目录，网络失败会给出中文提示':
         'Links are downloaded to the local cache; network failures are reported clearly',
     '风格参考图': 'Style reference',

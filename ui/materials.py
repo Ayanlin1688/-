@@ -531,6 +531,15 @@ ECOMMERCE_UI = {
     'video_creation_success': ('#22A65B', '#7FD69C'),
     'video_creation_error': ('#CB3C45', '#FF9EA6'),
     'video_creation_muted': ('#64748B', '#A9B1C1'),
+    # 电商任务列表
+    'task_border': ('#E9EDF5', '#303545'),
+    'task_done': ('#16A34A', '#7EDC9F'),
+    'task_issue': ('#F59E0B', '#F5C36B'),
+    'task_done_bg': ('#E8F7EE', '#1F3A2A'),
+    'task_active_bg': ('#EAF2FF', '#213B65'),
+    'task_issue_bg': ('#FFF4E5', '#4A351B'),
+    'task_failed_bg': ('#FEECEC', '#4A2428'),
+    'task_cancelled_bg': ('#F1F3F5', '#303545'),
 }
 
 

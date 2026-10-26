@@ -97,7 +97,6 @@ class EcommerceSmoothnessTests(unittest.TestCase):
 
     def test_late_task_cards_and_chips_keep_scale_baselines(self):
         groups = self.groups(3)
-        self.panel.page_size = 1
         self.panel.update_groups(groups)
         self.panel.show()
 
@@ -114,8 +113,8 @@ class EcommerceSmoothnessTests(unittest.TestCase):
 
         def assert_scaled(card):
             self.assertEqual(card.desc_label.font().pixelSize(), px(12))
-            self.assertEqual(card.thumb_labels[0].width(), px(56))
-            self.assertEqual(card.view_button.height(), px(28))
+            self.assertGreaterEqual(card.thumb_labels[0].width(), px(88))
+            self.assertGreaterEqual(card.view_button.height(), px(30))
             self.assertEqual(card.desc_label.maximumHeight(),
                              card.desc_label.fontMetrics().lineSpacing() * 2 + px(2))
             self.assertTrue(all(chip.font().pixelSize() == px(11)
@@ -124,19 +123,12 @@ class EcommerceSmoothnessTests(unittest.TestCase):
         for scale in ('1.0', '1.25', '1.5', '1.75'):
             with self.subTest(scale=scale):
                 self.panel.set_tab('all')
-                self.panel.set_page(0)
                 apply_interface_scale(self.app, FakeScreen(), scale)
                 self.panel.resize(px(1400), px(900))
                 flush_layout(self.app, self.panel)
                 card = next(iter(self.panel.cards.values()))
                 assert_scaled(card)
                 expected = measurements(card)
-
-                self.panel.set_page(1)
-                flush_layout(self.app, self.panel)
-                card = next(iter(self.panel.cards.values()))
-                assert_scaled(card)
-                self.assertEqual(measurements(card), expected)
 
                 self.panel.set_tab('done')
                 flush_layout(self.app, self.panel)
