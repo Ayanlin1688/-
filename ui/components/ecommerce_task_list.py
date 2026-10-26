@@ -1180,7 +1180,7 @@ class EcommerceTaskList(QWidget):
             'all': tr('全部'),
             'generating': tr('生成中'),
             'done': tr('已完成'),
-            'issue': tr('部分·失败'),
+            'issue': tr('部分/失败'),
         }.get(key, key)
 
     def _retranslate_tabs(self):

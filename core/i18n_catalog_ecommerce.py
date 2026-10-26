@@ -365,6 +365,7 @@ EN_ECOMMERCE = {
     '选择画廊目录': 'Choose gallery folder',
     '选择该记录': 'Select this record',
     '部分·失败': 'Partial / Failed',
+    '部分/失败': 'Partial / Failed',
     '分析中': 'Analyzing',
     '出错': 'Error',
     '继续生成（断点恢复）': 'Resume generation',
