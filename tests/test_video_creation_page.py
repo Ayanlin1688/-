@@ -15,7 +15,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication, QBoxLayout, QFrame, QToolButton
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtTest import QTest
-from qfluentwidgets import PushButton
+from qfluentwidgets import PushButton, ToolButton
 
 from core.config_manager import ConfigManager
 from core.i18n import set_language
@@ -156,9 +156,9 @@ class VideoCreationPageTests(unittest.TestCase):
 
     def test_history_action_tooltips_are_stable(self):
         row = _HistoryRow({'local_id': 'done-1', 'status': 'succeeded'}, self.page)
-        self.assertEqual(row.findChild(PushButton, 'videoHistoryRegenerate').toolTip(), '重新生成')
-        self.assertEqual(row.findChild(PushButton, 'videoHistoryFolder').toolTip(), '打开文件夹')
-        self.assertEqual(row.findChild(PushButton, 'videoHistoryDelete').toolTip(), '删除记录')
+        self.assertEqual(row.findChild(ToolButton, 'videoHistoryRegenerate').toolTip(), '重新生成')
+        self.assertEqual(row.findChild(ToolButton, 'videoHistoryFolder').toolTip(), '打开文件夹')
+        self.assertEqual(row.findChild(ToolButton, 'videoHistoryDelete').toolTip(), '删除记录')
         row.deleteLater()
         downloading = _HistoryRow({'local_id': 'downloading-1', 'status': 'downloading'}, self.page)
         self.assertEqual(downloading.status.text(), '下载中')

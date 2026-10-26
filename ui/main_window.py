@@ -7,9 +7,10 @@ import os
 import threading
 import time
 import math
+import logging
 
 from PyQt5.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath
-from PyQt5.QtCore import QAbstractEventDispatcher, QMargins, Qt, QTimer, QRect, QRectF, QEvent, QPointF, QSizeF
+from PyQt5.QtCore import QAbstractEventDispatcher, QElapsedTimer, QMargins, Qt, QTimer, QRect, QRectF, QEvent, QPointF, QSizeF
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import CaptionLabel, Dialog, FluentIcon as FIF, FluentWindow, InfoBar, NavigationItemPosition, Theme, setTheme, setThemeColor
 
@@ -28,9 +29,10 @@ from .pages.image_generation_page import ImageGenerationPage
 from .pages.video_creation_page import VideoCreationPage
 from .pages.settings_page import SettingsPage
 from .pages.workspace_page import WorkspacePage
-from .theme import style_controls, style_page, apply_palette
+from .theme import style_controls, style_page, apply_ui_mode
 from .materials import ACCENT, paint_background, paint_window_tint, window_background_snapshot, legacy_background_snapshot, ui_font_family
 from .motion import PageTransition
+from .components.navigation_icons import ShoppingBagIcon
 from .model_catalog_controller import ModelCatalogController
 from .scaling import screen_factors, apply_interface_scale
 from .tokens import px
@@ -46,10 +48,16 @@ class MainWindow(FluentWindow):
             ensure_ui_font()
             app.setFont(QFont(ui_font_family(), 9))
             app._yanlin_ui_font_initialized = True
-        apply_palette(app)
-        setTheme(Theme.DARK, save=False)
-        setThemeColor(QColor(ACCENT), save=False)
+        manager = config_manager or ConfigManager(migrate=True)
+        manager.load_config()
+        apply_ui_mode(manager.config.get('appearance', {}).get('theme', 'auto'))
         super().__init__()
+        # Every page uses the window's painted material. The native stacked
+        # container therefore needs no theme-dependent QSS; repolishing this
+        # ancestor on every theme change also repolishes every hidden page.
+        from qfluentwidgets.common.style_sheet import styleSheetManager
+        styleSheetManager.deregister(self.stackedWidget)
+        self.stackedWidget.setStyleSheet('StackedWidget {background:transparent; border:0;}')
         self._dpi_window_handle = None
         self._dpi_screen = None
         self._geometry_ready = False
@@ -65,11 +73,12 @@ class MainWindow(FluentWindow):
         self._glass_material = 'gradient'
         self._drag_background = None
         self.setMicaEffectEnabled(False)
-        self.setCustomBackgroundColor("#0A0B12", "#0A0B12")
+        from . import materials
+        initial_background = materials.palette()['bg1']
+        self.setCustomBackgroundColor(initial_background, initial_background)
         self._backdrop = WindowBackdrop(int(self.winId()), WindowsBackdropApi(
             available=QApplication.platformName() == 'windows'))
-        self.config_manager = config_manager or ConfigManager(migrate=True)
-        self.config_manager.load_config()
+        self.config_manager = manager
         # 语言须在界面构建前生效：否则构建期 tr() 拿不到配置语言（重启后英文也显示中文）。
         set_language(self.config_manager.config.get('appearance', {}).get('language', '简体中文'))
         # 记录最近一次已完整重翻的语言，避免 apply_appearance 与语言总线重复重翻。
@@ -84,9 +93,16 @@ class MainWindow(FluentWindow):
         self._setup_pages()
         self.stackedWidget.setAnimationEnabled(False)
         self.page_transition = PageTransition(self.stackedWidget)
+        self.page_transition.animation.setDuration(120)
+        # Native direct switching avoids two synchronous full-page snapshots.
+        # Keep the transition owner for cancellation/cleanup of existing callers.
+        self.stackedWidget.setCurrentWidget = self.page_transition._set_current
         # 两态导航：折叠 64px 图标栏 ↔ 展开 240px 文字导航（左上菜单按钮手动切换）。
         from . import tokens as design
         _nav_panel = self.navigationInterface.panel
+        # The native sliding indicator delays selection and paints a second,
+        # thin indicator over our filled selection. Commit selection at once.
+        _nav_panel.setIndicatorAnimationEnabled(False)
         self.navigationInterface.setMinimumExpandWidth(900)
         _nav_panel.setExpandWidth(design.NAV_EXPAND_WIDTH)
         _nav_panel.setMenuButtonVisible(True)
@@ -110,7 +126,8 @@ class MainWindow(FluentWindow):
         self._close_timer.setInterval(100)
         self._close_timer.timeout.connect(self._finish_close)
         self._setup_schedule(network_time)
-        for page in (self.workspace_page, self.ecommerce_page, self.history_page, self.settings_page):
+        for page in (self.workspace_page, self.image_generation_page, self.video_creation_page,
+                     self.ecommerce_page, self.history_page, self.settings_page):
             style_page(page)
         self._updateStackedBackground()
         style_controls(self)
@@ -145,6 +162,37 @@ class MainWindow(FluentWindow):
         self._restore_window_geometry()
         # 登记到语言总线：设置里切语言（set_language 广播）时整窗重翻。
         register_retranslate(self)
+        from . import materials
+        materials.register_theme_callback(self._refresh_theme_chrome)
+
+    def _refresh_theme_chrome(self):
+        from . import materials
+        bg = materials.palette()['bg1']
+        self.setCustomBackgroundColor(bg, bg)
+        self._apply_nav_style()
+        for item in self._nav_items:
+            item.update()
+
+    def switchTo(self, interface):
+        pending = getattr(self, '_first_frame_target', None)
+        if pending is not None:
+            pending[0].removeEventFilter(self)
+        timer = QElapsedTimer()
+        timer.start()
+        self._first_frame_target = (interface, timer)
+        interface.installEventFilter(self)
+        super().switchTo(interface)
+        interface.update()
+
+    def eventFilter(self, watched, event):
+        pending = getattr(self, '_first_frame_target', None)
+        if event.type() == QEvent.Paint and pending is not None and watched is pending[0]:
+            watched.removeEventFilter(self)
+            self._first_frame_target = None
+            # Run after this paint event has completed, including lazy QSS.
+            QTimer.singleShot(0, lambda name=watched.objectName(), timer=pending[1]:
+                              logging.getLogger(__name__).debug('页面首帧 %s: %d ms', name, timer.elapsed()))
+        return super().eventFilter(watched, event)
 
     @staticmethod
     def _bounded_geometry(rect, available, minimum):
@@ -274,7 +322,7 @@ class MainWindow(FluentWindow):
 
     def _retranslate_chrome(self):
         """语言切换即时生效：导航项 / 关于入口 / 菜单按钮提示。"""
-        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('图片生成'), tr('视频制作'), tr('电商图'), tr('任务历史'), tr('设置')]):
+        for item, text in zip(getattr(self, '_nav_items', []), [tr('工作台'), tr('图片生成'), tr('视频制作'), tr('电商图制作'), tr('任务历史'), tr('设置')]):
             try:
                 item.setText(text)
             except Exception:
@@ -393,15 +441,15 @@ class MainWindow(FluentWindow):
         from .tokens import MOTION
         from PyQt5.QtCore import QEasingCurve
         animation = self.navigationInterface.panel.expandAni
-        animation.setDuration(0 if config.get('reduce_motion', False) else MOTION['base'])
+        animation.setDuration(0 if config.get('reduce_motion', False) else 120)
         animation.setEasingCurve(QEasingCurve.OutCubic)
         try:
             from . import materials
             from .palettes import resolve
-            desired = resolve(config.get('theme', 'dark'))
+            desired = resolve(config.get('theme', 'auto'))
             if desired != materials.THEME_ID:
                 from .theme import apply_ui_mode
-                apply_ui_mode(config.get('theme', 'dark'))
+                apply_ui_mode(config.get('theme', 'auto'))
         except Exception:
             pass
         # 主题相关的窗口级外观：导航栏底色、自绘背景色、轨道指示条。
@@ -621,12 +669,12 @@ class MainWindow(FluentWindow):
 
     def _install_repaint_guard(self) -> None:
         guard = QTimer(self)
-        guard.setInterval(6000)
+        guard.setSingleShot(True)
+        guard.setInterval(120)
         guard.timeout.connect(self._integrity_repaint)
-        guard.start()
         self._repaint_guard = guard
         try:
-            self.stackedWidget.currentChanged.connect(lambda *_: QTimer.singleShot(160, self._integrity_repaint))
+            self.stackedWidget.currentChanged.connect(lambda *_: guard.start())
         except Exception:
             pass
 
@@ -762,24 +810,28 @@ class MainWindow(FluentWindow):
 
     @staticmethod
     def _decorate_rail_item(inner) -> None:
-        """Selected / hover chip background only.
-
-        The accent indicator bar is drawn natively from ``setIndicatorColor``
-        (see ``_rail_indicator_rect``); painting it here as well produced the
-        duplicated double-bar the user reported after switching pages.
-        """
-        original = inner.paintEvent
-
-        def paint(event, inner=inner, original=original):
+        """One blue rounded selection with consistently centred icons."""
+        def paint(event, inner=inner):
+            from . import materials
+            from qfluentwidgets import drawIcon
+            painter = QPainter(inner)
+            painter.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+            painter.setPen(Qt.NoPen)
             if inner.isSelected or inner.isEnter:
-                painter = QPainter(inner)
-                painter.setRenderHint(QPainter.Antialiasing)
-                painter.setPen(Qt.NoPen)
-                from .materials import ink
-                painter.setBrush(ink(12))
+                painter.setBrush(QColor(materials.ecommerce_color(
+                    'navigation_selected' if inner.isSelected else 'navigation_hover')))
                 painter.drawRoundedRect(QRectF(inner.rect()), px(8), px(8))
-                painter.end()
-            original(event)
+            color = (materials.ecommerce_color('navigation_selected_text')
+                     if inner.isSelected else materials.text_color(1))
+            side = px(16)
+            x = (inner.width() - side) / 2 if inner.isCompacted else px(16)
+            rect = QRectF(x, (inner.height() - side) / 2, side, side)
+            drawIcon(inner._icon, painter, rect, fill=color)
+            if not inner.isCompacted:
+                painter.setFont(inner.font()); painter.setPen(QColor(color))
+                painter.drawText(QRectF(px(44), 0, inner.width() - px(52), inner.height()),
+                                 Qt.AlignVCenter | Qt.AlignLeft, inner.text())
+            painter.end()
 
         inner.paintEvent = paint
 
@@ -1363,9 +1415,9 @@ class MainWindow(FluentWindow):
         self.history_page.clean_cache_requested.connect(self.workspace_page.clean_cache_now)
         self._nav_items = [
             self.addSubInterface(self.workspace_page, FIF.HOME, tr('工作台')),
-            self.addSubInterface(self.image_generation_page, FIF.IMAGE_EXPORT, tr('图片生成')),
-            self.addSubInterface(self.video_creation_page, FIF.VIDEO, tr('视频制作')),
-            self.addSubInterface(self.ecommerce_page, FIF.PHOTO, tr('电商图')),
+            self.addSubInterface(self.image_generation_page, FIF.PHOTO, tr('图片生成')),
+            self.addSubInterface(self.video_creation_page, FIF.CAMERA, tr('视频制作')),
+            self.addSubInterface(self.ecommerce_page, ShoppingBagIcon(), tr('电商图制作')),
             self.addSubInterface(self.history_page, FIF.HISTORY, tr('任务历史')),
             self.addSubInterface(self.settings_page, FIF.SETTING, tr('设置')),
         ]

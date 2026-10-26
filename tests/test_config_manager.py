@@ -14,10 +14,29 @@ class ConfigManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = ConfigManager(Path(temp_dir) / "config.json").load_config()
 
-        self.assertEqual(set(config), set(DEFAULT_CONFIG))
+        self.assertEqual(set(config), set(DEFAULT_CONFIG) | {'migrations'})
+        self.assertTrue(config['migrations']['r10_theme_auto'])
         self.assertEqual(config["workspace"]["duration"], 8)
-        self.assertEqual(config["appearance"]["theme"], "dark")
+        self.assertEqual(config["appearance"]["theme"], "auto")
         self.assertEqual(len(config["model_pool"]["models"]), 3)
+
+    def test_system_theme_migration_runs_once_and_preserves_new_choices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({'appearance': {'theme': 'dark'}}), encoding='utf-8')
+            manager = ConfigManager(path)
+            self.assertEqual(manager.load_config()['appearance']['theme'], 'auto')
+            self.assertTrue(manager.config['migrations']['r10_theme_auto'])
+            manager.update(('appearance', 'theme'), 'dark')
+            self.assertEqual(ConfigManager(path).load_config()['appearance']['theme'], 'dark')
+
+    def test_new_install_explicit_dark_choice_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            manager = ConfigManager(path)
+            manager.load_config()
+            manager.update(('appearance', 'theme'), 'dark')
+            self.assertEqual(ConfigManager(path).load_config()['appearance']['theme'], 'dark')
 
     def test_update_and_round_trip_preserves_nested_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:

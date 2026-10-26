@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 
 from core import i18n
 from core.config_manager import ConfigManager
+from ui import materials
 from tests.qt_scale_support import flush_layout, reset_interface_scaling
 
 
@@ -24,9 +25,9 @@ class NavigationLayoutTests(unittest.TestCase):
         'historyPage',
         'settingsPage',
     )
-    ZH_LABELS = ('工作台', '图片生成', '视频制作', '电商图', '任务历史', '设置')
+    ZH_LABELS = ('工作台', '图片生成', '视频制作', '电商图制作', '任务历史', '设置')
     EN_LABELS = ('Workspace', 'Image generation', 'Video creation',
-                 'Ecommerce Images', 'History', 'Settings')
+                 'Ecommerce Image Maker', 'History', 'Settings')
 
     @classmethod
     def setUpClass(cls):
@@ -110,6 +111,28 @@ class NavigationLayoutTests(unittest.TestCase):
             with self.subTest(collapsed=collapsed):
                 self._set_collapsed(collapsed)
                 self._assert_geometry(self.EN_LABELS)
+
+    def test_selection_is_immediate_and_filled_in_both_modes(self):
+        for collapsed in (True, False):
+            self._set_collapsed(collapsed)
+            for route in self.ROUTES:
+                page = next(self.window.stackedWidget.widget(i)
+                            for i in range(self.window.stackedWidget.count())
+                            if self.window.stackedWidget.widget(i).objectName() == route)
+                self.window.switchTo(page)
+                item = self.window.navigationInterface.widget(route)
+                inner = getattr(item, 'itemWidget', item)
+                self.assertTrue(inner.isSelected, (collapsed, route))
+                image = inner.grab().toImage()
+                color = image.pixelColor(image.width() // 2, 6).name().upper()
+                self.assertEqual(color, materials.ecommerce_color('navigation_selected').upper())
+
+    def test_ecommerce_uses_a_shopping_bag_outline(self):
+        from ui.components.navigation_icons import ShoppingBagIcon
+        item = self.window.navigationInterface.widget('ecommercePage')
+        inner = getattr(item, 'itemWidget', item)
+        self.assertIsInstance(inner._icon, ShoppingBagIcon)
+        self.assertFalse(inner._icon.icon().isNull())
 
 
 if __name__ == '__main__':

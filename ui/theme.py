@@ -93,9 +93,9 @@ def apply_palette(app, light=None):
 _MODE_STYLED = []
 
 
-def _theme_rules(kind):
+def _theme_rules(kind, th=None):
     """控件样式规则：颜色全部来自当前主题调色板。"""
-    th = materials.palette()
+    th = th or materials.palette()
     light = bool(th['light'])
     ir, ig, ib = th['ink']
     ar, ag, ab = th['accent_rgb']
@@ -152,18 +152,48 @@ def _theme_rules(kind):
 
 
 def _set_control_rules(widget, kind):
-    rules = _theme_rules(kind)
-    if rules:
-        setCustomStyleSheet(widget, rules, rules)
+    # Store both variants once; Fluent chooses the right variant in its one
+    # theme pass. Reinstall only when the user's accent palette changes.
+    active = materials.palette()
+    signature = (kind, active['id'] if active['id'] not in ('light', 'dark') else 'standard')
+    if getattr(widget, '_studio_rule_signature', None) == signature:
+        return
+    from .palettes import THEMES
+    light, dark = dict(THEMES['light']), dict(THEMES['dark'])
+    if active['id'] not in ('light', 'dark'):
+        for variant in (light, dark):
+            variant.update(accent=active['accent'], accent_rgb=active['accent_rgb'])
+    rules = (_theme_rules(kind, light), _theme_rules(kind, dark))
+    if any(rules):
+        setCustomStyleSheet(widget, *rules)
+        widget._studio_rule_signature = signature
 
 
 def _register_mode_widget(widget, kind):
+    registered = getattr(widget, '_studio_mode_kinds', set())
+    if kind in registered:
+        return
+    widget._studio_mode_kinds = registered | {kind}
     _MODE_STYLED.append((weakref.ref(widget), kind))
+
+
+def _style_settings_rail(widget):
+    th = materials.palette()
+    widget.setStyleSheet(
+        '#settingsRail {background:transparent; border-right:1px solid %s;}'
+        '#settingsRail QPushButton {border:0; border-radius:8px; text-align:left; '
+        'padding:10px 14px; background:transparent; color:%s;}'
+        '#settingsRail QPushButton:hover {background:%s;}'
+        '#settingsRail QPushButton[railActive="true"] {background:%s; color:%s; font-weight:600;}'
+        % (materials.ecommerce_color('single_card_border'), th['text2'],
+           materials.ecommerce_color('navigation_hover'),
+           materials.ecommerce_color('navigation_hover'), th['text1']))
 
 
 def refresh_mode_styles():
     light = materials.is_light()
     th = materials.palette()
+    live = []
     for ref, kind in list(_MODE_STYLED):
         widget = ref()
         if widget is None:
@@ -172,8 +202,20 @@ def refresh_mode_styles():
             if kind == 'group':
                 widget.titleLabel.setStyleSheet('color:%s; font-size:18px; font-weight:600;' % th['text1'])
             elif kind == 'caption2':
-                color = QColor(th['text2'])
-                widget.setTextColor(color, color)
+                # Standard modes already have a Fluent light/dark pair.
+                # Only custom palettes need a different secondary text pair.
+                light_text = materials.THEMES['light']['text2']
+                dark_text = materials.THEMES['dark']['text2']
+                if th['id'] not in ('light', 'dark'):
+                    if light:
+                        light_text = th['text2']
+                    else:
+                        dark_text = th['text2']
+                if (widget.lightColor != QColor(light_text) or
+                        widget.darkColor != QColor(dark_text)):
+                    widget.setTextColor(QColor(light_text), QColor(dark_text))
+            elif kind == 'settingsrail':
+                _style_settings_rail(widget)
             elif kind == 'progress':
                 accent = QColor(th['accent'])
                 widget.setCustomBarColor(accent, accent)
@@ -190,25 +232,31 @@ def refresh_mode_styles():
             elif kind == 'scrollbar':
                 widget.handle.setDarkColor(QColor(*th['ink'], 64 if light else 38))
                 widget.groove.darkBackgroundColor = QColor(0, 0, 0, 0)
+            elif kind == 'native_scrollbar':
+                widget.setStyleSheet(scroll_style())
             elif kind == 'page':
                 opaque = bool(widget.property('studioOpaque'))
-                widget.setStyleSheet(_page_stylesheet(widget, opaque))
+                rules = _page_stylesheet(widget, opaque)
+                if widget.styleSheet() != rules:
+                    widget.setStyleSheet(rules)
             else:
                 _set_control_rules(widget, kind)
+            live.append((ref, kind))
         except RuntimeError:
             continue
+    _MODE_STYLED[:] = live
 
 
-def apply_ui_mode(theme_id='dark'):
+def apply_ui_mode(theme_id='auto'):
     """切换主题：全局调色板、Fluent 主题、注册控件与窗口重绘一次做完。"""
     active = materials.apply_theme_tokens(theme_id)
     light = materials.is_light()
     try:
-        setTheme(Theme.LIGHT if light else Theme.DARK, save=False)
-    except Exception:
-        pass
-    try:
-        setThemeColor(QColor(materials.palette()['accent']), save=False)
+        # Set the accent before the one Fluent refresh; hidden controls are
+        # polished on their next show by Fluent's built-in dirty-qss watcher.
+        from qfluentwidgets import qconfig
+        qconfig.set(qconfig.themeColor, QColor(materials.palette()['accent']), save=False)
+        setTheme(Theme.LIGHT if light else Theme.DARK, save=False, lazy=True)
     except Exception:
         pass
     app = QApplication.instance()
@@ -254,6 +302,9 @@ def style_controls(root):
             continue
         widget.setProperty('studioStyled', True)
         kind = None
+        if widget.objectName() == 'settingsRail':
+            _style_settings_rail(widget)
+            _register_mode_widget(widget, 'settingsrail')
         if isinstance(widget, PrimaryPushButton):
             kind = 'primary'
         elif isinstance(widget, PushButton):
@@ -281,7 +332,7 @@ def style_controls(root):
             widget._createComboMenu = MethodType(studio_combo_menu, widget)
         if isinstance(widget, (PushButton, ToolButton, ComboBox)) and widget.__class__.__name__ != 'Indicator':
             widget._studio_motion = WidgetMotion(widget, primary=isinstance(widget, PrimaryPushButton))
-        if isinstance(widget, (CardWidget, SettingCard)):
+        if isinstance(widget, CardWidget) and not isinstance(widget, SettingCard):
             widget._studio_motion = WidgetMotion(widget, card=True)
         if isinstance(widget, ProgressBar):
             _accent = QColor(materials.palette()['accent'])
@@ -312,13 +363,14 @@ def style_controls(root):
         if isinstance(widget, CaptionLabel):
             font = widget.font(); font.setPixelSize(12); widget.setFont(font)
             if not widget.text().startswith('●') and not widget.property('statusTone') and widget.text() not in {tr(text) for text in _STATUS_TEXTS}:
-                widget.setTextColor(SECONDARY, SECONDARY)
+                widget.setTextColor(QColor(materials.THEMES['light']['text2']),
+                                    QColor(materials.THEMES['dark']['text2']))
                 _register_mode_widget(widget, 'caption2')
         elif isinstance(widget, StrongBodyLabel):
             font = widget.font(); font.setPixelSize(14 if widget.parentWidget().__class__.__name__ in ('TaskQueueRow', 'TaskGroupHeader', 'RecentCompletedRow') else 18)
             font.setBold(True); widget.setFont(font)
         elif isinstance(widget, TitleLabel):
-            font = widget.font(); font.setPixelSize(28); font.setBold(True); widget.setFont(font)
+            font = widget.font(); font.setPixelSize(widget.property('studioTitleSize') or 28); font.setBold(True); widget.setFont(font)
         if widget.__class__.__name__ in ('ScrollBar', 'SmoothScrollBar') and hasattr(widget, 'handle'):
             widget.handle.setDarkColor(QColor(*materials.palette()['ink'], 64 if materials.is_light() else 38))
             widget.groove.darkBackgroundColor = QColor(0,0,0,0)
@@ -337,7 +389,7 @@ def _page_stylesheet(page, opaque_window):
         background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %s,stop:1 %s)' % (th['bg1'], th['bg2'])
     return ("#%s {background:%s;}"
             "QScrollArea, #settingsContent {background:transparent; border:0;}"
-            "QSplitter::handle {background:transparent;}%s") % (page.objectName(), background, scroll_style())
+            "QSplitter::handle {background:transparent;}") % (page.objectName(), background)
 
 
 def style_page(page, opaque_window=None):
@@ -352,6 +404,9 @@ def style_page(page, opaque_window=None):
     _register_mode_widget(page, 'page')
     page.setProperty('isStackedTransparent', True)
     for area in page.findChildren(QAbstractScrollArea):
+        for bar in (area.verticalScrollBar(), area.horizontalScrollBar()):
+            bar.setStyleSheet(scroll_style())
+            _register_mode_widget(bar, 'native_scrollbar')
         area.viewport().setAutoFillBackground(False)
         # QScrollArea.setWidget enables autoFillBackground on its content.
         # Clear it as well so the window gradient shows between the cards.

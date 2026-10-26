@@ -25,7 +25,7 @@ try:
     from PyQt5.QtMultimediaWidgets import QVideoWidget
 except ImportError:  # pragma: no cover - optional multimedia backend
     QMediaContent = QMediaPlayer = QVideoWidget = None
-from qfluentwidgets import ComboBox, InfoBar, LineEdit, PrimaryPushButton, PushButton, StrongBodyLabel, TitleLabel, FluentIcon as FIF
+from qfluentwidgets import ComboBox, InfoBar, LineEdit, PrimaryPushButton, PushButton, StrongBodyLabel, TitleLabel, ToolButton, setCustomStyleSheet, FluentIcon as FIF
 
 from core.i18n import register_retranslate, tr
 from core.line_routing import resolve_line
@@ -119,7 +119,7 @@ class _VideoCard(QFrame):
     def refresh_colors(self):
         self.setStyleSheet(
             'QFrame#%s {background:%s; border:1px solid %s; border-radius:%dpx;}'
-            % (self.objectName(), _color('video_creation_surface'), _color('video_creation_border'), px(12)))
+            % (self.objectName(), _color('video_creation_surface'), _color('video_creation_border'), px(16)))
 
 
 class _ReferenceImageDropZone(QFrame):
@@ -194,14 +194,25 @@ class _HistoryRow(QFrame):
             (FIF.DELETE, self.delete_requested, 'videoHistoryDelete', tr('删除记录')),
         )
         for icon, signal, name, tooltip in actions:
-            button = PushButton(icon, '', self); button.setObjectName(name); button.setFixedSize(px(30), px(30)); button.setToolTip(tooltip); button.clicked.connect(lambda _=False, s=signal: s.emit(self.record)); layout.addWidget(button)
+            button = ToolButton(icon, self); button.setObjectName(name); button.setIconSize(QSize(px(16), px(16))); button.setFixedSize(px(30), px(30)); button.setToolTip(tooltip); button.clicked.connect(lambda _=False, s=signal: s.emit(self.record)); layout.addWidget(button)
         self._refresh_style()
 
+    def retranslate_ui(self):
+        statuses = {'pending': '等待中', 'running': '生成中', 'processing': '生成中',
+                    'downloading': '下载中', 'succeeded': '已完成', 'completed': '已完成',
+                    'failed': '失败', 'cancelled': '已取消'}
+        self.status.setText(tr(statuses.get(str(self.record.get('status') or '').lower(), '等待中')))
+        for name, text in [('videoHistoryRegenerate', '重新生成'),
+                           ('videoHistoryFolder', '打开文件夹'), ('videoHistoryDelete', '删除记录')]:
+            self.findChild(ToolButton, name).setToolTip(tr(text))
+
     def _refresh_style(self):
-        self.setStyleSheet('QFrame#videoHistoryRow {background:%s; border:1px solid %s; border-radius:%dpx;} QLabel#videoHistoryThumb {background:%s; color:%s; border-radius:%dpx;}' % (_color('video_creation_surface'), _color('video_creation_border'), px(8), _color('video_creation_preview_bg'), _color('video_creation_muted'), px(6)))
+        self.setStyleSheet('QFrame#videoHistoryRow {background:%s; border:1px solid %s; border-radius:%dpx;} QLabel#videoHistoryThumb {background:%s; color:%s; border-radius:%dpx;} QPushButton {padding:0;}' % (_color('video_creation_surface'), _color('video_creation_border'), px(8), _color('video_creation_preview_bg'), _color('video_creation_muted'), px(6)))
+        self.findChild(QLabel, 'videoHistoryMeta').setStyleSheet('color:%s;' % _color('video_creation_muted'))
+        self.status.setStyleSheet('color:%s;' % materials.text_color(1))
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and not any(button.geometry().contains(event.pos()) for button in self.findChildren(PushButton)):
+        if event.button() == Qt.LeftButton and not any(button.geometry().contains(event.pos()) for button in self.findChildren(ToolButton)):
             self.clicked.emit(self.record)
         super().mouseReleaseEvent(event)
 
@@ -291,8 +302,11 @@ class VideoCreationPage(QWidget):
         super().__init__(parent); self.setObjectName('videoCreationPage'); self.config_manager = config_manager
         self._workers, self._worker, self._manager, self.manager_factory = [], None, None, None
         self._tasks = {}; self._history_records = []; self._history_page = 1; self._history_query = ''
-        self._build_ui(); self.select_all_history.toggled.connect(self._toggle_select_all_history); self._load_config_defaults(); self._refresh_models(getattr(self, '_configured_model', '')); self._update_form_state(); self.refresh_history()
+        self._history_dirty = True
+        self._build_ui(); self.select_all_history.toggled.connect(self._toggle_select_all_history); self._load_config_defaults(); self._refresh_models(getattr(self, '_configured_model', '')); self._update_form_state()
         style_page(self); style_controls(self); register_retranslate(self)
+        materials.register_theme_callback(self.refresh_colors)
+        self.refresh_colors()
 
     @property
     def busy(self): return self.has_running_workers()
@@ -300,9 +314,9 @@ class VideoCreationPage(QWidget):
     def _build_ui(self):
         self.setMinimumWidth(0); root = scrollable_body(self); self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.body_content.setMinimumWidth(0); self.body_content.installEventFilter(self)
         root.setContentsMargins(px(26), px(16), px(26), px(20)); root.setSpacing(px(16))
-        header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.setSpacing(px(4)); self.title_label = TitleLabel(tr('视频创作'), self); self.caption_label = QLabel(tr('把想法写成画面，从这里开始。'), self); self.caption_label.setObjectName('videoCreationCaption'); title_box.addWidget(self.title_label); title_box.addWidget(self.caption_label); header.addLayout(title_box); header.addStretch(1)
+        header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.setSpacing(px(4)); self.title_label = TitleLabel(tr('视频创作'), self); self.title_label.setProperty('studioTitleSize', 20); self.caption_label = QLabel(tr('把想法写成画面，从这里开始。'), self); self.caption_label.setObjectName('videoCreationCaption'); title_box.addWidget(self.title_label); title_box.addWidget(self.caption_label); header.addLayout(title_box); header.addStretch(1)
         self.workspace_link = PushButton(FIF.DOCUMENT, tr('AI 视频工作台'), self); self.workspace_link.setObjectName('videoWorkspaceLink'); self.workspace_link.clicked.connect(self.navigate_workspace.emit); header.addWidget(self.workspace_link); root.addLayout(header)
-        self.body_layout = QBoxLayout(QBoxLayout.LeftToRight); self.body_layout.setSpacing(px(20));
+        self.body_layout = QBoxLayout(QBoxLayout.LeftToRight); self.body_layout.setSpacing(px(24));
         self.left_column = QWidget(self); self.left_column.setMinimumWidth(0); self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); left = QVBoxLayout(self.left_column); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(px(12)); left.addWidget(self._build_settings_card(), 1); self.body_layout.addWidget(self.left_column, 0)
         self.right_column = QWidget(self); self.right_column.setMinimumWidth(0); self.right_column.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred); right = QVBoxLayout(self.right_column); right.setContentsMargins(0, 0, 0, 0); right.setSpacing(px(12)); right.addWidget(self._build_preview_card(), 0); right.addWidget(self._build_history_card(), 1); self.body_layout.addWidget(self.right_column, 1); root.addLayout(self.body_layout, 1); self._fit_columns()
 
@@ -310,6 +324,7 @@ class VideoCreationPage(QWidget):
         card = _VideoCard('videoCreationSettingsCard', self.left_column); card.setMinimumWidth(0); card.setMaximumWidth(px(372)); card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); layout = QVBoxLayout(card); layout.setContentsMargins(px(16), px(16), px(16), px(16)); layout.setSpacing(px(12))
         head = QHBoxLayout(); text = QVBoxLayout(); self.settings_title = StrongBodyLabel(tr('🎬 创作设置'), card); self.settings_caption = QLabel(tr('选择模型，描述你的画面'), card); text.addWidget(self.settings_title); text.addWidget(self.settings_caption); head.addLayout(text, 1); self.settings_toggle = QToolButton(card); self.settings_toggle.setText('⌃'); self.settings_toggle.setCheckable(True); self.settings_toggle.setChecked(True); self.settings_toggle.clicked.connect(self._toggle_settings); head.addWidget(self.settings_toggle); layout.addLayout(head)
         self.settings_body = QWidget(card); body = QVBoxLayout(self.settings_body); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(px(12));
+        layout.setAlignment(Qt.AlignTop); body.setAlignment(Qt.AlignTop)
         self.model_label = QLabel(tr('🎬 视频模型'), self.settings_body); body.addWidget(self.model_label); self.model_combo = ComboBox(self.settings_body); self.model_combo.setObjectName('videoModelCombo'); self.model_selector = self.model_combo; self.model_combo.currentIndexChanged.connect(self._model_changed); self.model_combo.currentIndexChanged.connect(lambda _index: self._update_form_state()); body.addWidget(self.model_combo)
         api_row = QHBoxLayout(); self.api_label = QLabel(tr('🔗 API 连接'), self.settings_body); api_row.addWidget(self.api_label); api_row.addStretch(1); self.api_status = QLabel(self._api_status_text(), self.settings_body); self.api_status.setObjectName('videoApiStatus'); api_row.addWidget(self.api_status); self._style_api_status(); self.api_button = QToolButton(self.settings_body); self.api_button.setText('›'); self.api_button.clicked.connect(self.open_settings_requested.emit); api_row.addWidget(self.api_button); body.addLayout(api_row)
         self.mode_label = QLabel(tr('⚙ 生成模式'), self.settings_body); body.addWidget(self.mode_label); mode_row = QHBoxLayout(); self.text_mode_button = PushButton(tr('文生视频'), self.settings_body); self.text_mode_button.setCheckable(True); self.text_mode_button.setChecked(True); self.reference_mode_button = PushButton(tr('参考素材'), self.settings_body); self.reference_mode_button.setCheckable(True); mode_row.addWidget(self.text_mode_button); mode_row.addWidget(self.reference_mode_button); self.text_mode_button.clicked.connect(lambda: self._set_mode('text')); self.reference_mode_button.clicked.connect(lambda: self._set_mode('reference')); body.addLayout(mode_row)
@@ -317,7 +332,7 @@ class VideoCreationPage(QWidget):
         self.prompt_edit = QPlainTextEdit(self.settings_body); self.prompt_edit.setObjectName('videoPromptEdit'); self.description_edit = self.prompt_edit; self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.prompt_edit.setFixedHeight(px(150)); self.prompt_edit.textChanged.connect(self._prompt_text_changed); body.addWidget(self.prompt_edit); self.expand_prompt_button.clicked.connect(self._expand_prompt); self.copy_prompt_button.clicked.connect(self._copy_prompt)
         self.reference_panel = self._build_reference_panel(self.settings_body); body.addWidget(self.reference_panel)
         self.parameters_panel = self._build_parameters_panel(self.settings_body); body.addWidget(self.parameters_panel)
-        self.generate_button = PrimaryPushButton(FIF.PLAY, tr('▶ 生成视频 ×1'), self.settings_body); self.generate_button.setObjectName('videoGenerateButton'); self.generate_button.setFixedHeight(px(44)); self.generate_button.clicked.connect(self.submit_generation); body.addWidget(self.generate_button); layout.addWidget(self.settings_body); self._set_mode('text'); return card
+        self.generate_button = PrimaryPushButton(FIF.PLAY, tr('▶ 生成视频 ×1'), self.settings_body); self.generate_button.setObjectName('videoGenerateButton'); self.generate_button.setFixedHeight(px(44)); self.generate_button.clicked.connect(self.submit_generation); body.addWidget(self.generate_button); body.addStretch(1); layout.addWidget(self.settings_body); self._set_mode('text'); return card
 
     def _build_reference_panel(self, parent):
         panel = QWidget(parent); layout = QVBoxLayout(panel); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(px(8)); self.reference_images = []; self.reference_videos = []; self.reference_audios = []
@@ -425,7 +440,12 @@ class VideoCreationPage(QWidget):
         return super().eventFilter(watched, event)
 
     def _fit_columns(self):
-        available = self.body_content.width() if getattr(self, 'body_content', None) else self.width(); stacked = available < px(1180); direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
+        available = self.body_content.width() if getattr(self, 'body_content', None) else self.width()
+        margins = self.body_content.layout().contentsMargins()
+        available -= margins.left() + margins.right()
+        stacked = available < px(980)
+        self.body_layout.setSpacing(px(24))
+        direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
         if self.body_layout.direction() != direction: self.body_layout.setDirection(direction)
         if stacked:
             self.left_column.setMinimumWidth(0); self.left_column.setMaximumWidth(16777215); self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -569,9 +589,10 @@ class VideoCreationPage(QWidget):
         if kind == 'video': paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考视频'), '', tr('视频 (*.mp4 *.webm *.mov)')); self.reference_videos = [str(path) for path in paths[:3]]
         else: paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考音频'), '', tr('音频 (*.mp3 *.wav *.m4a *.aac *.ogg)')); self.reference_audios = [str(path) for path in paths[:3]]
         self._sync_reference_labels()
-    def _sync_reference_labels(self):
+    def _sync_reference_labels(self, rebuild=True):
         self.reference_images_label.setText(tr('参考图片（{n}/3）').format(n=len(self.reference_images))); self.reference_videos_label.setText(tr('参考视频（{n}/3）').format(n=len(self.reference_videos))); self.reference_audios_label.setText(tr('参考音频（{n}/3）').format(n=len(self.reference_audios)))
-        self._rebuild_reference_images()
+        if rebuild:
+            self._rebuild_reference_images()
 
     def _refresh_models(self, selected=''):
         self._records = _video_records(self.config_manager); current = selected or self.model_combo.currentData() or ''; blocker = QSignalBlocker(self.model_combo); self.model_combo.clear()
@@ -878,6 +899,7 @@ class VideoCreationPage(QWidget):
             return get_manual_video_store(self.config_manager, log=getattr(self.config_manager, 'log_callback', None))
         except Exception: return None
     def refresh_history(self):
+        self._history_dirty = False
         store = self._history_store(); records = []
         try: records = store.list(limit=20) if store is not None else []
         except Exception: records = []
@@ -946,10 +968,28 @@ class VideoCreationPage(QWidget):
             QCoreApplication.instance().aboutToQuit.connect(_wait_orphan_workers); _SHUTDOWN_HOOK_CONNECTED = True
         return self.has_running_workers()
     def closeEvent(self, event): self.shutdown_workers(); super().closeEvent(event)
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._history_dirty:
+            self.refresh_history()
+
     def refresh_interface_scale(self):
         self._fit_columns(); self.body_layout.invalidate(); self.body_layout.activate(); self.body_content.updateGeometry(); self._update_preview_geometry()
     def refresh_colors(self):
         for card in self.findChildren(_VideoCard): card.refresh_colors()
+        self.caption_label.setStyleSheet('color:%s;' % _color('video_creation_muted'))
+        self.status_badge.setFixedHeight(px(24))
+        self.body_content.setStyleSheet(
+            'QToolButton {background:%s; color:%s; border:1px solid %s; border-radius:%dpx; padding:%dpx;}'
+            'QToolButton:hover {background:%s;}'
+            'QToolButton:disabled {color:%s;}'
+            'QCheckBox {color:%s; background:transparent;}'
+            'QCheckBox::indicator {width:%dpx; height:%dpx; background:%s; border:1px solid %s; border-radius:%dpx;}'
+            'QCheckBox::indicator:checked {background:%s;}'
+            % (_color('video_creation_input'), materials.text_color(1), _color('video_creation_border'), px(5), px(3),
+               _color('video_creation_primary_soft'), _color('video_creation_muted'), materials.text_color(1),
+               px(14), px(14), _color('video_creation_input'), _color('video_creation_border'), px(3),
+               _color('video_creation_primary')))
         self._style_api_status()
         self.progress_model_label.setStyleSheet('QLabel#videoProgressModel { color:%s; background:%s; border:1px solid %s; border-radius:%dpx; padding:0 %dpx; }' % (_color('video_creation_muted'), _color('video_creation_input'), _color('video_creation_border'), px(9), px(6)))
         self.preview_area.setStyleSheet(
@@ -963,15 +1003,52 @@ class VideoCreationPage(QWidget):
             'QToolButton#videoEmptyPlayButton:hover { background:%s; }'
             % (_color('video_creation_primary'), _color('video_creation_preview_text'), px(26), px(18), _color('video_creation_primary_soft'))
         )
+        for button, icon in ((self.open_video_button, FIF.FOLDER), (self.retry_button, FIF.SYNC)):
+            # The playback surface stays dark in both themes. Register both
+            # variants so Fluent's deferred show polish retains the contrast.
+            rules = ('PushButton {background:%s; color:%s; border:1px solid %s; border-radius:%dpx;}'
+                     % (_color('video_creation_preview_bg'), _color('video_creation_preview_text'),
+                        _color('video_creation_muted'), px(8)))
+            setCustomStyleSheet(button, rules, rules)
+            button.setIcon(icon.icon(color=QColor(_color('video_creation_preview_text'))))
         self.status_badge.setStyleSheet(self._status_badge_style(getattr(self.status_badge, 'property', lambda _name: '')('status') or ''))
         self.reference_image_drop_zone.setStyleSheet(
             'QFrame#videoReferenceImageDropZone { background:%s; border:1px dashed %s; border-radius:%dpx; } '
             'QLabel { color:%s; }'
             % (_color('video_creation_input'), _color('video_creation_border'), px(8), _color('video_creation_muted'))
         )
-        self._rebuild_reference_images()
+        surface = _color('video_creation_input')
+        border = _color('video_creation_border')
+        text = materials.text_color(1)
+        self.prompt_edit.setStyleSheet(
+            'QPlainTextEdit#videoPromptEdit {background:%s; color:%s; border:1px solid %s; '
+            'border-radius:%dpx; padding:%dpx; font-size:%dpx;}'
+            % (surface, text, border, px(8), px(10), px(13)))
+        self.duration_spin.setStyleSheet(
+            'QSpinBox {background:%s; color:%s; border:1px solid %s; border-radius:%dpx; padding:%dpx;}'
+            % (surface, text, border, px(6), px(4)))
+        self.parameters_content.parentWidget().setStyleSheet(
+            'QFrame#videoGenerationParameters {background:%s; border:1px solid %s; border-radius:%dpx;}'
+            % (surface, border, px(8)))
+        self.progress_bar.setStyleSheet(
+            'QProgressBar {background:%s; border:0; border-radius:%dpx; min-height:%dpx;}'
+            'QProgressBar::chunk {background:%s; border-radius:%dpx;}'
+            % (surface, px(4), px(8), _color('video_creation_primary'), px(4)))
+        self.info_bar.setStyleSheet('background:%s; color:%s; border-radius:%dpx; padding:%dpx;'
+                                   % (_color('video_creation_info_bg'), text, px(8), px(10)))
+        for row in self.history_list.findChildren(_HistoryRow):
+            row._refresh_style()
+        for tile in self.reference_images_grid_host.findChildren(QFrame, 'videoReferenceImageTile'):
+            tile.setStyleSheet('QFrame#videoReferenceImageTile {background:%s; border:1px solid %s; border-radius:%dpx;}'
+                              % (surface, border, px(8)))
+        add = getattr(self, 'reference_image_add_zone', None)
+        if add is not None:
+            add.setStyleSheet('QFrame#videoReferenceImageAddTile {background:%s; border:1px dashed %s; border-radius:%dpx;} QLabel {color:%s;}'
+                             % (surface, border, px(8), _color('video_creation_muted')))
     def retranslate_ui(self):
-        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(); self._count_changed(self.count_spin.value()); self._update_form_state(); self._render_history()
+        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(rebuild=False); self._count_changed(self.count_spin.value()); self._update_form_state()
+        for row in self.history_list.findChildren(_HistoryRow):
+            row.retranslate_ui()
         if self.media_play_button is not None: self.media_play_button.setToolTip(tr('暂停') if self.media_player is not None and self.media_player.state() == QMediaPlayer.PlayingState else tr('播放'))
         if self.media_mute_button is not None: self.media_mute_button.setToolTip(tr('取消静音') if self.media_player is not None and self.media_player.isMuted() else tr('静音'))
         if self.media_fullscreen_button is not None: self.media_fullscreen_button.setToolTip(tr('退出全屏') if self.video_widget is not None and self.video_widget.isFullScreen() else tr('全屏'))

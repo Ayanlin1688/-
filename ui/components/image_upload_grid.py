@@ -290,10 +290,11 @@ class ImageUploadGrid(QWidget):
     add_requested = pyqtSignal()
 
     def __init__(self, variant='product', max_count=PRODUCT_MAX, parent=None,
-                 add_label_provider=None):
+                 add_label_provider=None, columns=PRODUCT_COLUMNS):
         super().__init__(parent)
         self.variant = 'style' if variant == 'style' else 'product'
         self.max_count = max(1, int(max_count))
+        self.columns = max(1, int(columns))
         # Optional page-owned label generation.  Existing callers keep the
         # built-in product/style labels when this is omitted.
         self.add_label_provider = add_label_provider
@@ -411,7 +412,7 @@ class ImageUploadGrid(QWidget):
         if width <= 1:
             width = px(900)
         available = max(1, width - GRID_PADDING * 2)
-        return max(px(56), (available - GRID_GAP * (PRODUCT_COLUMNS - 1)) // PRODUCT_COLUMNS)
+        return max(px(56), (available - GRID_GAP * (self.columns - 1)) // self.columns)
 
     def _relayout(self):
         if self.variant == 'style':
@@ -427,10 +428,10 @@ class ImageUploadGrid(QWidget):
             widgets = list(self._tiles) + ([self._add_tile] if self._add_tile else [])
             for index, widget in enumerate(widgets):
                 widget.setFixedSize(cell, cell)
-                row, column = divmod(index, PRODUCT_COLUMNS)
+                row, column = divmod(index, self.columns)
                 widget.move(GRID_PADDING + column * (cell + GRID_GAP),
                             GRID_PADDING + row * (cell + GRID_GAP))
-            rows = ((len(widgets) + PRODUCT_COLUMNS - 1) // PRODUCT_COLUMNS
+            rows = ((len(widgets) + self.columns - 1) // self.columns
                     if widgets else 0)
             height = (GRID_PADDING * 2 + rows * cell + max(0, rows - 1) * GRID_GAP
                       if widgets else 0)

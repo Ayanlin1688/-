@@ -151,8 +151,8 @@ class HistoryPageManualImageTests(unittest.TestCase):
         row = self.row_for('video:video-1')
         self.assertNotEqual(self.page.table.item(row, 8).text(), '—')
         self.assertNotEqual(self.page.table.item(row, 9).text(), '—')
-        self.assertEqual(self.page._type_text(task), tr('视频生成'))
-        self.page.type_filter_box.setCurrentText(tr('视频生成'))
+        self.assertEqual(self.page._type_text(task), tr('视频制作'))
+        self.page.type_filter_box.setCurrentText(tr('视频制作'))
         visible = [record for row, record in enumerate(self.page.records)
                    if not self.page.table.isRowHidden(row)]
         self.assertEqual([record['local_id'] for record in visible], ['video:video-1'])

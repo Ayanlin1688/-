@@ -320,11 +320,14 @@ class PlatformPreviewPlaceholderTests(PlatformPreviewDialogTestBase):
 
 
 class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
-    def test_retranslate_ui_rebuilds_shell_without_raising(self):
+    def test_retranslate_ui_updates_shell_in_place(self):
         dialog = self.dialog()
+        shell = dialog.shell
         set_language('en-US')
         try:
             dialog.retranslate_ui()
+            self.assertIs(dialog.shell, shell)
+            self.assertEqual(shell.search_button.text(), tr('搜索'))
             self.assertEqual(dialog.disclaimer_label.text(), tr(DISCLAIMER))
             self.assertEqual(dialog.shell_kind, 'desktop')
             self.assertEqual(len(dialog.platform_menu.actions()), 2)
@@ -337,6 +340,10 @@ class PlatformPreviewDialogStateTests(PlatformPreviewDialogTestBase):
             dialog.set_platform_index(1)
             self.assertEqual(dialog.shell.name_label.text(), 'Product Details')
             self.assertEqual(dialog.shell.cart_button.text(), 'Add to Cart')
+            phone = dialog.shell
+            set_language('zh-CN')
+            self.assertIs(dialog.shell, phone)
+            self.assertEqual(phone.cart_button.text(), tr('Add to Cart'))
         finally:
             set_language('zh-CN')
             dialog.retranslate_ui()

@@ -72,6 +72,10 @@ class StudioCard(CardWidget):
     def __init__(self, parent=None, elevated=False):
         super().__init__(parent)
         self.elevated = elevated
+        # Graphics effects must capture transparent rounded corners, otherwise
+        # the native Windows backing store can leave a black rectangular frame.
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
         self.setBorderRadius(12)
 
     def _normalBackgroundColor(self):

@@ -106,7 +106,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration": 8,
         "poll_interval": 5,
     },
-    "appearance": {"theme": "dark", "language": "简体中文", "blur": False, "reduce_motion": False,
+    "appearance": {"theme": "auto", "language": "简体中文", "blur": False, "reduce_motion": False,
                    "ui_scale": "auto", "window_geometry": None},
     "diagnostics": {"debug_mode": False},
     "updates": {"manifest_url": "", "check_on_start": True},
@@ -320,8 +320,23 @@ class ConfigManager:
             self.config['task_strategy']['naming_rule'] = self.config['download_settings']['naming_rule']
             self.config['workspace']['max_retries'] = self.config['task_strategy']['max_retries']
             self.config['workspace']['skip_threshold'] = self.config['task_strategy']['failure_skip_threshold']
+            # 一次性迁移旧版显式深色默认值。用户之后选择的主题保留不动；
+            # auto 通过系统偏好解析，避免首次升级时锁定在深色。
+            migrations = self.config.get('migrations')
+            if (not isinstance(migrations, dict) or not migrations.get('r10_theme_auto')):
+                appearance = self.config.get('appearance')
+                if not isinstance(appearance, dict):
+                    appearance = self.config['appearance'] = copy.deepcopy(DEFAULT_CONFIG['appearance'])
+                old_appearance = raw.get('appearance')
+                if isinstance(old_appearance, dict) and old_appearance.get('theme') == 'dark':
+                    appearance['theme'] = 'auto'
+                self.config['migrations'] = dict(migrations if isinstance(migrations, dict) else {}, r10_theme_auto=True)
+                try:
+                    self.save_config()
+                except Exception:
+                    pass
             # 一次性迁移：旧版默认值（并发 1、重试 5）升级为无人值守新默认（全队列并发 5、重试 3）。
-            migrations = raw.get('migrations')
+            migrations = self.config.get('migrations')
             if not isinstance(migrations, dict) or not migrations.get('r6_unattended_defaults'):
                 strategy = self.config['task_strategy']
                 upgraded = False
@@ -377,9 +392,11 @@ class ConfigManager:
         except FileNotFoundError:
             # 首次启动：配置文件尚未生成，静默使用默认值。
             self.config = copy.deepcopy(DEFAULT_CONFIG)
+            self.config['migrations'] = {'r10_theme_auto': True}
         except (OSError, ValueError, json.JSONDecodeError) as error:
             # 配置损坏：回退默认值前先备份原件，并把原因留给界面提示（不静默覆盖用户数据）。
             self.config = copy.deepcopy(DEFAULT_CONFIG)
+            self.config['migrations'] = {'r10_theme_auto': True}
             self.load_error = f'配置文件无法读取（{error}），已回退默认设置'
             try:
                 if self.path.is_file():

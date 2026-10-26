@@ -122,7 +122,7 @@ class HistoryPage(QWidget):
         title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
         self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过'), tr('部分完成')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
-        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成'), tr('视频生成')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
+        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成'), tr('视频制作')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         self.batch_resolve_button = PushButton(FIF.INFO, tr('批量处理待确认提交'))
@@ -182,6 +182,7 @@ class HistoryPage(QWidget):
         self.filter_box.currentTextChanged.connect(self._filter)
         self.type_filter_box.currentTextChanged.connect(lambda *_: self._filter(self.filter_box.currentText()))
         self.refresh_records()
+        materials.register_theme_callback(self.refresh_colors)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -440,12 +441,14 @@ class HistoryPage(QWidget):
             self.footer_right.setText(tr('显示最近 100 条') + f' · v{APP_VERSION}')
         except Exception:
             pass
-        # 状态胶囊 / 类型标签 / 行内操作提示都是按语言生成的：强制整表重建一次。
-        try:
-            self._display_keys = None
-            self.update_history(self.config_manager.history_records())
-        except Exception:
-            pass
+        self._row_status = [self._status_text(task) for task in self.records]
+        for row, task in enumerate(self.records):
+            for column, text in ((2, self._type_text(task)), (6, self._status_text(task))):
+                wrapper = self.table.cellWidget(row, column)
+                if wrapper is not None:
+                    wrapper.findChild(QLabel).setText(text)
+        gb = sum((task.get('size_bytes') or 0) for task in self._all_records) / 1024**3
+        self.footer_left.setText(tr('共 {n} 条记录 · 存储占用 {gb:.1f} GB').format(n=len(self._all_records), gb=gb))
         try:
             self._filter(self.filter_box.currentText())
         except Exception:
@@ -562,20 +565,22 @@ class HistoryPage(QWidget):
         if cls._is_manual_image(task):
             return tr('图片生成')
         if cls._is_manual_video(task):
-            return tr('视频生成')
+            return tr('视频制作')
         return tr('视频')
 
     @staticmethod
     def _type_colors(task):
-        if task.get('kind') == 'ec':
-            return 'rgba(74,141,255,0.15)', 'rgba(52,110,210,1)'
-        if task.get('kind') == 'manual_image':
-            return (materials.ecommerce_color('image_generation_primary_soft'),
-                    materials.ecommerce_color('image_generation_primary'))
-        if task.get('kind') == 'manual_video':
-            return (materials.ecommerce_color('video_creation_primary_soft'),
-                    materials.ecommerce_color('video_creation_primary'))
-        return 'rgba(122,130,148,0.14)', 'rgba(105,113,130,1)'
+        return (materials.ecommerce_color('history_type_bg'),
+                materials.ecommerce_color('history_type_fg'))
+
+    def refresh_colors(self):
+        for row, task in enumerate(self.records):
+            for column, colors in ((2, self._type_colors(task)), (6, self._tag_colors(task.get('status')))):
+                wrapper = self.table.cellWidget(row, column)
+                if wrapper is not None:
+                    bg, fg = colors
+                    wrapper.findChild(QLabel).setStyleSheet(
+                        f'color:{fg}; background:{bg}; border-radius:6px; padding:2px 10px;')
 
     @staticmethod
     def _cell_tooltip(task, column):
@@ -1013,4 +1018,3 @@ class HistoryPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.refresh_records()

@@ -66,11 +66,11 @@ class _QuickPromptCard(QFrame):
         self.setToolTip(text)
         self.setMinimumHeight(px(54))
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(px(12), px(8), px(12), px(8))
+        layout.setContentsMargins(px(16), px(14), px(16), px(14))
         layout.setSpacing(px(12))
         badge = QLabel(str(index), self)
         badge.setAlignment(Qt.AlignCenter)
-        badge.setFixedSize(px(28), px(28))
+        badge.setFixedSize(px(36), px(36))
         badge.setObjectName('quickPromptIndex')
         label = QLabel(text, self)
         label.setWordWrap(True)
@@ -81,16 +81,18 @@ class _QuickPromptCard(QFrame):
 
     def refresh_colors(self):
         border = materials.ecommerce_color('image_generation_border')
-        surface = materials.ecommerce_color('image_generation_surface')
+        surface = materials.ecommerce_color('image_generation_input')
         primary = materials.ecommerce_color('image_generation_primary')
         selected = materials.ecommerce_color('image_generation_primary_soft')
         self.setStyleSheet(
-            'QFrame#quickPromptItem {background:%s; border:1px solid %s; border-radius:%dpx;}'
+            'QFrame#quickPromptItem {background:%s; border:2px solid %s; border-radius:%dpx;}'
             'QFrame#quickPromptItem:hover, QFrame#quickPromptItem[selectedPrompt="true"] '
-            '{background:%s; border:1px solid %s;}'
-            'QLabel#quickPromptIndex {background:%s; color:white; border-radius:%dpx; font-weight:600;}'
+            '{background:%s; border:2px solid %s;}'
+            'QLabel#quickPromptIndex {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %s,stop:1 %s); color:white; border-radius:%dpx; font-weight:600;}'
             'QLabel#quickPromptText {background:transparent; border:0;}'
-            % (surface, border, px(8), selected, primary, primary, px(6)))
+            % (surface, border, px(12), selected, primary,
+               materials.ecommerce_color('image_generation_cta_start'),
+               materials.ecommerce_color('image_generation_cta_end'), px(8)))
 
     def click(self):
         self.clicked.emit()
@@ -287,7 +289,7 @@ class _Card(QFrame):
         border = materials.ecommerce_color('image_generation_border')
         self.setStyleSheet(
             'QFrame#imageGenerationCard {background:%s; border:1px solid %s; border-radius:%dpx;}'
-            % (color, border, px(12)))
+            % (color, border, px(16)))
 
 
 class _CtaCard(QFrame):
@@ -348,7 +350,7 @@ class _ReferenceDropStrip(QFrame):
         surface = materials.ecommerce_color('image_generation_input')
         primary = materials.ecommerce_color('image_generation_primary')
         self.setStyleSheet(
-            'QFrame#imageReferenceDropStrip {background:%s; border:1px dashed %s;'
+            'QFrame#imageReferenceDropStrip {background:%s; border:2px dashed %s;'
             ' border-radius:%dpx;}'
             'QLabel#imageReferenceDropIcon {background:transparent; color:%s;'
             ' font-size:%dpx;}'
@@ -466,6 +468,8 @@ class ImageGenerationPage(QWidget):
         style_page(self)
         style_controls(self)
         register_retranslate(self)
+        materials.register_theme_callback(self.refresh_colors)
+        self.refresh_colors()
 
     @property
     def busy(self):
@@ -476,31 +480,35 @@ class ImageGenerationPage(QWidget):
     def _build_ui(self):
         # The form contains long prompt examples whose size hints are wider than
         # the narrow layout breakpoint.  Keep the page/columns shrinkable so Qt
-        # can actually enter the stacked layout below 1180px.
+        # can actually enter the stacked layout below the content breakpoint.
         self.setMinimumWidth(0)
         root = scrollable_body(self)
         self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.body_content.setMinimumWidth(0)
+        self.body_content.setMaximumWidth(px(1464))
+        self.body_scroll.setAlignment(Qt.AlignHCenter)
         self.body_content.installEventFilter(self)
-        root.setContentsMargins(px(26), px(16), px(26), px(20))
+        root.setContentsMargins(px(32), px(16), px(32), px(20))
         root.setSpacing(px(16))
         header = QHBoxLayout()
         title_box = QVBoxLayout(); title_box.setSpacing(px(4))
         self.title_label = TitleLabel(tr('图片生成'), self)
+        self.title_label.setProperty('studioTitleSize', 20)
         self.caption_label = QLabel(tr('使用 AI 生成高质量图片内容'), self)
         self.caption_label.setObjectName('imageGenerationCaption')
         title_box.addWidget(self.title_label); title_box.addWidget(self.caption_label)
         header.addLayout(title_box); header.addStretch(1)
         root.addLayout(header)
 
-        body = QBoxLayout(QBoxLayout.LeftToRight); body.setSpacing(px(20))
+        body = QBoxLayout(QBoxLayout.LeftToRight); body.setSpacing(px(24))
         self.body_layout = body
         self.left_column = QWidget(self)
         self.left_column.setMinimumWidth(0)
         self.left_column.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         left = QVBoxLayout(self.left_column); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(px(16))
         self.form_card = _Card(self.left_column)
-        form = QVBoxLayout(self.form_card); form.setContentsMargins(px(24), px(24), px(24), px(24)); form.setSpacing(px(28))
+        form = QVBoxLayout(self.form_card); form.setContentsMargins(px(20), px(20), px(20), px(20)); form.setSpacing(px(20))
+        form.setAlignment(Qt.AlignTop)
         form.addWidget(self._build_prompt_section())
         form.addWidget(self._build_reference_section())
         form.addWidget(self._build_model_section())
@@ -510,7 +518,8 @@ class ImageGenerationPage(QWidget):
         self.submit_button.setObjectName('imageGenerationSubmit')
         self.submit_button.setMinimumWidth(px(140)); self.submit_button.setFixedHeight(px(44))
         self.submit_button.clicked.connect(self.submit_generation)
-        submit_row.addWidget(self.submit_button); left.addLayout(submit_row)
+        submit_row.addWidget(self.submit_button); form.addLayout(submit_row)
+        form.addStretch(1)
         body.addWidget(self.left_column, 1)
 
         self.right_column = QWidget(self)
@@ -546,16 +555,20 @@ class ImageGenerationPage(QWidget):
         available_width = self.body_content.width() if getattr(self, 'body_content', None) else 0
         if available_width <= 0:
             available_width = self.width()
-        stacked = available_width < px(1180)
+        margins = self.body_content.layout().contentsMargins()
+        available_width -= margins.left() + margins.right()
+        stacked = available_width < px(980)
         direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
         if self.body_layout.direction() != direction:
             self.body_layout.setDirection(direction)
         if stacked:
             self.body_layout.setSpacing(px(16))
+            self.right_column.setMinimumWidth(0)
             self.right_column.setMaximumWidth(16777215)
             self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:
-            self.body_layout.setSpacing(px(20))
+            self.body_layout.setSpacing(px(24))
+            self.right_column.setMinimumWidth(px(480))
             self.right_column.setMaximumWidth(px(480))
             self.right_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.body_layout.invalidate()
@@ -587,8 +600,10 @@ class ImageGenerationPage(QWidget):
         box = QWidget(self.form_card); layout = QVBoxLayout(box); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(px(10))
         title = QLabel(tr('🖼 参考图'), box); title.setStyleSheet('font-weight:600;')
         note = QLabel(tr('（图片生成需要上传参考图，文生图不需要）'), box)
+        note.setWordWrap(True)
+        self.reference_note = note
         note.setStyleSheet('color:%s;' % materials.ecommerce_color('image_generation_hint'))
-        heading = QHBoxLayout(); heading.addWidget(title); heading.addWidget(note); heading.addStretch(1)
+        heading = QHBoxLayout(); heading.addWidget(title); heading.addStretch(1)
         self.used_images_button = PushButton(tr('已用图片'), box)
         self.gallery_button = PushButton(tr('画廊选图'), box)
         self.clear_images_button = PushButton(tr('清空'), box); self.clear_images_button.setVisible(False)
@@ -597,13 +612,14 @@ class ImageGenerationPage(QWidget):
         self.clear_images_button.clicked.connect(self.clear_references)
         heading.addWidget(self.used_images_button); heading.addWidget(self.gallery_button); heading.addWidget(self.clear_images_button)
         layout.addLayout(heading)
+        layout.addWidget(note)
         self.reference_drop_strip = _ReferenceDropStrip(box)
         self.reference_drop_strip.clicked.connect(self.choose_reference_files)
         self.reference_drop_strip.files_dropped.connect(self._accept_dropped_references)
         layout.addWidget(self.reference_drop_strip)
         self.reference_grid = ImageUploadGrid(
             'product', max_count=8, parent=box,
-            add_label_provider=self._reference_add_label)
+            add_label_provider=self._reference_add_label, columns=4)
         self.image_grid = self.reference_grid
         self.reference_grid.setObjectName('imageReferenceGrid')
         self.reference_grid.preview_requested.connect(self._preview_reference)
@@ -659,8 +675,8 @@ class ImageGenerationPage(QWidget):
         if card is not None:
             card.setStyleSheet(
                 'QFrame#imageModelSubcard {background:%s; border:1px solid %s; border-radius:%dpx;}'
-                % (materials.ecommerce_color('image_generation_surface'),
-                   materials.ecommerce_color('image_generation_border'), px(10)))
+                % (materials.ecommerce_color('image_generation_input'),
+                   materials.ecommerce_color('image_generation_border'), px(8)))
 
     def _build_quick_prompt_card(self):
         card = _Card(self.right_column)
@@ -672,7 +688,7 @@ class ImageGenerationPage(QWidget):
         self.quick_caption = QLabel(tr('点击快速应用提示词'), card); self.quick_caption.setStyleSheet('color:%s;' % materials.ecommerce_color('image_generation_hint')); layout.addWidget(self.quick_caption)
         self.quick_list = QWidget(card); self.quick_layout = QVBoxLayout(self.quick_list); self.quick_layout.setContentsMargins(0, 0, 0, 0); self.quick_layout.setSpacing(px(10)); layout.addWidget(self.quick_list, 1)
         self.quick_prompt_buttons = []
-        self._refresh_quick_prompts()
+        self._quick_prompts_dirty = True
         return card
 
     # —— references ——
@@ -797,11 +813,12 @@ class ImageGenerationPage(QWidget):
         self.count_hint.setText(tr('将循环创建 {n} 个相同任务').format(n=value) if int(value) > 1 else '')
 
     def _refresh_prompt_style(self):
-        bg = QColor(str(materials.palette()['bg2'])).name()
+        bg = materials.ecommerce_color('image_generation_input')
         border = materials.ecommerce_color('image_generation_border')
         self.prompt_edit.setStyleSheet(
-            'QPlainTextEdit#imagePromptEdit {background:%s; border:1px solid %s; border-radius:%dpx;}'
-            % (bg, border, px(8)))
+            'QPlainTextEdit#imagePromptEdit {background:%s; color:%s; border:1px solid %s; '
+            'border-radius:%dpx; padding:%dpx; font-size:%dpx;}'
+            % (bg, materials.text_color(1), border, px(8), px(12), px(14)))
 
     # —— submission ——
     def _warning(self, text):
@@ -935,6 +952,14 @@ class ImageGenerationPage(QWidget):
         return [str(value) for value in values if str(value).strip()][:20]
 
     def _refresh_quick_prompts(self):
+        self._quick_prompts_dirty = False
+        prompts = [(tr(value), True) for value in DEFAULT_QUICK_PROMPTS]
+        prompts.extend((value, False) for value in self._custom_prompts())
+        if len(self.quick_prompt_buttons) == len(prompts):
+            for button, (value, _) in zip(self.quick_prompt_buttons, prompts):
+                button._prompt_text = value
+                button.findChild(QLabel, 'quickPromptText').setText(value)
+            return
         while self.quick_layout.count():
             item = self.quick_layout.takeAt(0); widget = item.widget()
             if widget is not None: widget.deleteLater()
@@ -943,7 +968,8 @@ class ImageGenerationPage(QWidget):
         prompts.extend((value, False) for value in self._custom_prompts())
         for index, (value, _is_default) in enumerate(prompts, 1):
             button = _QuickPromptCard(index, value, self.quick_list)
-            button.clicked.connect(lambda text=value, btn=button: self.apply_quick_prompt(text, btn))
+            button._prompt_text = value
+            button.clicked.connect(lambda btn=button: self.apply_quick_prompt(btn._prompt_text, btn))
             self.quick_layout.addWidget(button); self.quick_prompt_buttons.append(button)
         self.quick_layout.addStretch(1)
 
@@ -963,8 +989,13 @@ class ImageGenerationPage(QWidget):
         self._refresh_quick_prompts()
 
     # —— host integration ——
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._quick_prompts_dirty:
+            self._refresh_quick_prompts()
+
     def refresh_interface_scale(self):
-        self._refresh_quick_prompts(); self.reference_drop_strip.refresh_interface_scale(); self.reference_grid.refresh_interface_scale(); self.count_spin.refresh_interface_scale(); self._refresh_model_subcard_style(); self._sync_reference_add_label()
+        self.reference_drop_strip.refresh_interface_scale(); self.reference_grid.refresh_interface_scale(); self.count_spin.refresh_interface_scale(); self._refresh_model_subcard_style(); self._sync_reference_add_label()
         self._fit_columns()
         self.body_layout.invalidate()
         self.body_layout.activate()
@@ -975,9 +1006,14 @@ class ImageGenerationPage(QWidget):
         self.body_content.updateGeometry()
 
     def refresh_colors(self):
-        self.form_card.refresh_colors()
-        for card in (self.cta_card, self.right_column.findChild(QFrame, 'imageGenerationCard')):
-            if card is not None and hasattr(card, 'refresh_colors'): card.refresh_colors()
+        for card in self.findChildren(_Card) + self.findChildren(_QuickPromptCard):
+            card.refresh_colors()
+        self.cta_card.update()
+        self.reference_drop_strip.refresh_colors()
+        self.reference_grid.refresh_colors()
+        for label in (self.caption_label, self.quick_caption, self.reference_note):
+            label.setStyleSheet('color:%s; background:transparent;' % materials.ecommerce_color('image_generation_hint'))
+        self.cta_hint.setStyleSheet('color:%s; background:transparent;' % materials.ecommerce_color('navigation_selected_text'))
         self._refresh_prompt_style(); self.count_spin.refresh_colors(); self._refresh_model_subcard_style(); self._update_prompt_state()
 
     def retranslate_ui(self):
@@ -988,4 +1024,6 @@ class ImageGenerationPage(QWidget):
         self.submit_button.setText(tr('开始生成')); self.cta_button.setText(tr('开始生成')); self.cta_hint.setText(tr('填写提示词并选择模型后即可生成'))
         self.quick_title.setText(tr('💡 快速提示词')); self.quick_caption.setText(tr('点击快速应用提示词')); self.custom_prompt_button.setText(tr('+ 自定义提示词'))
         self.reference_drop_strip.retranslate_ui(); self.reference_drop_strip.refresh_colors(); self.count_spin.retranslate_ui()
-        self._refresh_quick_prompts(); self._update_count_hint(self.count_spin.value()); self._update_prompt_state()
+        if not self._quick_prompts_dirty:
+            self._refresh_quick_prompts()
+        self._update_count_hint(self.count_spin.value()); self._update_prompt_state()

@@ -132,6 +132,11 @@ def map_text_color(color):
 
 
 def register_label(widget, color):
+    # Fluent reinstalls its custom QSS when a hidden label is shown. Keep both
+    # colors there too, so that deferred polishing cannot restore the old mode.
+    base = color.name() if isinstance(color, QColor) else str(color)
+    widget.setTextColor(QColor(TEXT_COLOR_MAP.get(base, base)),
+                        QColor(DARK_TEXT_MAP.get(base, base)))
     _LABEL_REGISTRY.append((weakref.ref(widget), color))
 
 
@@ -186,16 +191,15 @@ def surface_border(hover=0, elevated=False):
 
 
 def apply_theme_to_labels():
+    # Fluent selects the registered light/dark pair in its theme pass. Avoid
+    # repolishing every label a second time, including labels on hidden pages.
     alive = []
     for ref, color in list(_LABEL_REGISTRY):
         widget = ref()
         if widget is None:
             continue  # 已销毁的弱引用：剔除
         try:
-            mapped = map_text_color(color)
-            name = mapped.name() if isinstance(mapped, QColor) else str(mapped)
-            widget.setTextColor(QColor(name), QColor(name))
-            widget.setStyleSheet(f'background:transparent; color:{name};')
+            widget.objectName()  # Validate the C++ object before retaining it.
         except (RuntimeError, AttributeError):
             continue  # 控件已析构或类型不符：剔除
         alive.append((ref, color))
@@ -204,7 +208,13 @@ def apply_theme_to_labels():
 
 def restyle_theme_buttons():
     from .widgets.workspace_surface import restyle_buttons
+    from qfluentwidgets import setCustomStyleSheet
     restyle_buttons()
+    for ref, _primary in _BUTTON_REGISTRY:
+        button = ref()
+        if button is not None:
+            rules = button.styleSheet()
+            setCustomStyleSheet(button, rules, rules)
 
 
 def background_brush(rect):
@@ -449,9 +459,7 @@ MONITOR = {
 }
 
 # 电商图任务列表 / 平台预览专用色（浅色, 深色）双色对。
-# 任务列表沿用主题玻璃质感，只补少量中性底色；平台预览要模拟真实平台的
-# 公开商品页，固定使用浅色页面 token（不随应用主题反转）。组件一律经
-# ecommerce_color() 取用，避免在组件里散落颜色字面量。
+# 任务列表与平台预览统一使用双色语义 token，组件经 ecommerce_color() 取用。
 ECOMMERCE_UI = {
     # 单个制作页：浅色参考布局与深色主题共用语义键。
     'single_card': ('#FFFFFF', '#181C28'),
@@ -483,28 +491,28 @@ ECOMMERCE_UI = {
     'chip_bg': ('#F1F3F8', '#202330'),
     'index_bg': ('#F1F3F8', '#202330'),
     'tag_bg': ('#EAF2FF', '#17233D'),
-    'preview_page': '#F5F5F7',
-    'preview_card': '#FFFFFF',
-    'preview_text': '#1F2329',
-    'preview_muted': '#8A8F99',
-    'preview_line': '#E8EAF0',
-    'preview_input': '#F2F3F5',
+    'preview_page': ('#F5F5F7', '#141823'),
+    'preview_card': ('#FFFFFF', '#181C28'),
+    'preview_text': ('#1F2329', '#E8ECF4'),
+    'preview_muted': ('#8A8F99', '#A9B1C1'),
+    'preview_line': ('#E8EAF0', '#41485B'),
+    'preview_input': ('#F2F3F5', '#202431'),
     'preview_white': '#FFFFFF',
-    # 平台预览覆盖层固定模拟参考商品页，不随主应用明暗主题反转。
-    'preview_overlay_header': ('#18171A', '#18171A'),
-    'preview_overlay_border': ('#2A2B30', '#2A2B30'),
-    'preview_overlay_disclaimer': ('#19181B', '#19181B'),
-    'preview_overlay_text': ('#FFFFFF', '#FFFFFF'),
-    'preview_disclaimer_text': ('#C9CDD4', '#C9CDD4'),
+    # 平台预览外框与商品内容跟随应用主题。
+    'preview_overlay_header': ('#FFFFFF', '#181C28'),
+    'preview_overlay_border': ('#E5E8EF', '#41485B'),
+    'preview_overlay_disclaimer': ('#F7F8FA', '#202431'),
+    'preview_overlay_text': ('#1F2329', '#E8ECF4'),
+    'preview_disclaimer_text': ('#64748B', '#A9B1C1'),
     'preview_close_bg': ('#E5484D', '#E5484D'),
     'preview_close_hover': ('#F25B60', '#F25B60'),
     'preview_sale': ('#FF2D60', '#FF2D60'),
-    'preview_canvas': ('#E7E7E7', '#E7E7E7'),
-    'preview_pill_bg': ('#0B0C11', '#0B0C11'),
-    'preview_sidebar_bg': ('#FFFFFF', '#FFFFFF'),
-    'preview_sidebar_text': ('#111827', '#111827'),
-    'preview_sidebar_border': ('#E5E8EF', '#E5E8EF'),
-    'preview_sidebar_button_text': ('#4B5563', '#4B5563'),
+    'preview_canvas': ('#EEF1F7', '#11151F'),
+    'preview_pill_bg': ('#F2F3F5', '#202431'),
+    'preview_sidebar_bg': ('#FFFFFF', '#181C28'),
+    'preview_sidebar_text': ('#111827', '#E8ECF4'),
+    'preview_sidebar_border': ('#E5E8EF', '#41485B'),
+    'preview_sidebar_button_text': ('#4B5563', '#BBC4D4'),
     'preview_check_bg': ('#2F7CF6', '#2F7CF6'),
     'preview_badge_bg': ('rgba(0,0,0,0.55)', 'rgba(0,0,0,0.55)'),
     'preview_unchecked_bg': ('rgba(0,0,0,0.28)', 'rgba(0,0,0,0.28)'),
@@ -515,8 +523,8 @@ ECOMMERCE_UI = {
     'image_generation_border': ('#E5E8EF', '#41485B'),
     'image_generation_primary': ('#7C3AED', '#A78BFA'),
     'image_generation_primary_soft': ('#F3EEFF', '#35264F'),
-    'image_generation_cta_start': ('#8B5CF6', '#6D28D9'),
-    'image_generation_cta_end': ('#7C3AED', '#5B21B6'),
+    'image_generation_cta_start': ('#667EEA', '#667EEA'),
+    'image_generation_cta_end': ('#764BA2', '#764BA2'),
     'image_generation_hint': ('#64748B', '#A9B1C1'),
     'image_generation_error': ('#CB3C45', '#FF9EA6'),
     # 独立视频制作页
@@ -531,6 +539,11 @@ ECOMMERCE_UI = {
     'video_creation_success': ('#22A65B', '#7FD69C'),
     'video_creation_error': ('#CB3C45', '#FF9EA6'),
     'video_creation_muted': ('#64748B', '#A9B1C1'),
+    'history_type_bg': ('rgba(47,124,246,0.12)', '#213B65'),
+    'history_type_fg': ('#1677FF', '#8ABBFF'),
+    'navigation_selected': ('#1677FF', '#1677FF'),
+    'navigation_selected_text': ('#FFFFFF', '#FFFFFF'),
+    'navigation_hover': ('#EAF2FF', '#213B65'),
     # 电商任务列表
     'task_border': ('#E9EDF5', '#303545'),
     'task_done': ('#16A34A', '#7EDC9F'),

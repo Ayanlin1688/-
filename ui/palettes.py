@@ -181,7 +181,7 @@ THEMES: dict[str, dict] = {
 
 # 主题选择下拉的顺序：深色家族 → 浅色家族 → 跟随系统
 THEME_ORDER = ['dark', 'midnight', 'graphite', 'nebula', 'abyss', 'dusk', 'light', 'mist', 'sand', 'aurora']
-SYSTEM_OPTION = ('system', '跟随系统')
+SYSTEM_OPTION = ('auto', '跟随系统')
 
 for _theme in THEMES.values():
     _theme['accent_rgb'] = _rgb(_theme['accent'])
@@ -197,21 +197,23 @@ for _theme in THEMES.values():
 def system_prefers_light() -> bool:
     try:
         import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
-        value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize') as key:
+            value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
         return bool(value)
     except Exception:
-        return False
+        # Windows 注册表不可用（Linux/offscreen/精简系统）时使用浅色，
+        # 让“跟随系统”保持可读且与首次启动默认值一致。
+        return True
 
 
 def resolve(theme_id):
     """把配置值解析成有效的主题 id；兼容历史值 dark / light / system。"""
-    tid = str(theme_id or 'dark').strip()
-    if tid == 'system':
+    tid = str(theme_id or 'auto').strip()
+    if tid in {'system', 'auto'}:
         tid = 'light' if system_prefers_light() else 'dark'
     if tid not in THEMES:
-        tid = 'dark'
+        tid = 'light'
     return tid
 
 

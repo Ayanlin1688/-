@@ -814,7 +814,7 @@ class _TabButton(QWidget):
         else:
             self.setStyleSheet(
                 '#ecommerceTabButton {background:%s; border:%dpx solid %s; border-radius:%dpx;}'
-                % (materials.surface_fill(0).name(), px(1),
+                % (materials.ecommerce_color('single_card'), px(1),
                    materials.ecommerce_color('task_border'), px(8)))
             self.name_label.setStyleSheet('color:%s; background:transparent;'
                                           % colors['text2'])
@@ -1138,7 +1138,7 @@ class EcommerceTaskList(QWidget):
                 px(8), px(12), px(13), px(14))
 
     def retranslate_ui(self):
-        """分段 4 接语言总线时调用：重建全部可见文案；不抛异常。"""
+        """原地更新可见文案，保留卡片与异步缩略图。"""
         try:
             self.title_label.setText(tr('电商图任务'))
             self.manage_button.setText(tr('管理'))
@@ -1152,7 +1152,8 @@ class EcommerceTaskList(QWidget):
             self._retranslate_tabs()
             for card in self.cards.values():
                 card.retranslate()
-            self._render()
+            self.subtitle_label.setText(tr('{count} 个制作任务').format(count=len(self._groups)))
+            self._sync_bottom_bar()
         except RuntimeError:
             return
 

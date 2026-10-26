@@ -126,7 +126,7 @@ class LanguageSwitchTests(unittest.TestCase):
         self._switch('English')
         # 导航 / 关于入口
         self.assertEqual([item.text() for item in self.window._nav_items],
-                         ['Workspace', 'Image generation', 'Video creation', 'Ecommerce Images', 'History', 'Settings'])
+                         ['Workspace', 'Image generation', 'Video creation', 'Ecommerce Image Maker', 'History', 'Settings'])
         self.assertEqual(self.window._about_item.text(), 'About')
         # 设置页：页面标题、卡片、按钮、状态文案
         self.assertIn('Relay stations', self._current_page_titles())
@@ -151,7 +151,7 @@ class LanguageSwitchTests(unittest.TestCase):
         self._switch('English')
         self._switch('简体中文')
         self.assertEqual([item.text() for item in self.window._nav_items],
-                         ['工作台', '图片生成', '视频制作', '电商图', '任务历史', '设置'])
+                         ['工作台', '图片生成', '视频制作', '电商图制作', '任务历史', '设置'])
         self.assertIn('中转站', self._current_page_titles())
         self.assertEqual(self.settings.sync_models_button.text(), '同步上游模型')
         self.assertTrue(self.settings.license_status_label.text().startswith('许可状态'))
