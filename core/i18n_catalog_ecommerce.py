@@ -108,7 +108,7 @@ EN_ECOMMERCE = {
     '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)': '⬆ Click to upload images (JPG, PNG, WEBP; up to 8 images)',
     '＋ 继续添加 ({n}/8)': '＋ Add more ({n}/8)',
     '⬆ 开始生成': '⬆ Start generation',
-    '开始生成': 'Start generation',
+    '开始生成': 'Start Generating',
     '🚀 开始生成': '🚀 Start generation',
     '填写提示词并选择模型后即可生成': 'Enter a prompt and choose a model to generate',
     '💡 快速提示词': '💡 Quick prompts',
