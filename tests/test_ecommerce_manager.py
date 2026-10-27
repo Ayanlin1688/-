@@ -359,7 +359,7 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(self.analysis.call_count, 1)
         event.wait.assert_called_once_with(0.1)
         self.image.assert_not_called()
-        self.assertEqual(self.manifest(group_id)['totals']['skipped'], 3)
+        self.assertEqual(self.manifest(group_id)['totals']['cancelled'], 3)
 
     def test_analysis_retry_wait_checks_cancel_every_tenth_second(self):
         self.retry_wait.stop()
@@ -867,8 +867,8 @@ class EcommerceManagerTests(unittest.TestCase):
         self.analysis.assert_not_called()
         self.image.assert_not_called()
         self.assertEqual(self.store.get_group(group_id)['status'], 'cancelled')
-        self.assertEqual(self.manifest(group_id)['totals']['skipped'], 3)
-        self.assertEqual({i['status'] for i in self.store.list_items(group_id)}, {'skipped'})
+        self.assertEqual(self.manifest(group_id)['totals']['cancelled'], 3)
+        self.assertEqual({i['status'] for i in self.store.list_items(group_id)}, {'cancelled'})
         self.manager.resume_group(group_id)
         self.image.assert_not_called()  # skipped tasks require an explicit regeneration.
 
@@ -892,7 +892,7 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(self.image.call_count, 1)
         counts = self.manifest(group_id)['totals']
         self.assertEqual(counts['succeeded'], 1)
-        self.assertEqual(counts['skipped'], 2)
+        self.assertEqual(counts['cancelled'], 2)
 
     def test_same_group_cannot_run_concurrently_across_managers(self):
         entered, release = threading.Event(), threading.Event()
@@ -1051,9 +1051,9 @@ class EcommerceManagerTests(unittest.TestCase):
         with patch.object(self.store, 'touch_group', wraps=self.store.touch_group) as touched:
             group_id = self.start(cancel_event=cancel)
         self.assertEqual(touched.call_count, 2)
-        self.assertEqual(touched.call_args.kwargs['totals']['skipped'], 2)
+        self.assertEqual(touched.call_args.kwargs['totals']['cancelled'], 2)
         self.assertEqual(touched.call_args.kwargs['totals']['succeeded'], 1)
-        self.assertEqual(self.store.get_group(group_id)['status'], 'partial')
+        self.assertEqual(self.store.get_group(group_id)['status'], 'cancelled')
 
     def test_touch_preserves_latest_group_state_and_never_upserts_a_stale_group(self):
         self.store.upsert_group(dict(group_id='touch', status='generating',
@@ -1296,6 +1296,20 @@ class EcommerceManagerTests(unittest.TestCase):
         self.assertEqual(current[0]['status'], 'succeeded')
 
 
+    def test_cancel_during_failed_request_prevents_model_retry_and_new_requests(self):
+        cancel = threading.Event()
+        self.manager = self.make_manager(concurrency=1, image_model_candidates=['fallback'])
+        def rejected(*args, **kwargs):
+            cancel.set()
+            raise EcommerceImageError('model not found', 404, 'model not found', retry_safe=True)
+        self.image.side_effect = rejected
+        group_id = self.start(cancel_event=cancel)
+        self.assertEqual(self.image.call_count, 1)
+        self.assertEqual(self.store.get_group(group_id)['status'], 'cancelled')
+        self.assertEqual([item['status'] for item in self.store.list_items(group_id)], ['cancelled']*3)
+
+
+
 class EcommerceConfigTests(unittest.TestCase):
     def test_old_configuration_merges_all_defaults_and_preserves_existing_values(self):
         expected = dict(analysis_model='gemini-3.8-flash', image_model='gpt-image-2.5-sunburst',
@@ -1349,6 +1363,7 @@ class EcommerceConfigTests(unittest.TestCase):
             manager = EcommerceImageManager('same-route', 'same-key', temporary, store)
             self.assertEqual((manager.analysis_base_url, manager.analysis_api_key), ('same-route', 'same-key'))
             self.assertEqual((manager.image_base_url, manager.image_api_key), ('same-route', 'same-key'))
+
 
 
 if __name__ == '__main__':

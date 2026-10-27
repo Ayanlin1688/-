@@ -167,6 +167,21 @@ class EcommerceSubmissionViewTests(unittest.TestCase):
                 release.set()
                 QThreadPool.globalInstance().waitForDone(3000)
 
+    def test_success_resize_keeps_grid_height_stable_without_recursive_render(self):
+        self.view.set_items([dict(kind='carousel', seq=1, status='succeeded', file=str(self.path))])
+        thumb = self.view.cells[('carousel', 1)].thumbnail
+        self.wait_for(lambda: thumb.has_image)
+        flush_layout(self.app, self.view)
+        baseline = self.view.minimumSizeHint().height()
+        with patch.object(thumb, 'setStyleSheet', wraps=thumb.setStyleSheet) as restyle:
+            for width in (520, 680, 600) * 5:
+                self.view.resize(width, 500)
+                flush_layout(self.app, self.view)
+                self.assertEqual(self.view.height(), 500)
+                self.assertLessEqual(thumb.height(), self.view.height())
+                self.assertEqual(self.view.minimumSizeHint().height(), baseline)
+            restyle.assert_not_called()
+
     def test_missing_and_corrupt_success_files_show_plain_missing_placeholder(self):
         corrupt = Path(self.temp.name) / 'corrupt.png'
         corrupt.write_bytes(b'local-invalid-image-fixture')

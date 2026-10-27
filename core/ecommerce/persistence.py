@@ -12,7 +12,7 @@ from weakref import WeakSet
 
 
 GROUP_STATUSES = ('analyzing', 'generating', 'succeeded', 'partial', 'failed', 'cancelled')
-ITEM_STATUSES = ('pending', 'running', 'succeeded', 'failed', 'skipped')
+ITEM_STATUSES = ('pending', 'running', 'succeeded', 'failed', 'skipped', 'cancelled')
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_image_groups (
@@ -158,6 +158,11 @@ class EcommerceImageStore:
                     record[name] = json.loads(record[name])
                 except (TypeError, ValueError):
                     record[name] = deepcopy(fallback)
+            # Keep the existing SQLite CHECK constraint; explicit cancellation
+            # uses its legacy skipped representation on disk only.
+            if (table == 'product_image_items' and record['status'] == 'skipped'
+                    and str(record.get('error') or '').startswith('已取消')):
+                record['status'] = 'cancelled'
             records[record[key]] = record
         self._cache[table] = records
 
@@ -187,7 +192,9 @@ class EcommerceImageStore:
                             f'ON CONFLICT({key}) DO UPDATE SET ' + ','.join(
                                 f'{name}=excluded.{name}' for name in columns if name != key),
                             [tuple(json.dumps(rec[name], ensure_ascii=False, default=str)
-                                   if name in json_fields else rec[name] for name in columns)
+                                   if name in json_fields else (
+                                       'skipped' if table == 'product_image_items' and name == 'status'
+                                       and rec[name] == 'cancelled' else rec[name]) for name in columns)
                              for rec in records])
                 finally:
                     conn.close()

@@ -139,7 +139,7 @@ class LanguageSwitchTests(unittest.TestCase):
                          ['Simplified Chinese', 'English'])
         # 历史页：标题 / 筛选 / 表头
         self.assertEqual(self.history.filter_box.itemText(0), 'All statuses')
-        self.assertEqual(self.history.type_filter_box.itemText(1), 'Video')
+        self.assertEqual(self.history.type_filter_box.itemText(1), 'Automated video')
         self.assertEqual(self.history.table.horizontalHeaderItem(1).text(), 'No.')
         self.assertEqual(self.history.table.horizontalHeaderItem(6).text(), 'Status')
         self.assertFalse(has_cjk(self.history.footer_right.text()))

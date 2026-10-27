@@ -96,7 +96,7 @@ class HistoryPageManualImageTests(unittest.TestCase):
         self.page.type_filter_box.setCurrentText(tr('图片生成'))
         self.assertEqual([record['local_id'] for row, record in enumerate(self.page.records)
                           if not self.page.table.isRowHidden(row)], ['image:manual-1'])
-        self.page.type_filter_box.setCurrentText(tr('视频'))
+        self.page.type_filter_box.setCurrentText(tr('自动化视频'))
         self.assertTrue(all(self.page.table.isRowHidden(row)
                             for row in range(self.page.table.rowCount())))
         self.page.type_filter_box.setCurrentText(tr('全部类型'))
@@ -245,6 +245,35 @@ class HistoryPageManualImageTests(unittest.TestCase):
         image_actions = self.page.table.cellWidget(image_row, 10).layout()
         video_actions = self.page.table.cellWidget(video_row, 10).layout()
         self.assertEqual(image_actions.spacing(), video_actions.spacing())
+
+
+    def test_history_type_order_labels_and_real_filter_in_both_languages(self):
+        rows = [dict(kind=kind, local_id=str(index), status='completed') for index, kind in
+                enumerate(('video','manual_image','manual_video','ec'))]
+        # Build real table cells, including selection/actions, using legacy kinds.
+        self.page._manual_records = lambda: [rows[1]]
+        self.page._manual_video_records = lambda: [rows[2]]
+        self.page._ecommerce_records = lambda: [rows[3]]
+        self.page.update_history([rows[0]])
+        for language, labels in (
+                ('zh-CN',['全部类型','自动化视频','图片生成','视频制作','电商图制作']),
+                ('en-US',['All types','Automated video','Image generation','Video creation','Ecommerce Image Maker'])):
+            set_language(language)
+            self.page.retranslate_ui()
+            expected = [tr(value) for value in ['全部类型','自动化视频','图片生成','视频制作','电商图制作']]
+            self.assertEqual([self.page.type_filter_box.itemText(index) for index in range(5)], expected)
+            self.assertEqual(expected, labels)
+            for index,label in enumerate(expected[1:]):
+                self.assertEqual(self.page._type_text(rows[index]),label)
+                row_index = self.row_for(rows[index]['local_id'])
+                tag = self.page.table.cellWidget(row_index, 2).findChild(QLabel)
+                self.assertEqual(tag.text(), label)
+                self.page.type_filter_box.setCurrentText(label)
+                self.page._filter(tr('全部状态'))
+                self.assertEqual([row for row in range(4) if not self.page.table.isRowHidden(row)],
+                                 [row_index])
+        set_language('zh-CN')
+
 
 
 if __name__ == '__main__':

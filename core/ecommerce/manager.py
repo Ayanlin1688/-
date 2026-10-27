@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from copy import deepcopy
 import json
@@ -263,7 +263,7 @@ class EcommerceImageManager:
             r'(multiple|multi[- ]?)\s*image.{0,30}(unsupported|not support)|'
             r'图片.{0,20}(数量|过多|上限)|不支持多图', body))
 
-    def _request_image(self, item):
+    def _request_image(self, item, cancel_event=None):
         candidates = self._image_candidates(item.get('model') or self.image_model)
         group = self.store.get_group(item['group_id']) if item.get('group_id') else None
         config = (group or {}).get('config') or {}
@@ -276,6 +276,8 @@ class EcommerceImageManager:
             attempted.append(model)
             try:
                 while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise Cancelled('已取消，未发起图片请求')
                     try:
                         prompt = item['prompt']
                         if reduced:
@@ -296,6 +298,8 @@ class EcommerceImageManager:
                         raise
                 return result, model
             except EcommerceImageError as error:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise Cancelled('已取消，不再重试图片请求') from None
                 failures.append(error)
                 if (not self._multi_image_rejection(error)
                         and position + 1 < len(candidates) and self._can_skip_to_next(error)):
@@ -504,8 +508,8 @@ class EcommerceImageManager:
                         self._item(dict(group_id=group_id, kind=kind, seq=seq,
                                         title='AI 分析已取消，未生成提示词', prompt='',
                                         reference_paths=references, ratio=ratio, tier=tier,
-                                        model=self.image_model, status='skipped', error='已取消 AI 分析'))
-                self._finalize(group_id)
+                                        model=self.image_model, status='cancelled', error='已取消 AI 分析'))
+                self._finalize(group_id, cancelled=True)
                 return group_id
             except Exception as error:
                 message = self._clean(str(error))
@@ -532,12 +536,12 @@ class EcommerceImageManager:
 
     def _generate(self, group, item, cancel_event):
         if cancel_event is not None and cancel_event.is_set():
-            self._item(dict(item, status='skipped', error='已取消，未发起图片请求'))
+            self._item(dict(item, status='cancelled', error='已取消，未发起图片请求'))
             return
         item = self._item(dict(item, status='running', error=''))
         # Cancellation may arrive during persistence/callback processing.
         if cancel_event is not None and cancel_event.is_set():
-            self._item(dict(item, status='skipped', error='已取消，未发起图片请求'))
+            self._item(dict(item, status='cancelled', error='已取消，未发起图片请求'))
             return
         started = time.monotonic()
         requested = None
@@ -546,7 +550,7 @@ class EcommerceImageManager:
                       delivery=None, request_seconds=0., decode_seconds=None,
                       write_seconds=0., total_seconds=0., status='failed')
         try:
-            result, used_model = self._request_image(item)
+            result, used_model = self._request_image(item, cancel_event)
             requested = time.monotonic()
             timing.update(model=used_model, delivery=getattr(result, 'delivery', 'b64'),
                           request_seconds=requested - started)
@@ -564,6 +568,9 @@ class EcommerceImageManager:
             self._item(dict(item, status='succeeded', file_path=str(path), size=result.size,
                             image_tokens=result.image_tokens, warnings=list(result.warnings), error=''))
             self._touch_group(group['group_id'])
+        except Cancelled as error:
+            timing.update(total_seconds=time.monotonic() - started, status='cancelled')
+            self._item(dict(item, status='cancelled', error=self._clean(str(error))))
         except Exception as error:
             finished = time.monotonic()
             timing.update(total_seconds=finished - started, status='failed')
@@ -589,9 +596,33 @@ class EcommerceImageManager:
                 error = self._clean(f'输出目录不可用：{exc}')
                 raise
             with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix='ecommerce-image') as pool:
-                futures = [pool.submit(self._generate, group, item, cancel_event) for item in items]
-                for future in futures:
-                    future.result()
+                remaining = iter(items)
+                active = set()
+                def fill_slots():
+                    while len(active) < self.concurrency and not (cancel_event and cancel_event.is_set()):
+                        item = next(remaining, None)
+                        if item is None:
+                            break
+                        active.add(pool.submit(self._generate, group, item, cancel_event))
+                fill_slots()
+                settled_cancel = False
+                while active:
+                    done, active = wait(active, timeout=0.02, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            # Settle a crashed worker after the pool drains; unrelated
+                            # items can still run, without retrying a billed request.
+                            error = self._clean(f'图片任务执行失败：{exc}')
+                            self._log(error, 'error')
+                    if cancel_event is not None and cancel_event.is_set():
+                        if not settled_cancel:
+                            for item in remaining:
+                                self._item(dict(item, status='cancelled', error='已取消，未发起图片请求'))
+                            settled_cancel = True
+                    else:
+                        fill_slots()
         except Exception as exc:
             error = error or self._clean(f'图片任务执行失败：{exc}')
             self._log(error, 'error')
@@ -600,24 +631,26 @@ class EcommerceImageManager:
         cancelled = cancel_event is not None and cancel_event.is_set()
         for item in self.store.list_items(group_id):
             if item['status'] in ('pending', 'running'):
-                status = 'skipped' if cancelled or item['status'] == 'pending' else 'failed'
+                status = 'cancelled' if cancelled else ('skipped' if item['status'] == 'pending' else 'failed')
                 message = error or ('已取消，未发起图片请求' if cancelled else '图片任务未完成')
                 self._item(dict(item, status=status, error=message))
         self._touch_group(group_id)
-        self._finalize(group_id, error=error)
+        self._finalize(group_id, error=error, cancelled=cancelled)
 
-    def _finalize(self, group_id, *, error=''):
+    def _finalize(self, group_id, *, error='', cancelled=False):
         group = self.store.get_group(group_id)
         items = self.store.list_items(group_id)
         counts = self.store.item_counts(group_id)
         total = len(items)
-        if error:
+        if cancelled:
+            status = 'cancelled'
+        elif error:
             status = 'failed'
         elif total and counts['succeeded'] == total:
             status = 'succeeded'
         elif counts['succeeded']:
             status = 'partial'
-        elif counts['skipped']:
+        elif counts['skipped'] or counts['cancelled']:
             status = 'cancelled'
         else:
             status = 'failed'

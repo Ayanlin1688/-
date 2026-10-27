@@ -783,5 +783,48 @@ class _BatchCase(unittest.TestCase):
         page.refresh_interface_scale()
 
 
+    def test_model_grid_minimum_tooltips_and_language_at_four_scales(self):
+        from tests.qt_scale_support import flush_layout
+        from ui.tokens import px
+        page = self.page
+        page.show()
+        for scale in (1., 1.25, 1.5, 1.75):
+            tokens.set_interface_scale(scale)
+            page.refresh_interface_scale()
+            page.resize(px(1440), px(1000))
+            flush_layout(self.app, page)
+            self.assertEqual(page._model_columns, 3)
+            controls = (page.analysis_model_picker, page.image_model_picker, page.tier_combo)
+            for control in controls:
+                self.assertGreaterEqual(control.width(), px(220))
+                self.assertEqual(control.toolTip(), control.currentText())
+            self.assertEqual(len({control.y() for control in controls}), 1)
+            self.assertEqual(page.language_combo.height(), px(40))
+            self.assertEqual(page.style_grid.max_count, 3)
+
+    def test_model_grid_tracks_viewport_resize_without_manual_refresh(self):
+        from tests.qt_scale_support import flush_layout
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.addWidget(self.page)
+        try:
+            host.resize(700, 900)
+            host.show()
+            flush_layout(self.app, host)
+            self.assertEqual(self.page._model_columns, 2)
+            host.resize(1680, 1100)
+            flush_layout(self.app, host)
+            self.assertEqual(self.page._model_columns, 3)
+            controls = (self.page.analysis_model_picker,
+                        self.page.image_model_picker, self.page.tier_combo)
+            self.assertEqual(len({control.y() for control in controls}), 1)
+        finally:
+            self.page.setParent(None)
+            host.close()
+            host.deleteLater()
+
+
+
 if __name__ == '__main__':
     unittest.main()

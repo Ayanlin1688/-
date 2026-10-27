@@ -4,7 +4,7 @@ from collections import OrderedDict
 import json
 import re
 
-from PyQt5.QtCore import Qt, QRectF, QSize, QSignalBlocker, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QSignalBlocker, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, CardWidget, CheckBox, PushButton, StrongBodyLabel, SwitchButton
@@ -52,9 +52,9 @@ def _load_thumbnail_image(value):
 
 def _status_text(status):
     return {
-        'pending': tr('等待'), 'running': tr('生成中'), 'succeeded': tr('成功'),
-        'failed': tr('失败'), 'skipped': tr('跳过'),
-    }.get(status, status)
+        'pending': '', 'running': '', 'succeeded': tr('成功'),
+        'failed': tr('失败'), 'skipped': tr('取消'), 'cancelled': tr('取消'),
+    }.get(status, '')
 
 
 class _Thumbnail(QLabel):
@@ -64,6 +64,7 @@ class _Thumbnail(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._adaptive = True
+        self.aspect_ratio = 1.0
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(100)
@@ -82,7 +83,7 @@ class _Thumbnail(QLabel):
         return True
 
     def heightForWidth(self, width):
-        return max(1, width)
+        return max(1, round(width / self.aspect_ratio)) if self._adaptive else max(1, width)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -100,6 +101,8 @@ class _Thumbnail(QLabel):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
             self.clicked.emit()
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
 
 
@@ -119,7 +122,7 @@ class EcommerceResultCard(CardWidget):
         policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
-        self.setMinimumHeight(px(90))
+        self.setMinimumHeight(1 if self._adaptive else px(90))
         self.setMinimumWidth(0)
         self._hover = False
         self.badge_label = StrongBodyLabel()
@@ -131,6 +134,7 @@ class EcommerceResultCard(CardWidget):
         self.badge_label.setParent(self)
         self.select_checkbox.setParent(self)
         self.status_label.setParent(self)
+        self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.thumbnail = _Thumbnail()
         self.thumbnail.setAlignment(Qt.AlignCenter)
         self.thumbnail.setTextFormat(Qt.PlainText)
@@ -179,7 +183,7 @@ class EcommerceResultCard(CardWidget):
         error_text, error_tooltip = self._display_error(record.get('error') or '', record)
         self.error_label.setText(error_text)
         self.error_label.setToolTip(error_tooltip)
-        self.error_label.setVisible(bool(self.error_label.text()))
+        self.error_label.hide()
         references = list(record.get('reference_paths') or [])
         warnings = [warning for warning in self.record['warnings']
                     if references or '参考图可能未被模型采用' not in str(warning)]
@@ -197,7 +201,7 @@ class EcommerceResultCard(CardWidget):
             warnings = [warning for warning in warnings
                         if '参考图可能未被模型采用' not in str(warning)]
         self.warning_label.setText('\n'.join(str(warning) for warning in warnings))
-        self.warning_label.setVisible(bool(warnings))
+        self.warning_label.hide()
         self._render_thumbnail()
         self.set_busy(self._busy)
         self.refresh_colors()
@@ -211,6 +215,9 @@ class EcommerceResultCard(CardWidget):
         return True
 
     def heightForWidth(self, width):
+        image = _load_thumbnail_image(self.record.get('file_path')) if self._adaptive else QImage()
+        if not image.isNull():
+            return max(1, round((width - 4) * image.height() / image.width()) + 4)
         return max(px(90), width)
 
     def sizeHint(self):
@@ -219,13 +226,13 @@ class EcommerceResultCard(CardWidget):
     def _place_content(self):
         width, height = self.width(), self.height()
         bar = px(22)
-        side = max(1, min(width, height) - 4)
-        self.thumbnail.setGeometry((width - side) // 2, (height - side) // 2, side, side)
+        self.thumbnail.setGeometry(2, 2, max(1, width - 4), max(1, height - 4))
+        self.badge_label.hide()
         self.badge_label.setGeometry(px(4), px(3), px(34), px(22))
         self.status_label.setGeometry(1, max(0, height - bar - 1), max(1, width - 2), bar)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.size_label.setGeometry(px(4), max(0, height - bar * 2), max(1, width - px(8)), bar)
-        self.size_label.setVisible(self._hover and bool(self.size_label.text()))
+        self.size_label.hide()
         self.select_checkbox.setGeometry(max(0, width - px(30)), px(3), px(26), px(26))
         for index, button in enumerate((self.regenerate_button, self.folder_button)):
             button.setFixedSize(px(26), px(24))
@@ -233,7 +240,7 @@ class EcommerceResultCard(CardWidget):
             button.setVisible(self._hover)
         for index, label in enumerate((self.error_label, self.warning_label)):
             label.setGeometry(px(4), px(30 + index * 25), max(1, width - px(8)), px(24))
-            label.setVisible(bool(label.text()))
+            label.hide()
         self.thumbnail.lower()
 
     def resizeEvent(self, event):
@@ -286,11 +293,12 @@ class EcommerceResultCard(CardWidget):
                 painter.setClipPath(clip)
                 painter.fillRect(QRectF(0, 0, width, height), QColor(materials.palette()['bg2']))
                 physical_width, physical_height = round(width * ratio), round(height * ratio)
-                zoom = 1.04 if self._hover and self._adaptive else 1.0
+                zoom = 1.04 if self._hover and not self._adaptive else 1.0
                 scaled = image.scaled(round(physical_width * zoom), round(physical_height * zoom),
-                                      Qt.KeepAspectRatioByExpanding if self._adaptive else Qt.KeepAspectRatio,
+                                      Qt.KeepAspectRatio if self._adaptive else Qt.KeepAspectRatioByExpanding,
                                       Qt.SmoothTransformation)
-                if self._adaptive:
+                self.thumbnail.aspect_ratio = image.width() / image.height()
+                if not self._adaptive:
                     source = QRectF((scaled.width() - physical_width) / 2,
                                     (scaled.height() - physical_height) / 2,
                                     physical_width, physical_height)
@@ -304,10 +312,12 @@ class EcommerceResultCard(CardWidget):
                 self.thumbnail.setPixmap(canvas)
                 self._has_image = True
             else:
-                self.thumbnail.setText(tr('文件缺失'))
+                self.thumbnail.setText('')
+                self.thumbnail.setToolTip(tr('文件缺失'))
         else:
-            self.thumbnail.setText(_status_text(status))
+            self.thumbnail.setText('')
         self.thumbnail.setCursor(Qt.PointingHandCursor if self._has_image else Qt.ArrowCursor)
+        self.setCursor(self.thumbnail.cursor())
 
     @staticmethod
     def _display_error(value, record):
@@ -359,13 +369,14 @@ class EcommerceResultCard(CardWidget):
 
     def apply_adaptive(self, adaptive, *, update_geometry=True):
         self._adaptive = bool(adaptive)
+        self.setMinimumHeight(1 if self._adaptive else px(90))
         self.thumbnail.apply_adaptive(self._adaptive)
         self._render_thumbnail()
         if update_geometry:
             self.updateGeometry()
 
     def refresh_interface_scale(self):
-        self.setMinimumHeight(px(90))
+        self.setMinimumHeight(1 if self._adaptive else px(90))
         self.thumbnail.apply_adaptive(self._adaptive)
         self._place_content()
         self.thumbnail._resize_timer.start()
@@ -379,6 +390,11 @@ class EcommerceResultCard(CardWidget):
         """结果图点击进灯箱预览（需求：生成结果图也要能点开看大图）。"""
         if self._has_image:
             self.preview_requested.emit(self.record.get('item_id', ''))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self._request_preview()
+        super().mouseReleaseEvent(event)
 
     def _open_image(self):
         if self._has_image:
@@ -424,6 +440,29 @@ class EcommerceResultCard(CardWidget):
             (colors['text2'], background, px(8)))
 
 
+class _ResultGrid(WrapLayout):
+    def _arrange(self, rect, apply):
+        spacing = max(0, self.spacing())
+        width = max(1, rect.width())
+        items = self._visible_items()
+        columns = min(self.max_columns, max(1, (width + spacing) // (px(90) + spacing)))
+        self.columns = columns
+        cell, remainder = divmod(max(1, width - spacing * (columns - 1)), columns)
+        top = rect.y()
+        for offset in range(0, len(items), columns):
+            row = items[offset:offset + columns]
+            left, height = rect.x(), 0
+            for index, item in enumerate(row):
+                w = cell + int(index < remainder)
+                h = item.widget().heightForWidth(w)
+                if apply:
+                    item.setGeometry(QRect(left, top, w, h))
+                height = max(height, h)
+                left += w + spacing
+            top += height + spacing
+        return top - rect.y() - (spacing if items else 0)
+
+
 class EcommerceResultPanel(QWidget):
     regenerate_requested = pyqtSignal(object)
     regenerate_failed_requested = pyqtSignal()
@@ -464,7 +503,7 @@ class EcommerceResultPanel(QWidget):
         actions.addWidget(self.regenerate_selected_button)
         actions.addWidget(self.regenerate_failed_button)
         layout.addLayout(actions)
-        self.grid = WrapLayout(spacing=px(12), card_width=90, max_columns=12)
+        self.grid = _ResultGrid(spacing=px(12), card_width=90, max_columns=12)
         layout.addLayout(self.grid)
         style_controls(self)
         self._refresh_selection()

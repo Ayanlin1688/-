@@ -72,7 +72,7 @@ class EcommercePersistenceTests(unittest.TestCase):
         records[1]['warnings'].append('不应保存')
         self.assertEqual(self.store.list_items('g')[1]['warnings'], ['警告'])
         self.assertEqual(self.store.item_counts('g'),
-                         dict(pending=1, running=1, succeeded=1, failed=1, skipped=0))
+                         dict(pending=1, running=1, succeeded=1, failed=1, skipped=0, cancelled=0))
         self.assertTrue(self.store.delete_group('g'))
         self.assertIsNone(self.store.get_group('g'))
         self.assertEqual(self.store.list_items('g'), [])
@@ -248,7 +248,8 @@ class EcommercePersistenceTests(unittest.TestCase):
             group = reopened.get_group(group_id)
             self.assertEqual(group['status'], 'failed')
             self.assertEqual(group['error'], '上次运行未正常结束（程序中断）')
-            self.assertEqual(group['totals'], dict(pending=0, running=0, succeeded=1, failed=1, skipped=2, total=4))
+            self.assertEqual(group['totals'], dict(pending=0, running=0, succeeded=1, failed=1,
+                                                  skipped=2, cancelled=0, total=4))
             items = reopened.list_items(group_id)
             self.assertEqual([item['status'] for item in items], ['skipped', 'skipped', 'succeeded', 'failed'])
             self.assertTrue(all(item['error'] == group['error'] for item in items[:2]))
@@ -336,6 +337,25 @@ class EcommercePersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.list_items('g'), [])
         with self.assertRaises(ValueError):
             self.store.upsert_item(self.item(item_id='incorrect'))
+
+
+    def test_cancelled_round_trip_preserves_existing_schema_and_legacy_skips(self):
+        self.group()
+        with closing(sqlite3.connect(self.path)) as connection:
+            schema = connection.execute("SELECT sql FROM sqlite_master WHERE name='product_image_items'").fetchone()[0]
+        self.store.upsert_items_many([self.item(seq=1,status='cancelled',error='已取消，未发起图片请求'),
+                                     self.item(seq=2,status='skipped',error='旧中断恢复')])
+        self.assertEqual(self.store.list_items('g')[0]['status'], 'cancelled')
+        self.store.close()
+        reopened = EcommerceImageStore(self.path)
+        try:
+            self.assertEqual([item['status'] for item in reopened.list_items('g')], ['cancelled','skipped'])
+            with closing(sqlite3.connect(self.path)) as connection:
+                self.assertEqual(connection.execute("SELECT sql FROM sqlite_master WHERE name='product_image_items'").fetchone()[0], schema)
+                self.assertEqual(connection.execute('SELECT status FROM product_image_items ORDER BY seq').fetchall(), [('skipped',),('skipped',)])
+        finally:
+            reopened.close()
+
 
 
 if __name__ == '__main__':

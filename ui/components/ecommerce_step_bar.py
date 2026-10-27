@@ -39,14 +39,15 @@ class _StepCircle(QWidget):
         font.setPixelSize(px(12))
         font.setBold(state == 'done')
         painter.setFont(font)
-        text = '✓' if state == 'done' else '!' if state == 'failed' else str(self.number)
+        text = ('✓' if state == 'done' else '!' if state == 'failed'
+                else '×' if state == 'cancelled' else str(self.number))
         painter.drawText(rect, Qt.AlignCenter, text)
 
 
 class EcommerceStepBar(QWidget):
     """显示分析、生成和完成三步；状态变更不创建动画或后台任务。"""
 
-    STAGES = frozenset(('idle', 'analyzing', 'generating', 'finished', 'failed'))
+    STAGES = frozenset(('idle', 'analyzing', 'generating', 'finished', 'failed', 'cancelled'))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,6 +101,7 @@ class EcommerceStepBar(QWidget):
             'generating': ('done', 'active', 'pending'),
             'finished': ('done', 'done', 'done'),
             'failed': ('done', 'done', 'failed'),
+            'cancelled': ('done', 'pending', 'cancelled'),
         }[stage]
         self.setProperty('stage', stage)
         for circle, label, state in zip(self.circles, self.labels, states):
@@ -114,7 +116,8 @@ class EcommerceStepBar(QWidget):
     def retranslate_ui(self):
         self.labels[0].setText(tr('AI 分析'))
         self.labels[1].setText(tr('生成图片'))
-        self.labels[2].setText(tr('部分失败') if self._stage == 'failed' else tr('完成'))
+        self.labels[2].setText(tr('已取消') if self._stage == 'cancelled'
+                               else tr('部分失败') if self._stage == 'failed' else tr('完成'))
 
     def refresh_interface_scale(self):
         self.setFixedHeight(px(48))

@@ -25,6 +25,7 @@ class _ZoomView(QGraphicsView):
     """图片视图：适配窗口 + 滚轮缩放 + 拖拽平移 + 键盘缩放。"""
 
     zoom_changed = pyqtSignal(float)
+    navigation_requested = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +66,9 @@ class _ZoomView(QGraphicsView):
         else:
             self._item = QGraphicsPixmapItem(pixmap)
             self.scene().addItem(self._item)
+        # QGraphicsScene's implicit scene rect only grows. Reset it when a
+        # portrait follows a wider image so both side margins stay equal.
+        self.scene().setSceneRect(self.scene().itemsBoundingRect())
         self._fit_image()
 
     def _fit_image(self):
@@ -112,7 +116,16 @@ class _ZoomView(QGraphicsView):
         self.zoom_by(1.25 if delta > 0 else 0.8)
         event.accept()
 
+    def mouseDoubleClickEvent(self, event):
+        self.reset_zoom()
+        event.accept()
+
     def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            # QGraphicsView otherwise consumes arrows to scroll the zoomed image.
+            self.navigation_requested.emit(-1 if event.key() == Qt.Key_Left else 1)
+            event.accept()
+            return
         if event.key() in (Qt.Key_Plus, Qt.Key_Equal):
             self.zoom_by(1.25)
             event.accept()
@@ -150,6 +163,14 @@ class _RoundButton(QWidget):
         self._font_size = font_size
         self.setFixedSize(self._size, self._size)
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def keyPressEvent(self, event):
+        if self.isEnabled() and event.key() in (Qt.Key_Space, Qt.Key_Return):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def set_glyph(self, glyph):
         self._glyph = str(glyph)
@@ -158,6 +179,7 @@ class _RoundButton(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setOpacity(1.0 if self.isEnabled() else 0.35)
         painter.setPen(Qt.NoPen)
         color = self._hover_background if self._hover else self._background
         painter.setBrush(color if isinstance(color, QColor) else QColor(*color))
@@ -182,7 +204,7 @@ class _RoundButton(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+        if self.isEnabled() and event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 
@@ -239,6 +261,8 @@ class ImageLightbox(QDialog):
         header_layout.addStretch(1)
         self.hint_label = QLabel(tr('滚轮缩放 · 拖拽平移 · ←/→ 切换 · Esc 关闭'), self.header)
         header_layout.addWidget(self.hint_label)
+        self.metadata_label = QLabel('', self.header)
+        header_layout.addWidget(self.metadata_label)
         self.counter_label = QLabel('', self.header)
         header_layout.addWidget(self.counter_label)
         self.close_button = _RoundButton(
@@ -252,10 +276,12 @@ class ImageLightbox(QDialog):
 
         self.body = QWidget(self.panel)
         body_layout = QVBoxLayout(self.body)
-        body_layout.setContentsMargins(px(56), px(12), px(56), px(16))
+        body_layout.setContentsMargins(px(72), px(12), px(72), px(12))
         body_layout.setSpacing(0)
         self.view = _ZoomView(self.body)
         self.view.setObjectName('lightboxView')
+        self.view.navigation_requested.connect(
+            lambda step: self.previous_image() if step < 0 else self.next_image())
         body_layout.addWidget(self.view, 1)
         panel_layout.addWidget(self.body, 1)
         self.prev_button = _RoundButton('‹', size=px(40),
@@ -318,6 +344,8 @@ class ImageLightbox(QDialog):
         self.tab_underline.setStyleSheet('background: %s; border-radius: 1px;' % accent)
         self.hint_label.setStyleSheet(
             'color: %s; background: transparent; font-size: %dpx;' % (text2, px(11)))
+        self.metadata_label.setStyleSheet(
+            'color:%s;background:transparent;font-size:%dpx;' % (text2, px(12)))
         self.counter_label.setStyleSheet(
             'color: %s; background: transparent; font-size: %dpx;' % (text2, px(12)))
         self.view.setStyleSheet(
@@ -351,32 +379,56 @@ class ImageLightbox(QDialog):
             self.next_button.setEnabled(False)
             return
         self.view.set_image(self._paths[self._index])
+        pixmap = self.view._item.pixmap() if self.view._item is not None else QPixmap()
+        try:
+            size = Path(self.current_path()).stat().st_size
+            size_text = ('%.1f MB' % (size / 1048576) if size >= 1048576
+                         else '%.1f KB' % (size / 1024))
+        except (OSError, ValueError):
+            size_text = '—'
+        resolution = '%d × %d' % (pixmap.width(), pixmap.height()) if not pixmap.isNull() else '—'
+        self.metadata_label.setText(resolution + ' · ' + size_text)
         multiple = len(self._paths) > 1
-        self.prev_button.setVisible(multiple)
-        self.next_button.setVisible(multiple)
-        self.prev_button.setEnabled(multiple)
-        self.next_button.setEnabled(multiple)
+        self.prev_button.show()
+        self.next_button.show()
+        self.prev_button.setEnabled(self._index > 0)
+        self.next_button.setEnabled(self._index < len(self._paths) - 1)
         self._place_navs()
 
     def next_image(self):
-        if len(self._paths) > 1:
-            self._index = (self._index + 1) % len(self._paths)
+        if self._index < len(self._paths) - 1:
+            self._index += 1
             self._show_current()
 
     def previous_image(self):
-        if len(self._paths) > 1:
-            self._index = (self._index - 1) % len(self._paths)
+        if self._index > 0:
+            self._index -= 1
             self._show_current()
 
     # —— 布局 ——
     def _place_navs(self):
         bottom = px(40)
-        self.prev_button.move(px(12), max(0, (self.body.height() - bottom) // 2))
-        self.next_button.move(max(0, self.body.width() - bottom - px(12)),
+        self.prev_button.move(px(24), max(0, (self.body.height() - bottom) // 2))
+        self.next_button.move(max(0, self.body.width() - bottom - px(24)),
                               max(0, (self.body.height() - bottom) // 2))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, 'panel'):
+            self.panel.setFixedSize(max(1, self.width() - px(32)), max(1, self.height() - px(32)))
+            self.hint_label.setVisible(self.width() >= px(1000))
+            self.panel.layout().activate()
+        self._place_navs()
+
+    def refresh_colors(self):
+        self._apply_theme()
+
+    def refresh_interface_scale(self):
+        self.header.setFixedHeight(px(56))
+        for button, size in ((self.prev_button, 40), (self.next_button, 40), (self.close_button, 32)):
+            button.setFixedSize(px(size), px(size))
+        self.body.layout().setContentsMargins(px(72), px(12), px(72), px(12))
+        self._apply_theme()
         self._place_navs()
 
     def keyPressEvent(self, event):
@@ -419,18 +471,16 @@ class ImageLightbox(QDialog):
             return None
         dialog = cls(parent)
         dialog.set_images(paths, index)
-        app = QApplication.instance()
-        screen = None
-        if app is not None and app.primaryScreen() is not None:
-            screen = app.primaryScreen().availableGeometry()
-        if screen is not None:
-            width = min(px(1200), max(px(480), int(screen.width() * 0.9)))
-            height = min(int(screen.height() * 0.9), px(1000))
-            dialog.panel.setMinimumSize(
-                QSize(min(width, max(px(360), int(screen.width() * 0.6))),
-                      min(height, max(px(280), int(screen.height() * 0.6)))))
-            dialog.panel.setMaximumSize(QSize(width, height))
-            dialog.resize(screen.width(), screen.height())
+        geometry = parent.window().frameGeometry() if parent is not None else None
+        if geometry is None:
+            app = QApplication.instance()
+            geometry = app.primaryScreen().availableGeometry() if app else None
+        if geometry is not None:
+            dialog.setGeometry(geometry)
+            dialog.panel.setMinimumSize(0, 0)
+            dialog.panel.setMaximumSize(16777215, 16777215)
+            dialog.panel.setFixedSize(max(1, geometry.width() - px(32)),
+                                      max(1, geometry.height() - px(32)))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

@@ -11,8 +11,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QCoreApplication, QEvent, QSize, Qt, QSignalBlocker, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QFont, QPixmap
+from PyQt5.QtCore import QCoreApplication, QEvent, QRect, QSize, Qt, QSignalBlocker, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QFont, QIcon, QImage, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QBoxLayout, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
@@ -21,16 +21,17 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QUrl
 try:
-    from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
-    from PyQt5.QtMultimediaWidgets import QVideoWidget
+    from PyQt5.QtMultimedia import (QAbstractVideoBuffer, QAbstractVideoSurface, QMediaContent,
+                                    QMediaPlayer, QVideoFrame, QVideoSurfaceFormat)
 except ImportError:  # pragma: no cover - optional multimedia backend
-    QMediaContent = QMediaPlayer = QVideoWidget = None
+    QMediaContent = QMediaPlayer = QAbstractVideoSurface = None
 from qfluentwidgets import ComboBox, InfoBar, LineEdit, PrimaryPushButton, PushButton, StrongBodyLabel, TitleLabel, ToolButton, setCustomStyleSheet, FluentIcon as FIF
 
 from core.i18n import register_retranslate, tr
 from core.line_routing import resolve_line
 from core.model_catalog import builtin_models, classify_model, normalize_model_id, family_for
 from .. import materials
+from ..components.image_lightbox import ImageLightbox
 from ..components.model_selector import catalog_snapshot
 from ..responsive import scrollable_body
 from ..theme import style_controls, style_page
@@ -47,6 +48,90 @@ def _color(key):
         return materials.ecommerce_color(key)
     except (KeyError, AttributeError):
         return materials.text_color(1)
+
+
+if QAbstractVideoSurface is not None:
+    class _VideoFrameSurface(QAbstractVideoSurface):
+        frame_ready = pyqtSignal(QImage)
+
+        def supportedPixelFormats(self, handleType=QAbstractVideoBuffer.NoHandle):
+            if handleType != QAbstractVideoBuffer.NoHandle:
+                return []
+            return [QVideoFrame.Format_RGB32, QVideoFrame.Format_ARGB32,
+                    QVideoFrame.Format_RGB24, QVideoFrame.Format_RGB565, QVideoFrame.Format_RGB555]
+
+        def present(self, frame):
+            mapped = QVideoFrame(frame)
+            if not mapped.map(QAbstractVideoBuffer.ReadOnly):
+                return False
+            try:
+                image_format = QVideoFrame.imageFormatFromPixelFormat(mapped.pixelFormat())
+                if image_format == QImage.Format_Invalid:
+                    return False
+                bits = mapped.bits()
+                bits.setsize(mapped.mappedBytes())
+                image = QImage(bits, mapped.width(), mapped.height(), mapped.bytesPerLine(), image_format)
+                # Some Windows decoders leave RGB32's unused alpha byte at zero.
+                # Normalize it before painting into the translucent main window.
+                image = (image.convertToFormat(QImage.Format_RGB888)
+                         if image_format == QImage.Format_RGB32 else image.copy())
+                if self.surfaceFormat().scanLineDirection() == QVideoSurfaceFormat.BottomToTop:
+                    image = image.mirrored(False, True)
+            finally:
+                mapped.unmap()
+            self.frame_ready.emit(image)
+            return True
+
+
+class _VideoPreviewWidget(QWidget):
+    """Paint decoded Qt frames inside the translucent window without a native overlay."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image = QImage()
+        self._aspect_mode = Qt.KeepAspectRatio
+        self.surface = _VideoFrameSurface(self)
+        self.surface.frame_ready.connect(self._set_frame, Qt.QueuedConnection)
+
+    def _set_frame(self, image):
+        self._image = image
+        self.update()
+
+    def aspectRatioMode(self):
+        return self._aspect_mode
+
+    def setAspectRatioMode(self, mode):
+        self._aspect_mode = mode
+        self.update()
+
+    def frameRect(self):
+        size = self._image.size().scaled(self.size(), self._aspect_mode)
+        return QRect((self.width() - size.width()) // 2, (self.height() - size.height()) // 2,
+                     size.width(), size.height())
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(_color('video_creation_preview_bg')))
+        if not self._image.isNull():
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawImage(self.frameRect(), self._image)
+
+    def showFullScreen(self):
+        self._embedded_flags = self.windowFlags()
+        self.setWindowFlag(Qt.Window, True)
+        super().showFullScreen()
+
+    def showNormal(self):
+        self.setWindowFlags(getattr(self, '_embedded_flags', Qt.Widget))
+        super().showNormal()
+        if self.parentWidget() is not None and self.parentWidget().layout() is not None:
+            self.parentWidget().layout().invalidate()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def _dispose_worker(worker):
@@ -407,25 +492,36 @@ class VideoCreationPage(QWidget):
         self.preview_stack.addWidget(self.preview_empty_page)
         self.preview_loading = QLabel(tr('生成中…'), self.preview_stack); self.preview_loading.setAlignment(Qt.AlignCenter); self.preview_stack.addWidget(self.preview_loading)
         self.preview_media_page = QWidget(self.preview_stack); media_layout = QVBoxLayout(self.preview_media_page); media_layout.setContentsMargins(0, 0, 0, 0)
+        self.media_player = None
         try:
-            self.media_available = bool(QMediaPlayer is not None and QVideoWidget is not None and QMediaPlayer.isAvailable())
+            if QMediaPlayer is not None and QAbstractVideoSurface is not None:
+                self.media_player = QMediaPlayer(self.preview_media_page)
+            self.media_available = bool(self.media_player is not None and self.media_player.isAvailable())
         except Exception:
             self.media_available = False
         if self.media_available:
-            self.video_widget = QVideoWidget(self.preview_media_page); self.video_widget.setObjectName('videoPreviewWidget'); self.media_player = QMediaPlayer(self.preview_media_page); self.media_player.setVideoOutput(self.video_widget); self.media_available = True; media_layout.addWidget(self.video_widget, 1)
+            self.video_widget = _VideoPreviewWidget(self.preview_media_page)
+            self.video_widget.setObjectName('videoPreviewWidget')
+            self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
+            self.media_player.setVideoOutput(self.video_widget.surface)
+            media_layout.addWidget(self.video_widget, 1)
             self.media_controls = QWidget(self.preview_media_page); controls = QHBoxLayout(self.media_controls); controls.setContentsMargins(0, 0, 0, 0); controls.setSpacing(px(6))
             self.media_play_button = QToolButton(self.media_controls); self.media_play_button.setObjectName('videoPlayPauseButton'); self.media_play_button.setIcon(FIF.PLAY.icon()); self.media_play_button.setToolTip(tr('播放')); self.media_play_button.clicked.connect(self._toggle_media_playback); controls.addWidget(self.media_play_button)
             self.media_time_label = QLabel('00:00 / 00:00', self.media_controls); self.media_time_label.setObjectName('videoMediaTime'); controls.addWidget(self.media_time_label); controls.addStretch(1)
             self.media_mute_button = QToolButton(self.media_controls); self.media_mute_button.setObjectName('videoMuteButton'); self.media_mute_button.setIcon(FIF.VOLUME.icon()); self.media_mute_button.setToolTip(tr('静音')); self.media_mute_button.clicked.connect(self._toggle_media_mute); controls.addWidget(self.media_mute_button)
             self.media_fullscreen_button = QToolButton(self.media_controls); self.media_fullscreen_button.setObjectName('videoFullscreenButton'); self.media_fullscreen_button.setIcon(FIF.FULL_SCREEN.icon()); self.media_fullscreen_button.setToolTip(tr('全屏')); self.media_fullscreen_button.clicked.connect(self._toggle_media_fullscreen); controls.addWidget(self.media_fullscreen_button)
-            media_layout.addWidget(self.media_controls, 0)
             self.media_player.positionChanged.connect(self._media_position_changed); self.media_player.durationChanged.connect(self._media_duration_changed); self.media_player.stateChanged.connect(self._media_state_changed)
             try: self.media_player.error.connect(self._on_media_error)
             except (AttributeError, TypeError): pass
         else:
+            if self.media_player is not None:
+                self.media_player.deleteLater()
             self.video_widget = None; self.media_player = None; self.media_controls = None; self.media_play_button = self.media_time_label = self.media_mute_button = self.media_fullscreen_button = None; self.media_available = False
-        self.preview_done = QLabel('', self.preview_media_page); self.preview_done.setAlignment(Qt.AlignCenter); self.preview_done.setWordWrap(True); self.preview_done.setVisible(not self.media_available); media_layout.addWidget(self.preview_done); self.open_video_button = PushButton(FIF.FOLDER, tr('打开文件'), self.preview_media_page); self.open_video_button.clicked.connect(self._open_current_file); media_layout.addWidget(self.open_video_button, 0, Qt.AlignCenter); self.preview_stack.addWidget(self.preview_media_page)
+        self.preview_done = QLabel('', self.preview_media_page); self.preview_done.setAlignment(Qt.AlignCenter); self.preview_done.setWordWrap(True); self.preview_done.setVisible(not self.media_available); media_layout.addWidget(self.preview_done, 1); self.open_video_button = PushButton(FIF.FOLDER, tr('打开文件'), self.preview_media_page); self.open_video_button.clicked.connect(self._open_current_file);  self.preview_stack.addWidget(self.preview_media_page)
         failed_page = QWidget(self.preview_stack); failed_layout = QVBoxLayout(failed_page); self.preview_failed = QLabel('', failed_page); self.preview_failed.setAlignment(Qt.AlignCenter); self.preview_failed.setWordWrap(True); failed_layout.addWidget(self.preview_failed); self.retry_button = PushButton(FIF.SYNC, tr('重新生成'), failed_page); self.retry_button.clicked.connect(self._retry_current); failed_layout.addWidget(self.retry_button, 0, Qt.AlignCenter); self.preview_stack.addWidget(failed_page); preview_layout.addWidget(self.preview_stack); layout.addWidget(self.preview_area, 0, Qt.AlignHCenter)
+        if self.media_controls is not None:
+            layout.addWidget(self.media_controls)
+        layout.addWidget(self.open_video_button, 0, Qt.AlignHCenter)
         url_row = QHBoxLayout(); self.url_edit = LineEdit(card); self.url_edit.setObjectName('videoUrlEdit'); self.url_edit.setReadOnly(True); self.url_edit.setPlaceholderText(tr('生成完成后显示视频路径或 URL')); url_row.addWidget(self.url_edit, 1); self.download_button = PushButton(FIF.DOWNLOAD, tr('下载视频'), card); self.download_button.clicked.connect(self._download_current); self.copy_url_button = PushButton(FIF.COPY, tr('复制链接'), card); self.copy_url_button.clicked.connect(self._copy_url); url_row.addWidget(self.download_button); url_row.addWidget(self.copy_url_button); layout.addLayout(url_row)
         self.history_detail_hint = QLabel('', card); self.history_detail_hint.setObjectName('videoHistoryDetailHint'); layout.addWidget(self.history_detail_hint)
         self.info_bar = QLabel(tr('温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。'), card); self.info_bar.setWordWrap(True); self.info_bar.setObjectName('videoInfoBar'); layout.addWidget(self.info_bar)
@@ -525,13 +621,15 @@ class VideoCreationPage(QWidget):
             tile_layout = QGridLayout(tile)
             tile_layout.setContentsMargins(0, 0, 0, 0)
             tile_layout.setSpacing(0)
-            image = QLabel(tile)
-            image.setAlignment(Qt.AlignCenter)
+            image = QToolButton(tile)
+            image.setObjectName('videoReferenceImagePreview')
+            image.clicked.connect(lambda _checked=False, item_index=index: self._preview_reference_image(item_index))
             image.setFixedSize(px(94), px(94))
             image.setStyleSheet('border-radius:%dpx;' % px(8))
             pixmap = QPixmap(path)
             if not pixmap.isNull():
-                image.setPixmap(pixmap.scaled(px(94), px(94), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+                image.setIcon(QIcon(pixmap))
+                image.setIconSize(QSize(px(90), px(90)))
             else:
                 image.setText(tr('图片'))
                 image.setStyleSheet('color:%s; border-radius:%dpx;' % (_color('video_creation_muted'), px(8)))
@@ -572,6 +670,9 @@ class VideoCreationPage(QWidget):
         if 0 <= int(index) < len(self.reference_images):
             self.reference_images.pop(int(index))
             self._sync_reference_labels()
+
+    def _preview_reference_image(self, index):
+        self._lightbox = ImageLightbox.show_images(self, self.reference_images, index)
 
     def _insert_reference_image(self, index):
         if not 0 <= int(index) < len(self.reference_images):

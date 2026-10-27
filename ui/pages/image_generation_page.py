@@ -806,7 +806,7 @@ class ImageGenerationPage(QWidget):
         self.clear_prompt_button.setVisible(bool(value))
         too_long = len(value) > 10000
         self.prompt_count_label.setStyleSheet('color:%s;' % materials.ecommerce_color('image_generation_error') if too_long else '')
-        self.submit_button.setEnabled(bool(value.strip()) and bool(self.model_combo.currentData()) and not too_long)
+        self.submit_button.setEnabled(bool(value.strip()) and bool(self.model_combo.currentData()) and not too_long and not self.has_running_workers())
         self.cta_button.setEnabled(self.submit_button.isEnabled())
 
     def _update_count_hint(self, value):
@@ -843,6 +843,8 @@ class ImageGenerationPage(QWidget):
         return self._manager
 
     def submit_generation(self):
+        if self.has_running_workers():
+            return False
         prompt = self.prompt_edit.toPlainText().strip()
         model = str(self.model_combo.currentData() or '').strip()
         if not prompt:
@@ -864,6 +866,8 @@ class ImageGenerationPage(QWidget):
         self._worker.task_updated.connect(lambda _record: self.history_changed.emit())
         self._workers.append(self._worker)
         self._worker.finished.connect(lambda worker=self._worker: self._worker_finished(worker))
+        self.submit_button.setEnabled(False)
+        self.cta_button.setEnabled(False)
         self._worker.start()
         return True
 
@@ -873,6 +877,7 @@ class ImageGenerationPage(QWidget):
         except ValueError:
             pass
         worker.deleteLater()
+        self._update_prompt_state()
 
     def has_running_workers(self):
         """Return whether an image-generation worker is still running."""

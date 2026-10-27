@@ -116,29 +116,26 @@ class EcommerceResultPanelTests(unittest.TestCase):
         self.assertIn(str(first.resolve()), paths)
         self.assertNotIn(str(Path(self.temporary.name, '0.png').resolve()), paths)
 
-    def test_square_cover_and_contain_preserve_rounding_and_image(self):
-        card = self._card(self._image())
-        card.resize(360, 800)
+    def test_adaptive_natural_ratio_and_square_cover_preserve_image(self):
+        card = self._card(self._image(size=(300, 600)))
+        card.resize(204, card.heightForWidth(204))
         card.show()
         self._settle(card)
+        self.assertEqual(card.height(), 404)
+        self.assertEqual(card.thumbnail.height(), 400)
+        self.assertEqual(card.thumbnail.width(), 200)
         red = QColor('#dc2345')
-        cover = card.thumbnail.pixmap().toImage()
-        self.assertEqual(cover.pixelColor(10, cover.height() // 2), red)
-        self.assertEqual(cover.pixelColor(0, 0).alpha(), 0)
-        card.apply_adaptive(False)
-        self._settle(card)
-        self.assertTrue(card.thumbnail.hasHeightForWidth())
-        self.assertTrue(card.thumbnail.sizePolicy().hasHeightForWidth())
-        self.assertEqual(card.thumbnail.height(), card.thumbnail.width())
-        self.assertEqual(card.thumbnail.height(), min(card.width(), card.height()) - 4)
         contained = card.thumbnail.pixmap().toImage()
-        self.assertEqual(contained.pixelColor(10, contained.height() // 2),
-                         QColor(materials.palette()['bg2']))
-        self.assertEqual(contained.pixelColor(contained.width() // 2, contained.height() // 2), red)
-        card.apply_adaptive(True)
+        self.assertEqual(contained.pixelColor(10, 200), red)
+        self.assertEqual(contained.pixelColor(0, 0).alpha(), 0)
+        card.apply_adaptive(False)
+        card.resize(204, card.heightForWidth(204))
         self._settle(card)
-        self.assertTrue(card.thumbnail.hasHeightForWidth())
-        self.assertEqual(card.thumbnail.height(), card.thumbnail.heightForWidth(card.thumbnail.width()))
+        cover = card.thumbnail.pixmap().toImage()
+        self.assertEqual(card.height(), 204)
+        self.assertEqual(card.thumbnail.height(), card.thumbnail.width())
+        self.assertEqual(cover.pixelColor(10, 100), red)
+        self.assertEqual(cover.pixelColor(0, 0).alpha(), 0)
 
     def test_adaptive_switch_reads_and_persists_setting_and_applies_to_every_card(self):
         config = {'ecommerce': {'thumbnail_adaptive': False}}
@@ -197,11 +194,60 @@ class EcommerceResultPanelTests(unittest.TestCase):
         panel.update_item(dict(item_id='missing', kind='carousel', seq=1,
                                status='succeeded', file_path=str(Path(self.temporary.name, 'missing.png'))))
         card = panel.cards['missing']
-        self.assertEqual(card.thumbnail.text(), '文件缺失')
+        self.assertEqual(card.thumbnail.text(), '')
+        self.assertEqual(card.thumbnail.toolTip(), '文件缺失')
         card.thumbnail._resize_timer.start()
         panel.clear()
         self.assertFalse(card.thumbnail._resize_timer.isActive())
         self.assertEqual(panel.cards, {})
+
+
+    def test_only_terminal_status_text_is_visible_even_with_diagnostics(self):
+        from PyQt5.QtWidgets import QLabel
+        for status, text in (('pending', ''), ('running', ''), ('succeeded', '成功'),
+                             ('failed', '失败'), ('cancelled', '取消')):
+            card = self._card(self._image(), status=status, size='1024x1820',
+                              warnings=['源图为 JPEG，已转为 PNG'], error='请求错误')
+            card.show()
+            card._hover = True
+            card._place_content()
+            self.app.processEvents()
+            self.assertEqual([label.text() for label in card.findChildren(QLabel)
+                              if label.isVisible() and label.text()], [text] if text else [])
+            self.assertEqual(card.record['warnings'], ['源图为 JPEG，已转为 PNG'])
+            self.assertIn('请求错误', card.toolTip())
+
+    def test_mixed_aspect_grid_keeps_each_ratio_and_cover_crops_edges(self):
+        from PyQt5.QtGui import QPainter
+        panel = EcommerceResultPanel()
+        self.widgets.append(panel)
+        for index, size in enumerate(((120, 120), (90, 160), (90, 120), (240, 120))):
+            path = self._image(f'ratio-{index}.png', color='#0000ff', size=size)
+            if index == 3:
+                image = QImage(str(path))
+                painter = QPainter(image)
+                painter.fillRect(0, 0, 60, 120, QColor('#ff0000'))
+                painter.fillRect(180, 0, 60, 120, QColor('#00ff00'))
+                painter.end()
+                image.save(str(path))
+            panel.update_item(dict(item_id=str(index), kind='carousel', seq=index+1,
+                                   status='succeeded', file_path=str(path)))
+        panel.resize(600, 700)
+        panel.show()
+        self.app.processEvents()
+        for card, size in zip(panel.ordered_cards(), ((120,120),(90,160),(90,120),(240,120))):
+            self._settle(card)
+            self.assertAlmostEqual((card.width()-4)/(card.height()-4), size[0]/size[1], delta=.025)
+        card = panel.ordered_cards()[3]
+        natural = card.thumbnail.pixmap().toImage()
+        self.assertEqual(natural.pixelColor(10, natural.height()//2), QColor('#ff0000'))
+        panel.set_adaptive(False)
+        self.app.processEvents()
+        self._settle(card)
+        cropped = card.thumbnail.pixmap().toImage()
+        self.assertEqual(card.width(), card.height())
+        self.assertEqual(cropped.pixelColor(10, cropped.height()//2), QColor('#0000ff'))
+
 
 
 if __name__ == '__main__':

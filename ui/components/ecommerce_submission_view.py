@@ -44,7 +44,12 @@ class _SubmissionThumbnail(QLabel):
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(0, px(72))
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        # A QLabel pixmap otherwise becomes its next minimum height.  Repainting
+        # at the allocated size must not feed a larger size back into the grid.
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._resize_render = QTimer(self)
+        self._resize_render.setSingleShot(True)
+        self._resize_render.timeout.connect(self._render)
         font = self.font()
         font.setFamily(materials.ui_font_family())
         font.setPixelSize(12)
@@ -87,7 +92,9 @@ class _SubmissionThumbnail(QLabel):
 
     def _render(self):
         self.setProperty('thumbLoaded', self.has_image)
-        self.setStyleSheet('color:%s; background:transparent;' % materials.text_color(3))
+        style = 'color:%s; background:transparent;' % materials.text_color(3)
+        if self.styleSheet() != style:
+            self.setStyleSheet(style)
         if self._missing:
             self.setPixmap(QPixmap())
             self.setText(tr('缺失'))
@@ -138,7 +145,7 @@ class _SubmissionThumbnail(QLabel):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._render()
+        self._resize_render.start(0)
 
 
 class _SubmissionCell(QFrame):
@@ -182,7 +189,7 @@ class _SubmissionCell(QFrame):
         if index is not None:
             self.index = index
         status = str(self.record.get('status') or 'pending')
-        status = status if status in ('running', 'succeeded', 'failed') else 'pending'
+        status = status if status in ('running', 'succeeded', 'failed', 'cancelled') else 'pending'
         self.setProperty('cellState', status)
         self.number_label.setText(str(self.index))
         self.thumbnail.setVisible(status == 'succeeded')
@@ -210,7 +217,7 @@ class _SubmissionCell(QFrame):
         self.badge_label.setText((tr('轮{seq}') if self.key[0] == 'carousel'
                                  else tr('详{seq}')).format(seq=self.key[1]))
         self.status_label.setText({'pending': tr('排队中'), 'running': tr('生成中'),
-                                   'failed': tr('失败')}.get(self.property('cellState'), ''))
+                                   'failed': tr('失败'), 'cancelled': tr('取消')}.get(self.property('cellState'), ''))
         self.retry_button.setText(tr('重试'))
         self.thumbnail._render()
 
@@ -269,7 +276,8 @@ class EcommerceSubmissionView(QFrame):
         self.progress_label = _label(parent=self)
         self.progress_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.cancel_button = PushButton(self)
-        self.cancel_button.setFixedHeight(px(30))
+        self.cancel_button.setFixedHeight(px(40))
+        self.cancel_button.setStyleSheet('border-radius:%dpx;' % px(8))
         self.cancel_button.clicked.connect(self.cancel_requested)
         header.addWidget(self.title_label)
         header.addWidget(self.progress_label, 1)
@@ -390,7 +398,8 @@ class EcommerceSubmissionView(QFrame):
         self._layout.setContentsMargins(px(20), px(20), px(20), px(20))
         self._layout.setSpacing(px(16))
         self.grid_layout.setSpacing(px(10))
-        self.cancel_button.setFixedHeight(px(30))
+        self.cancel_button.setFixedHeight(px(40))
+        self.cancel_button.setStyleSheet('border-radius:%dpx;' % px(8))
         for label, size in ((self.title_label, 13), (self.progress_label, 12)):
             font = label.font()
             font.setPixelSize(px(size))

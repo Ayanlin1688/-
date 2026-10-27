@@ -91,7 +91,9 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
             with self.subTest(case=label):
                 card = EcommerceResultCard(dict(base, **fields))
                 self.assertEqual(card.warning_label.text(), expected_text)
-                self.assertEqual(card.warning_label.isHidden(), not bool(expected_text))
+                self.assertTrue(card.warning_label.isHidden())
+                self.assertTrue(card.error_label.isHidden())
+                self.assertTrue(card.size_label.isHidden())
                 self.assertEqual(card._feedback_positive, feedback_positive)
                 self.assertIn(colors[color], card.warning_label.styleSheet())
                 card.deleteLater()
@@ -110,7 +112,7 @@ class EcommerceResultCardWarningTests(unittest.TestCase):
 
             base = dict(item_id='portrait-item', kind='carousel', seq=1,
                         file_path=str(image_path), status='succeeded')
-            card = EcommerceResultCard(base)
+            card = EcommerceResultCard(base, adaptive=False)
             card.resize(280, 280)
             card.show()
             self.app.processEvents()
@@ -946,7 +948,7 @@ class EcommercePageTests(unittest.TestCase):
         self.wait_until(lambda: not self.page.busy)
         self.assertEqual(self.image.call_count, 1)
         card = self.history_card(group['group_id'])
-        self.assertEqual(card.status_badge.text(), '部分·失败')
+        self.assertEqual(card.status_badge.text(), '已取消')
         self.assertIn('轮播图 3 张', card.counts_label.text())
         self.assertTrue(card.view_button.isEnabled())
         self.assertTrue(all(t == self.app.thread() for t in callback_threads))
@@ -1424,7 +1426,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertTrue(group_id)
         self.assertEqual(error, '')
         self.assertEqual(self.page.stage_label.text(), '已完成')
-        self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 跳过 0')
+        self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 取消 0')
         self.assertEqual(len(self.page.item_labels), 3)
         for label in self.page.item_labels.values():
             self.assertIn('成功', label.text())
@@ -1579,18 +1581,26 @@ class EcommercePageTests(unittest.TestCase):
             self.assertIn('Reference image order', call.args[3])
 
     def test_preset_cancellation_skips_every_image_and_finishes_cancelled(self):
+        self.page.show_single_creation()
+        self.page.show()
         self.fill_valid()
         token = self.page.cancel_event
         token.set()
         self.run_to_idle()
         self.image.assert_not_called()
         self.assertEqual(self.page.stage_label.text(), '已取消')
-        self.assertEqual(self.page.summary_label.text(), '成功 0 / 失败 0 / 跳过 3')
-        self.assertTrue(all('跳过' in label.text() for label in self.page.item_labels.values()))
+        self.assertEqual(self.page.summary_label.text(), '成功 0 / 失败 0 / 取消 3')
+        self.assertEqual(self.page.completion_title_label.text(), '已取消 · 成功 0 / 失败 0 / 取消 3')
+        self.assertEqual(self.page.step_bar.stage, 'cancelled')
+        self.assertEqual(self.page.step_bar.labels[2].text(), '已取消')
+        self.assertTrue(self.page.completion_bar.isVisible())
+        self.assertTrue(all('取消' in label.text() for label in self.page.item_labels.values()))
         self.assertIsNot(self.page.cancel_event, token)
         self.assertFalse(self.page.cancel_event.is_set())
 
     def test_cancel_button_locks_form_and_skips_queued_images_without_termination(self):
+        self.page.show_single_creation()
+        self.page.show()
         self.fill_valid()
         self.config.config['ecommerce']['max_concurrency'] = 1
         entered, release = threading.Event(), threading.Event()
@@ -1608,14 +1618,23 @@ class EcommercePageTests(unittest.TestCase):
         self.assertFalse(self.page.start_button.isEnabled())
         self.assertTrue(all(not c.isEnabled() for c in self.page._form_cards))
         self.assertIn(self.page._worker, _LIVE_WORKERS)
+        clicked = time.monotonic()
         self.page.cancel_button.click()
+        self.assertLess(time.monotonic() - clicked, 0.1)
+        self.assertEqual(self.page.stage_label.text(), '取消中…')
+        self.assertFalse(self.page.submission_view.cancel_button.isEnabled())
+        self.wait_until(lambda: sum(i['status'] == 'cancelled' for i in self.config.ecommerce_store().list_items(self.page._group['group_id'])) == 2)
         self.assertTrue(self.page.cancel_event.is_set())
         self.assertFalse(self.page.cancel_button.isEnabled())
         release.set()
         self.wait_until(lambda: not self.page.busy)
         self.assertEqual(self.image.call_count, 1)
-        self.assertEqual(self.page.stage_label.text(), '部分成功')
-        self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 跳过 2')
+        self.assertEqual(self.page.stage_label.text(), '已取消')
+        self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 取消 2')
+        self.assertEqual(self.page.completion_title_label.text(), '已取消 · 成功 1 / 失败 0 / 取消 2')
+        self.assertEqual(self.page.step_bar.stage, 'cancelled')
+        self.assertEqual(self.page.step_bar.labels[2].text(), '已取消')
+        self.assertTrue(self.page.completion_bar.isVisible())
         self.assert_results_match_store()
 
     def test_analysis_error_is_redacted_in_notice_and_log_and_restores_form(self):
@@ -1646,7 +1665,7 @@ class EcommercePageTests(unittest.TestCase):
         self.image.side_effect = sometimes_fails
         self.run_to_idle()
         self.assertEqual(self.page.stage_label.text(), '部分成功')
-        self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 跳过 0')
+        self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 取消 0')
         self.assert_results_match_store()
         self.assertTrue(self.page.result_panel.regenerate_failed_button.isEnabled())
         self.assertNotIn(TEST_KEY, self.ui_text())
@@ -1805,7 +1824,7 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.result_panel.ordered_cards(), cards)
         self.assertTrue(all(card.record['status'] == 'succeeded' for card in cards))
         self.assertEqual(self.page.stage_label.text(), '已完成')
-        self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 跳过 0')
+        self.assertEqual(self.page.summary_label.text(), '成功 3 / 失败 0 / 取消 0')
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
         self.assertNotIn(TEST_KEY, self.ui_text())
 
@@ -1916,7 +1935,7 @@ class EcommercePageTests(unittest.TestCase):
         self.image.side_effect = image
         self.run_to_idle()
         self.assertEqual(self.page.stage_label.text(), '部分成功')
-        self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 跳过 0')
+        self.assertEqual(self.page.summary_label.text(), '成功 2 / 失败 1 / 取消 0')
         self.assert_results_match_store()
         self.assertTrue(self.page.regenerate_failed_button.isEnabled())
 
@@ -2116,6 +2135,8 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(self.page.model_overrides(), {})
 
     def test_regeneration_locks_all_actions_supports_cancel_and_queues_ui_callbacks(self):
+        self.page.show_single_creation()
+        self.page.show()
         self.fill_valid()
         self.config.config['ecommerce']['max_concurrency'] = 1
         self.run_to_idle()
@@ -2147,7 +2168,12 @@ class EcommercePageTests(unittest.TestCase):
         self.assertFalse(self.page.regenerate_failed_button.isEnabled())
         self.assertTrue(self.page.cancel_button.isEnabled())
         self.assertNotEqual(self.factory_threads[-1], self.app.thread())
+        clicked = time.monotonic()
         self.page.cancel_button.click()
+        self.assertLess(time.monotonic() - clicked, 0.1)
+        self.assertEqual(self.page.stage_label.text(), '取消中…')
+        self.assertFalse(self.page.submission_view.cancel_button.isEnabled())
+        self.wait_until(lambda: sum(i['status'] == 'cancelled' for i in self.config.ecommerce_store().list_items(self.page._group['group_id'])) == 2)
         self.assertTrue(self.page.cancel_event.is_set())
         release.set()
         self.wait_until(lambda: not self.page.busy)
@@ -2157,7 +2183,11 @@ class EcommercePageTests(unittest.TestCase):
         self.assertTrue(all(form.isEnabled() for form in self.page._form_cards))
         self.assertFalse(self.page.cancel_button.isEnabled())
         self.assertTrue(all(card.regenerate_button.isEnabled() for card in cards))
-        self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 跳过 2')
+        self.assertEqual(self.page.summary_label.text(), '成功 1 / 失败 0 / 取消 2')
+        self.assertEqual(self.page.completion_title_label.text(), '已取消 · 成功 1 / 失败 0 / 取消 2')
+        self.assertEqual(self.page.step_bar.stage, 'cancelled')
+        self.assertEqual(self.page.step_bar.labels[2].text(), '已取消')
+        self.assertTrue(self.page.completion_bar.isVisible())
         self.assertNotIn(TEST_KEY, self.ui_text())
 
     def test_result_without_references_hides_token_warning_and_missing_file_placeholder(self):
@@ -2182,7 +2212,8 @@ class EcommercePageTests(unittest.TestCase):
         self.page._refresh_results()
         self.assertIs(self.page.result_panel.ordered_cards()[0], cards[0])
         placeholder = '\n'.join(label.text() for label in cards[0].findChildren(QLabel))
-        self.assertIn('文件缺失', placeholder)
+        self.assertNotIn('文件缺失', placeholder)
+        self.assertEqual(cards[0].thumbnail.toolTip(), '文件缺失')
         pixmap = cards[0].thumbnail.pixmap()
         self.assertTrue(pixmap is None or pixmap.isNull())
         # A stale persisted reference warning must not affect pure text-to-image items.
@@ -2193,7 +2224,8 @@ class EcommercePageTests(unittest.TestCase):
         self.assertNotIn('参考图可能未被模型采用', cards[1].warning_label.text())
         Path(cards[0].record['file_path']).write_bytes(b'invalid-image')
         self.page._refresh_results()
-        self.assertEqual(cards[0].thumbnail.text(), '文件缺失')
+        self.assertEqual(cards[0].thumbnail.text(), '')
+        self.assertEqual(cards[0].thumbnail.toolTip(), '文件缺失')
         self.assertNotIn(TEST_KEY, self.ui_text())
 
     def test_regeneration_rejects_missing_group_or_foreign_item_before_worker(self):

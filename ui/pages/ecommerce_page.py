@@ -300,6 +300,8 @@ class EcommercePage(QWidget):
         self.options_card = options.parentWidget()
         row = WrapLayout(spacing=px(16))
         self.language = ComboBox()
+        self.language.setMinimumWidth(px(220))
+        self.language.setFixedHeight(px(40))
         for key, value in LANGUAGE_TEXT.items():
             self.language.addItem(tr(value), userData=key)
         self._select_data(self.language, defaults.get('language', 'zh'))
@@ -336,16 +338,10 @@ class EcommercePage(QWidget):
         self.model_grid.setHorizontalSpacing(px(10))
         self.model_grid.setVerticalSpacing(px(8))
         self.model_grid.setColumnStretch(0, 1)
-        # 模型设置卡居中限宽：宽窗不再把控件拉满整行（需求5：卡片居中、不要过宽）。
+        self.model_grid.setColumnStretch(1, 1)
         self.model_card_container = QWidget()
-        self.model_card_container.setMaximumWidth(px(980))
         self.model_card_container.setLayout(self.model_grid)
-        centered_models = QHBoxLayout()
-        centered_models.setContentsMargins(0, 0, 0, 0)
-        centered_models.addStretch(1)
-        centered_models.addWidget(self.model_card_container, 10)
-        centered_models.addStretch(1)
-        self.model_centered_layout = centered_models
+        models.addWidget(self.model_card_container)
         self.analysis_model_picker = ModelPickComboBox()
         self.analysis_model_picker.setObjectName('ecommerceAnalysisModel')
         self.analysis_model_picker.setMinimumWidth(px(260))
@@ -383,13 +379,19 @@ class EcommercePage(QWidget):
                  self.analysis_line_label, self.analysis_status_dot, self.sync_analysis_models_button),
                 (2, tr('图片模型'), self.image_model_picker, self.image_line_combo,
                  self.image_line_label, self.image_status_dot, self.sync_image_models_button)):
-            self.model_grid.addWidget(CaptionLabel(title), row, 0)
-            self.model_grid.addWidget(CaptionLabel(tr('线路')), row, 1)
-            self.model_grid.addWidget(picker, row + 1, 0)
-            self.model_grid.addWidget(combo, row + 1, 1, Qt.AlignLeft | Qt.AlignVCenter)
-            self.model_grid.addWidget(label, row + 1, 2)
-            self.model_grid.addWidget(dot, row + 1, 3, Qt.AlignCenter)
-            self.model_grid.addWidget(button, row + 1, 4)
+            column = row // 2
+            self.model_grid.addWidget(CaptionLabel(title), 0, column)
+            self.model_grid.addWidget(picker, 1, column)
+            route = QVBoxLayout()
+            route.setContentsMargins(0, 0, 0, 0)
+            route.addWidget(CaptionLabel(tr('线路')))
+            route.addWidget(combo)
+            feedback = QHBoxLayout()
+            feedback.addWidget(label, 1)
+            feedback.addWidget(dot)
+            feedback.addWidget(button)
+            route.addLayout(feedback)
+            self.model_grid.addLayout(route, 2, column)
             # These status dots own useful hover details, unlike passive dots.
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, False)
             dot.setToolTip(tr('未测试'))
@@ -404,7 +406,6 @@ class EcommercePage(QWidget):
             'Claude 走 thinking budget；非推理模型不会盲发参数'))
         self.model_grid.addWidget(CaptionLabel(tr('深度思考')), 4, 0)
         self.model_grid.addWidget(self.thinking_switch, 4, 1, Qt.AlignLeft | Qt.AlignVCenter)
-        models.addLayout(self.model_centered_layout)
         self.sync_analysis_models_button.clicked.connect(lambda: self._test_selected_model('chat'))
         self.sync_image_models_button.clicked.connect(lambda: self._test_selected_model('image'))
         self.analysis_model_picker.currentTextChanged.connect(
@@ -434,7 +435,7 @@ class EcommercePage(QWidget):
         self.start_button.clicked.connect(self.start_generation)
         self.cancel_button.clicked.connect(self.cancel_generation)
         for button in (self.start_button, self.cancel_button):
-            button.setFixedHeight(40)
+            button.setFixedHeight(px(40))
         actions.addStretch(1)
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.start_button)
@@ -715,6 +716,7 @@ class EcommercePage(QWidget):
         self.completion_bar.setObjectName('ecommerceCompletionBar')
         toolbar = WrapLayout(self.completion_bar, spacing=px(8))
         self.completion_title_label = self._text_label()
+        self.completion_title_label.setWordWrap(False)
         toolbar.addWidget(self.completion_title_label)
         toolbar.addStretch(1)
         self.completion_regenerate_button = PushButton(tr('重新生成'))
@@ -838,8 +840,10 @@ class EcommercePage(QWidget):
             self.submission_view.set_items(items)
             self.submission_view.set_progress(total, ok + failed, failed)
         self.submission_view.cancel_button.setEnabled(self.busy and not self.cancel_event.is_set())
+        self.submission_view.cancel_button.setText(tr('取消中…') if self.busy and self.cancel_event.is_set() else tr('取消'))
         incomplete = status in ('partial', 'failed', 'cancelled') or failed > 0
-        self.step_bar.set_stage('failed' if state == 'finished' and incomplete else state)
+        self.step_bar.set_stage('cancelled' if status == 'cancelled'
+                                else 'failed' if state == 'finished' and incomplete else state)
         for widget, visible in (
                 (self.right_header_host, state != 'idle'),
                 (self.right_state_row, state in ('analyzing', 'generating')),
@@ -853,9 +857,17 @@ class EcommercePage(QWidget):
         colors_changed = self.completion_title_label.property('hasFailures') != (failed > 0)
         if colors_changed:
             self.completion_title_label.setProperty('hasFailures', failed > 0)
-        self.completion_title_label.setText(
-            tr('部分完成（成功 {ok} / 共 {total} 张）').format(ok=ok, total=total)
-            if incomplete else tr('全部完成（{n} 张）').format(n=ok))
+        if status == 'cancelled':
+            totals = group.get('totals') or {}
+            cancelled = (sum(item.get('status') in ('cancelled', 'skipped') for item in items)
+                         if items else int(totals.get('cancelled') or 0) + int(totals.get('skipped') or 0))
+            self.completion_title_label.setText(
+                tr('已取消') + ' · ' + tr('成功 {success} / 失败 {failed} / 取消 {skipped}').format(
+                    success=ok, failed=failed, skipped=cancelled))
+        else:
+            self.completion_title_label.setText(
+                tr('部分完成（成功 {ok} / 共 {total} 张）').format(ok=ok, total=total)
+                if incomplete else tr('全部完成（{n} 张）').format(n=ok))
         self.completion_open_button.setText(tr('打开文件夹({n})').format(n=ok))
         self.completion_open_button.setEnabled(bool(group.get('output_dir')))
         self.completion_preview_button.setEnabled(bool(group.get('group_id')))
@@ -1120,37 +1132,17 @@ class EcommercePage(QWidget):
         """宽窗保留完整模型宽度，窄窗按同一列预算收缩，避免横向滚动。"""
         if not self.isVisible():
             return
-        outer = self.body_content.layout().contentsMargins()
-        inner = self.analysis_model_picker.parentWidget().layout().contentsMargins()
-        viewport = self.body_scroll.viewport().width()
-        # 模型卡居中限宽：列宽预算最多按 980px 卡宽计算，宽窗不把控件拉满整行；
-        # 同时扣掉卡片自身左右内边距，避免窄窗下卡片最小宽度撑出横向滚动。
-        card_width = min(px(980), max(0, viewport - outer.left() - outer.right()))
-        available = max(px(120), card_width - px(40) - inner.left() - inner.right())
-        spacing = max(0, self.model_grid.horizontalSpacing()) * 4
-        reserved = sum(max(first.minimumSizeHint().width(), second.minimumSizeHint().width(),
-                           first.minimumWidth(), second.minimumWidth())
-                       for first, second in ((self.analysis_line_label, self.image_line_label),
-                                             (self.analysis_status_dot, self.image_status_dot),
-                                             (self.sync_analysis_models_button,
-                                              self.sync_image_models_button)))
-        picker_width = min(px(260), max(px(110), available - spacing - reserved - px(120)))
-        combo_width = min(px(200), max(px(90), available - spacing - reserved - picker_width))
-        total = picker_width + combo_width + reserved + spacing
-        if total > available:
-            picker_width = max(px(80), picker_width - (total - available))
-            total = picker_width + combo_width + reserved + spacing
-        if total > available:
-            combo_width = max(px(80), combo_width - (total - available))
         for picker in (self.analysis_model_picker, self.image_model_picker):
-            picker.setMinimumWidth(picker_width)
+            picker.setMinimumWidth(px(260))
+            picker.setMaximumWidth(16777215)
+            picker.setToolTip(picker.currentText())
         for combo in (self.analysis_line_combo, self.image_line_combo):
-            combo.setMinimumWidth(combo_width)
-            combo.setMaximumWidth(px(200))
-        for label in (self.analysis_line_label, self.image_line_label):
-            label.setMaximumWidth(px(96))
+            combo.setMinimumWidth(0)
+            combo.setMaximumWidth(16777215)
 
     def refresh_interface_scale(self):
+        self.language.setMinimumWidth(px(220))
+        self.language.setFixedHeight(px(40))
         self._fit_single_columns()
         self._fit_model_columns()
         self._refresh_empty_icon()
@@ -1435,8 +1427,8 @@ class EcommercePage(QWidget):
                 % (button.objectName(), materials.ecommerce_color('single_button_text'),
                    materials.ecommerce_color('single_button_border'), button.objectName(),
                    materials.ecommerce_color('single_button_hover')))
-        self.start_button.setStyleSheet('border-radius: 8px;')
-        self.cancel_button.setStyleSheet('border-radius: 8px;')
+        self.start_button.setStyleSheet('border-radius: %dpx;' % px(8))
+        self.cancel_button.setStyleSheet('border-radius: %dpx;' % px(8))
         self.empty_title_label.setStyleSheet('font-size: 14px; color: %s;'
                                             % materials.ecommerce_color('single_empty_text'))
         self.empty_subtitle_label.setStyleSheet('font-size: 12px; color: %s;'
@@ -1811,6 +1803,9 @@ class EcommercePage(QWidget):
         if self.busy:
             self.cancel_event.set()
             self.cancel_button.setEnabled(False)
+            self.stage_label.setText(tr('取消中…'))
+            self.submission_view.cancel_button.setEnabled(False)
+            self.submission_view.cancel_button.setText(tr('取消中…'))
             self._append_log(tr('已请求取消；未开始的图片将跳过，等待已发出的请求结束。'), 'warning')
             self._sync_right_states()
 
@@ -1825,11 +1820,12 @@ class EcommercePage(QWidget):
         self._right_launch_stage = None
         self._group = redact_structure(record, self._clean)
         status = self._group['status']
-        self.stage_label.setText(_stage_text(status))
+        self.stage_label.setText(tr('取消中…') if self.busy and self.cancel_event.is_set()
+                                 and status in ('analyzing', 'generating') else _stage_text(status))
         if status not in ('analyzing', 'generating'):
             totals = self._group.get('totals', {})
-            self.summary_label.setText(tr('成功 {success} / 失败 {failed} / 跳过 {skipped}').format(
-                success=totals.get('succeeded', 0), failed=totals.get('failed', 0), skipped=totals.get('skipped', 0)))
+            self.summary_label.setText(tr('成功 {success} / 失败 {failed} / 取消 {skipped}').format(
+                success=totals.get('succeeded', 0), failed=totals.get('failed', 0), skipped=totals.get('cancelled', 0) + totals.get('skipped', 0)))
             self.open_output_button.setEnabled(bool(self._group.get('output_dir')))
             for item in self.config_manager.ecommerce_store().list_items(self._group['group_id']):
                 self._on_item(item)
@@ -2020,13 +2016,14 @@ class EcommercePage(QWidget):
             self.refresh_model_pickers()
             if self._group:
                 status = self._right_launch_stage or self._group.get('status')
-                self.stage_label.setText(_stage_text(status))
+                self.stage_label.setText(tr('取消中…') if self.busy and self.cancel_event.is_set()
+                                 and status in ('analyzing', 'generating') else _stage_text(status))
                 totals = self._group.get('totals', {})
                 self.summary_label.setText(
-                    tr('成功 {success} / 失败 {failed} / 跳过 {skipped}').format(
+                    tr('成功 {success} / 失败 {failed} / 取消 {skipped}').format(
                         success=totals.get('succeeded', 0),
                         failed=totals.get('failed', 0),
-                        skipped=totals.get('skipped', 0)))
+                        skipped=totals.get('cancelled', 0) + totals.get('skipped', 0)))
                 for item in self.config_manager.ecommerce_store().list_items(
                         self._group['group_id']):
                     self._on_item(item)

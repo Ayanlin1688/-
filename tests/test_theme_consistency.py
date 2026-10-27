@@ -119,7 +119,8 @@ class ThemeConsistencyTests(unittest.TestCase):
         self.assertTrue(all(a != b for a, b in zip(old, new)))
         i18n.set_language('English')
         self.assertEqual([page.prompt_edit.styleSheet() for page in (image, video)], new)
-        self.assertEqual(self.window.history_page.type_filter_box.itemText(4), 'Video creation')
+        self.assertEqual(self.window.history_page.type_filter_box.itemText(3), 'Video creation')
+        self.assertEqual(self.window.history_page.type_filter_box.itemText(4), 'Ecommerce Image Maker')
 
     def test_tall_generation_forms_keep_compact_control_spacing(self):
         w = self.window

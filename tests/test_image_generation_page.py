@@ -270,5 +270,48 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertEqual(self.page.title_label.text(), '图片生成')
 
 
+    def test_both_generate_buttons_click_once_and_share_busy_state_wide_and_narrow(self):
+        from PyQt5.QtTest import QTest
+        from tests.qt_scale_support import flush_layout
+        self.page.prompt_edit.setPlainText('Offline dual button fixture')
+        for width in (1600, 1000):
+            self.page.resize(width, 900)
+            flush_layout(self.app, self.page)
+            for button in (self.page.submit_button, self.page.cta_button):
+                release, started = threading.Event(), threading.Event()
+                manager = Mock()
+                manager.prepare_tasks.return_value = [dict(local_id='fixture', status='pending')]
+                def run(_records):
+                    started.set()
+                    release.wait(3)
+                manager.run_tasks.side_effect = run
+                self.page._manager = manager
+                self.page.body_scroll.ensureWidgetVisible(button)
+                self.app.processEvents()
+                try:
+                    self.assertTrue(button.isVisible())
+                    self.assertTrue(button.isEnabled())
+                    with patch('ui.pages.image_generation_page.InfoBar.success'):
+                        QTest.mouseClick(button, Qt.LeftButton)
+                        self.assertTrue(started.wait(2))
+                        self.assertFalse(self.page.submit_button.isEnabled())
+                        self.assertFalse(self.page.cta_button.isEnabled())
+                        self.page.prompt_edit.insertPlainText(' ')
+                        self.assertFalse(self.page.cta_button.isEnabled())
+                        self.assertFalse(self.page.submit_generation())
+                        manager.prepare_tasks.assert_called_once()
+                        manager.run_tasks.assert_called_once()
+                finally:
+                    release.set()
+                    deadline = time.monotonic()+3
+                    while self.page._workers and time.monotonic()<deadline:
+                        self.app.processEvents()
+                        QTest.qWait(5)
+                self.assertFalse(self.page._workers)
+                self.assertTrue(self.page.submit_button.isEnabled())
+                self.assertTrue(self.page.cta_button.isEnabled())
+
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -664,5 +664,20 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
                         self.assertIn(f'border-radius: {px(12)}px', card.styleSheet())
 
 
+    def test_model_card_alignment_equal_columns_and_language_style(self):
+        self.assertEqual(self.page.models_card.x(),self.page.options_card.x())
+        self.assertEqual(self.page.models_card.width(),self.page.options_card.width())
+        self.assertEqual(self.page.models_card.layout().contentsMargins(),self.page.options_card.layout().contentsMargins())
+        self.assertGreater(self.page.model_card_container.maximumWidth(),980)
+        controls = (self.page.analysis_model_picker,self.page.image_model_picker)
+        for control in controls:
+            self.assertGreaterEqual(control.width(),px(260))
+            self.assertEqual(control.toolTip(),control.currentText())
+        self.assertLessEqual(abs(controls[0].width()-controls[1].width()),1)
+        batch = self.page.batch_page
+        self.assertEqual(self.page.language.height(),batch.language_combo.height())
+        self.assertEqual(type(self.page.language),type(batch.language_combo))
+
+
 if __name__ == '__main__':
     unittest.main()

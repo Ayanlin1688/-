@@ -151,13 +151,14 @@ class ImageLightboxTests(_QtCase):
             self.assertEqual(dialog.counter_label.text(), '2 / 3')
             dialog.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
             dialog.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
-            self.assertEqual(dialog.current_index(), 0, '最后一张后应该循环回第一张')
-            dialog.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.NoModifier))
             self.assertEqual(dialog.current_index(), 2)
-            dialog.next_image()
-            self.assertEqual(dialog.current_path(), paths[0])
+            self.assertFalse(dialog.next_button.isEnabled())
             dialog.previous_image()
-            self.assertEqual(dialog.current_path(), paths[2])
+            self.assertEqual(dialog.current_path(), paths[1])
+            dialog.previous_image()
+            dialog.previous_image()
+            self.assertEqual(dialog.current_path(), paths[0])
+            self.assertFalse(dialog.prev_button.isEnabled())
         finally:
             dialog.close()
 
@@ -167,6 +168,18 @@ class ImageLightboxTests(_QtCase):
         dialog.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
         self.assertEqual(len(closed), 1)
         self.assertEqual(dialog.result(), QDialog.Rejected)
+
+    def test_arrow_keys_switch_images_while_zoomed_view_has_focus(self):
+        dialog, paths = self.make(3)
+        try:
+            dialog.view.zoom_by(4.0)
+            dialog.view.setFocus()
+            QTest.keyClick(dialog.view, Qt.Key_Right)
+            self.assertEqual(dialog.current_path(), paths[1])
+            QTest.keyClick(dialog.view, Qt.Key_Left)
+            self.assertEqual(dialog.current_path(), paths[0])
+        finally:
+            dialog.close()
 
     def test_wheel_zoom_and_reset(self):
         dialog, _paths = self.make(1)
@@ -211,6 +224,60 @@ class ImageLightboxTests(_QtCase):
             self.assertAlmostEqual(dialog.view.zoom_ratio(), 1.0, places=2)
         finally:
             dialog.close()
+
+
+    def test_parent_sizing_metadata_arrows_and_reset_at_four_scales(self):
+        from PyQt5.QtWidgets import QWidget
+        from tests.qt_scale_support import reset_interface_scaling
+        from ui.tokens import px, set_interface_scale
+        from ui.theme import apply_ui_mode
+        parent = QWidget()
+        try:
+            for scale in (1., 1.25, 1.5, 1.75):
+                set_interface_scale(scale)
+                parent.resize(px(1300), px(900))
+                parent.show()
+                paths = [self.image('wide.png', (240,120)), self.image('tall.png', (90,160))]
+                dialog = ImageLightbox.show_images(parent, paths)
+                self.app.processEvents()
+                try:
+                    self.assertEqual(dialog.size(), parent.frameGeometry().size())
+                    self.assertIn('240 × 120', dialog.metadata_label.text())
+                    self.assertIn('KB', dialog.metadata_label.text())
+                    self.assertFalse(dialog.prev_button.isEnabled())
+                    for button in (dialog.prev_button, dialog.next_button):
+                        self.assertEqual(button.width(), px(40))
+                        self.assertLessEqual(abs(button.geometry().center().y()-dialog.body.rect().center().y()), 1)
+                    self.assertEqual(dialog.prev_button.x(), px(24))
+                    self.assertEqual(dialog.body.width()-dialog.next_button.geometry().right()-1, px(24))
+                    QTest.mouseClick(dialog.next_button, Qt.LeftButton)
+                    self.app.processEvents()
+                    self.assertIn('90 × 160', dialog.metadata_label.text())
+                    self.assertEqual(dialog.counter_label.text(), '2 / 2')
+                    self.assertFalse(dialog.next_button.isEnabled())
+                    image_center = dialog.view.mapFromScene(
+                        dialog.view._item.sceneBoundingRect().center())
+                    viewport_center = dialog.view.viewport().rect().center()
+                    self.assertLessEqual(abs(image_center.x() - viewport_center.x()), 2)
+                    self.assertLessEqual(abs(image_center.y() - viewport_center.y()), 2)
+                    dialog.view.zoom_by(2)
+                    QTest.mouseDClick(dialog.view.viewport(), Qt.LeftButton)
+                    self.assertAlmostEqual(dialog.view.zoom_ratio(), 1., places=2)
+                    for theme in ('light','dark'):
+                        apply_ui_mode(theme)
+                        dialog.refresh_colors()
+                        self.assertTrue(dialog.view.styleSheet())
+                    dialog.set_images([str(self.root/'missing.png')])
+                    self.assertEqual(dialog.metadata_label.text(), '— · —')
+                finally:
+                    dialog.close()
+                    dialog.deleteLater()
+                    self.app.processEvents()
+        finally:
+            parent.close()
+            reset_interface_scaling(self.app)
+            apply_ui_mode('light')
+
 
 
 class ImagePickerHelperTests(_QtCase):
@@ -364,6 +431,22 @@ class ResultPanelPreviewTests(_QtCase):
             panel.close()
             panel.deleteLater()
             self.app.processEvents()
+
+    def test_whole_card_click_previews_successful_group_in_carousel_detail_order(self):
+        panel = EcommerceResultPanel()
+        paths = [self.image(f'ordered-{i}.png') for i in range(4)]
+        for index, (kind,seq,status) in enumerate((('detail',2,'succeeded'),('carousel',2,'succeeded'),
+                                                  ('carousel',1,'succeeded'),('detail',1,'failed'))):
+            panel.update_item(dict(item_id=str(index),kind=kind,seq=seq,status=status,file_path=paths[index]))
+        panel.resize(600,400)
+        panel.show()
+        self.app.processEvents()
+        previews = QSignalSpy(panel.preview_requested)
+        QTest.mouseClick(panel.cards['1'],Qt.LeftButton,pos=QPoint(1,10))
+        self.assertEqual(len(previews),1)
+        self.assertEqual(previews[0],[ [paths[2],paths[1],paths[0]], 1])
+        panel.close()
+        panel.deleteLater()
 
     def test_failed_card_click_does_not_request_preview(self):
         panel = EcommerceResultPanel()

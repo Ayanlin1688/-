@@ -418,4 +418,7 @@ EN_ECOMMERCE = {
     'AI 将自动分析产品并生成图片': 'AI will analyze the product and generate images',
     'https://example.com/product.png\nD:\\图片\\产品白底图.jpg':
         'https://example.com/product.png\nD:\\images\\product-white.png',
+    '自动化视频': 'Automated video',
+    '取消中…': 'Cancelling…',
+    '成功 {success} / 失败 {failed} / 取消 {skipped}': 'Succeeded {success} / Failed {failed} / Cancelled {skipped}',
 }

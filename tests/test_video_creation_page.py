@@ -512,5 +512,120 @@ class VideoCreationPageTests(unittest.TestCase):
                     self.assertLessEqual(self.page.left_column.width(), self.page.body_content.width())
 
 
+    def test_reference_uses_shared_lightbox_and_preview_is_balanced(self):
+        from PyQt5.QtCore import Qt, QPoint
+        from PyQt5.QtGui import QColor
+        from ui.components.image_lightbox import ImageLightbox
+        paths = []
+        for index in range(2):
+            path = self.root / f'ref-{index}.png'
+            image = QPixmap(90,160)
+            image.fill(QColor('#446688'))
+            image.save(str(path))
+            paths.append(str(path))
+        self.page._accept_reference_images(paths)
+        with patch.object(ImageLightbox,'show_images',return_value=object()) as preview:
+            buttons = self.page.findChildren(QToolButton, 'videoReferenceImagePreview')
+            QTest.mouseClick(buttons[1], Qt.LeftButton)
+            preview.assert_called_once_with(self.page, paths, 1)
+        self.page.preview_stack.setCurrentWidget(self.page.preview_media_page)
+        if self.page.video_widget is not None:
+            self.page.video_widget.hide()
+        self.page.preview_done.show()
+        flush_layout(self.app,self.page)
+        center = self.page.preview_done.mapTo(self.page.preview_area, self.page.preview_done.rect().center())
+        expected = self.page.preview_area.rect().center()
+        self.assertLessEqual(abs(center.x()-expected.x()),2)
+        self.assertLessEqual(abs(center.y()-expected.y()),2)
+        if self.page.media_controls is not None:
+            self.assertIs(self.page.media_controls.parentWidget(), self.page.preview_area.parentWidget())
+        self.assertEqual(self.page.preview_done.alignment(), Qt.AlignCenter)
+
+    def test_media_backend_is_checked_on_instance_and_video_stays_centered(self):
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtMultimedia import QMediaPlayer
+        checked = []
+
+        class AvailablePlayer(QMediaPlayer):
+            def isAvailable(player):
+                checked.append(player)
+                return True
+
+        with patch('ui.pages.video_creation_page.QMediaPlayer', AvailablePlayer):
+            page = VideoCreationPage(self.config)
+        try:
+            self.assertEqual(checked, [page.media_player])
+            self.assertTrue(page.media_available)
+            self.assertIsNotNone(page.video_widget)
+            self.assertEqual(page.video_widget.aspectRatioMode(), Qt.KeepAspectRatio)
+            page.resize(1440, 900)
+            page.show()
+            page.preview_stack.setCurrentWidget(page.preview_media_page)
+            page.preview_done.hide()
+            flush_layout(self.app, page)
+            center = page.video_widget.mapTo(page.preview_area, page.video_widget.rect().center())
+            expected = page.preview_area.rect().center()
+            self.assertLessEqual(abs(center.x() - expected.x()), 2)
+            self.assertLessEqual(abs(center.y() - expected.y()), 2)
+        finally:
+            page.shutdown_workers(wait_ms=2000)
+            page.close()
+            page.deleteLater()
+
+    def test_unavailable_media_backend_keeps_centered_file_fallback(self):
+        with patch('ui.pages.video_creation_page.QMediaPlayer', None):
+            page = VideoCreationPage(self.config)
+        try:
+            self.assertFalse(page.media_available)
+            self.assertIsNone(page.media_player)
+            self.assertIsNone(page.video_widget)
+            self.assertFalse(page.preview_done.isHidden())
+        finally:
+            page.shutdown_workers(wait_ms=2000)
+            page.close()
+            page.deleteLater()
+
+    def test_decoded_frame_is_painted_centered_in_translucent_window_and_fullscreen_restores(self):
+        from PyQt5.QtCore import Qt, QSize
+        from PyQt5.QtGui import QColor, QImage
+        from PyQt5.QtMultimedia import QAbstractVideoBuffer, QVideoFrame, QVideoSurfaceFormat
+        from PyQt5.QtWidgets import QWidget
+        from ui.pages.video_creation_page import _VideoPreviewWidget
+
+        host = QWidget()
+        host.setAttribute(Qt.WA_TranslucentBackground)
+        view = _VideoPreviewWidget(host)
+        view.setGeometry(0, 0, 240, 240)
+        host.resize(240, 240)
+        host.show()
+        # DirectShow RGB32 frames can contain zero in the unused alpha byte.
+        raw_pixels = b'\xAA\x77\x44\x00' * (80 * 160)
+        image = QImage(raw_pixels, 80, 160, 80 * 4, QImage.Format_RGB32)
+        surface_format = QVideoSurfaceFormat(image.size(), QVideoFrame.Format_RGB32)
+        try:
+            self.assertTrue(view.surface.start(surface_format))
+            self.assertTrue(view.surface.present(QVideoFrame(image)))
+            image.fill(QColor('#FF0000'))  # present must retain its own frame storage.
+            self.app.processEvents()
+            self.assertEqual(view.frameRect().size(), QSize(120, 240))
+            self.assertLessEqual((view.frameRect().center() - view.rect().center()).manhattanLength(), 1)
+            shot = host.grab().toImage()
+            self.assertEqual(shot.pixelColor(120, 120).name(), '#4477aa')
+            self.assertNotEqual(shot.pixelColor(5, 120).name(), '#4477aa')
+            self.assertFalse(view.surface.present(QVideoFrame()))
+            self.assertEqual(view.surface.supportedPixelFormats(QAbstractVideoBuffer.GLTextureHandle), [])
+            view.showFullScreen()
+            self.assertTrue(view.isFullScreen())
+            QTest.keyClick(view, Qt.Key_Escape)
+            self.assertFalse(view.isFullScreen())
+            self.assertIs(view.parentWidget(), host)
+            self.assertFalse(view.isWindow())
+        finally:
+            view.surface.stop()
+            host.close()
+            host.deleteLater()
+
+
+
 if __name__ == '__main__':
     unittest.main()

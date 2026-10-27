@@ -122,7 +122,7 @@ class HistoryPage(QWidget):
         title_box.addWidget(caption)
         header.addLayout(title_box); header.addStretch(1)
         self.filter_box = ComboBox(); self.filter_box.addItems([tr('全部状态'), tr('等待中'), tr('生成中'), tr('上传中'), tr('提交中'), tr('下载中'), tr('重试中'), tr('等待冷却'), tr('已暂停'), tr('已完成'), tr('失败'), tr('重复'), tr('提交待确认'), tr('已取消'), tr('已跳过'), tr('部分完成')]); self.filter_box.setFixedHeight(32); self.filter_box.setMaximumWidth(180); header.addWidget(self.filter_box)
-        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('视频'), tr('电商图'), tr('图片生成'), tr('视频制作')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
+        self.type_filter_box = ComboBox(); self.type_filter_box.addItems([tr('全部类型'), tr('自动化视频'), tr('图片生成'), tr('视频制作'), tr('电商图制作')]); self.type_filter_box.setFixedHeight(32); self.type_filter_box.setMaximumWidth(150); header.addWidget(self.type_filter_box)
         self.open_button = PushButton(FIF.FOLDER, tr('打开输出文件夹'))
         self.open_button.clicked.connect(self.open_output)
         self.batch_resolve_button = PushButton(FIF.INFO, tr('批量处理待确认提交'))
@@ -561,12 +561,12 @@ class HistoryPage(QWidget):
     @classmethod
     def _type_text(cls, task):
         if cls._is_ecommerce(task):
-            return tr('电商图')
+            return tr('电商图制作')
         if cls._is_manual_image(task):
             return tr('图片生成')
         if cls._is_manual_video(task):
             return tr('视频制作')
-        return tr('视频')
+        return tr('自动化视频')
 
     @staticmethod
     def _type_colors(task):

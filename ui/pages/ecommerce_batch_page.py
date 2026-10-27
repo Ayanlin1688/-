@@ -931,6 +931,7 @@ class EcommerceBatchPage(QWidget):
         self._body_layout.setContentsMargins(px(24), px(8), px(24), px(8))
         self._body_layout.setSpacing(px(14))
         self.body_scroll.viewport().setAutoFillBackground(False)
+        self.body_scroll.viewport().installEventFilter(self)
 
         self._build_shared_panel(defaults)
         self._build_table_panel()
@@ -1023,7 +1024,9 @@ class EcommerceBatchPage(QWidget):
             self.language_combo.addItem(tr(value), userData=key)
         self._select_combo_data(self.language_combo,
                                 defaults.get('language', 'zh') or 'zh')
-        language_wrap = WrapLayout(spacing=px(16))
+        language_wrap = QVBoxLayout()
+        self.language_combo.setMinimumWidth(px(220))
+        self.language_combo.setFixedHeight(px(40))
         language_field, self.language_caption = self._field(
             tr('图片文字语言'), self.language_combo, panel)
         language_wrap.addLayout(language_field)
@@ -1109,16 +1112,30 @@ class EcommerceBatchPage(QWidget):
         if tier not in TIER_SHORT_EDGE:
             tier = FALLBACK_TIER
         self.tier_combo.setCurrentText(tier)
-        models_wrap = WrapLayout(spacing=px(16))
+        models_wrap = QGridLayout()
+        models_wrap.setHorizontalSpacing(px(16))
+        self.models_grid = models_wrap
+        self._model_fields = []
+        self._model_columns = 3
         analysis_field, self.analysis_caption = self._field(
             tr('AI 分析模型'), self.analysis_model_picker, panel)
         image_field, self.image_caption = self._field(
             tr('图片生成模型'), self.image_model_picker, panel)
         tier_field, self.tier_caption = self._field(
             tr('分辨率'), self.tier_combo, panel)
-        models_wrap.addLayout(analysis_field)
-        models_wrap.addLayout(image_field)
-        models_wrap.addLayout(tier_field)
+        for column, (field, control) in enumerate(((analysis_field, self.analysis_model_picker),
+                                                   (image_field, self.image_model_picker),
+                                                   (tier_field, self.tier_combo))):
+            control.setMinimumWidth(px(220))
+            control.setFixedHeight(px(40))
+            control.setMaximumWidth(16777215)
+            control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            control.setToolTip(control.currentText())
+            control.currentTextChanged.connect(control.setToolTip)
+            models_wrap.setColumnMinimumWidth(column, px(220))
+            models_wrap.setColumnStretch(column, 1)
+            models_wrap.addLayout(field, 0, column)
+            self._model_fields.append(field)
         layout.addLayout(models_wrap)
         self.analysis_model_picker.currentTextChanged.connect(
             lambda _text: self._persist_model(
@@ -1135,7 +1152,7 @@ class EcommerceBatchPage(QWidget):
         self.tier_combo.currentTextChanged.connect(
             lambda _text: self._shared_changed())
 
-        # —— 风格参考图（可选，整批共用，最多 1 张） ——
+        # —— 风格参考图（可选，整批共用，最多 3 张） ——
         style_header = QHBoxLayout()
         style_header.setContentsMargins(0, 0, 0, 0)
         style_header.setSpacing(px(8))
@@ -1921,6 +1938,27 @@ class EcommerceBatchPage(QWidget):
         except RuntimeError:
             pass
 
+    def eventFilter(self, watched, event):
+        if (getattr(self, 'body_scroll', None) is not None
+                and watched is self.body_scroll.viewport()
+                and event.type() == QEvent.Resize
+                and hasattr(self, '_model_fields')):
+            self._fit_model_grid()
+        return super().eventFilter(watched, event)
+
+    def _fit_model_grid(self):
+        available = self.body_scroll.viewport().width() - px(80)
+        columns = max(1, min(3, (available + px(16)) // px(236)))
+        if columns == self._model_columns:
+            return
+        self._model_columns = columns
+        fields = [self.models_grid.takeAt(0) for _ in self._model_fields]
+        for column in range(3):
+            self.models_grid.setColumnMinimumWidth(column, px(220) if column < columns else 0)
+            self.models_grid.setColumnStretch(column, 1 if column < columns else 0)
+        for index, field in enumerate(fields):
+            self.models_grid.addItem(field, index // columns, index % columns)
+
     def _apply_metrics(self):
         self._header_layout.setContentsMargins(px(24), px(14), px(24), px(6))
         self._header_layout.setSpacing(px(12))
@@ -1932,6 +1970,13 @@ class EcommerceBatchPage(QWidget):
             layout.setContentsMargins(px(16), px(16), px(16), px(16))
             layout.setSpacing(px(12))
         self._rows_layout.setSpacing(px(10))
+        self._model_columns = 0
+        self._fit_model_grid()
+        for combo in (self.analysis_model_picker, self.image_model_picker, self.tier_combo):
+            combo.setMinimumWidth(px(220))
+            combo.setFixedHeight(px(40))
+        self.language_combo.setMinimumWidth(px(220))
+        self.language_combo.setFixedHeight(px(40))
         self.carousel_spin.setFixedWidth(px(110))
         self.detail_spin.setFixedWidth(px(110))
         for button in (self.style_used_button, self.style_gallery_button):
