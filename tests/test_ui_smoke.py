@@ -2,6 +2,7 @@ import os
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from core.config_manager import ConfigManager
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -58,6 +59,16 @@ class UiSmokeTests(unittest.TestCase):
         self.assertIsNotNone(recent.itemWidget(recent.item(0)))
         self.assertNotIn("✅", queue.item(0).text())
         window.close()
+
+    def test_catalog_and_credentials_signals_refresh_both_manual_pages(self):
+        image, video = self.window.image_generation_page, self.window.video_creation_page
+        with patch.object(image, '_refresh_models') as refresh_image, patch.object(video, '_refresh_models') as refresh_video:
+            self.window.model_catalog.changed.emit(self.window.model_catalog.snapshot())
+            self.assertEqual(refresh_image.call_count, 1)
+            self.assertEqual(refresh_video.call_count, 1)
+            self.window.settings_page.api_credentials_changed.emit()
+            self.assertGreaterEqual(refresh_image.call_count, 2)
+            self.assertGreaterEqual(refresh_video.call_count, 2)
 
     def test_navigation_brand_and_titlebar_show_english_title_only_once(self):
         self.window.show()

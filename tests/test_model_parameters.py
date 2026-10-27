@@ -11,6 +11,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 from core.api_client import ApiClient, GROK, V3_MODELS
 from core.config_manager import ConfigManager, DEFAULT_CONFIG
+from core.model_parameters import model_options
 from core.task_manager import TaskWorker
 from test_http_clients import LocalServer
 from ui.widgets.params_card import ParamsCard
@@ -49,7 +50,7 @@ class ModelContractTests(unittest.TestCase):
             client = ApiClient(server.base, 'test')
             self.addCleanup(client.close)
             for ratio, exact_sizes in sizes.items():
-                for resolution, exact in zip(['480p', '768p', '1080p'], exact_sizes):
+                for resolution, exact in zip(['768p', '1080p'], exact_sizes[1:]):
                     with self.subTest(ratio=ratio, resolution=resolution):
                         client.create_task('MiniMax-H3', '镜头推进', ['https://example.com/ref.jpg'], params(aspect_ratio=ratio, resolution=resolution))
                         self.assertEqual(json.loads(server.calls[-1][2]), dict(model='MiniMax-H3', prompt='镜头推进',
@@ -71,10 +72,10 @@ class ModelContractTests(unittest.TestCase):
             client.create_task('video-v1', 'text', [], params(duration=10))
             self.assertEqual(server.calls[-1][0], '/video/generations')
             self.assertEqual(json.loads(server.calls[-1][2]), dict(model='video-v1', prompt='text', images=[], duration=10, aspect_ratio='9:16'))
-            for model in ('video-v2', 'video-v2-fast'):
-                client.create_task(model, 'text', [], params(duration=5, resolution='480p'))
+            for model, resolution in (('video-v2', '480p'), ('video-v2-fast', '720p')):
+                client.create_task(model, 'text', [], params(duration=5, resolution=resolution))
                 self.assertEqual(json.loads(server.calls[-1][2]), dict(model=model, prompt='text', images=[], videos=[], audios=[],
-                    duration=5, aspect_ratio='9:16', resolution='480p', generate_audio=False))
+                    duration=5, aspect_ratio='9:16', resolution=resolution, generate_audio=False))
             for model in sorted(V3_MODELS):
                 client.create_task(model, 'text', [], params(resolution='720p', seed='4294967295'))
                 self.assertEqual(json.loads(server.calls[-1][2]), dict(model=model, prompt='text', images=[], videos=[], audios=[],
@@ -194,8 +195,8 @@ class ModelWorkflowTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_all_model_dropdowns_preserve_documented_api_names(self):
-        documented = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5',
-                      'MiniMax-H3', 'grok-imagine-1.5-video', 'seedance2.5', 'sd-2.5', 'sd2.5']
+        documented = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3',
+                      'MiniMax-H3', 'grok-imagine-1.5-video']
         with tempfile.TemporaryDirectory() as directory, LocalServer() as server:
             config = ConfigManager(Path(directory) / 'config.json')
             card = ParamsCard(config); settings = SettingsPage(config, lambda *_: None)
@@ -220,7 +221,7 @@ class ModelWorkflowTests(unittest.TestCase):
             finally:
                 card.close(); settings.close()
 
-    def test_persisted_seedance_aliases_display_the_actual_submission_model(self):
+    def test_seedance_aliases_are_not_fabricated_but_family_mapping_remains_available(self):
         with tempfile.TemporaryDirectory() as directory:
             for model in ('seedance2.5', 'sd-2.5', 'sd2.5'):
                 with self.subTest(model=model):
@@ -229,11 +230,10 @@ class ModelWorkflowTests(unittest.TestCase):
                     config.config['defaults'].update(model=model, resolution='720p', duration=8)
                     card = ParamsCard(config); settings = SettingsPage(config, lambda *_: None)
                     try:
-                        self.assertEqual(card.model.currentText(), model)
-                        self.assertEqual(settings.default_model.currentText(), model)
-                        self.assertEqual(card.duration.value(), 8)
-                        self.assertTrue(card.audio.isEnabled())
-                        self.assertEqual(config.config['workspace']['model'], model)
+                        self.assertNotIn(model, [card.model.itemData(i) for i in range(card.model.count())])
+                        self.assertNotIn(model, [settings.default_model.itemData(i) for i in range(settings.default_model.count())])
+                        self.assertEqual(model_options(model)['durations'], tuple(range(4, 31)))
+                        self.assertEqual(model_options(model)['max_images'], 30)
                     finally:
                         card.close(); settings.close()
 
@@ -244,7 +244,7 @@ class ModelWorkflowTests(unittest.TestCase):
             settings = SettingsPage(config, lambda *_: None)
             try:
                 card.model.setCurrentText('MiniMax-H3')
-                self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['1080p', '2K', '4K'])
+                self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['768p', '1080p', '2K', '4K'])
                 card.ratio.setCurrentText('9:16'); card.resolution.setCurrentText('1080p')
                 self.assertIn('1088x1920', card.size_hint.text())
                 self.assertEqual((card.duration.minimum(), card.duration.maximum()), (4, 15))
@@ -253,7 +253,7 @@ class ModelWorkflowTests(unittest.TestCase):
                 self.assertIn(card.duration.value(), (5, 10, 15))
                 card.duration.setValue(8)
                 self.assertIn(card.duration.value(), (5, 10, 15))
-                card.model.setCurrentText('seedance-2.5')
+                card.model.setCurrentText('video-v3')
                 self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['720p'])
                 self.assertTrue(card.audio.isEnabled()); self.assertTrue(card.seed.isEnabled())
                 settings.default_model.setCurrentText('MiniMax-H3')
@@ -262,6 +262,7 @@ class ModelWorkflowTests(unittest.TestCase):
                 settings.default_ratio.setCurrentText('2:3')
                 settings.default_model.setCurrentText('video-v3')
                 settings.default_model.setCurrentText('MiniMax-H3')
+                settings.default_resolution.setCurrentText('1080p')
                 settings.default_ratio.setCurrentText('2:3')
                 self.assertEqual(config.config['defaults']['aspect_ratio'], '2:3')
                 card.model.setCurrentText('MiniMax-H3')

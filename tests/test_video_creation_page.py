@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication, QBoxLayout, QFrame, QToolButton
+from PyQt5.QtWidgets import QApplication, QBoxLayout, QFrame, QToolButton, QAbstractButton, QCheckBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtTest import QTest
 from qfluentwidgets import PushButton, ToolButton
@@ -65,6 +65,181 @@ class VideoCreationPageTests(unittest.TestCase):
         self.temp.cleanup()
         set_language('zh-CN')
 
+    def _use_models(self, names):
+        from core.model_catalog import _record_from_upstream
+        self.config.model_catalog_controller.snapshot_for.return_value = {
+            name: _record_from_upstream(dict(id=name, supported_endpoint_types=['openai-video'])) for name in names}
+        self.page.refresh_catalog()
+
+    def _wait_upload(self):
+        deadline = time.monotonic() + 3
+        while self.page._upload_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertIsNone(self.page._upload_worker)
+
+    def test_model_capabilities_link_duration_presets_media_and_output_sizes(self):
+        self._use_models(['MiniMax-H3', 'video-v3', 'wan-3.0'])
+        for model, duration, limits, presets, resolutions in (
+                ('MiniMax-H3', (4, 15), (9, 3, 3), (5, 10, 15), ('768p', '1080p', '2K', '4K')),
+                ('video-v3', (4, 30), (30, 10, 10), (5, 10, 15, 30), ('720p',)),
+                ('wan-3.0', (5, 15), (10, 5, 5), (5, 10, 15), ('720p',))):
+            self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
+            self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), duration)
+            self.assertEqual(tuple(button.property('duration') for button in self.page.duration_buttons), presets)
+            self.assertEqual(tuple(self.page._capabilities['max_' + kind] for kind in ('images', 'videos', 'audios')), limits)
+            self.assertEqual(self.page._capabilities['resolutions'], resolutions)
+            if model == 'video-v3':
+                self.assertEqual(self.page.duration_spin.value(), 30)
+                self.assertEqual(self.page.output_size_combo.currentText(), '720x1280')
+        self.page.reference_images = ['image'] * 30
+        self.page.reference_videos = ['video'] * 10
+        self.page.reference_audios = ['audio'] * 10
+        with patch.object(self.page, '_warning') as warning:
+            self.page.model_combo.setCurrentIndex(0)
+        warning.assert_called_once()
+        self.assertEqual(tuple(len(getattr(self.page, 'reference_' + kind)) for kind in ('images', 'videos', 'audios')), (9, 3, 3))
+
+    def test_unknown_model_requires_video_endpoint_and_uses_conservative_fallback(self):
+        from core.model_catalog import _record_from_upstream
+        self.config.model_catalog_controller.snapshot_for.return_value = {
+            'future-motion': _record_from_upstream(dict(id='future-motion', kind='unknown', supported_endpoint_types=['openai-video'])),
+            'unsupported-motion': _record_from_upstream(dict(id='unsupported-motion', kind='video')),
+            'unknown-without-endpoint': _record_from_upstream(dict(id='unknown-without-endpoint')),
+        }
+        with self.assertLogs('core.video_capabilities', level='WARNING'):
+            self.page.refresh_catalog()
+        self.page.prompt_edit.setPlainText('Offline prompt')
+        self.assertEqual(self.page.model_combo.currentData(), 'future-motion')
+        self.assertTrue(self.page.generate_button.isEnabled())
+        self.assertEqual(self.page._capabilities['source'], 'fallback')
+        self.assertEqual(self.page._capabilities['durations'], tuple(range(4, 16)))
+        self.assertEqual(self.page.model_combo.findData('unknown-without-endpoint'), -1)
+        self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('unsupported-motion'))
+        self.assertFalse(self.page.generate_button.isEnabled())
+        self.assertIn('不支持视频提交', self.page.generate_button.toolTip())
+        with patch.object(self.page, '_warning') as warning:
+            self.assertFalse(self.page.submit_generation())
+        warning.assert_called_once()
+
+    def test_catalog_refresh_preserves_selection_then_falls_back_when_removed(self):
+        self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('veo-3'))
+        self.page.refresh_catalog()
+        self.assertEqual(self.page.model_combo.currentData(), 'veo-3')
+        self.config.model_catalog_controller.snapshot_for.return_value = {
+            'video-v3': dict(id='video-v3', kind='video', available=True)}
+        with patch.object(self.page, '_warning') as warning:
+            self.page.refresh_catalog()
+        warning.assert_called_once()
+        self.assertEqual(self.page.model_combo.currentData(), 'video-v3')
+        self.assertEqual(self.page.duration_spin.value(), 30)
+
+    def test_media_upload_is_async_disables_submit_and_preserves_order(self):
+        self.page.prompt_edit.setPlainText('Offline upload')
+        paths = [self.root / '片段.mp4', self.root / '参考.mov']
+        for path in paths:
+            path.write_bytes(b'fixture media')
+        started, release = threading.Event(), threading.Event()
+        uploader = Mock()
+        def upload(path, kind):
+            started.set(); release.wait(2)
+            return 'https://fixture.test/' + Path(path).name
+        uploader.upload_file.side_effect = upload
+        try:
+            with patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader):
+                before = time.perf_counter()
+                self.assertTrue(self.page._accept_media_files([str(path) for path in paths], 'videos'))
+                self.assertLess(time.perf_counter() - before, .1)
+                self.assertFalse(self.page.generate_button.isEnabled())
+                self.assertFalse(self.page.model_combo.isEnabled())
+                self.assertTrue(started.wait(1))
+                QTest.qWait(20)
+                release.set(); self._wait_upload()
+        finally:
+            release.set()
+        self.assertEqual(self.page.reference_videos, ['https://fixture.test/' + path.name for path in paths])
+        self.assertIn('参考视频（2/3）', self.page.reference_videos_label.text())
+        self.assertIn(paths[0].name, self.page.reference_videos_hint.toolTip())
+        self.assertTrue(self.page.generate_button.isEnabled())
+        uploader.close.assert_called_once()
+
+    def test_media_upload_failure_is_classified_and_retry_only_uploads_remaining(self):
+        from core.http_client import RequestError
+        paths = [self.root / 'first.mp3', self.root / 'second.mp3']
+        for path in paths:
+            path.write_bytes(b'fixture media')
+        uploader = Mock()
+        uploader.upload_file.side_effect = ['https://fixture.test/first.mp3', RequestError('redacted', 401)]
+        with patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader), patch.object(self.page, '_warning') as warning:
+            self.page._accept_media_files([str(path) for path in paths], 'audios')
+            self._wait_upload()
+        self.assertEqual(self.page.reference_audios, ['https://fixture.test/first.mp3'])
+        self.assertEqual(self.page.upload_status.text(), '素材上传鉴权失败，请检查上传密钥')
+        self.assertEqual(self.page._retry_upload, ([str(paths[1])], 'audios'))
+        warning.assert_called_once()
+        uploader = Mock(); uploader.upload_file.return_value = 'https://fixture.test/second.mp3'
+        with patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader):
+            self.page._retry_media_upload(); self._wait_upload()
+        self.assertEqual(len(self.page.reference_audios), 2)
+        uploader.upload_file.assert_called_once_with(str(paths[1]), kind='audios')
+
+    def test_catalog_change_waits_for_upload_and_cancel_drops_late_result(self):
+        paths = [self.root / 'first.mp4', self.root / 'second.mp4']
+        for path in paths:
+            path.write_bytes(b'fixture media')
+        started, release = threading.Event(), threading.Event()
+        uploader = Mock()
+        def upload(path, kind):
+            started.set(); release.wait(2)
+            return 'https://fixture.test/' + Path(path).name
+        uploader.upload_file.side_effect = upload
+        try:
+            with patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader):
+                self.page._accept_media_files([str(path) for path in paths], 'videos')
+                self.assertTrue(started.wait(1))
+                self.config.model_catalog_controller.snapshot_for.return_value = {
+                    'video-v3': dict(id='video-v3', kind='video', available=True)}
+                self.page.refresh_catalog()
+                self.assertEqual(self.page.model_combo.currentData(), 'video-v2')
+                self.page._upload_worker.cancel()
+                with patch.object(self.page, '_warning'):
+                    release.set(); self._wait_upload()
+        finally:
+            release.set()
+        self.assertEqual(self.page.reference_videos, [])
+        self.assertEqual(uploader.upload_file.call_count, 1)
+        self.assertEqual(self.page.upload_status.text(), '参考素材上传已取消')
+        self.assertEqual(self.page.model_combo.currentData(), 'video-v3')
+        self.assertFalse(self.page._catalog_refresh_pending)
+
+    def test_preview_fills_available_height_at_two_window_sizes_and_decoded_ratio(self):
+        from PyQt5.QtGui import QImage
+        for size in ((1200, 800), (1600, 1000)):
+            self.page.resize(*size)
+            self.page.ratio_combo.setCurrentText('9:16')
+            flush_layout(self.app, self.page)
+            if size[1] >= 1000:
+                self.assertGreater(self.page.preview_area.height(), px(420))
+            self.assertAlmostEqual(self.page.preview_area.height(), self.page._preview_available_height, delta=2)
+            self.assertAlmostEqual(self.page.preview_area.width()/self.page.preview_area.height(), 9/16, delta=.01)
+        if self.page.video_widget is not None:
+            self.page.preview_stack.setCurrentIndex(2)
+            self.page.video_widget._set_frame(QImage(600, 800, QImage.Format_RGB32))
+            flush_layout(self.app, self.page)
+            self.assertAlmostEqual(self.page.preview_area.width()/self.page.preview_area.height(), 3/4, delta=.01)
+
+    def test_v3_four_duration_shortcuts_fit_all_scales(self):
+        self._use_models(['video-v3'])
+        for scale in ('1.0', '1.25', '1.5', '1.75'):
+            apply_interface_scale(self.app, FakeScreen(), scale)
+            self.page.resize(px(1440), px(900))
+            flush_layout(self.app, self.page)
+            self.assertEqual([button.text() for button in self.page.duration_buttons], ['5秒', '10秒', '15秒', '30秒'])
+            for index, button in enumerate(self.page.duration_buttons):
+                self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + px(12))
+                self.assertTrue(self.page.parameters_content.rect().contains(button.geometry()))
+                if index:
+                    self.assertGreater(button.x(), self.page.duration_buttons[index-1].geometry().right())
+
     def test_header_models_and_api_status(self):
         from ui.materials import ecommerce_color
 
@@ -79,7 +254,7 @@ class VideoCreationPageTests(unittest.TestCase):
         self.page._style_api_status()
         self.assertIn(ecommerce_color('video_creation_success').lower(), self.page.api_status.styleSheet().lower())
         self.assertEqual(self.page.preview_title.text(), '📄 作品预览')
-        self.assertIn('温馨提示', self.page.info_bar.text())
+        self.assertIn('自动保存', self.page.info_bar.text())
 
     def test_generation_parameters_can_collapse(self):
         self.assertTrue(self.page.parameters_content.isVisible())
@@ -92,14 +267,14 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertEqual(self.page.parameters_toggle.toolTip(), '收起')
 
     def test_duration_ratio_size_count_controls(self):
-        self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), (4, 15))
+        self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), (5, 15))
         self.page.duration_buttons[1].click()
         self.assertEqual(self.page.duration_spin.value(), 10)
         self.assertTrue(self.page.duration_buttons[1].isChecked())
         self.page.ratio_combo.setCurrentText('16:9')
-        self.assertEqual(self.page.output_size_combo.currentText(), '1920x1088')
+        self.assertEqual(self.page.output_size_combo.currentText(), '854x480')
         self.page.ratio_combo.setCurrentText('1:1')
-        self.assertEqual(self.page.output_size_combo.currentText(), '1024x1024')
+        self.assertEqual(self.page.output_size_combo.currentText(), '480x480')
         self.assertEqual(self.page.count_spin.value(), 1)
         self.assertFalse(self.page.count_spin.minus_button.isEnabled())
         self.page.count_spin.setValue(10)
@@ -134,19 +309,18 @@ class VideoCreationPageTests(unittest.TestCase):
                         self.assertEqual(self.page.duration_spin.value(), (5, 10, 15)[index])
                         self.assertEqual([item.isChecked() for item in buttons], [i == index for i in range(3)])
                     self.page.duration_spin.setValue(4)
-                    self.assertFalse(any(button.isChecked() for button in buttons))
+                    self.assertEqual(self.page.duration_spin.value(), 5)
+                    self.assertTrue(buttons[0].isChecked())
 
     def test_model_change_refreshes_supported_options(self):
         self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('veo-3'))
         self.assertEqual([self.page.ratio_combo.itemText(i) for i in range(self.page.ratio_combo.count())], ['16:9'])
         self.assertEqual(self.page.output_size_combo.currentText(), '1920x1088')
 
-    def test_model_extra_output_sizes_are_kept_and_unknown_progress_is_indeterminate(self):
-        self.page._records['video-v2']['resolutions'] = ['1088x1920', '2K', '1920x1080']
-        self.page._model_changed(self.page.model_combo.currentIndex())
+    def test_verified_model_output_sizes_and_unknown_progress_is_indeterminate(self):
         self.assertEqual([self.page.output_size_combo.itemText(i)
                           for i in range(self.page.output_size_combo.count())],
-                         ['1088x1920', '2K', '1920x1080'])
+                         ['480x854', '720x1280', '1080x1920'])
         self.page._render_task({'local_id': 'running-1', 'status': 'running', 'model': 'video-v2'})
         self.assertEqual(self.page.progress_bar.minimum(), 0)
         self.assertEqual(self.page.progress_bar.maximum(), 0)
@@ -164,22 +338,22 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertEqual(downloading.status.text(), '下载中')
         downloading.deleteLater()
 
-    def test_reference_mode_shows_reference_panel_and_disables_unavailable_media(self):
+    def test_reference_mode_shows_model_media_limits_and_enabled_uploads(self):
         self.assertFalse(self.page.reference_panel.isVisible())
         self.page.reference_mode_button.click()
         self.app.processEvents()
         self.assertTrue(self.page.reference_panel.isVisible())
         self.assertEqual(self.page.mode, 'reference')
-        self.assertFalse(self.page.reference_videos_button.isEnabled())
-        self.assertFalse(self.page.reference_audios_button.isEnabled())
-        self.assertIn('0/3', self.page.reference_images_label.text())
+        self.assertTrue(self.page.reference_videos_button.isEnabled())
+        self.assertTrue(self.page.reference_audios_button.isEnabled())
+        self.assertIn('0/9', self.page.reference_images_label.text())
         self.page.text_mode_button.click()
         self.assertFalse(self.page.reference_panel.isVisible())
 
     def test_reference_image_drop_zone_tiles_remove_and_prompt_insertion(self):
         self.page.reference_mode_button.click()
         paths = []
-        for index in range(4):
+        for index in range(10):
             path = self.root / f'reference-{index}.png'
             image = QPixmap(16, 16)
             image.fill()
@@ -188,21 +362,23 @@ class VideoCreationPageTests(unittest.TestCase):
 
         self.assertTrue(self.page.reference_image_drop_zone.isVisible())
         self.assertEqual(self.page.reference_image_drop_zone.label.text(), '点击或拖入参考图片')
-        self.page._accept_reference_images(paths)
-        self.assertEqual(len(self.page.reference_images), 3)
+        with patch.object(self.page, '_warning') as warning:
+            self.page._accept_reference_images(paths)
+        warning.assert_called_once()
+        self.assertEqual(len(self.page.reference_images), 9)
         self.assertFalse(self.page.reference_image_drop_zone.isVisible())
-        self.assertEqual(self.page.reference_images_grid.count(), 3)
-        self.assertEqual(self.page.reference_images_label.text(), '参考图片（3/3）')
+        self.assertEqual(self.page.reference_images_grid.count(), 9)
+        self.assertEqual(self.page.reference_images_label.text(), '参考图片（9/9）')
 
         first_tile = self.page.reference_images_grid.itemAt(0).widget()
         first_tile.findChild(QToolButton, 'videoReferenceImageInsert').click()
         self.assertIn('@参考图', self.page.prompt_edit.toPlainText())
         first_tile.findChild(QToolButton, 'videoReferenceImageRemove').click()
-        self.assertEqual(self.page.reference_images, paths[1:3])
-        self.assertEqual(self.page.reference_images_grid.count(), 3)
+        self.assertEqual(self.page.reference_images, paths[1:9])
+        self.assertEqual(self.page.reference_images_grid.count(), 9)
         self.assertTrue(self.page.reference_images_grid_host.findChild(QFrame, 'videoReferenceImageAddTile').isVisible())
 
-        for _ in range(2):
+        for _ in range(8):
             tile = self.page.reference_images_grid.itemAt(0).widget()
             tile.findChild(QToolButton, 'videoReferenceImageRemove').click()
         self.assertEqual(self.page.reference_images, [])
@@ -224,6 +400,14 @@ class VideoCreationPageTests(unittest.TestCase):
 
         self.assertTrue(self.page.preview_empty_play.isVisible())
         self.assertEqual(self.page.preview_stack.currentWidget(), self.page.preview_empty_page)
+        for size in ((1200, 800), (1600, 1000)):
+            self.page.resize(*size)
+            flush_layout(self.app, self.page)
+            play = self.page.preview_empty_play.geometry()
+            label = self.page.preview_empty.geometry()
+            area = self.page.preview_empty_page.rect()
+            self.assertAlmostEqual((play.top() + label.bottom()) / 2, area.center().y(), delta=2)
+            self.assertAlmostEqual(play.center().x(), area.center().x(), delta=2)
         for status, token in (('running', 'video_creation_primary'),
                               ('succeeded', 'video_creation_success'),
                               ('failed', 'video_creation_error')):
@@ -241,7 +425,8 @@ class VideoCreationPageTests(unittest.TestCase):
                 self.page.ratio_combo.setCurrentText(ratio)
                 flush_layout(self.app, self.page)
                 width, height = self.page.preview_area.width(), self.page.preview_area.height()
-                self.assertLessEqual(height, px(420))
+                self.assertGreater(height, px(420) if ratio == '9:16' else px(160))
+                self.assertLessEqual(height, self.page._preview_available_height)
                 self.assertAlmostEqual(width / height, value, delta=0.02)
 
     def test_validation_disables_submit_until_prompt_and_warns(self):
@@ -293,24 +478,19 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertIn('12.4 MB · 18.3 MB/s', self.page.preview_done.text())
         self.assertEqual(self.page.history_detail_hint.text(), '已保存到本地 · 12.4 MB · 18.3 MB/s')
 
-    def test_download_button_reports_existing_local_file_without_redownloading(self):
+    def test_no_manual_download_actions_and_local_file_can_be_opened(self):
         path = self.root / 'saved.mp4'
-        path.write_bytes(b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00fixture-video')
+        path.write_bytes(b'\x00\x00\x00\x18ftypmp42fixture-video')
         self.page._current_record = {'local_id': 'saved-1', 'file_path': str(path)}
-        with patch('ui.pages.video_creation_page.InfoBar.success') as success, \
-                patch.object(self.page, '_download_record') as download:
-            self.assertFalse(self.page._download_current())
-        download.assert_not_called()
-        success.assert_called_once()
-
-    def test_download_button_retries_invalid_existing_file(self):
-        path = self.root / 'invalid.mp4'
-        path.write_bytes(b'not an mp4')
-        self.page._current_record = {'local_id': 'invalid-1', 'file_path': str(path),
-                                     'video_url': 'https://relay.example/video.mp4'}
-        with patch.object(self.page, '_download_record', return_value=True) as download:
-            self.assertTrue(self.page._download_current())
-        download.assert_called_once()
+        with patch('ui.pages.video_creation_page.QDesktopServices.openUrl', return_value=True) as open_url:
+            self.page._open_current_file()
+        self.assertEqual(Path(open_url.call_args.args[0].toLocalFile()), path)
+        self.assertFalse(any('下载' in button.text() or '下载' in button.toolTip()
+                             for button in self.page.findChildren(QAbstractButton)))
+        self.assertIn('自动保存', self.page.info_bar.text())
+        for name in ('download_button', 'batch_download_button', 'select_downloadable_check',
+                     '_download_current', '_download_record', '_batch_download'):
+            self.assertFalse(hasattr(self.page, name), name)
 
     def test_history_running_and_failed_states_are_preserved_for_retry(self):
         self.page._load_history_record({'local_id': 'running-1', 'status': 'running',
@@ -346,14 +526,14 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertEqual(self.page._worker.kwargs['reference_videos'], [])
         self.assertEqual(self.page._worker.kwargs['reference_audios'], [])
 
-    def test_history_rows_only_allow_download_selection_when_downloadable(self):
-        unavailable = _HistoryRow({'local_id': 'failed-1', 'status': 'failed'}, self.page)
-        available = _HistoryRow({'local_id': 'done-1', 'status': 'succeeded',
-                                 'file_path': str(self.root / 'video.mp4')}, self.page)
-        self.assertFalse(unavailable.check.isEnabled())
-        self.assertTrue(available.check.isEnabled())
-        unavailable.deleteLater()
-        available.deleteLater()
+    def test_history_rows_have_no_download_selection_or_actions(self):
+        for status in ('failed', 'running', 'downloading', 'succeeded'):
+            row = _HistoryRow({'local_id': status, 'status': status,
+                               'file_path': str(self.root / 'video.mp4')}, self.page)
+            self.assertEqual(row.findChildren(QCheckBox), [])
+            self.assertFalse(any('下载' in b.text() or '下载' in b.toolTip()
+                                 for b in row.findChildren(QAbstractButton)))
+            row.deleteLater()
 
     def test_media_time_and_backend_error_fall_back_to_file(self):
         self.assertEqual(self.page._media_time(65_000), '01:05')

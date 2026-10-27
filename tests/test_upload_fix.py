@@ -22,6 +22,63 @@ class UploadFixTests(unittest.TestCase):
         from PyQt5.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_media_upload_preserves_chinese_filename_bytes_and_mime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, kind, mime in (('片段.MOV', 'videos', 'video/quicktime'),
+                                     ('旁白.m4a', 'audios', 'audio/mp4')):
+                path = Path(directory) / name
+                path.write_bytes(b'original-media-bytes')
+                captured = []
+                def send(method, url, **kwargs):
+                    filename, stream, content_type = kwargs['files']['files']
+                    captured.append((filename, stream.read(), content_type))
+                    return response(200, {'url': 'https://fixture.test/media'})
+                session = Mock(); session.request.side_effect = send
+                client = ImageUploader('https://fixture.test/upload', session=session)
+                with patch('core.image_uploader.normalized_reference_path') as normalize:
+                    self.assertEqual(client.upload_file(path, kind=kind), 'https://fixture.test/media')
+                normalize.assert_not_called()
+                self.assertEqual(captured, [(name, path.read_bytes(), mime)])
+                client.close()
+
+    def test_media_upload_rejections_do_not_retry_or_accept_invalid_urls(self):
+        from core.http_client import RequestError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
+            for status in (400, 401, 403, 413, 415, 429):
+                session = Mock(); session.request.return_value = response(status, {'error': 'rejected'})
+                client = ImageUploader('https://fixture.test/upload', session=session)
+                with self.assertRaises(RequestError):
+                    client.upload_file(path, kind='videos')
+                self.assertEqual(session.request.call_count, 1)
+                client.close()
+            for url in ('file:///private.mp4', 'https:', '', 'javascript:alert(1)'):
+                session = Mock(); session.request.return_value = response(200, {'url': url})
+                client = ImageUploader('https://fixture.test/upload', session=session)
+                with patch('core.image_uploader.time.sleep'), self.assertRaises(RequestError):
+                    client.upload_file(path, kind='videos')
+                self.assertEqual(session.request.call_count, 2)
+                client.close()
+
+    def test_media_upload_network_retry_once_and_cancel_during_backoff(self):
+        from core.http_client import Cancelled, RequestError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '旁白.wav'; path.write_bytes(b'media')
+            client = ImageUploader('https://fixture.test/upload')
+            with patch.object(client, '_upload_once', side_effect=[RequestError('network'), 'https://fixture.test/media']) as upload, patch('core.image_uploader.time.sleep'):
+                self.assertEqual(client.upload_file(path, kind='audios'), 'https://fixture.test/media')
+                self.assertEqual(upload.call_count, 2)
+            with patch.object(client, '_upload_once', side_effect=RequestError('network')) as upload, patch('core.image_uploader.time.sleep'):
+                with self.assertRaises(RequestError):
+                    client.upload_file(path, kind='audios')
+                self.assertEqual(upload.call_count, 2)
+            client.check_cancel = Mock(side_effect=[None, Cancelled()])
+            with patch.object(client, '_upload_once', side_effect=RequestError('network')) as upload:
+                with self.assertRaises(Cancelled):
+                    client.upload_file(path, kind='audios')
+                self.assertEqual(upload.call_count, 1)
+            client.close()
+
     def test_connection_probe_is_a_decodable_png(self):
         from PyQt5.QtGui import QImage
         captured = []

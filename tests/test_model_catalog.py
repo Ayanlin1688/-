@@ -154,6 +154,29 @@ class FetchModelsTests(unittest.TestCase):
 
 
 class ModelClassificationTests(unittest.TestCase):
+    def test_endpoint_metadata_is_preserved_without_changing_family_rules(self):
+        for endpoints in (['openai-video'], ['video'], ['videos'], ['video-generation']):
+            row = model_catalog._record_from_upstream({'id': 'future-motion', 'supported_endpoint_types': endpoints})
+            self.assertEqual(row['supported_endpoint_types'], endpoints)
+            self.assertEqual(row['kind'], 'video')
+            self.assertEqual(row['family'], '')
+            self.assertFalse(row['protocol_known'])
+            self.assertTrue(model_catalog._valid_record(row))
+        row = model_catalog._record_from_upstream({'id': 'future-motion', 'endpoint_types': ['openai-video']})
+        self.assertEqual(row['supported_endpoint_types'], ['openai-video'])
+        self.assertEqual(model_catalog._record_from_upstream({'id': 'future-motion'})['kind'], 'unknown')
+        self.assertEqual(model_catalog._record_from_upstream({'id': 'future-motion'})['supported_endpoint_types'], [])
+        self.assertFalse(model_catalog._valid_record(dict(row, supported_endpoint_types=[42])))
+
+    def test_explicit_unknown_kind_still_uses_video_endpoint_metadata(self):
+        row = model_catalog._record_from_upstream({
+            'id': 'future-motion', 'kind': 'unknown',
+            'supported_endpoint_types': ['openai-video'],
+        })
+        self.assertEqual(row['kind'], 'video')
+        self.assertFalse(row['protocol_known'])
+        self.assertEqual(row['supported_endpoint_types'], ['openai-video'])
+
     def test_70_offline_models_have_expected_kind_and_pack_availability(self):
         cases = [(model, kind) for kind, models in _CLASSIFICATION_MODELS.items() for model in models]
         self.assertEqual(len(cases), 70)
@@ -242,11 +265,14 @@ class ModelClassificationTests(unittest.TestCase):
                 for field in ('family', 'resolutions', 'ratios', 'durations', 'protocol_known'):
                     self.assertEqual(pack[field], base[field])
 
-    def test_builtins_preserve_all_original_video_records_and_add_complete_non_video_records(self):
+    def test_builtins_list_only_verified_video_records_and_add_complete_non_video_records(self):
         records = model_catalog.builtin_models()
-        video_ids = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5',
-                     'MiniMax-H3', 'grok-imagine-1.5-video', 'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0']
+        video_ids = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3',
+                     'MiniMax-H3', 'grok-imagine-1.5-video', 'wan-3.0']
         self.assertEqual([model for model, row in records.items() if row['kind'] == 'video'], video_ids)
+        self.assertFalse(any('seedance' in model.lower() for model in records))
+        self.assertEqual(model_catalog.classify_model('seedance-2.5'), 'video')
+        self.assertEqual(model_catalog.family_for('seedance-2.5'), 'video-v3')
         for model in video_ids:
             with self.subTest(model=model):
                 row = records[model]
@@ -273,6 +299,20 @@ class ModelClassificationTests(unittest.TestCase):
 
 
 class ModelCatalogTests(unittest.TestCase):
+    def test_endpoint_metadata_roundtrip_and_old_cache_without_field(self):
+        catalog = self.catalog()
+        client = Mock()
+        client.fetch_models.return_value = [{'id': 'future-motion', 'supported_endpoint_types': ['openai-video']}]
+        snapshot = catalog.refresh(client)
+        self.assertEqual(self.catalog().snapshot(), snapshot)
+        document = json.loads(catalog.cache_path.read_text(encoding='utf-8'))
+        document['models']['future-motion'].pop('supported_endpoint_types')
+        catalog.cache_path.write_text(json.dumps(document), encoding='utf-8')
+        reopened = self.catalog()
+        self.assertEqual(reopened.source, 'cache')
+        self.assertEqual(reopened.snapshot()['future-motion']['kind'], 'video')
+        self.assertEqual(reopened.snapshot()['future-motion'].get('supported_endpoint_types', []), [])
+
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('core.model_catalog'), '模型目录模块尚未实现')
         self.module = importlib.import_module('core.model_catalog')

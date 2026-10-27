@@ -72,7 +72,7 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertTrue(self.page.reference_drop_strip.isVisible())
         self.assertEqual(
             self.page.reference_drop_strip.text_label.text(),
-            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
+            '点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
         paths = [self._make_image(f'image-{index}.png') for index in range(10)]
         with patch('ui.pages.image_generation_page.QFileDialog.getOpenFileNames',
                    return_value=(paths, '')) as picker, \
@@ -99,9 +99,11 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.assertEqual(strip.objectName(), 'imageReferenceDropStrip')
         self.assertTrue(strip.isVisible())
         self.assertFalse(self.page.reference_grid.isVisible())
+        self.assertEqual(strip.icon_label.text(), '⬆')
+        self.assertNotIn('⬆', strip.text_label.text())
         self.assertEqual(
             strip.text_label.text(),
-            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
+            '点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
         with patch('ui.pages.image_generation_page.QFileDialog.getOpenFileNames',
                    return_value=([], '')) as choose:
             strip.clicked.emit()
@@ -269,6 +271,28 @@ class ImageGenerationPageTests(unittest.TestCase):
         self.page.retranslate_ui()
         self.assertEqual(self.page.title_label.text(), '图片生成')
 
+
+    def test_reference_empty_strip_has_exactly_one_icon_in_both_languages(self):
+        strip = self.page.reference_drop_strip
+        for language in ('zh-CN', 'en'):
+            set_language(language)
+            self.page.retranslate_ui()
+            self.assertEqual(strip.icon_label.text(), '⬆')
+            self.assertNotIn('⬆', strip.text_label.text())
+            self.assertTrue(strip.text_label.text())
+
+    def test_catalog_refresh_keeps_model_version_and_removes_unavailable_model(self):
+        self.page.version_combo.setCurrentText('image-model-v2')
+        self.page.refresh_catalog()
+        self.assertEqual(self.page.model_combo.currentData(), 'image-model')
+        self.assertEqual(self.page.version_combo.currentText(), 'image-model-v2')
+        self.config.model_catalog_controller.snapshot_for.return_value = {
+            'replacement-image': dict(id='replacement-image', kind='image', available=True)}
+        with patch.object(self.page, '_warning') as warning:
+            self.page.refresh_catalog()
+        warning.assert_called_once()
+        self.assertEqual(self.page.model_combo.currentData(), 'replacement-image')
+        self.assertEqual(self.page.model_combo.findData('image-model'), -1)
 
     def test_both_generate_buttons_click_once_and_share_busy_state_wide_and_narrow(self):
         from PyQt5.QtTest import QTest

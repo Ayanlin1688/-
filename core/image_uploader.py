@@ -4,6 +4,7 @@ import struct
 import zlib
 import tempfile
 import time
+from urllib.parse import urlsplit
 from pathlib import Path
 from .http_client import HttpClient, RequestError, Cancelled, objects, extract
 
@@ -132,6 +133,27 @@ class ImageUploader(HttpClient):
                 if cleanup:
                     Path(cleanup).unlink(missing_ok=True)
 
+    def upload_file(self, file_path, kind=None):
+        """Upload arbitrary reference media without image decoding or conversion."""
+        if kind is not None:
+            from .video_capabilities import validate_media_file
+            validate_media_file(file_path, kind)
+        for attempt in range(2):
+            self.check_cancel()
+            try:
+                return self._upload_once(file_path)
+            except Cancelled:
+                raise
+            except Exception as error:
+                # Authentication, validation and rate-limit rejections are final.
+                status = getattr(error, 'status_code', None)
+                if attempt or (status is not None and 400 <= status < 500):
+                    raise
+                self.log('素材上传失败，将重试一次', 'warning')
+                for _ in range(20):
+                    self.check_cancel()
+                    time.sleep(0.1)
+
     def _upload_once(self, file_path):
         try:
             path = Path(file_path)
@@ -142,7 +164,11 @@ class ImageUploader(HttpClient):
             if self.upload_url.rstrip('/') == DEFAULT_UPLOAD_URL and self.api_key:
                 headers['X-Upload-Token'] = self.api_key
             with path.open('rb') as stream:
-                with self.request('POST', self.upload_url, headers=headers, authenticated=bool(self.api_key), files={'files': (path.name, stream, mimetypes.guess_type(path.name)[0] or 'application/octet-stream')}) as response:
+                mime = {'.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+                        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+                        '.aac': 'audio/aac', '.ogg': 'audio/ogg'}.get(path.suffix.lower())
+                mime = mime or mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
+                with self.request('POST', self.upload_url, headers=headers, authenticated=bool(self.api_key), files={'files': (path.name, stream, mime)}) as response:
                     self.last_status_code = response.status_code
                     data = self.json(response)
                     url = None
@@ -152,9 +178,9 @@ class ImageUploader(HttpClient):
                             url = files[0]['url']
                             break
                     url = url or extract(data, ('url',))
-                    if isinstance(url, str) and url.strip():
+                    if isinstance(url, str) and urlsplit(url.strip()).scheme in ('http', 'https') and urlsplit(url.strip()).hostname:
                         url = url.strip()
-                        self.log(f'图片上传完成：{self.redact(url)[:240]}', 'success')
+                        self.log('素材上传完成：' + path.name, 'success')
                         return url
                     raise RequestError(f'HTTP {response.status_code}: 上传响应缺少图片 URL：{self.redact(response.text)}', response.status_code, self.redact(response.text))
         except Exception as error:

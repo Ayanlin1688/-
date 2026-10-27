@@ -455,9 +455,57 @@ class ManualVideoTests(unittest.TestCase):
         self.assertEqual(result['error'], '任务已取消')
         uploader.close.assert_called_once()
 
-    def test_video_and_audio_refs_are_rejected_without_upload_support(self):
-        with self.assertRaisesRegex(ValueError, '当前线路未配置视频/音频上传能力'):
-            self._tasks(refs={'videos': ['local.mp4']})
+    def test_video_audio_upload_order_payload_and_persistence(self):
+        video = self.root / '参考视频.mp4'; video.write_bytes(MP4)
+        audio = self.root / '参考音频.wav'; audio.write_bytes(b'fixture-audio')
+        refs = {'images': ['https://img/a.png'],
+                'videos': [str(video), 'https://media/second.mp4'], 'audios': [str(audio)]}
+        task = self._tasks(refs=refs)[0]
+        self.assertEqual(self.store.get(task['local_id'])['refs'], refs)
+        uploader = mock.MagicMock()
+        uploader.upload_file.side_effect = ['https://media/first.mp4', 'https://media/audio.wav']
+        _FakeApiClient.create_calls = []
+        with mock.patch('core.image_uploader.ImageUploader.from_config', return_value=uploader), \
+                mock.patch('core.manual_video.ApiClient', _FakeApiClient), \
+                mock.patch('core.manual_video.VideoDownloader', _FakeDownloader):
+            result = self.manager.run_tasks([task])[0]
+        self.assertEqual(result['status'], 'succeeded')
+        params = _FakeApiClient.create_calls[0][3]
+        self.assertEqual(params['videos'], ['https://media/first.mp4', 'https://media/second.mp4'])
+        self.assertEqual(params['audios'], ['https://media/audio.wav'])
+        self.assertEqual(uploader.upload_file.call_args_list,
+                         [mock.call(str(video), kind='videos'), mock.call(str(audio), kind='audios')])
+
+    def test_family_reference_limits_and_v3_thirty_seconds(self):
+        for model, image_limit, media_limit, duration in (
+            ('MiniMax-H3', 9, 3, 15), ('video-v2', 9, 3, 10),
+            ('video-v3', 30, 10, 30), ('wan-3.0', 10, 5, 15)):
+            refs = {'images': ['https://img/a.png'] * image_limit,
+                    'videos': ['https://media/a.mp4'] * media_limit,
+                    'audios': ['https://media/a.wav'] * media_limit}
+            records = self.manager.prepare_tasks('fixture', model, duration=duration, refs=refs)
+            self.assertEqual(records[0]['refs'], refs)
+            for kind in refs:
+                too_many = dict(refs, **{kind: refs[kind] + [refs[kind][0]]})
+                with self.assertRaisesRegex(ValueError, '最多'):
+                    self.manager.prepare_tasks('fixture', model, duration=duration, refs=too_many)
+        with self.assertRaisesRegex(ValueError, '时长'):
+            self.manager.prepare_tasks('fixture', 'video-v2', duration=6)
+        with self.assertRaisesRegex(ValueError, '链接无效'):
+            self._tasks(refs={'videos': ['https://']})
+
+    def test_media_upload_failure_and_cancel_never_create_generation(self):
+        path = self.root / '参考.mp4'; path.write_bytes(MP4)
+        for error, expected in ((OSError('fixture'), 'failed'), (manual_video.Cancelled(), 'cancelled')):
+            task = self._tasks(refs={'videos': [str(path)]})[0]
+            uploader = mock.MagicMock(); uploader.upload_file.side_effect = error
+            client = mock.MagicMock()
+            with mock.patch('core.image_uploader.ImageUploader.from_config', return_value=uploader), \
+                    mock.patch('core.manual_video.ApiClient', return_value=client):
+                result = self.manager.run_tasks([task])[0]
+            self.assertEqual(result['status'], expected)
+            client.create_task.assert_not_called()
+            uploader.close.assert_called_once()
 
     def test_http_failures_use_chinese_api_error_classification(self):
         from core.http_client import RequestError

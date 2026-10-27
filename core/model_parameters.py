@@ -4,13 +4,12 @@ Only the existing text/image generation flows are exposed. No upload behavior li
 """
 import re
 
-from .model_catalog import family_for, options_for
+from .model_catalog import family_for, options_for, _VIDEO_ENDPOINTS
 
 V3_MODELS = {'video-v3', 'seedance-2.5', 'seedance2.5', 'sd-2.5', 'sd2.5'}
 GROK = 'grok-imagine-1.5-video'
 H3 = 'MiniMax-H3'
-MODELS = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5', H3, GROK,
-          'seedance2.5', 'sd-2.5', 'sd2.5']
+MODELS = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', H3, GROK, 'wan-3.0']
 H3_SIZES = {
     '16:9': ('864x480', '1376x768', '1920x1088'),
     '9:16': ('480x864', '768x1376', '1088x1920'),
@@ -40,13 +39,25 @@ def legacy_model_options(model):
 
 
 def model_options(model, catalog=None):
+    from .video_capabilities import capabilities
+    family = family_for(model, catalog)
+    verified = family in ('MiniMax-H3', 'video-v2', 'video-v3') or model == 'wan-3.0'
     if catalog is None:
-        return legacy_model_options(model)
-    snapshot = catalog.snapshot() if hasattr(catalog, 'snapshot') else catalog
-    options = options_for(model, snapshot)
-    record = snapshot.get(model) if isinstance(snapshot, dict) else None
-    options['available'] = bool(isinstance(record, dict) and record.get('available', True))
-    options['kind'] = record.get('kind', 'unknown') if isinstance(record, dict) else 'unknown'
+        if not verified:
+            return legacy_model_options(model)
+        options = {}
+    else:
+        snapshot = catalog.snapshot() if hasattr(catalog, 'snapshot') else catalog
+        options = options_for(model, snapshot)
+        record = snapshot.get(model) if isinstance(snapshot, dict) else None
+        options['available'] = bool(isinstance(record, dict) and record.get('available', True))
+        options['kind'] = record.get('kind', 'unknown') if isinstance(record, dict) else 'unknown'
+        endpoints = (record or {}).get('supported_endpoint_types') or ()
+        verified = verified or bool({str(item).strip().lower() for item in endpoints} & _VIDEO_ENDPOINTS)
+    if verified:
+        caps = capabilities(model, catalog)
+        options.update({key: caps[key] for key in ('ratios', 'resolutions', 'durations', 'max_images', 'max_videos', 'max_audios')})
+        options.update(audio=caps['supports_audio'], seed=caps['supports_seed'], protocol_known=True)
     return options
 
 
@@ -82,10 +93,19 @@ def generation_fields(model, params, image_count, catalog=None):
         raise ValueError('Grok 多图仅支持 480p / 720p，请修改分辨率')
     if options['audio'] and type(params.get('generate_audio')) is not bool:
         raise ValueError(f'{model} generate_audio 必须是布尔值 true/false')
+    media = {}
+    for key, label in (('videos', '视频'), ('audios', '音频')):
+        values = params.get(key) or []
+        if not isinstance(values, (list, tuple)) or len(values) > options.get('max_' + key, 0):
+            raise ValueError(f'参考{label}数量超出模型上限')
+        from urllib.parse import urlsplit
+        if any(not isinstance(value, str) or urlsplit(value).scheme not in ('http', 'https') or not urlsplit(value).hostname for value in values):
+            raise ValueError(f'参考{label}必须是有效的 HTTP/HTTPS 素材 URL')
+        media[key] = list(values)
     if family == 'video-v1':
         return dict(duration=duration, aspect_ratio=ratio)
     if family == 'video-v2':
-        fields = dict(duration=duration, aspect_ratio=ratio, resolution=resolution, videos=[], audios=[])
+        fields = dict(duration=duration, aspect_ratio=ratio, resolution=resolution, **media)
         if options['audio']:
             fields['generate_audio'] = params['generate_audio']
         return fields
@@ -93,7 +113,7 @@ def generation_fields(model, params, image_count, catalog=None):
         # The table marks bypass_face_check as required although the example omits it.
         # Send false explicitly; the application does not enable bypass behavior.
         fields = dict(duration=duration, ratio=ratio, resolution=resolution,
-                      bypass_face_check=False, videos=[], audios=[])
+                      bypass_face_check=False, **media)
         if options['audio']:
             fields['generate_audio'] = params['generate_audio']
         seed = params.get('seed', '')
@@ -109,11 +129,13 @@ def generation_fields(model, params, image_count, catalog=None):
             fields['seed'] = value
         return fields
     if family == H3:
-        fields = dict(workflow_id='multi-reference' if image_count else 'text-to-video', seconds=duration, size=h3_size(ratio, resolution))
+        fields = dict(workflow_id='multi-reference' if image_count or any(media.values()) else 'text-to-video', seconds=duration, size=h3_size(ratio, resolution),
+                      **{key: value for key, value in media.items() if value})
         if resolution in ('2K', '4K'):
             fields['aspect_ratio'] = ratio
         return fields
-    return dict(aspect_ratio=ratio, seconds=str(duration), resolution=resolution)
+    return dict(aspect_ratio=ratio, seconds=str(duration), resolution=resolution,
+                **{key: value for key, value in media.items() if value})
 
 
 def validate_task_parameters(model, prompt, params, image_count, catalog=None):

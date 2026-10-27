@@ -29,7 +29,11 @@ from qfluentwidgets import ComboBox, InfoBar, LineEdit, PrimaryPushButton, PushB
 
 from core.i18n import register_retranslate, tr
 from core.line_routing import resolve_line
+from core.video_capabilities import capabilities, validate_media_file
+from core.image_uploader import ImageUploader
+from core.http_client import Cancelled
 from core.model_catalog import builtin_models, classify_model, normalize_model_id, family_for
+from core.model_parameters import model_options
 from .. import materials
 from ..components.image_lightbox import ImageLightbox
 from ..components.model_selector import catalog_snapshot
@@ -93,7 +97,14 @@ class _VideoPreviewWidget(QWidget):
         self.surface.frame_ready.connect(self._set_frame, Qt.QueuedConnection)
 
     def _set_frame(self, image):
+        changed = self._image.size() != image.size()
         self._image = image
+        if changed:
+            page = self.parentWidget()
+            while page is not None and not isinstance(page, VideoCreationPage):
+                page = page.parentWidget()
+            if page is not None:
+                QTimer.singleShot(0, page._update_preview_geometry)
         self.update()
 
     def aspectRatioMode(self):
@@ -260,7 +271,6 @@ class _HistoryRow(QFrame):
         super().__init__(parent); self.record = dict(record or {}); self.setObjectName('videoHistoryRow')
         self.setCursor(Qt.PointingHandCursor); self.setMinimumHeight(px(64))
         layout = QHBoxLayout(self); layout.setContentsMargins(px(8), px(6), px(8), px(6)); layout.setSpacing(px(8))
-        self.check = QCheckBox(self); self.check.setObjectName('videoHistoryCheck'); self.check.setFixedWidth(px(22)); self.check.setEnabled(bool(self.record.get('file_path') or self.record.get('video_url'))); layout.addWidget(self.check)
         thumb = QLabel(self); thumb.setObjectName('videoHistoryThumb'); thumb.setFixedSize(px(64), px(40)); thumb.setAlignment(Qt.AlignCenter); thumb.setText(tr('视频')); layout.addWidget(thumb)
         text_box = QVBoxLayout(); text_box.setSpacing(px(2));
         prompt = QLabel(str(self.record.get('prompt_name') or self.record.get('prompt') or tr('未命名视频')), self); prompt.setObjectName('videoHistoryPrompt'); prompt.setWordWrap(True); prompt.setMaximumHeight(px(34)); text_box.addWidget(prompt)
@@ -314,11 +324,7 @@ class _SubmitWorker(QThread):
         try:
             if hasattr(self.manager, 'prepare_tasks') and hasattr(self.manager, 'run_tasks'):
                 self.manager.on_task = self.task_updated.emit
-                try:
-                    tasks = self.manager.prepare_tasks(**self.kwargs)
-                except TypeError:
-                    reduced = dict(self.kwargs); reduced.pop('reference_videos', None); reduced.pop('reference_audios', None)
-                    tasks = self.manager.prepare_tasks(**reduced)
+                tasks = self.manager.prepare_tasks(**self.kwargs)
                 self.submitted.emit(tasks); self.manager.run_tasks(tasks)
             elif callable(self.manager):
                 self.submitted.emit(self.manager(**self.kwargs))
@@ -328,40 +334,52 @@ class _SubmitWorker(QThread):
             self.failed.emit(str(error))
 
 
-class _DownloadWorker(QThread):
-    completed = pyqtSignal(str, object)
-    failed = pyqtSignal(str, object)
+class _MediaUploadWorker(QThread):
+    uploaded = pyqtSignal(str, str, str)
+    progress = pyqtSignal(int, int)
+    failed = pyqtSignal(str)
 
-    def __init__(self, manager, record, parent=None):
+    def __init__(self, config, paths, kind, parent=None):
         super().__init__(parent)
-        self.manager = manager
-        self.record = dict(record or {})
+        self.config, self.paths, self.kind = config, paths, kind
+        self.remaining = list(paths)
+        self._cancel = threading.Event()
+        self.cancelled = False
+
+    def cancel(self):
+        self._cancel.set()
+
+    def _check_cancel(self):
+        if self._cancel.is_set():
+            raise Cancelled()
 
     def run(self):
+        uploader = None
         try:
-            if hasattr(self.manager, 'download_task'):
-                path = self.manager.download_task(self.record)
-            elif hasattr(self.manager, 'download_result'):
-                path = self.manager.download_result(self.record)
+            uploader = ImageUploader.from_config(self.config, check_cancel=self._check_cancel)
+            for index, path in enumerate(self.paths):
+                self._check_cancel()
+                url = uploader.upload_file(path, kind=self.kind)
+                self._check_cancel()
+                self.remaining.remove(path)
+                self.uploaded.emit(self.kind, path, url)
+                self.progress.emit(index + 1, len(self.paths))
+        except Cancelled:
+            self.cancelled = True
+        except Exception as error:
+            status = getattr(error, 'status_code', None)
+            if status in (401, 403):
+                message = tr('素材上传鉴权失败，请检查上传密钥')
+            elif status == 429:
+                message = tr('素材上传限流，请稍后重试')
+            elif status in (400, 413, 415, 422):
+                message = tr('素材上传被拒绝，请检查文件格式与大小')
             else:
-                path = self.record.get('file_path') or self.record.get('video_url') or ''
-            updated = self._latest_record()
-            self.completed.emit(str(path or ''), updated)
-        except Exception as error:  # noqa: BLE001
-            self.failed.emit(str(error), self._latest_record())
-
-    def _latest_record(self):
-        local_id = str(self.record.get('local_id') or '')
-        store = getattr(self.manager, 'store', None)
-        getter = getattr(store, 'get', None)
-        if local_id and callable(getter):
-            try:
-                updated = getter(local_id)
-                if isinstance(updated, dict):
-                    return updated
-            except Exception:
-                pass
-        return dict(self.record)
+                message = tr('参考素材上传失败，请检查素材上传线路后重试')
+            self.failed.emit(message)
+        finally:
+            if uploader is not None:
+                uploader.close()
 
 
 def _video_records(config_manager):
@@ -369,10 +387,10 @@ def _video_records(config_manager):
     except Exception: records = builtin_models()
     result = {}
     for model_id, record in (records or {}).items():
-        if isinstance(record, dict) and record.get('available', True) is not False and (record.get('kind') == 'video' or classify_model(model_id) == 'video'):
+        if isinstance(record, dict) and record.get('available', True) is not False and (
+                record.get('kind') == 'video'
+                or classify_model(model_id, record.get('supported_endpoint_types', ())) == 'video'):
             result[str(model_id)] = dict(record)
-    config = getattr(config_manager, 'config', {}) or {}; configured = str((config.get('video_creation') or {}).get('model') or '')
-    if configured and configured not in result: result[configured] = {'id': configured, 'display_name': configured, 'kind': 'video', 'available': True}
     return result
 
 
@@ -388,7 +406,15 @@ class VideoCreationPage(QWidget):
         self._workers, self._worker, self._manager, self.manager_factory = [], None, None, None
         self._tasks = {}; self._history_records = []; self._history_page = 1; self._history_query = ''
         self._history_dirty = True
-        self._build_ui(); self.select_all_history.toggled.connect(self._toggle_select_all_history); self._load_config_defaults(); self._refresh_models(getattr(self, '_configured_model', '')); self._update_form_state()
+        self._upload_worker = None
+        self._media_names = {}
+        self._retry_upload = None
+        self._capabilities = None
+        self._active_model = ''
+        self._records = {}
+        self._protocol_support = {}
+        self._catalog_refresh_pending = False
+        self._build_ui(); self._load_config_defaults(); self._refresh_models(getattr(self, '_configured_model', '')); self._update_form_state()
         style_page(self); style_controls(self); register_retranslate(self)
         materials.register_theme_callback(self.refresh_colors)
         self.refresh_colors()
@@ -442,10 +468,12 @@ class VideoCreationPage(QWidget):
         self.reference_images_button = PushButton(tr('选择图片'), panel)
         self.reference_images_button.clicked.connect(self._choose_reference_images)
         self.reference_images_button.setVisible(False)
-        unsupported = tr('当前线路未配置视频/音频上传能力')
-        self.reference_videos_label = QLabel(tr('参考视频（0/3）'), panel); layout.addWidget(self.reference_videos_label); self.reference_videos_button = PushButton(tr('选择视频'), panel); self.reference_videos_button.setEnabled(False); self.reference_videos_button.setToolTip(unsupported); layout.addWidget(self.reference_videos_button); self.reference_videos_hint = QLabel(unsupported, panel); self.reference_videos_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_videos_hint.setWordWrap(True); layout.addWidget(self.reference_videos_hint)
-        self.reference_audios_label = QLabel(tr('参考音频（0/3）'), panel); layout.addWidget(self.reference_audios_label); self.reference_audios_button = PushButton(tr('选择音频'), panel); self.reference_audios_button.setEnabled(False); self.reference_audios_button.setToolTip(unsupported); layout.addWidget(self.reference_audios_button); self.reference_audios_hint = QLabel(unsupported, panel); self.reference_audios_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_audios_hint.setWordWrap(True); layout.addWidget(self.reference_audios_hint)
-        self.reference_hint = QLabel(tr('MiniMax-H3 会按 images、reference_videos、reference_audios 字段提交；可将素材写入 Prompt'), panel); self.reference_hint.setWordWrap(True); self.reference_hint.setObjectName('videoReferenceHint'); layout.addWidget(self.reference_hint)
+        unsupported = ''
+        self.reference_videos_label = QLabel(tr('参考视频（0/3）'), panel); layout.addWidget(self.reference_videos_label); self.reference_videos_button = PushButton(tr('选择视频'), panel); self.reference_videos_button.clicked.connect(lambda: self._choose_media('videos')); layout.addWidget(self.reference_videos_button); self.reference_videos_hint = QLabel(unsupported, panel); self.reference_videos_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_videos_hint.setWordWrap(True); layout.addWidget(self.reference_videos_hint)
+        self.reference_audios_label = QLabel(tr('参考音频（0/3）'), panel); layout.addWidget(self.reference_audios_label); self.reference_audios_button = PushButton(tr('选择音频'), panel); self.reference_audios_button.clicked.connect(lambda: self._choose_media('audios')); layout.addWidget(self.reference_audios_button); self.reference_audios_hint = QLabel(unsupported, panel); self.reference_audios_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_audios_hint.setWordWrap(True); layout.addWidget(self.reference_audios_hint)
+        self.reference_hint = QLabel(tr('参考素材按图片、视频、音频顺序提交，可在画面描述中引用。'), panel); self.reference_hint.setWordWrap(True); self.reference_hint.setObjectName('videoReferenceHint'); layout.addWidget(self.reference_hint)
+        self.upload_status = QLabel('', panel); self.upload_status.setWordWrap(True); layout.addWidget(self.upload_status)
+        self.retry_upload_button = PushButton(tr('重试上传'), panel); self.retry_upload_button.hide(); self.retry_upload_button.clicked.connect(self._retry_media_upload); layout.addWidget(self.retry_upload_button)
         self._rebuild_reference_images()
         return panel
 
@@ -453,8 +481,8 @@ class VideoCreationPage(QWidget):
         panel = QFrame(parent); panel.setObjectName('videoGenerationParameters'); layout = QVBoxLayout(panel); layout.setContentsMargins(px(12), px(10), px(12), px(10)); layout.setSpacing(px(8))
         title_row = QHBoxLayout(); self.parameters_title = StrongBodyLabel(tr('生成参数'), panel); title_row.addWidget(self.parameters_title); title_row.addStretch(1); self.parameters_toggle = QToolButton(panel); self.parameters_toggle.setObjectName('videoParametersToggle'); self.parameters_toggle.setText('⌃'); self.parameters_toggle.setToolTip(tr('收起')); self.parameters_toggle.setCheckable(True); self.parameters_toggle.setChecked(True); self.parameters_toggle.clicked.connect(self._toggle_parameters); title_row.addWidget(self.parameters_toggle); layout.addLayout(title_row)
         self.parameters_content = QWidget(panel); content = QVBoxLayout(self.parameters_content); content.setContentsMargins(0, 0, 0, 0); content.setSpacing(px(8))
-        duration_row = QHBoxLayout(); self.duration_label = QLabel(tr('⏱ 渲染时长'), self.parameters_content); duration_row.addWidget(self.duration_label); self.duration_spin = QSpinBox(self.parameters_content); self.duration_spin.setObjectName('videoDurationSpin'); self.duration_spin.setRange(4, 15); self.duration_spin.setValue(5); self.duration_spin.valueChanged.connect(self._duration_changed); duration_row.addWidget(self.duration_spin); duration_row.addWidget(QLabel(tr('秒 (4-15)'), self.parameters_content)); duration_row.addStretch(1); content.addLayout(duration_row)
-        duration_shortcuts = QHBoxLayout(); duration_shortcuts.setSpacing(px(8)); self.duration_buttons = []
+        duration_row = QHBoxLayout(); self.duration_label = QLabel(tr('⏱ 渲染时长'), self.parameters_content); duration_row.addWidget(self.duration_label); self.duration_spin = QSpinBox(self.parameters_content); self.duration_spin.setObjectName('videoDurationSpin'); self.duration_spin.setRange(4, 15); self.duration_spin.setValue(5); self.duration_spin.valueChanged.connect(self._duration_changed); duration_row.addWidget(self.duration_spin); self.duration_range_label = QLabel('', self.parameters_content); duration_row.addWidget(self.duration_range_label); duration_row.addStretch(1); content.addLayout(duration_row)
+        duration_shortcuts = self.duration_shortcuts = QHBoxLayout(); duration_shortcuts.setSpacing(px(8)); self.duration_buttons = []
         for value in (5, 10, 15):
             button = PushButton(tr('{n}秒').format(n=value), self.parameters_content); button.setCheckable(True); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); button.setMinimumWidth(max(px(56), button.sizeHint().width())); button.clicked.connect(lambda _=False, v=value: self.duration_spin.setValue(v)); self.duration_buttons.append(button); duration_shortcuts.addWidget(button, 1)
         content.addLayout(duration_shortcuts)
@@ -466,12 +494,13 @@ class VideoCreationPage(QWidget):
     def _build_preview_card(self):
         card = _VideoCard('videoPreviewCard', self.right_column)
         layout = QVBoxLayout(card); layout.setContentsMargins(px(16), px(16), px(16), px(16)); layout.setSpacing(px(10))
-        head = QHBoxLayout(); title_box = QVBoxLayout(); self.preview_title = StrongBodyLabel(tr('📄 作品预览'), card); self.preview_caption = QLabel(tr('播放、查看与下载生成结果'), card); title_box.addWidget(self.preview_title); title_box.addWidget(self.preview_caption); head.addLayout(title_box, 1); self.status_badge = QLabel('', card); self.status_badge.setObjectName('videoStatusBadge'); head.addWidget(self.status_badge); layout.addLayout(head)
+        head = QHBoxLayout(); title_box = QVBoxLayout(); self.preview_title = StrongBodyLabel(tr('📄 作品预览'), card); self.preview_caption = QLabel(tr('播放、查看自动保存的生成结果'), card); title_box.addWidget(self.preview_title); title_box.addWidget(self.preview_caption); head.addLayout(title_box, 1); self.status_badge = QLabel('', card); self.status_badge.setObjectName('videoStatusBadge'); head.addWidget(self.status_badge); layout.addLayout(head)
         self.preview_area = QFrame(card); self.preview_area.setObjectName('videoPreviewArea'); self.preview_area.setMinimumSize(0, 0); self.preview_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); self.preview_area.setStyleSheet('QFrame#videoPreviewArea { background: %s; border-radius: %dpx; } QFrame#videoPreviewArea QLabel { color: %s; } QFrame#videoPreviewArea QStackedWidget { background: transparent; }' % (_color('video_creation_preview_bg'), px(8), _color('video_creation_preview_text'))); preview_layout = QVBoxLayout(self.preview_area); preview_layout.setContentsMargins(px(16), px(16), px(16), px(16)); self.preview_stack = QStackedWidget(self.preview_area)
         self.preview_empty_page = QWidget(self.preview_stack)
         empty_layout = QVBoxLayout(self.preview_empty_page)
         empty_layout.setContentsMargins(0, 0, 0, 0)
         empty_layout.setSpacing(px(10))
+        empty_layout.addStretch(1)
         self.preview_empty_play = QToolButton(self.preview_empty_page)
         self.preview_empty_play.setObjectName('videoEmptyPlayButton')
         self.preview_empty_play.setIcon(FIF.PLAY.icon())
@@ -484,6 +513,7 @@ class VideoCreationPage(QWidget):
         self.preview_empty.setAlignment(Qt.AlignCenter)
         self.preview_empty.setWordWrap(True)
         empty_layout.addWidget(self.preview_empty, 0, Qt.AlignHCenter)
+        empty_layout.addStretch(1)
         self.preview_empty_page.setStyleSheet(
             'QToolButton#videoEmptyPlayButton { background:%s; color:%s; border:0; border-radius:%dpx; font-size:%dpx; } '
             'QToolButton#videoEmptyPlayButton:hover { background:%s; }'
@@ -521,14 +551,16 @@ class VideoCreationPage(QWidget):
         failed_page = QWidget(self.preview_stack); failed_layout = QVBoxLayout(failed_page); self.preview_failed = QLabel('', failed_page); self.preview_failed.setAlignment(Qt.AlignCenter); self.preview_failed.setWordWrap(True); failed_layout.addWidget(self.preview_failed); self.retry_button = PushButton(FIF.SYNC, tr('重新生成'), failed_page); self.retry_button.clicked.connect(self._retry_current); failed_layout.addWidget(self.retry_button, 0, Qt.AlignCenter); self.preview_stack.addWidget(failed_page); preview_layout.addWidget(self.preview_stack); layout.addWidget(self.preview_area, 0, Qt.AlignHCenter)
         if self.media_controls is not None:
             layout.addWidget(self.media_controls)
+            self.media_controls.hide()
         layout.addWidget(self.open_video_button, 0, Qt.AlignHCenter)
-        url_row = QHBoxLayout(); self.url_edit = LineEdit(card); self.url_edit.setObjectName('videoUrlEdit'); self.url_edit.setReadOnly(True); self.url_edit.setPlaceholderText(tr('生成完成后显示视频路径或 URL')); url_row.addWidget(self.url_edit, 1); self.download_button = PushButton(FIF.DOWNLOAD, tr('下载视频'), card); self.download_button.clicked.connect(self._download_current); self.copy_url_button = PushButton(FIF.COPY, tr('复制链接'), card); self.copy_url_button.clicked.connect(self._copy_url); url_row.addWidget(self.download_button); url_row.addWidget(self.copy_url_button); layout.addLayout(url_row)
+        self.open_video_button.hide()
+        url_row = QHBoxLayout(); self.url_edit = LineEdit(card); self.url_edit.setObjectName('videoUrlEdit'); self.url_edit.setReadOnly(True); self.url_edit.setPlaceholderText(tr('生成完成后显示视频路径或 URL')); url_row.addWidget(self.url_edit, 1); self.copy_url_button = PushButton(FIF.COPY, tr('复制链接'), card); self.copy_url_button.clicked.connect(self._copy_url); url_row.addWidget(self.copy_url_button); layout.addLayout(url_row)
         self.history_detail_hint = QLabel('', card); self.history_detail_hint.setObjectName('videoHistoryDetailHint'); layout.addWidget(self.history_detail_hint)
-        self.info_bar = QLabel(tr('温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。'), card); self.info_bar.setWordWrap(True); self.info_bar.setObjectName('videoInfoBar'); layout.addWidget(self.info_bar)
+        self.info_bar = QLabel(tr('视频生成后会自动保存到本地，可在任务历史中查看。'), card); self.info_bar.setWordWrap(True); self.info_bar.setObjectName('videoInfoBar'); layout.addWidget(self.info_bar)
         progress_row = QHBoxLayout(); self.progress_label = QLabel('', card); self.progress_model_label = QLabel('', card); self.progress_model_label.setObjectName('videoProgressModel'); self.progress_model_label.setStyleSheet('QLabel#videoProgressModel { color:%s; background:%s; border:1px solid %s; border-radius:%dpx; padding:0 %dpx; }' % (_color('video_creation_muted'), _color('video_creation_input'), _color('video_creation_border'), px(9), px(6))); self.progress_model_label.setVisible(False); self.copy_task_id_button = QToolButton(card); self.copy_task_id_button.setObjectName('videoCopyTaskIdButton'); self.copy_task_id_button.setText('⧉'); self.copy_task_id_button.setToolTip(tr('复制')); self.copy_task_id_button.setVisible(False); self.copy_task_id_button.clicked.connect(self._copy_task_id); self.progress_bar = QProgressBar(card); self.progress_bar.setRange(0, 100); self.progress_bar.setValue(0); self.progress_bar.setTextVisible(False); progress_row.addWidget(self.progress_label); progress_row.addWidget(self.progress_model_label); progress_row.addWidget(self.copy_task_id_button); progress_row.addWidget(self.progress_bar, 1); layout.addLayout(progress_row); return card
 
     def _build_history_card(self):
-        card = _VideoCard('videoHistoryCard', self.right_column); layout = QVBoxLayout(card); layout.setContentsMargins(px(16), px(16), px(16), px(16)); layout.setSpacing(px(8)); head = QHBoxLayout(); self.history_title = StrongBodyLabel(tr('历史视频 (0)'), card); head.addWidget(self.history_title); head.addStretch(1); self.clear_history_button = PushButton(tr('清空'), card); self.clear_history_button.clicked.connect(self.clear_history); self.history_toggle = QToolButton(card); self.history_toggle.setText('⌃'); self.history_toggle.setCheckable(True); self.history_toggle.setChecked(True); self.history_toggle.clicked.connect(lambda checked: self.history_list.setVisible(checked)); head.addWidget(self.clear_history_button); head.addWidget(self.history_toggle); layout.addLayout(head); self.history_caption = QLabel(tr('保留最近 20 条，记录只存于当前浏览器。'), card); layout.addWidget(self.history_caption); self.history_search = LineEdit(card); self.history_search.setPlaceholderText(tr('搜索 Prompt、任务 ID 或模型')); self.history_search.textChanged.connect(self._history_search_changed); layout.addWidget(self.history_search); toolbar = QHBoxLayout(); self.select_all_history = QCheckBox(tr('全选本页可下载'), card); toolbar.addWidget(self.select_all_history); toolbar.addStretch(1); self.batch_download_button = PushButton(tr('批量下载'), card); self.batch_download_button.clicked.connect(self._batch_download); toolbar.addWidget(self.batch_download_button); self.history_result_count = QLabel(tr('0 条结果'), card); toolbar.addWidget(self.history_result_count); layout.addLayout(toolbar); self.history_list = QWidget(card); self.history_layout = QVBoxLayout(self.history_list); self.history_layout.setContentsMargins(0, 0, 0, 0); self.history_layout.setSpacing(px(6)); layout.addWidget(self.history_list, 1); page_row = QHBoxLayout(); self.history_page_label = QLabel('', card); self.history_page_label.setAlignment(Qt.AlignCenter); self.history_prev_button = QToolButton(card); self.history_prev_button.setText('‹'); self.history_prev_button.setToolTip(tr('上一页')); self.history_prev_button.clicked.connect(lambda: self._change_history_page(-1)); self.history_next_button = QToolButton(card); self.history_next_button.setText('›'); self.history_next_button.setToolTip(tr('下一页')); self.history_next_button.clicked.connect(lambda: self._change_history_page(1)); page_row.addWidget(self.history_prev_button); page_row.addWidget(self.history_page_label, 1); page_row.addWidget(self.history_next_button); layout.addLayout(page_row); return card
+        card = _VideoCard('videoHistoryCard', self.right_column); layout = QVBoxLayout(card); layout.setContentsMargins(px(16), px(16), px(16), px(16)); layout.setSpacing(px(8)); head = QHBoxLayout(); self.history_title = StrongBodyLabel(tr('历史视频 (0)'), card); head.addWidget(self.history_title); head.addStretch(1); self.clear_history_button = PushButton(tr('清空'), card); self.clear_history_button.clicked.connect(self.clear_history); self.history_toggle = QToolButton(card); self.history_toggle.setText('⌃'); self.history_toggle.setCheckable(True); self.history_toggle.setChecked(True); self.history_toggle.clicked.connect(lambda checked: self.history_list.setVisible(checked)); head.addWidget(self.clear_history_button); head.addWidget(self.history_toggle); layout.addLayout(head); self.history_caption = QLabel(tr('保留最近 20 条，记录只存于当前浏览器。'), card); layout.addWidget(self.history_caption); self.history_search = LineEdit(card); self.history_search.setPlaceholderText(tr('搜索 Prompt、任务 ID 或模型')); self.history_search.textChanged.connect(self._history_search_changed); layout.addWidget(self.history_search); toolbar = QHBoxLayout(); toolbar.addStretch(1); self.history_result_count = QLabel(tr('0 条结果'), card); toolbar.addWidget(self.history_result_count); layout.addLayout(toolbar); self.history_list = QWidget(card); self.history_layout = QVBoxLayout(self.history_list); self.history_layout.setContentsMargins(0, 0, 0, 0); self.history_layout.setSpacing(px(6)); layout.addWidget(self.history_list, 1); page_row = QHBoxLayout(); self.history_page_label = QLabel('', card); self.history_page_label.setAlignment(Qt.AlignCenter); self.history_prev_button = QToolButton(card); self.history_prev_button.setText('‹'); self.history_prev_button.setToolTip(tr('上一页')); self.history_prev_button.clicked.connect(lambda: self._change_history_page(-1)); self.history_next_button = QToolButton(card); self.history_next_button.setText('›'); self.history_next_button.setToolTip(tr('下一页')); self.history_next_button.clicked.connect(lambda: self._change_history_page(1)); page_row.addWidget(self.history_prev_button); page_row.addWidget(self.history_page_label, 1); page_row.addWidget(self.history_next_button); layout.addLayout(page_row); return card
 
     def resizeEvent(self, event): super().resizeEvent(event); self._fit_columns()
     def eventFilter(self, watched, event):
@@ -554,12 +586,36 @@ class VideoCreationPage(QWidget):
     def _update_preview_geometry(self):
         if not hasattr(self, 'preview_area') or not self.preview_area.parentWidget():
             return
-        ratio = {'9:16': 9 / 16, '16:9': 16 / 9, '1:1': 1.0}.get(self.ratio_combo.currentText(), 9 / 16)
-        available_width = max(px(1), self.preview_area.parentWidget().contentsRect().width() - px(36))
-        max_height = px(420)
-        height = min(max_height, int(available_width / ratio))
-        width = max(px(1), int(height * ratio))
-        self.preview_area.setFixedSize(width, height)
+        ratio_text = self.ratio_combo.currentText() or '9:16'
+        record = getattr(self, '_current_record', {}) or {}
+        if self.preview_stack.currentIndex() == 2:
+            ratio_text = record.get('ratio') or ratio_text
+        try:
+            w, h = map(int, ratio_text.split(':'))
+            ratio = w / h
+        except (ValueError, ZeroDivisionError):
+            ratio = 9 / 16
+        if self.preview_stack.currentIndex() == 2 and self.video_widget is not None and not self.video_widget._image.isNull():
+            ratio = self.video_widget._image.width() / self.video_widget._image.height()
+        available_width = max(px(1), self.preview_area.parentWidget().contentsRect().width() - px(32))
+        # Budget against the viewport, not the scroll content's growing size.
+        card = self.preview_area.parentWidget()
+        layout = card.layout()
+        margins = layout.contentsMargins()
+        overhead = margins.top() + margins.bottom() + layout.spacing() * (layout.count() - 1)
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            if item.widget() is self.preview_area:
+                continue
+            if item.widget() is not None and item.widget().isHidden():
+                continue
+            overhead += item.sizeHint().height()
+        header = self.title_label.height() + self.caption_label.height() + px(24)
+        available_height = max(px(160), self.body_scroll.viewport().height() - header - px(36) - overhead)
+        self._preview_available_height = available_height
+        height = min(available_height, int(available_width / ratio))
+        self.preview_area.setFixedSize(max(1, round(height * ratio)), height)
+        self.preview_area.layout().setContentsMargins(0, 0, 0, 0)
 
     def _api_status_text(self):
         try: configured = bool(resolve_line(getattr(self.config_manager, 'config', {}), 'video').get('api_key'))
@@ -593,7 +649,10 @@ class VideoCreationPage(QWidget):
             value = str(path or '')
             if value and Path(value).suffix.lower() in allowed and value not in self.reference_images:
                 incoming.append(value)
-        self.reference_images = (list(self.reference_images) + incoming)[:3]
+        limit = (self._capabilities or {}).get('max_images', 9)
+        if len(self.reference_images) + len(incoming) > limit:
+            self._warning(tr('参考素材超出模型上限，已保留前 {n} 个').format(n=limit))
+        self.reference_images = (list(self.reference_images) + incoming)[:limit]
         self._sync_reference_labels()
 
     def _clear_reference_image_tiles(self):
@@ -650,11 +709,11 @@ class VideoCreationPage(QWidget):
             tile_layout.addWidget(insert, 0, 0, Qt.AlignBottom | Qt.AlignLeft)
             self.reference_images_grid.addWidget(tile, index // 3, index % 3)
             tile.show()
-        if len(self.reference_images) < 3:
+        if len(self.reference_images) < (self._capabilities or {}).get('max_images', 9):
             self.reference_image_add_zone = _ReferenceImageDropZone(self.reference_images_grid_host)
             self.reference_image_add_zone.setObjectName('videoReferenceImageAddTile')
             self.reference_image_add_zone.setFixedSize(px(96), px(96))
-            self.reference_image_add_zone.label.setText(tr('继续添加参考图片（{n}/3）').format(n=len(self.reference_images)))
+            self.reference_image_add_zone.label.setText(tr('继续添加参考图片（{n}/{limit}）').format(n=len(self.reference_images), limit=(self._capabilities or {}).get('max_images', 9)))
             self.reference_image_add_zone.files_dropped.connect(self._accept_reference_images)
             self.reference_image_add_zone.clicked.connect(self._choose_reference_images)
             self.reference_image_add_zone.setStyleSheet(
@@ -681,56 +740,164 @@ class VideoCreationPage(QWidget):
         token = '@参考图'
         self.prompt_edit.setPlainText((current + (' ' if current else '') + token).strip())
     def _choose_media(self, kind):
-        # Reference video/audio upload is not available through the current
-        # uploader. Keep these paths out of the request rather than pretending
-        # that local files are relay URLs.
-        if kind in {'video', 'audio'}:
-            self._warning(tr('当前线路未配置视频/音频上传能力'))
+        if kind == 'videos':
+            paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考视频'), '', tr('视频 (*.mp4 *.webm *.mov)'))
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考音频'), '', tr('音频 (*.mp3 *.wav *.m4a *.aac *.ogg)'))
+        self._accept_media_files(paths, kind)
+
+    def _accept_media_files(self, paths, kind):
+        if kind not in ('videos', 'audios') or self._upload_worker is not None or not paths:
+            return False
+        limit = (self._capabilities or {})['max_' + kind]
+        refs = getattr(self, 'reference_' + kind)
+        if len(paths) + len(refs) > limit:
+            self._warning(tr('参考素材超出模型上限，最多 {n} 个').format(n=limit))
+            return False
+        try:
+            paths = [validate_media_file(path, kind) for path in paths]
+        except ValueError as error:
+            self._warning(tr(str(error)))
+            return False
+        except OSError:
+            self._warning(tr('无法读取参考素材，请检查文件权限'))
+            return False
+        worker = _MediaUploadWorker(self.config_manager, paths, kind, self)
+        self._upload_worker = worker; self._workers.append(worker)
+        self._retry_upload = None; self.retry_upload_button.hide()
+        self.upload_status.setText(tr('正在上传参考素材（{n}/{total}）').format(n=0, total=len(paths)))
+        worker.uploaded.connect(self._media_uploaded)
+        worker.progress.connect(lambda n, total: self.upload_status.setText(tr('正在上传参考素材（{n}/{total}）').format(n=n, total=total)))
+        worker.failed.connect(lambda message: self._media_upload_failed(worker, message))
+        worker.finished.connect(lambda: self._media_upload_finished(worker))
+        self._update_form_state(); worker.start()
+        return True
+
+    def _media_uploaded(self, kind, path, url):
+        refs = getattr(self, 'reference_' + kind)
+        if len(refs) >= self._capabilities['max_' + kind]:
             return
-        if kind == 'video': paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考视频'), '', tr('视频 (*.mp4 *.webm *.mov)')); self.reference_videos = [str(path) for path in paths[:3]]
-        else: paths, _ = QFileDialog.getOpenFileNames(self, tr('选择参考音频'), '', tr('音频 (*.mp3 *.wav *.m4a *.aac *.ogg)')); self.reference_audios = [str(path) for path in paths[:3]]
-        self._sync_reference_labels()
+        refs.append(url)
+        self._media_names[url] = Path(path).name
+        self._sync_reference_labels(rebuild=False)
+
+    def _media_upload_failed(self, worker, message):
+        self._retry_upload = (list(worker.remaining), worker.kind)
+        self.upload_status.setText(message); self.retry_upload_button.show()
+        self._warning(message)
+
+    def _media_upload_finished(self, worker):
+        self._upload_worker = None
+        if worker.cancelled:
+            self.upload_status.setText(tr('参考素材上传已取消'))
+        elif self._retry_upload is None:
+            self.upload_status.setText(tr('参考素材上传完成'))
+        self._worker_finished(worker); self._update_form_state()
+        if self._catalog_refresh_pending:
+            self._catalog_refresh_pending = False
+            self.refresh_catalog()
+
+    def _retry_media_upload(self):
+        if self._retry_upload:
+            self._accept_media_files(*self._retry_upload)
+
     def _sync_reference_labels(self, rebuild=True):
-        self.reference_images_label.setText(tr('参考图片（{n}/3）').format(n=len(self.reference_images))); self.reference_videos_label.setText(tr('参考视频（{n}/3）').format(n=len(self.reference_videos))); self.reference_audios_label.setText(tr('参考音频（{n}/3）').format(n=len(self.reference_audios)))
+        caps = self._capabilities or dict(max_images=9, max_videos=3, max_audios=3)
+        for kind, label, key in (('images', self.reference_images_label, tr('参考图片（{n}/{limit}）')),
+                                 ('videos', self.reference_videos_label, tr('参考视频（{n}/{limit}）')),
+                                 ('audios', self.reference_audios_label, tr('参考音频（{n}/{limit}）'))):
+            values = getattr(self, 'reference_' + kind)
+            label.setText(key.format(n=len(values), limit=caps['max_' + kind]))
+            if kind != 'images':
+                hint = self.reference_videos_hint if kind == 'videos' else self.reference_audios_hint
+                names = [self._media_names.get(url, Path(url).name) for url in values]
+                hint.setMinimumWidth(0)
+                hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+                hint.setText('\n'.join(hint.fontMetrics().elidedText(name, Qt.ElideMiddle, px(290)) for name in names))
+                hint.setToolTip('\n'.join(names))
         if rebuild:
             self._rebuild_reference_images()
 
+    def refresh_catalog(self, *_):
+        if self._upload_worker is not None:
+            self._catalog_refresh_pending = True
+            return
+        current = str(self.model_combo.currentData() or '')
+        self._refresh_models(current)
+        if current and current not in self._records:
+            self._warning(tr('当前模型已不可用，已切换到首个可用模型'))
+        self.api_status.setText(self._api_status_text()); self._style_api_status()
+
     def _refresh_models(self, selected=''):
+        self._protocol_support.clear()
         self._records = _video_records(self.config_manager); current = selected or self.model_combo.currentData() or ''; blocker = QSignalBlocker(self.model_combo); self.model_combo.clear()
         for model_id, record in self._records.items():
             self.model_combo.addItem(str(record.get('display_name') or record.get('name') or model_id), userData=model_id)
         del blocker; index = self.model_combo.findData(normalize_model_id(current, self._records.keys())); self.model_combo.setCurrentIndex(index if index >= 0 else (0 if self.model_combo.count() else -1)); self._model_changed(self.model_combo.currentIndex())
     def _model_changed(self, index):
-        previous_ratio = self.ratio_combo.currentText() or str((getattr(self.config_manager, 'config', {}).get('video_creation') or {}).get('ratio') or '9:16')
+        model = str(self.model_combo.itemData(index) or '')
+        caps = capabilities(model, self._records) if model else dict(
+            durations=(5,), default_duration=5, quick_presets=(5,), ratios=('9:16',),
+            output_sizes={'9:16': ('720x1280',)}, max_images=0, max_videos=0, max_audios=0)
+        previous_ratio = self.ratio_combo.currentText() or '9:16'
         previous_size = self.output_size_combo.currentText()
-        record = self._records.get(str(self.model_combo.itemData(index)), {})
-        self.model_combo.setToolTip(str(self.model_combo.itemData(index) or ''))
-        ratios = record.get('ratios') or ('9:16', '16:9', '1:1')
-        supported = [str(item) for item in ratios if str(item) in {'9:16', '16:9', '1:1'}] or ['9:16', '16:9', '1:1']
-        blocker = QSignalBlocker(self.ratio_combo); self.ratio_combo.clear(); self.ratio_combo.addItems(supported); self.ratio_combo.setCurrentText(previous_ratio if previous_ratio in supported else supported[0]); del blocker
-        durations = record.get('durations') or tuple(range(4, 16))
-        try: duration_values = [int(value) for value in durations]
-        except (TypeError, ValueError): duration_values = list(range(4, 16))
-        duration_values = [value for value in duration_values if 4 <= value <= 15] or list(range(4, 16))
-        self.duration_spin.setRange(min(duration_values), max(duration_values))
+        changed = model != self._active_model
+        self._capabilities = caps; self._active_model = model
+        self.model_combo.setToolTip(model)
+        blocker = QSignalBlocker(self.ratio_combo)
+        self.ratio_combo.clear(); self.ratio_combo.addItems(list(caps['ratios']))
+        self.ratio_combo.setCurrentText(previous_ratio if previous_ratio in caps['ratios'] else caps['ratios'][0]); del blocker
+        previous = self.duration_spin.value()
+        value = caps['default_duration'] if changed and caps['default_duration'] == 30 else min(caps['durations'], key=lambda n: abs(n - previous))
+        self.duration_spin.setRange(min(caps['durations']), max(caps['durations'])); self.duration_spin.setValue(value)
+        while self.duration_shortcuts.count():
+            item = self.duration_shortcuts.takeAt(0)
+            item.widget().deleteLater()
+        self.duration_buttons = []
+        for value in caps['quick_presets']:
+            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content)
+            button.setProperty('duration', value); button.setCheckable(True)
+            button.setMinimumWidth(px(48)); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(lambda _=False, n=value: self._choose_duration(n))
+            self.duration_buttons.append(button); self.duration_shortcuts.addWidget(button, 1)
+        self._duration_changed(self.duration_spin.value())
+        self._update_duration_range_label()
+        clipped = False
+        for kind in ('images', 'videos', 'audios'):
+            values = getattr(self, 'reference_' + kind)
+            limit = caps['max_' + kind]
+            clipped |= len(values) > limit
+            setattr(self, 'reference_' + kind, values[:limit])
+        if clipped:
+            self._warning(tr('已按当前模型上限裁剪参考素材'))
+        self._sync_reference_labels()
         self._ratio_changed(self.ratio_combo.currentText())
         if self.output_size_combo.findText(previous_size) >= 0: self.output_size_combo.setCurrentText(previous_size)
         self._update_form_state()
+
+    def _update_duration_range_label(self):
+        if self._capabilities:
+            values = self._capabilities['durations']
+            self.duration_range_label.setText(tr('秒（{values}）').format(values=(' / '.join(map(str, values)) if len(values) <= 3 else f'{values[0]}–{values[-1]}')))
+
     def _load_config_defaults(self):
         defaults = (getattr(self.config_manager, 'config', {}) or {}).get('video_creation') or {}; self._configured_model = str(defaults.get('model') or ''); self.mode = str(defaults.get('mode') or 'text'); self.ratio_combo.setCurrentText(str(defaults.get('ratio') or '9:16')); self.output_size_combo.setCurrentText(str(defaults.get('output_size') or '')); self.duration_spin.setValue(int(defaults.get('duration') or 5)); self.count_spin.setValue(int(defaults.get('count') or 1))
     def _ratio_changed(self, ratio):
-        # Keep the reference dimensions stable when a model advertises several
-        # resolutions. Extra model-specific sizes can follow the canonical
-        # aspect-ratio size, but must not replace it for another ratio.
-        sizes = {'9:16': '1088x1920', '16:9': '1920x1088', '1:1': '1024x1024'}
-        record = self._records.get(str(self.model_combo.currentData()), {}) if hasattr(self, '_records') else {}
-        configured = [str(item) for item in (record.get('resolutions') or record.get('output_sizes') or ()) if str(item)]
-        primary = sizes.get(str(ratio), '1088x1920')
-        values = [primary]
-        values.extend(item for item in configured if item != primary and item not in values)
-        self.output_size_combo.clear(); self.output_size_combo.addItems(values); QTimer.singleShot(0, self._update_preview_geometry)
+        values = (self._capabilities or {}).get('output_sizes', {}).get(str(ratio), ())
+        self.output_size_combo.clear(); self.output_size_combo.addItems(list(values))
+        QTimer.singleShot(0, self._update_preview_geometry)
+
     def _duration_changed(self, value):
-        for button, number in zip(self.duration_buttons, (5, 10, 15)): button.setChecked(int(value) == number)
+        if self._capabilities and int(value) not in self._capabilities['durations']:
+            self.duration_spin.setValue(min(self._capabilities['durations'], key=lambda n: abs(n - int(value))))
+            return
+        for button in self.duration_buttons:
+            button.setChecked(int(value) == button.property('duration'))
+
+    def _choose_duration(self, value):
+        self.duration_spin.setValue(value)
+        self._duration_changed(self.duration_spin.value())
+
     def _count_changed(self, value): self.generate_button.setText(tr('▶ 生成视频 ×{n}').format(n=int(value))); self._update_form_state()
     def _prompt_text_changed(self):
         text = self.prompt_edit.toPlainText()
@@ -743,7 +910,28 @@ class VideoCreationPage(QWidget):
             del blocker
         self._update_form_state()
     def _update_form_state(self):
-        valid = bool(self.prompt_edit.toPlainText().strip()) and len(self.prompt_edit.toPlainText()) <= 5000 and bool(self.model_combo.currentData()); self.generate_button.setEnabled(valid)
+        uploading = self._upload_worker is not None
+        valid = bool(self.prompt_edit.toPlainText().strip()) and len(self.prompt_edit.toPlainText()) <= 5000 and bool(self.model_combo.currentData())
+        supported = self._model_supported()
+        self.generate_button.setEnabled(valid and supported and not uploading)
+        self.generate_button.setToolTip('' if supported else tr('当前模型不支持视频提交，请同步模型或更换模型'))
+        self.model_combo.setEnabled(not uploading)
+        for kind, button in (('videos', self.reference_videos_button), ('audios', self.reference_audios_button)):
+            limit = (self._capabilities or {}).get('max_' + kind, 0)
+            button.setEnabled(bool(limit) and not uploading)
+            button.setToolTip(tr('当前模型不支持此类参考素材') if not limit else '')
+
+    def _model_supported(self):
+        model = str(self.model_combo.currentData() or '')
+        record = self._records.get(model, {})
+        if not record.get('available', True) or record.get('kind') != 'video':
+            return False
+        if 'veo' in model.lower() or 'gemini' in model.lower():
+            return True  # The existing Gemini route has its own submission contract.
+        if model not in self._protocol_support:
+            self._protocol_support[model] = bool(model_options(model, self._records).get('protocol_known'))
+        return self._protocol_support[model]
+
     def _expand_prompt(self):
         dialog = QDialog(self); dialog.setWindowTitle(tr('放大画面描述')); dialog.resize(px(640), px(420)); layout = QVBoxLayout(dialog); editor = QPlainTextEdit(dialog); editor.setPlainText(self.prompt_edit.toPlainText()); layout.addWidget(editor); save = PrimaryPushButton(tr('保存'), dialog); save.clicked.connect(lambda: (self.prompt_edit.setPlainText(editor.toPlainText()), dialog.accept())); layout.addWidget(save); dialog.exec_()
     def _copy_prompt(self):
@@ -770,6 +958,16 @@ class VideoCreationPage(QWidget):
         if not prompt: self._warning(tr('请输入画面描述')); return False
         if len(prompt) > 5000: self._warning(tr('画面描述不能超过5000字')); return False
         if not model: self._warning(tr('请选择视频模型')); return False
+        if not self._model_supported():
+            self._warning(tr('当前模型不支持视频提交，请同步模型或更换模型')); return False
+        if self._upload_worker is not None:
+            self._warning(tr('参考素材正在上传，请稍候')); return False
+        caps = capabilities(model, self._records)
+        if (self.duration_spin.value() not in caps['durations'] or self.ratio_combo.currentText() not in caps['ratios']
+                or self.output_size_combo.currentText() not in caps['output_sizes'].get(self.ratio_combo.currentText(), ())):
+            self._warning(tr('视频参数不在当前模型支持范围内')); return False
+        if self.mode == 'reference' and any(len(getattr(self, 'reference_' + kind)) > caps['max_' + kind] for kind in ('images', 'videos', 'audios')):
+            self._warning(tr('参考素材数量超出模型上限')); return False
         manager = self._manager_instance()
         if manager is None: self._warning(tr('视频生成服务暂不可用')); return False
         kwargs = dict(prompt=prompt, model=model, mode=self.mode, ratio=self.ratio_combo.currentText(), output_size=self.output_size_combo.currentText(), duration=int(self.duration_spin.value()), count=int(self.count_spin.value()), reference_images=list(self.reference_images) if self.mode == 'reference' else [], reference_videos=list(self.reference_videos) if self.mode == 'reference' else [], reference_audios=list(self.reference_audios) if self.mode == 'reference' else [])
@@ -792,6 +990,13 @@ class VideoCreationPage(QWidget):
         if status in {'succeeded', 'completed'}: self._set_preview_done(record)
     def _render_task(self, record):
         status = str(record.get('status') or 'pending').lower(); progress = record.get('progress'); task_id = str(record.get('task_id') or record.get('local_id') or ''); model = str(record.get('model') or '')
+        if status not in {'succeeded', 'completed'}:
+            if self.media_player is not None:
+                self.media_player.stop()
+            if self.media_controls is not None:
+                self.media_controls.hide()
+            self.open_video_button.hide()
+        QTimer.singleShot(0, self._update_preview_geometry)
         self.status_badge.setText({'running': tr('生成中'), 'processing': tr('生成中'), 'downloading': tr('下载中'), 'succeeded': tr('已完成'), 'completed': tr('已完成'), 'failed': tr('失败'), 'cancelled': tr('已取消')}.get(status, '')); self.status_badge.setProperty('status', status); self.status_badge.setStyleSheet(self._status_badge_style(status));
         if status == 'downloading':
             progress_text = tr('下载中…')
@@ -904,7 +1109,9 @@ class VideoCreationPage(QWidget):
 
     def _set_preview_done(self, record, *, from_history=False):
         self._current_record = dict(record or {})
+        QTimer.singleShot(0, self._update_preview_geometry)
         path = str(record.get('file_path') or record.get('video_url') or '')
+        self.open_video_button.setVisible(bool(record.get('file_path') and os.path.isfile(path)))
         self.url_edit.setText(path); self.preview_done.setText(self._preview_done_text(record, path))
         detail = self._download_details(record)
         if path and record.get('file_path'):
@@ -927,52 +1134,6 @@ class VideoCreationPage(QWidget):
         if not self.media_available:
             self._on_media_error()
     def _on_submit_failed(self, error): self._warning(tr('提交失败：{message}').format(message=error or tr('请稍后重试')))
-    def _download_current(self):
-        record = getattr(self, '_current_record', None)
-        if record:
-            existing = str(record.get('file_path') or '')
-            if existing and self._is_valid_local_video(existing):
-                InfoBar.success(tr('已保存到本地'), existing, parent=self, duration=3500)
-                return False
-            return self._download_record(record)
-        path = self.url_edit.text().strip()
-        if path and self._is_valid_local_video(path):
-            InfoBar.success(tr('已保存到本地'), path, parent=self, duration=3500)
-            return False
-
-    @staticmethod
-    def _is_valid_local_video(path):
-        try:
-            from core.manual_video import ManualVideoManager
-            ManualVideoManager._validate_mp4(path)
-            return True
-        except (OSError, ValueError):
-            return False
-
-    def _download_record(self, record):
-        manager = self._manager_instance()
-        if manager is None: return False
-        worker = _DownloadWorker(manager, record, self); self._workers.append(worker); self._worker = worker
-        worker.completed.connect(self._on_download_completed); worker.failed.connect(self._on_download_failed); worker.finished.connect(lambda w=worker: self._worker_finished(w)); worker.start(); return True
-
-    def _on_download_completed(self, path, record):
-        if path:
-            updated = dict(record or {})
-            updated.update(file_path=path, status='succeeded')
-            self._current_record = updated
-            self._render_task(updated)
-            self._set_preview_done(updated)
-            self.refresh_history()
-            self.history_changed.emit()
-            if os.path.isfile(path): QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-
-    def _on_download_failed(self, error, record):
-        if isinstance(record, dict):
-            self._current_record = dict(record)
-            self._render_task(record)
-            self.refresh_history()
-            self.history_changed.emit()
-        self._warning(tr('下载视频失败：{message}').format(message=error or tr('请稍后重试')))
     def _copy_url(self):
         app = QApplication.instance()
         if app is not None:
@@ -1007,10 +1168,6 @@ class VideoCreationPage(QWidget):
         records.extend(self._tasks.values()); unique = {str(item.get('local_id') or item.get('task_id')): item for item in records if isinstance(item, dict)}; self._history_records = list(unique.values()); self._render_history()
     def _history_search_changed(self, text): self._history_query = str(text or '').strip().lower(); self._history_page = 1; self._render_history()
     def _change_history_page(self, delta): self._history_page = max(1, self._history_page + int(delta)); self._render_history()
-    def _toggle_select_all_history(self, checked):
-        for row in self.history_list.findChildren(_HistoryRow):
-            if row.record.get('file_path') or row.record.get('video_url'):
-                row.check.setChecked(bool(checked))
     def _render_history(self):
         records = [r for r in self._history_records if not self._history_query or self._history_query in ' '.join(str(r.get(k) or '') for k in ('prompt', 'prompt_name', 'task_id', 'model')).lower()]; page_size = 5; pages = max(1, (len(records) + page_size - 1) // page_size); self._history_page = min(self._history_page, pages); shown = records[(self._history_page - 1) * page_size:self._history_page * page_size]; self.history_title.setText(tr('历史视频 ({n})').format(n=len(self._history_records))); self.history_result_count.setText(tr('{n} 条结果').format(n=len(records))); self.history_page_label.setText(tr('第 {start}-{end} 条，共 {total} 条').format(start=((self._history_page - 1) * page_size + 1) if shown else 0, end=((self._history_page - 1) * page_size + len(shown)) if shown else 0, total=len(records)))
         while self.history_layout.count():
@@ -1045,15 +1202,12 @@ class VideoCreationPage(QWidget):
             except Exception: pass
         self._tasks.clear()
         self.refresh_history()
-    def _batch_download(self):
-        for row in self.history_list.findChildren(_HistoryRow):
-            if row.check.isChecked(): self._download_record(row.record)
-
     def has_running_workers(self):
         return any(worker.isRunning() for worker in tuple(self._workers) if worker is not None)
     def shutdown_workers(self, wait_ms=1000):
         global _SHUTDOWN_HOOK_CONNECTED
         for worker in tuple(self._workers):
+            if hasattr(worker, 'cancel'): worker.cancel()
             manager = getattr(worker, 'manager', None)
             if manager is not None and hasattr(manager, 'cancel'):
                 try: manager.cancel()
@@ -1147,7 +1301,7 @@ class VideoCreationPage(QWidget):
             add.setStyleSheet('QFrame#videoReferenceImageAddTile {background:%s; border:1px dashed %s; border-radius:%dpx;} QLabel {color:%s;}'
                              % (surface, border, px(8), _color('video_creation_muted')))
     def retranslate_ui(self):
-        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('温馨提示：平台不会永久保存数据，生成的视频仅保留 48 小时，请及时下载备份，逾期丢失概不负责。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(rebuild=False); self._count_changed(self.count_spin.value()); self._update_form_state()
+        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('视频生成后会自动保存到本地，可在任务历史中查看。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(rebuild=False); self._update_duration_range_label(); self._duration_changed(self.duration_spin.value()); self._count_changed(self.count_spin.value()); self._update_form_state()
         for row in self.history_list.findChildren(_HistoryRow):
             row.retranslate_ui()
         if self.media_play_button is not None: self.media_play_button.setToolTip(tr('暂停') if self.media_player is not None and self.media_player.state() == QMediaPlayer.PlayingState else tr('播放'))

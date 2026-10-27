@@ -13,7 +13,7 @@ _FIELDS = (
     'id', 'name', 'display_name', 'description', 'kind', 'family',
     'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images',
     'pricing_text', 'aliases', 'available', 'protocol_known',
-    'capability_source',
+    'capability_source', 'supported_endpoint_types',
 )
 _CACHE_FIELDS = set(_FIELDS)
 _VIDEO_ENDPOINTS = {'openai-video', 'video', 'videos', 'video-generation'}
@@ -184,12 +184,12 @@ def _builtin_record(model, description='', display_name=None):
                         max_images=0, protocol_known=True)
     return dict(id=model, name=model, display_name=display_name or model, description=description,
                 kind=kind, family=family, pricing_text='计费未提供', aliases=[], available=True,
-                capability_source='builtin', **{key: defaults[key] for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')})
+                capability_source='builtin', supported_endpoint_types=[], **{key: defaults[key] for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')})
 
 
 def builtin_models():
-    names = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'seedance-2.5', 'MiniMax-H3', 'grok-imagine-1.5-video',
-             'seedance2.5', 'sd-2.5', 'sd2.5', 'wan-3.0', 'deepseek-flash', 'deepseek-v4-pro',
+    names = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'MiniMax-H3', 'grok-imagine-1.5-video',
+             'wan-3.0', 'deepseek-flash', 'deepseek-v4-pro',
              'deepseek-chat', 'deepseek-reasoner',
              'gemini-3.8-flash', 'gpt-image-2.5-sunburst', 'gpt-image-2']
     records = {_name: _builtin_record(_name) for _name in names}
@@ -244,13 +244,14 @@ def _record_from_upstream(row):
     if isinstance(row.get('capabilities'), dict):
         detail.update(row['capabilities'])
     described = _description_capabilities(description)
-    endpoint_types = row.get('supported_endpoint_types')
+    endpoint_types = row.get('supported_endpoint_types', row.get('endpoint_types', ()))
     if isinstance(endpoint_types, str):
         endpoint_types = [endpoint_types]
+    endpoint_types = [item.strip() for item in endpoint_types or () if isinstance(item, str) and item.strip()] if isinstance(endpoint_types, (list, tuple)) else []
     explicit_kind = str(row.get('kind') or row.get('type') or '').strip().lower()
     if explicit_kind in {'chat', 'llm', 'text'}:
         kind = 'chat'
-    elif explicit_kind in {'video', 'image', 'unknown'}:
+    elif explicit_kind in {'video', 'image'}:
         kind = explicit_kind
     else:
         kind = classify_model(model, endpoint_types)
@@ -286,7 +287,8 @@ def _record_from_upstream(row):
                 description=description, kind=kind, family=family, resolutions=resolutions, ratios=ratios,
                 durations=durations, audio=audio, seed=seed, max_images=max_images, pricing_text=pricing,
                 aliases=aliases, available=not model.lower().endswith('-pack'),
-                protocol_known=bool(defaults['protocol_known']), capability_source=source_name)
+                protocol_known=bool(defaults['protocol_known']), capability_source=source_name,
+                supported_endpoint_types=endpoint_types)
 
 
 def options_for(model, catalog=None):
@@ -474,7 +476,10 @@ def _scrub(value, key):
 
 
 def _valid_record(record):
-    if not isinstance(record, dict) or set(record) - _CACHE_FIELDS or any(field not in record for field in _FIELDS):
+    if not isinstance(record, dict) or set(record) - _CACHE_FIELDS or any(field not in record for field in _FIELDS if field != 'supported_endpoint_types'):
+        return False
+    endpoints = record.get('supported_endpoint_types', ())
+    if not isinstance(endpoints, (list, tuple)) or not all(isinstance(item, str) for item in endpoints):
         return False
     if not isinstance(record['id'], str) or not record['id'] or record['name'] != record['id']:
         return False

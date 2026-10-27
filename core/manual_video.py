@@ -30,6 +30,7 @@ from .http_client import Cancelled, HttpClient, RequestError
 from .line_routing import resolve_line
 from .model_catalog import family_for
 from .video_downloader import VideoDownloader, safe_filename
+from .video_capabilities import capabilities, validate_media_file
 
 
 TASK_STATUSES = ('pending', 'running', 'downloading', 'succeeded', 'failed', 'cancelled')
@@ -388,8 +389,9 @@ class ManualVideoManager:
             raise ValueError('请选择视频生成模型')
         if mode not in ('text', 'reference'):
             raise ValueError('生成模式无效')
-        if type(duration) is not int or not 4 <= duration <= 15:
-            raise ValueError('渲染时长必须为 4 到 15 秒')
+        caps = capabilities(model, self._video_catalog())
+        if type(duration) is not int or duration not in caps['durations']:
+            raise ValueError('渲染时长不在当前模型支持范围内')
         if type(count) is not int or not 1 <= count <= 10:
             raise ValueError('生成次数必须为 1 到 10')
         if refs is None:
@@ -403,12 +405,24 @@ class ManualVideoManager:
             refs['videos'] = list(reference_videos)
         if reference_audios is not None:
             refs['audios'] = list(reference_audios)
-        for key, limit in (('images', 3), ('videos', 3), ('audios', 3)):
+        for key, label in (('images', '图片'), ('videos', '视频'), ('audios', '音频')):
+            limit = caps['max_' + key]
             value = refs.get(key) or refs.get('reference_' + key) or []
             if not isinstance(value, (list, tuple)) or len(value) > limit:
-                raise ValueError(f'参考{key}最多 {limit} 个')
-        if any(refs.get(key) or refs.get('reference_' + key) for key in ('videos', 'audios')):
-            raise ValueError('当前线路未配置视频/音频上传能力')
+                raise ValueError(f'参考{label}最多 {limit} 个')
+            if key != 'images':
+                for path in value:
+                    if str(path).lower().startswith(('http://', 'https://')):
+                        from urllib.parse import urlsplit
+                        try:
+                            valid = bool(urlsplit(str(path)).hostname)
+                        except ValueError:
+                            valid = False
+                        if not valid:
+                            raise ValueError(f'参考{label}链接无效，请重新选择')
+                    else:
+                        validate_media_file(path, key)
+            refs[key] = list(value)
         config = getattr(self.config_manager, 'config', {})
         catalog = self._video_catalog()
         protocol = self._preferred_protocol(model, config, catalog)
@@ -621,7 +635,6 @@ class ManualVideoManager:
 
     def _run_openai(self, record, base_url, api_key, cancel_event):
         catalog = self._video_catalog()
-        client = ApiClient(base_url=base_url, api_key=api_key, log=lambda msg, level='info': _log(self.log, msg, level))
         refs = record.get('refs') or {}
         family = family_for(record.get('model') or '', catalog)
         images = list(refs.get('images') or refs.get('reference_images') or [])
@@ -634,10 +647,11 @@ class ManualVideoManager:
             'ratio': record.get('ratio') or '9:16',
             'resolution': resolution,
             'output_size': record.get('output_size') or '',
-            'videos': list(refs.get('videos') or refs.get('reference_videos') or []),
-            'audios': list(refs.get('audios') or refs.get('reference_audios') or []),
+            'videos': self._reference_media_urls(refs.get('videos') or refs.get('reference_videos') or [], 'videos', cancel_event),
+            'audios': self._reference_media_urls(refs.get('audios') or refs.get('reference_audios') or [], 'audios', cancel_event),
             'generate_audio': True,
         }
+        client = ApiClient(base_url=base_url, api_key=api_key, log=lambda msg, level='info': _log(self.log, msg, level))
         try:
             task_id = client.create_task(record['model'], record['prompt'], images, params, catalog)
             record['task_id'] = str(task_id)
@@ -705,6 +719,28 @@ class ManualVideoManager:
         replacement = iter(uploaded)
         return [next(replacement) if str(value) in local else value for value in values]
 
+    def _reference_media_urls(self, values, kind, cancel_event=None):
+        from .image_uploader import ImageUploader
+        values = list(values)
+        if all(str(path).lower().startswith(('http://', 'https://')) for path in values):
+            return values
+        uploader = ImageUploader.from_config(self.config_manager, check_cancel=lambda: self._check_cancel(cancel_event))
+        try:
+            result = []
+            for path in values:
+                self._check_cancel(cancel_event)
+                result.append(path if str(path).lower().startswith(('http://', 'https://'))
+                              else uploader.upload_file(path, kind=kind))
+            return result
+        except Cancelled:
+            raise ManualVideoError('任务已取消', category='cancelled') from None
+        except ManualVideoError:
+            raise
+        except Exception:
+            raise ManualVideoError('参考素材上传失败，请检查素材上传线路后重试', category='reference', retryable=True) from None
+        finally:
+            uploader.close()
+
     @staticmethod
     def _api_resolution(model, output_size, catalog=None):
         """Map UI dimensions (or labels) to the API client's resolution enum."""
@@ -712,6 +748,10 @@ class ManualVideoManager:
         if family == 'video-v1':
             return ''
         text = str(output_size or '').strip()
+        caps = capabilities(model, catalog)
+        for sizes in caps['output_sizes'].values():
+            if text in sizes:
+                return caps['resolutions'][sizes.index(text)]
         allowed = ()
         try:
             from .model_parameters import model_options

@@ -245,7 +245,7 @@ def _records_for_image(config_manager):
             result[str(model_id)] = dict(record)
     config = getattr(config_manager, 'config', {}) or {}
     configured = str((config.get('ecommerce') or {}).get('image_model') or '').strip()
-    if configured and configured not in result:
+    if configured and configured not in result and getattr(config_manager, 'model_catalog_controller', None) is None:
         result[configured] = {'id': configured, 'display_name': configured,
                               'kind': 'image', 'available': True}
     return result
@@ -364,7 +364,7 @@ class _ReferenceDropStrip(QFrame):
 
     def retranslate_ui(self):
         self.text_label.setText(tr(
-            '⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)'))
+            '点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)'))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
@@ -756,7 +756,7 @@ class ImageGenerationPage(QWidget):
         if self.reference_paths:
             label = self._reference_add_label(len(self.reference_paths), 8)
         else:
-            label = tr('⬆ 点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
+            label = tr('点击上传图片 (支持 JPG、PNG、WEBP 格式，最多只能上传8张图片)')
         tile.set_label(label)
 
     def _preview_reference(self, index):
@@ -767,6 +767,15 @@ class ImageGenerationPage(QWidget):
             max(0, min(int(index), len(self.reference_paths) - 1)))
 
     # —— models and state ——
+    def refresh_catalog(self, *_):
+        current = str(self.model_combo.currentData() or '')
+        version = self.version_combo.currentText()
+        self._refresh_models(current)
+        if self.version_combo.findText(version) >= 0:
+            self.version_combo.setCurrentText(version)
+        if current and current not in self._records:
+            self._warning(tr('当前模型已不可用，已切换到首个可用模型'))
+
     def _refresh_models(self, selected=''):
         self._records = _records_for_image(self.config_manager)
         current = selected or self.model_combo.currentData() or ''
