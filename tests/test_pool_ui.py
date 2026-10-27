@@ -52,7 +52,7 @@ class PoolUiTests(unittest.TestCase):
     def test_cooldown_refresh_preserves_user_enable_and_model_rows(self):
         settings = self.window.settings_page
         settings.model_rows[0][1].setChecked(False)
-        settings.update_pool_state([dict(name='seedance-2.5', status='冷却中', cooldown_until=time.time()+.15,
+        settings.update_pool_state([dict(name='video-v3', status='冷却中', cooldown_until=time.time()+.15,
                                         remaining=.15, consecutive_failures=1)])
         self.assertIn('冷却中', settings.model_rows[0][3].text())
         self.assertFalse(self.config.config['model_pool']['models'][0]['enabled'])
@@ -62,7 +62,7 @@ class PoolUiTests(unittest.TestCase):
         self.assertFalse(self.config.config['model_pool']['models'][0]['enabled'])
         settings._remove_model_row(settings.model_rows[1][0])
         settings._persist_models()
-        self.assertEqual(len(self.config.config['model_pool']['models']), 2)
+        self.assertEqual(len(self.config.config['model_pool']['models']), 1)
 
     def test_capability_pool_tabs_persist_separate_model_sets(self):
         from ui.components.model_selector import ModelComboBox, ModelPickComboBox
@@ -102,7 +102,7 @@ class PoolUiTests(unittest.TestCase):
 
         settings.pool_tabs.setCurrentItem('video')
         self.assertEqual(settings.pool_stack.currentIndex(), 0)
-        self.assertEqual(len(self.config.config['model_pool']['models']), 3)
+        self.assertEqual(len(self.config.config['model_pool']['models']), 2)
         stored = ConfigManager(self.config.path).load_config()
         self.assertEqual(stored['chat_model_pool']['models'][0]['name'], 'deepseek-chat')
         self.assertEqual(stored['image_model_pool']['models'][0]['name'], 'gpt-image-2')

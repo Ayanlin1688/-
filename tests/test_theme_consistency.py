@@ -203,13 +203,14 @@ class ThemeConsistencyTests(unittest.TestCase):
         for scale in ('1.0', '1.25', '1.5', '1.75'):
             self.config.config['appearance']['ui_scale'] = scale
             w._apply_interface_scale()
-            # Keep at least 980 logical content pixels at every scale.
+            # Preserve the two-column canvas even when navigation reduces the viewport.
             w.resize(px(1300), px(900))
             for page in (w.image_generation_page, w.video_creation_page):
                 w.switchTo(page)
                 flush_layout(self.app, w)
                 self.assertEqual(page.body_layout.direction(), QBoxLayout.LeftToRight, (scale, page.objectName()))
-                self.assertEqual(page.body_scroll.horizontalScrollBar().maximum(), 0)
+                self.assertEqual(page.body_scroll.horizontalScrollBar().maximum(),
+                                 max(0, page.body_content.width() - page.body_scroll.viewport().width()))
             self.assertEqual(w.image_generation_page.right_column.width(), px(480))
             settings_card = w.video_creation_page.findChild(QFrame, 'videoCreationSettingsCard')
             self.assertEqual(settings_card.width(), px(372))
@@ -219,8 +220,11 @@ class ThemeConsistencyTests(unittest.TestCase):
         for page in (w.image_generation_page, w.video_creation_page):
             w.switchTo(page)
             flush_layout(self.app, w)
-            self.assertEqual(page.body_layout.direction(), QBoxLayout.TopToBottom)
-            self.assertEqual(page.body_scroll.horizontalScrollBar().maximum(), 0)
+            self.assertEqual(page.body_layout.direction(), QBoxLayout.LeftToRight)
+            self.assertGreater(page.body_scroll.horizontalScrollBar().maximum(), 0)
+            page.body_scroll.ensureWidgetVisible(page.right_column, 0, 0)
+            self.app.processEvents()
+            self.assertGreater(page.body_scroll.horizontalScrollBar().value(), 0)
         self.assertEqual(w.image_generation_page.reference_grid.columns, 4)
 
     def test_repeated_page_switches_and_language_theme_do_not_rebuild_lists(self):

@@ -293,8 +293,9 @@ class VideoCreationPageTests(unittest.TestCase):
                     buttons = self.page.duration_buttons
                     self.assertEqual([button.text() for button in buttons], ['5秒', '10秒', '15秒'])
                     self.assertEqual(self.page.settings_body.parentWidget().width(), px(372))
-                    self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
-                    self.assertLessEqual(self.page.body_content.width(), self.page.body_scroll.viewport().width())
+                    self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
+                    self.assertGreaterEqual(self.page.body_content.width(), self.page.body_scroll.viewport().width())
+                    self.assertEqual(self.page.right_column.minimumWidth(), px(640))
                     self.assertLess(self.page.duration_spin.geometry().bottom(), buttons[0].geometry().top())
                     self.assertLessEqual(max(button.width() for button in buttons) - min(button.width() for button in buttons), 1)
                     for index, button in enumerate(buttons):
@@ -662,11 +663,11 @@ class VideoCreationPageTests(unittest.TestCase):
         return sum(isinstance(self.page.history_layout.itemAt(index).widget(), _HistoryRow)
                    for index in range(self.page.history_layout.count()))
 
-    def test_narrow_layout_stacks_without_horizontal_scroll(self):
+    def test_narrow_layout_keeps_columns_with_horizontal_scroll(self):
         self.page.resize(1000, 900)
         self.app.processEvents()
-        self.assertEqual(self.page.body_layout.direction(), QBoxLayout.TopToBottom)
-        self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
+        self.assertGreater(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
         self.page.resize(1440, 900)
         self.app.processEvents()
         self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
@@ -685,9 +686,9 @@ class VideoCreationPageTests(unittest.TestCase):
                 apply_interface_scale(self.app, FakeScreen(), scale)
                 self.page.resize(1000, 900) if scale == '1.75' else self.page.resize(px(1440), px(900))
                 flush_layout(self.app, self.page)
-                self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
                 if scale == '1.75':
-                    self.assertEqual(self.page.body_layout.direction(), QBoxLayout.TopToBottom)
+                    self.assertGreater(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+                    self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
                     self.assertGreater(self.page.left_column.width(), 0)
                     self.assertLessEqual(self.page.left_column.width(), self.page.body_content.width())
 

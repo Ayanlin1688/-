@@ -10,6 +10,22 @@ from core.config_manager import ConfigManager, DEFAULT_CONFIG, default_config_pa
 
 
 class ConfigManagerTests(unittest.TestCase):
+    def test_cross_machine_unknown_appearance_and_missing_sections_fall_back(self):
+        for raw in ({'appearance': {'theme': 'other-machine', 'language': 'xx-ZZ'}},
+                    {'appearance': None, 'workspace': [], 'download_settings': False},
+                    {'appearance': {'language': 'en-US'}, 'models_cache': {}}, {}):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'config.json'
+                path.write_text(json.dumps(raw), encoding='utf-8')
+                loaded = ConfigManager(path).load_config()
+                self.assertEqual(loaded['appearance']['theme'], 'auto')
+                language = raw.get('appearance') or {}
+                expected = 'English' if language.get('language') == 'en-US' else '简体中文'
+                self.assertEqual(loaded['appearance']['language'], expected)
+                self.assertIsInstance(loaded['workspace'], dict)
+                self.assertIsInstance(loaded['download_settings'], dict)
+                self.assertIn('paths', loaded)
+
     def test_defaults_include_all_persisted_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = ConfigManager(Path(temp_dir) / "config.json").load_config()
@@ -18,7 +34,8 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertTrue(config['migrations']['r10_theme_auto'])
         self.assertEqual(config["workspace"]["duration"], 8)
         self.assertEqual(config["appearance"]["theme"], "auto")
-        self.assertEqual(len(config["model_pool"]["models"]), 3)
+        self.assertEqual([model['name'] for model in config['model_pool']['models']],
+                         ['video-v3', 'video-v2'])
 
     def test_system_theme_migration_runs_once_and_preserves_new_choices(self):
         with tempfile.TemporaryDirectory() as directory:

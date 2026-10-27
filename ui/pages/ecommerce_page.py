@@ -338,7 +338,7 @@ class EcommercePage(QWidget):
         self.model_grid.setHorizontalSpacing(px(10))
         self.model_grid.setVerticalSpacing(px(8))
         self.model_grid.setColumnStretch(0, 1)
-        self.model_grid.setColumnStretch(1, 1)
+        self.model_grid.setColumnStretch(1, 0)
         self.model_card_container = QWidget()
         self.model_card_container.setLayout(self.model_grid)
         models.addWidget(self.model_card_container)
@@ -379,19 +379,9 @@ class EcommercePage(QWidget):
                  self.analysis_line_label, self.analysis_status_dot, self.sync_analysis_models_button),
                 (2, tr('图片模型'), self.image_model_picker, self.image_line_combo,
                  self.image_line_label, self.image_status_dot, self.sync_image_models_button)):
-            column = row // 2
-            self.model_grid.addWidget(CaptionLabel(title), 0, column)
-            self.model_grid.addWidget(picker, 1, column)
-            route = QVBoxLayout()
-            route.setContentsMargins(0, 0, 0, 0)
-            route.addWidget(CaptionLabel(tr('线路')))
-            route.addWidget(combo)
-            feedback = QHBoxLayout()
-            feedback.addWidget(label, 1)
-            feedback.addWidget(dot)
-            feedback.addWidget(button)
-            route.addLayout(feedback)
-            self.model_grid.addLayout(route, 2, column)
+            self.model_grid.addWidget(CaptionLabel(title), row, 0, 1, 5)
+            for column, control in enumerate((picker, combo, label, dot, button)):
+                self.model_grid.addWidget(control, row + 1, column)
             # These status dots own useful hover details, unlike passive dots.
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, False)
             dot.setToolTip(tr('未测试'))
@@ -624,7 +614,15 @@ class EcommercePage(QWidget):
         self.single_columns_layout = QBoxLayout(QBoxLayout.LeftToRight)
         self.single_columns_layout.setContentsMargins(48, 0, 48, 24)
         self.single_columns_layout.setSpacing(24)
-        shell.addLayout(self.single_columns_layout, 1)
+        self.single_columns_host = QWidget()
+        self.single_columns_host.setLayout(self.single_columns_layout)
+        self.single_columns_scroll = QScrollArea()
+        self.single_columns_scroll.setObjectName('ecommerceColumnsScroll')
+        self.single_columns_scroll.setFrameShape(QFrame.NoFrame)
+        self.single_columns_scroll.setWidgetResizable(True)
+        self.single_columns_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.single_columns_scroll.setWidget(self.single_columns_host)
+        shell.addWidget(self.single_columns_scroll, 1)
         columns = []
         for name in ('ecommerceFormScroll', 'ecommerceResultScroll'):
             area = QScrollArea()
@@ -703,13 +701,11 @@ class EcommercePage(QWidget):
     def _fit_single_columns(self):
         if not hasattr(self, 'single_columns_layout'):
             return
-        wide = self.single_view.width() >= px(1080)
-        direction = QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom
-        if self.single_columns_layout.direction() != direction:
-            self.single_columns_layout.setDirection(direction)
-            self.single_columns_layout.invalidate()
-            self.single_view.updateGeometry()
-        self.single_columns_layout.setSpacing(px(24 if wide else 16))
+        self.single_columns_layout.setDirection(QBoxLayout.LeftToRight)
+        self.single_columns_layout.setSpacing(px(24))
+        # Preserve the shared five-column model rows and the 50/50 structure.
+        # The outer viewport scrolls; each column keeps its own vertical scroll.
+        self.single_columns_host.setMinimumWidth(px(1600))
 
     def _setup_completion_bar(self, root):
         self.completion_bar = QWidget(self.result_content)
@@ -1129,7 +1125,7 @@ class EcommercePage(QWidget):
         self._fit_model_columns()
 
     def _fit_model_columns(self):
-        """宽窗保留完整模型宽度，窄窗按同一列预算收缩，避免横向滚动。"""
+        """两行使用同一列预算；不足的窗口由页面水平滚动。"""
         if not self.isVisible():
             return
         for picker in (self.analysis_model_picker, self.image_model_picker):
@@ -1137,8 +1133,7 @@ class EcommercePage(QWidget):
             picker.setMaximumWidth(16777215)
             picker.setToolTip(picker.currentText())
         for combo in (self.analysis_line_combo, self.image_line_combo):
-            combo.setMinimumWidth(0)
-            combo.setMaximumWidth(16777215)
+            combo.setFixedWidth(px(200))
 
     def refresh_interface_scale(self):
         self.language.setMinimumWidth(px(220))

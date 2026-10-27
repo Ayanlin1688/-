@@ -19,6 +19,7 @@ from .materials import ACCENT, ERROR, WARNING, SECONDARY, paint_surface
 from .motion import WidgetMotion, Shimmer
 from core.i18n import tr
 from .tokens import MOTION, RADIUS
+from .fonts import css_font_families
 
 # 状态标签颜色豁免表：这些文案保留语义色，不参与 Caption 次级灰化（按当前语言匹配）。
 _STATUS_TEXTS = {'生成中', '失败', '已完成', '重试中', '等待冷却', '等待中', '已跳过'}
@@ -387,9 +388,9 @@ def _page_stylesheet(page, opaque_window):
     if opaque_window:
         th = materials.palette()
         background = 'qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %s,stop:1 %s)' % (th['bg1'], th['bg2'])
-    return ("#%s {background:%s;}"
+    return ("QWidget {font-family:%s;} #%s {background:%s;}"
             "QScrollArea, #settingsContent {background:transparent; border:0;}"
-            "QSplitter::handle {background:transparent;}") % (page.objectName(), background)
+            "QSplitter::handle {background:transparent;}") % (css_font_families(), page.objectName(), background)
 
 
 def style_page(page, opaque_window=None):

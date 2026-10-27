@@ -88,7 +88,10 @@ class InteractionTests(unittest.TestCase):
             self.assertEqual(reopened.settings_page.default_ratio.currentText(), "9:16")
             self.assertEqual(reopened.settings_page.naming.text(), "{提示词名}_demo.mp4")
             self.assertEqual(reopened.settings_page.language.currentText(), "English")
-            self.assertEqual(len(reopened.settings_page.model_rows), 3)
+            self.assertEqual(len(reopened.settings_page.model_rows), 2)
+            self.assertNotIn('seedance-2.5', [
+                row[2].currentText().casefold() for row in reopened.settings_page.model_rows
+            ])
             self.assertFalse(reopened.settings_page.model_rows[0][1].isChecked())
             self.assertEqual(reopened.workspace_page.params_card.duration.value(), 12)
             self.assertFalse(reopened.workspace_page.params_card.audio.isChecked())

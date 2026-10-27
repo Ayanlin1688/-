@@ -5,7 +5,7 @@
 """
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRectF, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPixmap, QPen
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QWidget
 
@@ -28,6 +28,7 @@ class _CircleButton(QWidget):
     def __init__(self, parent=None, size=24):
         super().__init__(parent)
         self._diameter = max(px(18), int(size))
+        self.setProperty('studioManagedGeometry', True)
         self._hover = False
         self.setFixedSize(self._diameter + px(4), self._diameter + px(4))
         self.setCursor(Qt.PointingHandCursor)
@@ -84,6 +85,7 @@ class _ImageTile(QWidget):
         self.path = str(path)
         self.index = int(index)
         self._cell = max(1, int(cell))
+        self.setProperty('studioManagedGeometry', True)
         self._hover = False
         self._pixmap = QPixmap()
         self._load()
@@ -95,6 +97,7 @@ class _ImageTile(QWidget):
         self.number_label = QLabel(str(self.index + 1), self)
         self.number_label.setAlignment(Qt.AlignCenter)
         self.number_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.number_label.setProperty('studioManagedGeometry', True)
         metrics = QFontMetrics(self.font())
         badge_width = metrics.horizontalAdvance('99') + px(12)
         badge_height = metrics.height() + px(4)
@@ -103,7 +106,7 @@ class _ImageTile(QWidget):
             'background: %s; color: %s; border-radius: %dpx;'
             ' font-size: %dpx; font-weight: 600;'
             % (materials.rgba(materials.ECOMMERCE['badge_bg']),
-               materials.ECOMMERCE['badge_text'], px(8), px(9)))
+               materials.ECOMMERCE['badge_text'], 8, 9))
         self._place_overlays()
 
     def set_path(self, path):
@@ -122,6 +125,11 @@ class _ImageTile(QWidget):
         self._pixmap = image
 
     def _place_overlays(self):
+        self.remove_button._diameter = px(24)
+        self.remove_button.setFixedSize(px(28), px(28))
+        metrics = self.number_label.fontMetrics()
+        self.number_label.setFixedSize(metrics.horizontalAdvance('99') + px(12),
+                                       metrics.height() + px(4))
         margin = max(px(3), self._cell // 30)
         offset = max(px(3), self._cell // 40)
         button_size = self.remove_button.size()
@@ -199,6 +207,7 @@ class _AddTile(QWidget):
         self._label = str(label)
         self._hover = False
         self._fixed = bool(fixed)
+        self.setProperty('studioManagedGeometry', True)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(self._label)
         if fixed:
@@ -210,16 +219,18 @@ class _AddTile(QWidget):
         self.text_label.setAlignment(Qt.AlignCenter)
         self.text_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.text_label.setWordWrap(True)
+        self.plus_label.installEventFilter(self)
+        self.text_label.installEventFilter(self)
         self._style_labels()
 
     def _style_labels(self):
         self.plus_label.setStyleSheet('background: transparent; border: 0;')
         self.text_label.setStyleSheet('background: transparent; border: 0;')
         font = self.plus_label.font()
-        font.setPixelSize(px(20))
+        font.setPixelSize(20)
         self.plus_label.setFont(font)
         font = self.text_label.font()
-        font.setPixelSize(px(11))
+        font.setPixelSize(11)
         self.text_label.setFont(font)
 
     def set_label(self, label):
@@ -229,13 +240,20 @@ class _AddTile(QWidget):
 
     def _place_labels(self):
         width = max(1, self.width())
-        plus_height = min(self.height(), px(26))
-        self.plus_label.setGeometry(0, max(0, self.height() // 2 - plus_height - px(2)),
-                                    width, plus_height)
-        text_height = max(px(16), self.height() // 3)
+        plus_height = max(px(26), self.plus_label.fontMetrics().boundingRect('+').height() + px(2))
+        text_width = max(1, width - px(8))
+        text_height = self.text_label.fontMetrics().boundingRect(
+            QRect(0, 0, text_width, 10000), Qt.AlignCenter | Qt.TextWordWrap,
+            self.text_label.text()).height()
+        top = max(px(4), (self.height() - plus_height - px(2) - text_height) // 2)
+        self.plus_label.setGeometry(0, top, width, plus_height)
         self.text_label.setGeometry(
-            max(0, width // 10), self.height() // 2 + px(2),
-            max(1, width - width // 5), text_height)
+            px(4), top + plus_height + px(2), text_width, text_height)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.FontChange:
+            self._place_labels()
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -304,6 +322,9 @@ class ImageUploadGrid(QWidget):
         self._add_tile = None
         self._cell = px(STYLE_CELL)
         self.setObjectName('imageUploadGrid')
+        # This container and its tiles calculate their bounds from px() in
+        # _relayout; the global scaler must not multiply those bounds again.
+        self.setProperty('studioManagedGeometry', True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._resizing = False
         self._apply_style()

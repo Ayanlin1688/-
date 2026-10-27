@@ -10,7 +10,7 @@ import re
 import threading
 from pathlib import Path
 
-from PyQt5.QtCore import QCoreApplication, QEvent, Qt, QSignalBlocker, QThread, pyqtSignal, QRectF
+from PyQt5.QtCore import QCoreApplication, QEvent, Qt, QSignalBlocker, QThread, pyqtSignal, QRectF, QSize
 from PyQt5.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import (
     QBoxLayout, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidget,
@@ -478,12 +478,10 @@ class ImageGenerationPage(QWidget):
 
     # —— build ——
     def _build_ui(self):
-        # The form contains long prompt examples whose size hints are wider than
-        # the narrow layout breakpoint.  Keep the page/columns shrinkable so Qt
-        # can actually enter the stacked layout below the content breakpoint.
+        # Keep the same two-column structure at every window width.
         self.setMinimumWidth(0)
         root = scrollable_body(self)
-        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.body_content.setMinimumWidth(0)
         self.body_content.setMaximumWidth(px(1464))
         self.body_scroll.setAlignment(Qt.AlignHCenter)
@@ -552,25 +550,12 @@ class ImageGenerationPage(QWidget):
         return super().eventFilter(watched, event)
 
     def _fit_columns(self):
-        available_width = self.body_content.width() if getattr(self, 'body_content', None) else 0
-        if available_width <= 0:
-            available_width = self.width()
-        margins = self.body_content.layout().contentsMargins()
-        available_width -= margins.left() + margins.right()
-        stacked = available_width < px(980)
-        direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
-        if self.body_layout.direction() != direction:
-            self.body_layout.setDirection(direction)
-        if stacked:
-            self.body_layout.setSpacing(px(16))
-            self.right_column.setMinimumWidth(0)
-            self.right_column.setMaximumWidth(16777215)
-            self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        else:
-            self.body_layout.setSpacing(px(24))
-            self.right_column.setMinimumWidth(px(480))
-            self.right_column.setMaximumWidth(px(480))
-            self.right_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.body_layout.setDirection(QBoxLayout.LeftToRight)
+        self.body_layout.setSpacing(px(24))
+        self.body_content.setMinimumWidth(px(640 + 480 + 24 + 64))
+        self.left_column.setMinimumWidth(px(640))
+        self.right_column.setFixedWidth(px(480))
+        self.right_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.body_layout.invalidate()
         self.updateGeometry()
 
@@ -1011,6 +996,7 @@ class ImageGenerationPage(QWidget):
     def refresh_interface_scale(self):
         self.reference_drop_strip.refresh_interface_scale(); self.reference_grid.refresh_interface_scale(); self.count_spin.refresh_interface_scale(); self._refresh_model_subcard_style(); self._sync_reference_add_label()
         self._fit_columns()
+        self._refresh_submit_style()
         self.body_layout.invalidate()
         self.body_layout.activate()
         content_layout = self.body_content.layout()
@@ -1028,7 +1014,25 @@ class ImageGenerationPage(QWidget):
         for label in (self.caption_label, self.quick_caption, self.reference_note):
             label.setStyleSheet('color:%s; background:transparent;' % materials.ecommerce_color('image_generation_hint'))
         self.cta_hint.setStyleSheet('color:%s; background:transparent;' % materials.ecommerce_color('navigation_selected_text'))
+        self._refresh_submit_style()
         self._refresh_prompt_style(); self.count_spin.refresh_colors(); self._refresh_model_subcard_style(); self._update_prompt_state()
+
+    def _refresh_submit_style(self):
+        colors = materials.palette()
+        color = materials.ecommerce_color
+        # An explicit shared rule also covers the button outside the CTA card.
+        rule = ('QPushButton {background:%s; color:white; border:0; border-radius:8px; '
+                'padding:0 12px;} QPushButton[hasIcon=true] {padding-left:36px;} '
+                'QPushButton:hover {background:%s;} '
+                'QPushButton:pressed {background:%s;} '
+                'QPushButton:disabled {background:%s; color:%s;}' % (
+                    color('image_generation_submit'),
+                    color('image_generation_submit_hover'), color('image_generation_submit_pressed'),
+                    color('image_generation_submit_disabled'), colors['text3']))
+        for button in (self.submit_button, self.cta_button):
+            button.setStyleSheet(rule)
+            button.setFixedHeight(px(44))
+            button.setIconSize(QSize(px(16), px(16)))
 
     def retranslate_ui(self):
         self.title_label.setText(tr('图片生成')); self.caption_label.setText(tr('使用 AI 生成高质量图片内容'))

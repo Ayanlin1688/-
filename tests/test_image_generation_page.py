@@ -216,15 +216,21 @@ class ImageGenerationPageTests(unittest.TestCase):
             time.sleep(0.005)
         self.assertFalse(self.page._workers)
 
-    def test_narrow_layout_stacks_right_column_and_wide_layout_restores(self):
+    def test_narrow_layout_keeps_columns_and_scrolls_to_right_column(self):
         from tests.qt_scale_support import flush_layout
 
         self.page.resize(1000, 900)
         flush_layout(self.app, self.page)
-        self.assertEqual(self.page.body_layout.direction(), QBoxLayout.TopToBottom,
+        self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight,
                          f'actual page width={self.page.width()}, min={self.page.minimumWidth()}')
-        self.assertGreater(self.page.right_column.geometry().top(),
-                           self.page.left_column.geometry().bottom())
+        self.assertLess(self.page.left_column.geometry().right(),
+                        self.page.right_column.geometry().left())
+        self.assertGreater(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+        self.page.body_scroll.ensureWidgetVisible(self.page.cta_button)
+        flush_layout(self.app, self.page)
+        rect = self.page.cta_button.rect()
+        point = self.page.cta_button.mapTo(self.page.body_scroll.viewport(), rect.center())
+        self.assertTrue(self.page.body_scroll.viewport().rect().contains(point))
         self.page.resize(1600, 900)
         flush_layout(self.app, self.page)
         self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
@@ -243,11 +249,11 @@ class ImageGenerationPageTests(unittest.TestCase):
                 self.page.refresh_interface_scale()
                 flush_layout(self.app, self.page)
 
-                self.assertEqual(self.page.body_layout.direction(), QBoxLayout.TopToBottom)
+                self.assertEqual(self.page.body_layout.direction(), QBoxLayout.LeftToRight)
                 self.assertEqual(self.page.body_scroll.horizontalScrollBarPolicy(),
-                                 Qt.ScrollBarAlwaysOff)
-                self.assertEqual(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
-                self.assertLessEqual(self.page.body_content.width(),
+                                 Qt.ScrollBarAsNeeded)
+                self.assertGreater(self.page.body_scroll.horizontalScrollBar().maximum(), 0)
+                self.assertGreater(self.page.body_content.width(),
                                      self.page.body_scroll.viewport().width())
                 self.assertGreaterEqual(self.page.prompt_edit.height(), px(140))
 
@@ -256,7 +262,14 @@ class ImageGenerationPageTests(unittest.TestCase):
                 subcard = self.page.findChild(QFrame, 'imageModelSubcard')
                 self.assertGreaterEqual(card_top, subcard.mapTo(self.page, subcard.rect().topLeft()).y())
                 self.assertLessEqual(card_bottom, subcard.mapTo(self.page, subcard.rect().bottomRight()).y())
+                self.page.resize(1000, 600)
+                flush_layout(self.app, self.page)
                 self.assertTrue(self.page.body_scroll.verticalScrollBar().isVisible())
+                self.page.body_scroll.ensureWidgetVisible(self.page.submit_button, 0, 0)
+                flush_layout(self.app, self.page)
+                self.assertTrue(self.page.body_scroll.viewport().rect().contains(
+                    self.page.submit_button.mapTo(self.page.body_scroll.viewport(),
+                                                 self.page.submit_button.rect().center())))
         finally:
             reset_interface_scaling(self.app)
 

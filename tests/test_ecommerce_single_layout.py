@@ -68,12 +68,12 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
             self.assertLessEqual(scroll.widget().width(), scroll.viewport().width())
             rect = self.mapped_rect(scroll)
             self.assertGreaterEqual(rect.left(), 0)
-            self.assertLess(rect.right(), self.page.width())
-        # The single view has two independently bounded scroll areas and no
-        # third scroll container capable of introducing page-level overflow.
+            self.assertLess(rect.right(), self.page.single_columns_host.width())
+        # The outer horizontal viewport preserves both independent columns.
         self.assertEqual({s for s in self.page.single_view.findChildren(QScrollArea)
                           if s.window() is self.page.window()},
-                         {self.page.body_scroll, self.page.result_scroll})
+                         {self.page.body_scroll, self.page.result_scroll,
+                          self.page.single_columns_scroll})
 
     def test_wide_view_has_two_independent_columns_with_bounded_contents(self):
         self.assertEqual(self.page.body_scroll.objectName(), 'ecommerceFormScroll')
@@ -91,16 +91,22 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
         self.assertTrue(self.page.result_scroll.widget().isAncestorOf(self.page.result_panel))
         self.assert_scrolls_fit()
 
-    def test_narrow_view_stacks_columns_and_returns_to_side_by_side(self):
+    def test_narrow_view_keeps_equal_columns_and_scrolls_to_results(self):
         self.page.resize(1000, 900)
         flush_layout(self.app, self.page)
-        self.assertEqual(self.page.single_columns_layout.direction(), QBoxLayout.TopToBottom)
+        self.assertEqual(self.page.single_columns_layout.direction(), QBoxLayout.LeftToRight)
         left, right = (self.mapped_rect(scroll) for scroll in
                        (self.page.body_scroll, self.page.result_scroll))
-        self.assertGreater(right.top(), left.bottom())
-        self.assertAlmostEqual(left.left(), right.left(), delta=1)
+        self.assertLess(left.right(), right.left())
+        self.assertAlmostEqual(left.top(), right.top(), delta=1)
         self.assertAlmostEqual(left.width(), right.width(), delta=1)
         self.assert_scrolls_fit()
+        scroll = self.page.single_columns_scroll
+        self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
+        scroll.ensureWidgetVisible(self.page.empty_title_label)
+        flush_layout(self.app, self.page)
+        self.assertTrue(scroll.viewport().rect().contains(
+            self.page.empty_title_label.mapTo(scroll.viewport(), self.page.empty_title_label.rect().center())))
         self.page.resize(1600, 900)
         flush_layout(self.app, self.page)
         self.assertEqual(self.page.single_columns_layout.direction(), QBoxLayout.LeftToRight)

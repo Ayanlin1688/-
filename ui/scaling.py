@@ -91,6 +91,16 @@ def _scalable(widget):
             and (root.isVisible() or not root.testAttribute(Qt.WA_WState_ExplicitShowHide)))
 
 
+def _managed_scale(widget):
+    """Return whether a widget owns its scaled geometry and typography."""
+    current = widget
+    while isinstance(current, QWidget):
+        if current.property('studioManagedScale'):
+            return True
+        current = current.parentWidget()
+    return False
+
+
 class InterfaceScaler(QObject):
     """Reapply immutable 100% baselines; never multiply previously scaled values."""
 
@@ -114,7 +124,8 @@ class InterfaceScaler(QObject):
     def eventFilter(self, watched, event):
         if (self.disposed or self.applying
                 or event.type() not in (QEvent.Polish, QEvent.Show, QEvent.StyleChange, QEvent.FontChange)
-                or not isinstance(watched, QWidget) or not _scalable(watched)):
+                or not isinstance(watched, QWidget) or not _scalable(watched)
+                or _managed_scale(watched)):
             return False
         state = self.widgets.get(watched)
         if (state is not None and state['applied_scale'] == self.scale
@@ -159,6 +170,8 @@ class InterfaceScaler(QObject):
         return state
 
     def _refresh_widget(self, widget):
+        if _managed_scale(widget):
+            return
         state = self.widgets.get(widget)
         if state is None:
             state = self._capture(widget)
@@ -181,7 +194,8 @@ class InterfaceScaler(QObject):
                 scaled_font.setPointSizeF(state['font'].pointSizeF() * self.scale)
             if widget.font() != scaled_font:
                 widget.setFont(scaled_font)
-        if not widget.isWindow() and state['applied_scale'] != self.scale:
+        if (not widget.isWindow() and not widget.property('studioManagedGeometry')
+                and state['applied_scale'] != self.scale):
             minimum = state['minimum']
             maximum = state['maximum']
             scaled_minimum = QSize(round(minimum.width() * self.scale), round(minimum.height() * self.scale))
@@ -193,7 +207,14 @@ class InterfaceScaler(QObject):
                 widget.setMaximumSize(scaled_maximum)
         if 'icon' in state and state['applied_scale'] != self.scale:
             icon = state['icon']
-            widget.setIconSize(QSize(round(icon.width() * self.scale), round(icon.height() * self.scale)))
+            # QAbstractButton may use QWIDGETSIZE_MAX as its default icon size.
+            # Keep Qt's unbounded sentinel intact instead of overflowing QSize.
+            icon_size = QSize(*[
+                value if value < 0 or value >= 16777215 else round(value * self.scale)
+                for value in (icon.width(), icon.height())
+            ])
+            if widget.iconSize() != icon_size:
+                widget.setIconSize(icon_size)
         if 'section_size' in state and state['applied_scale'] != self.scale:
             widget.setDefaultSectionSize(round(state['section_size'] * self.scale))
         if 'radius' in state and state['applied_scale'] != self.scale:
@@ -208,13 +229,21 @@ class InterfaceScaler(QObject):
         widget.update()
 
     def _refresh_layout(self, layout):
+        parent = layout.parentWidget() if hasattr(layout, 'parentWidget') else None
+        if parent is not None and _managed_scale(parent):
+            return
         state = self.layouts.get(layout)
         if state is None:
             margins = layout.contentsMargins()
-            state = dict(margins=(margins.left(), margins.top(), margins.right(), margins.bottom()),
-                         spacing=layout.spacing(), spacers=[])
+            scale = self.scale or 1.0
+            state = dict(margins=tuple(round(value / scale) for value in (
+                             margins.left(), margins.top(), margins.right(), margins.bottom())),
+                         spacing=round(layout.spacing() / scale) if layout.spacing() >= 0 else layout.spacing(),
+                         spacers=[])
             if isinstance(layout, QGridLayout):
-                state['grid_spacing'] = (layout.horizontalSpacing(), layout.verticalSpacing())
+                horizontal, vertical = layout.horizontalSpacing(), layout.verticalSpacing()
+                state['grid_spacing'] = tuple(
+                    round(value / scale) if value >= 0 else value for value in (horizontal, vertical))
             self.layouts[layout] = state
         current_spacers = {layout.itemAt(index).spacerItem() for index in range(layout.count())}
         state['spacers'] = [entry for entry in state['spacers'] if entry[0] in current_spacers]
@@ -223,7 +252,8 @@ class InterfaceScaler(QObject):
             for spacer in current_spacers - known_spacers - {None}:
                 size = spacer.sizeHint()
                 policy = spacer.sizePolicy()
-                state['spacers'].append((spacer, size, policy.horizontalPolicy(), policy.verticalPolicy()))
+                baseline = QSize(round(size.width() / self.scale), round(size.height() / self.scale))
+                state['spacers'].append((spacer, baseline, policy.horizontalPolicy(), policy.verticalPolicy()))
         scaled_margins = tuple(round(value * self.scale) for value in state['margins'])
         margins = layout.contentsMargins()
         if not layout.property('studioManagedMargins') and scaled_margins != (margins.left(), margins.top(), margins.right(), margins.bottom()):
@@ -253,11 +283,11 @@ class InterfaceScaler(QObject):
         try:
             layouts = set()
             for widget in pending:
-                if _scalable(widget):
+                if _scalable(widget) and not _managed_scale(widget):
                     self._refresh_widget(widget)
                     layouts.update(widget.findChildren(QLayout))
             for layout in layouts:
-                if _alive(layout):
+                if _alive(layout) and not _managed_scale(layout.parentWidget() if hasattr(layout, 'parentWidget') else None):
                     self._refresh_layout(layout)
         finally:
             self.applying = False

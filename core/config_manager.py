@@ -80,7 +80,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_failover": True,
         "cooldown": 30,
         "models": [
-            {"name": "seedance-2.5", "enabled": True, "status": "健康"},
             {"name": "video-v3", "enabled": True, "status": "健康"},
             {"name": "video-v2", "enabled": True, "status": "健康"},
         ],
@@ -210,8 +209,9 @@ def _migrate_legacy_files(target: Path) -> None:
 def _deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(defaults)
     for key, value in values.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
+        if isinstance(merged.get(key), dict):
+            if isinstance(value, dict):
+                merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = value
     return merged
@@ -307,7 +307,15 @@ class ConfigManager:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("configuration root must be an object")
+            for key, default in DEFAULT_CONFIG.items():
+                if isinstance(default, dict) and key in raw and not isinstance(raw[key], dict):
+                    raw[key] = copy.deepcopy(default)
             self.config = _deep_merge(DEFAULT_CONFIG, raw)
+            appearance = self.config['appearance']
+            if appearance.get('theme') not in ('auto', 'light', 'dark'):
+                appearance['theme'] = 'auto'
+            language = str(appearance.get('language') or '').lower()
+            appearance['language'] = ('English' if language.startswith('en') else '简体中文')
             # Normalize legacy aliases before any migration writes a checkpoint.
             for key, alias in DIRECTORY_ALIASES:
                 value = self.config['paths'].get(key)

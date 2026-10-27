@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication, QGraphicsEffect
 
 from .palettes import THEMES, resolve as resolve_theme
 from .tokens import RADIUS, px
+from .fonts import resolve_font_families
 
 ACCENT = '#5B8DEF'
 BRAND_START = '#5B8DEF'
@@ -31,25 +32,29 @@ _LABEL_REGISTRY = []
 _BUTTON_REGISTRY = []
 _THEME_CALLBACKS = []
 _UI_FONT_FAMILY = None
+_UI_FONT_DB_TOKEN = None
+_UI_FONT_APP_FAMILY = None
 
 
 def ui_font_family():
     """缓存界面字体族；缺少中文字体时回退到系统默认字体。"""
-    global _UI_FONT_FAMILY
-    if _UI_FONT_FAMILY is not None:
-        return _UI_FONT_FAMILY
+    global _UI_FONT_FAMILY, _UI_FONT_DB_TOKEN, _UI_FONT_APP_FAMILY
     app = QApplication.instance()
     # QFontDatabase 必须在 QApplication 创建后访问；早期导入不缓存结果。
     if app is None:
         return QFont().family() or 'Sans Serif'
-    fallback = app.font().family() or QFont().family() or 'Sans Serif'
+    # 测试及启动阶段可能替换字体数据库对象；避免沿用另一数据库的旧结果。
+    db_token = QFontDatabase
+    app_family = app.font().family()
+    if (_UI_FONT_FAMILY is not None and _UI_FONT_DB_TOKEN is db_token
+            and _UI_FONT_APP_FAMILY == app_family):
+        return _UI_FONT_FAMILY
     try:
-        available = set(QFontDatabase().families())
-        _UI_FONT_FAMILY = next((family for family in (
-            'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI'
-        ) if family in available), fallback)
+        _UI_FONT_FAMILY = resolve_font_families(QFontDatabase().families())[0]
     except (RuntimeError, OSError):
-        _UI_FONT_FAMILY = fallback
+        _UI_FONT_FAMILY = app.font().family() or QFont().family() or 'Sans Serif'
+    _UI_FONT_DB_TOKEN = db_token
+    _UI_FONT_APP_FAMILY = app_family
     return _UI_FONT_FAMILY
 
 
@@ -524,6 +529,10 @@ ECOMMERCE_UI = {
     'image_generation_border': ('#E5E8EF', '#41485B'),
     'image_generation_primary': ('#7C3AED', '#A78BFA'),
     'image_generation_primary_soft': ('#F3EEFF', '#35264F'),
+    'image_generation_submit': ('#1677FF', '#1677FF'),
+    'image_generation_submit_hover': ('#4096FF', '#4096FF'),
+    'image_generation_submit_pressed': ('#0958D9', '#0958D9'),
+    'image_generation_submit_disabled': ('#E5E7EB', '#353B48'),
     'image_generation_cta_start': ('#667EEA', '#667EEA'),
     'image_generation_cta_end': ('#764BA2', '#764BA2'),
     'image_generation_hint': ('#64748B', '#A9B1C1'),

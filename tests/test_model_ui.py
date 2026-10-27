@@ -293,10 +293,11 @@ class ModelUiTests(unittest.TestCase):
         try:
             card = window.workspace_page.params_card
             card.model.setCurrentText('MiniMax-H3')
-            self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['1080p', '2K', '4K'])
+            self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['768p', '1080p', '2K', '4K'])
             card.model.setCurrentText('video-v2')
+            self.assertEqual([card.resolution.itemText(i) for i in range(card.resolution.count())], ['480p', '720p', '1080p'])
             self.assertEqual(card.resolution.currentText(), '720p')
-            self.assertFalse(card.resolution.isEnabled())
+            self.assertTrue(card.resolution.isEnabled())
             self.assertEqual(self.config.config['workspace']['model'], 'video-v2')
             self.assertTrue(window.settings_page.auto_detect.isChecked())
             window.settings_page.auto_detect.setChecked(False)

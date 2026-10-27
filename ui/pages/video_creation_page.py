@@ -423,7 +423,7 @@ class VideoCreationPage(QWidget):
     def busy(self): return self.has_running_workers()
 
     def _build_ui(self):
-        self.setMinimumWidth(0); root = scrollable_body(self); self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.body_content.setMinimumWidth(0); self.body_content.installEventFilter(self)
+        self.setMinimumWidth(0); root = scrollable_body(self); self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded); self.body_content.setMinimumWidth(0); self.body_content.installEventFilter(self)
         root.setContentsMargins(px(26), px(16), px(26), px(20)); root.setSpacing(px(16))
         header = QHBoxLayout(); title_box = QVBoxLayout(); title_box.setSpacing(px(4)); self.title_label = TitleLabel(tr('视频创作'), self); self.title_label.setProperty('studioTitleSize', 20); self.caption_label = QLabel(tr('把想法写成画面，从这里开始。'), self); self.caption_label.setObjectName('videoCreationCaption'); title_box.addWidget(self.title_label); title_box.addWidget(self.caption_label); header.addLayout(title_box); header.addStretch(1)
         self.workspace_link = PushButton(FIF.DOCUMENT, tr('AI 视频工作台'), self); self.workspace_link.setObjectName('videoWorkspaceLink'); self.workspace_link.clicked.connect(self.navigate_workspace.emit); header.addWidget(self.workspace_link); root.addLayout(header)
@@ -568,19 +568,13 @@ class VideoCreationPage(QWidget):
         return super().eventFilter(watched, event)
 
     def _fit_columns(self):
-        available = self.body_content.width() if getattr(self, 'body_content', None) else self.width()
-        margins = self.body_content.layout().contentsMargins()
-        available -= margins.left() + margins.right()
-        stacked = available < px(980)
+        self.body_content.setMinimumWidth(px(372 + 640 + 24 + 52))
         self.body_layout.setSpacing(px(24))
-        direction = QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
-        if self.body_layout.direction() != direction: self.body_layout.setDirection(direction)
-        if stacked:
-            self.left_column.setMinimumWidth(0); self.left_column.setMaximumWidth(16777215); self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.right_column.setMinimumWidth(0); self.right_column.setMaximumWidth(16777215); self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        else:
-            self.left_column.setMinimumWidth(px(372)); self.left_column.setMaximumWidth(px(372)); self.left_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-            self.right_column.setMinimumWidth(0); self.right_column.setMaximumWidth(16777215); self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.body_layout.setDirection(QBoxLayout.LeftToRight)
+        self.left_column.setFixedWidth(px(372))
+        self.left_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        self.right_column.setMinimumWidth(px(640))
+        self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.body_layout.invalidate(); self.updateGeometry(); QTimer.singleShot(0, self._update_preview_geometry)
 
     def _update_preview_geometry(self):

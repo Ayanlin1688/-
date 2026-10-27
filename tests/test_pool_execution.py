@@ -256,7 +256,7 @@ class PoolExecutionTests(unittest.TestCase):
             tasks = self.run_tasks(server, 3)
             bodies = [json.loads(body) for _, _, body in server.calls]
             self.assertEqual([p['duration'] for p in bodies], [10, 10, 8])
-            self.assertEqual([p['resolution'] for p in bodies], ['1080p', '1080p', '720p'])
+            self.assertEqual([p['resolution'] for p in bodies], ['1080p', '720p', '720p'])
             self.assertEqual([t['status'] for t in tasks], ['completed'] * 3)
 
     def test_skip_is_scoped_to_worker_not_coordinator(self):

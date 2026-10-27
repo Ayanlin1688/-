@@ -143,7 +143,7 @@ def _catalog_record(model, catalog):
 
 def _defaults(family, model=''):
     if family == 'MiniMax-H3':
-        return dict(resolutions=('1080p', '2K', '4K'), ratios=('16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9'),
+        return dict(resolutions=('768p', '1080p', '2K', '4K'), ratios=('16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9'),
                     durations=tuple(range(4, 16)), audio=False, seed=False, max_images=9, protocol_known=True)
     if family == 'video-v1':
         return dict(resolutions=(), ratios=('16:9', '9:16', '1:1', '4:3', '3:4'), durations=(5, 10, 15),

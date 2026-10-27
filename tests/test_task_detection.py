@@ -34,7 +34,7 @@ def is_video_submit_path(path):
 def catalog_fixture():
     records = {}
     for model, resolutions, audio, seed, duration, images in (
-        ('MiniMax-H3', ['1080p', '2K', '4K'], False, False, list(range(4,16)), 9),
+        ('MiniMax-H3', ['768p', '1080p', '2K', '4K'], False, False, list(range(4,16)), 9),
         ('video-v2', ['720p'], True, False, [5,10,15], 9),
         ('video-v3', ['720p'], True, True, list(range(4,31)), 30),
         ('video-v3-480p', ['480p'], True, True, list(range(4,31)), 30)):
@@ -89,7 +89,7 @@ class DetectedTaskTests(unittest.TestCase):
             self.assertEqual(bodies[0]['size'], '1088x1920')
             self.assertEqual(len(bodies[0]['images']), 3)
             self.assertEqual(bodies[1]['aspect_ratio'], '9:16')
-            self.assertEqual(bodies[1]['resolution'], '720p')
+            self.assertEqual(bodies[1]['resolution'], '1080p')
             self.assertEqual(bodies[1]['prompt'], '镜头1：展示@Image1。镜头2：面料特写。')
             self.assertEqual(bodies[2]['ratio'], '9:16')
             self.assertEqual([task['status'] for task in self.manager.tasks], ['completed']*3)
@@ -111,8 +111,8 @@ class DetectedTaskTests(unittest.TestCase):
         self.config['workspace']['resolution'] = '720p'
         with PoolServer() as server:
             bodies = self.start(server)
-            self.assertEqual([body['size'] for body in bodies], ['1088x1920'])
-            self.assertEqual(self.manager.tasks[0]['effective_parameters']['resolution'], '1080p')
+            self.assertEqual([body['size'] for body in bodies], ['768x1376'])
+            self.assertEqual(self.manager.tasks[0]['effective_parameters']['resolution'], '768p')
 
     def test_detected_model_outside_pool_can_fail_over_to_enabled_pool(self):
         (self.prompts/'1.txt').write_text(H3_COMPLETE, encoding='utf-8')
@@ -233,7 +233,7 @@ class DetectedTaskTests(unittest.TestCase):
             body = bodies[0]
             self.assertEqual(body['model'], 'video-v2')
             self.assertEqual(body['prompt'], prompt)
-            self.assertEqual((body['duration'], body['resolution']), (10, '720p'))
+            self.assertEqual((body['duration'], body['resolution']), (10, '1080p'))
             task = self.manager.tasks[0]
             self.assertEqual(task['status'], 'completed')
             self.assertEqual(task['source_format'], 'text')

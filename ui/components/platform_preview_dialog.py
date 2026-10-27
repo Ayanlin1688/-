@@ -349,6 +349,11 @@ class _StatusBar(QWidget):
 
 class _ProfileShell:
     def _text(self, widget, source, prefix=''):
+        if isinstance(widget, QPushButton):
+            font = widget.font()
+            font.setFamily(materials.ui_font_family())
+            font.setPixelSize(11)
+            widget.setFont(font)
         widget.setText(prefix + self.profile.text(source))
         return widget
 
@@ -418,7 +423,7 @@ class _PhoneShell(_ProfileShell, QWidget):
         self.carousel_index = 0
         self._available_width = None
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.setMinimumWidth(0)
+        self.setFixedWidth(400)
         self.setFixedHeight(730)
         self.resize(400, 730)
         self.setObjectName('previewPhoneShell')
@@ -613,16 +618,15 @@ class _PhoneShell(_ProfileShell, QWidget):
         _round_mask(self, px(20))
 
     def sizeHint(self):
-        width = px(400)
-        if self._available_width is not None:
-            width = min(width, self._available_width)
-        return QSize(max(1, width), px(730))
+        return QSize(px(400), px(730))
 
     def minimumSizeHint(self):
         return QSize(0, 0)
 
     def fit_width(self, available):
         self._available_width = max(1, available)
+        # The scaler owns the immutable 400px construction constraint. Applying
+        # px() here can run before a newly selected shell is captured and scale twice.
         self.updateGeometry()
 
     def _counter_text(self):
@@ -686,7 +690,7 @@ class _DesktopShell(_ProfileShell, QWidget):
         self.primary = _platform_color(self.platform, 'primaryColor')
         self.accent = _platform_color(self.platform, 'accentColor')
         self.carousel_index = 0
-        self.setMinimumWidth(0)
+        self.setMinimumWidth(900)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setAttribute(Qt.WA_StyledBackground, True)
         root = QVBoxLayout(self)
@@ -837,8 +841,7 @@ class _DesktopShell(_ProfileShell, QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.main_layout.setDirection(QBoxLayout.TopToBottom if self.width() < px(700)
-                                      else QBoxLayout.LeftToRight)
+        self.main_layout.setDirection(QBoxLayout.LeftToRight)
         _round_mask(self, px(12))
         self.update()
 
@@ -879,6 +882,8 @@ class PlatformPreviewDialog(FramelessDialog):
         self.shell_kind = ''
         self.carousel, self.detail = _group_images(self.group)
         self._cover_parent = parent.window() if parent is not None else None
+        if self._cover_parent is not None:
+            self._cover_parent.installEventFilter(self)
         self._cover_parent_geometry()
         root = QVBoxLayout(self)
         root.setSizeConstraint(QLayout.SetNoConstraint)
@@ -931,7 +936,7 @@ class PlatformPreviewDialog(FramelessDialog):
         self.scroll.setMinimumWidth(0)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll.viewport().setObjectName('previewShellViewport')
         self.scroll.viewport().installEventFilter(self)
         self.shell_host = QWidget()
@@ -939,7 +944,7 @@ class PlatformPreviewDialog(FramelessDialog):
         self.shell_host.setMinimumWidth(0)
         self.shell_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.shell_layout = QVBoxLayout(self.shell_host)
-        self.shell_layout.setContentsMargins(12, 12, 12, 12)
+        self.shell_layout.setContentsMargins(px(12), px(12), px(12), px(12))
         self.shell_layout.setSpacing(0)
         self.scroll.setWidget(self.shell_host)
         body.addWidget(self.scroll, 1)
@@ -1055,17 +1060,21 @@ class PlatformPreviewDialog(FramelessDialog):
     def _fit_columns(self):
         if not self._layout_ready:
             return
-        compact = self.width() < px(1100)
-        self.selection_panel.setFixedWidth(px(232 if compact else 260))
-        self.selection_panel.set_columns(2 if compact else 3)
+        self.selection_panel.setFixedWidth(px(260))
+        self.selection_panel.set_columns(3)
         self._fit_shell_width()
 
     def _fit_shell_width(self):
-        if self.shell is not None and self.is_mobile:
+        if self.shell is not None:
             margins = self.shell_layout.contentsMargins()
-            self.shell.fit_width(max(1, self.scroll.viewport().width() - margins.left() - margins.right()))
+            minimum = px(400 if self.is_mobile else 900)
+            self.shell_host.setMinimumWidth(minimum + margins.left() + margins.right())
+            if self.is_mobile:
+                self.shell.fit_width(max(1, self.scroll.viewport().width() - margins.left() - margins.right()))
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self, '_cover_parent', None) and event.type() in (QEvent.Resize, QEvent.Move):
+            self._cover_parent_geometry()
         scroll = getattr(self, 'scroll', None)
         if scroll is not None and watched is scroll.viewport() and event.type() == QEvent.Resize:
             if self._layout_ready:

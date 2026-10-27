@@ -352,7 +352,7 @@ class ModelCatalogTests(unittest.TestCase):
 
     def test_builtin_limits_and_variant_families_are_conservative(self):
         options = self.module.options_for
-        self.assertEqual(options('MiniMax-H3')['resolutions'], ('1080p', '2K', '4K'))
+        self.assertEqual(options('MiniMax-H3')['resolutions'], ('768p', '1080p', '2K', '4K'))
         self.assertEqual(options('video-v2-fast(渠道甲)')['resolutions'], ('720p',))
         self.assertEqual(options('video-v3-480p-特价')['resolutions'], ('480p',))
         self.assertEqual(options('video-v3')['durations'], tuple(range(4, 31)))

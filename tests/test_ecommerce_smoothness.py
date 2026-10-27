@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from PyQt5.QtCore import QPoint, QThreadPool, Qt
+from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import QApplication
 
 from core.i18n import set_language
@@ -17,6 +18,7 @@ from tests.qt_scale_support import flush_layout, reset_interface_scaling
 from tests.test_interface_scaling import FakeScreen
 from ui import materials
 from ui.components.ecommerce_task_list import EcommerceTaskList
+from ui.fonts import resolve_font_families
 from ui.main_window import MainWindow
 from ui.scaling import apply_interface_scale
 from ui.tokens import px
@@ -158,12 +160,25 @@ class UiFontFamilyTests(unittest.TestCase):
             (['Segoe UI'], 'Segoe UI'),
             ([], self.app.font().family()),
         ):
-            with self.subTest(fonts=available), patch.object(materials, '_UI_FONT_FAMILY', None), \
-                    patch.object(materials, 'QFontDatabase') as database:
+            with self.subTest(fonts=available), \
+                    patch.object(materials, '_UI_FONT_FAMILY', None), \
+                    patch.object(materials, '_UI_FONT_DB_TOKEN', None), \
+                    patch.object(materials, 'QFontDatabase') as database, \
+                    patch.object(materials, 'resolve_font_families',
+                                 wraps=resolve_font_families) as resolver:
                 database.return_value.families.return_value = available
                 self.assertEqual(materials.ui_font_family(), expected)
                 self.assertEqual(materials.ui_font_family(), expected)
                 database.return_value.families.assert_called_once_with()
+                resolver.assert_called_once_with(available)
+
+    def test_latin_only_fallback_keeps_chinese_text_metrics_nonzero(self):
+        families = resolve_font_families(['Segoe UI'])
+        self.assertEqual(families, ['Segoe UI'])
+        font = QFont()
+        font.setFamilies(families)
+        metrics = QFontMetrics(font)
+        self.assertGreater(metrics.horizontalAdvance('图片生成视频制作'), 0)
 
     def test_ui_font_database_failure_uses_system_font(self):
         with patch.object(materials, '_UI_FONT_FAMILY', None), \

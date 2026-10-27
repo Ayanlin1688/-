@@ -20,6 +20,7 @@ from qfluentwidgets import (
     TextBrowser, TitleLabel, TransparentToolButton,
 )
 from ..materials import paint_surface
+from ..fonts import CJK_FAMILIES, resolve_font_families
 
 _font_loaded = False
 _font_result = ([], False, '')
@@ -38,19 +39,33 @@ def ensure_ui_font() -> tuple[list[str], bool, str]:
             font_path = windows_dir / 'Fonts' / name
             if not font_path.is_file():
                 continue
-            font_id = QFontDatabase.addApplicationFont(str(font_path))
-            families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+            try:
+                font_id = QFontDatabase.addApplicationFont(str(font_path))
+                families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+            except (RuntimeError, OSError):
+                continue
             if families:
                 preferred, source = families[0], str(font_path)
                 break
         if not preferred:
-            preferred = next((family for family in QFontDatabase().families()
-                              if any(name in family.lower() for name in
-                                     ('yahei', 'jhenghei', 'simhei', 'simsun', 'noto sans cjk'))), '')
-        families = list(dict.fromkeys([preferred, 'Microsoft YaHei UI', 'Microsoft YaHei',
-                                      'Microsoft JhengHei UI', 'SimHei', 'Segoe UI', 'sans-serif'])) if preferred else []
+            try:
+                available = QFontDatabase().families()
+            except (RuntimeError, OSError):
+                available = []
+            preferred = next((family for family in resolve_font_families(available)
+                              if family.casefold() in {name.casefold() for name in CJK_FAMILIES}), '')
+        if preferred:
+            try:
+                fallback_families = resolve_font_families()
+            except (RuntimeError, OSError):
+                fallback_families = []
+            families = list(dict.fromkeys([preferred, *fallback_families]))
+        else:
+            families = []
         _font_result = families, bool(source), source
         _font_loaded = True
+        from .. import materials
+        materials._UI_FONT_FAMILY = None
         if not families:
             logging.getLogger(__name__).warning('No CJK UI font found; keeping the system font')
     families, registered, source = _font_result

@@ -273,6 +273,7 @@ class PreviewSelectionPanel(QWidget):
     def __init__(self, carousel, detail, parent=None):
         super().__init__(parent)
         self.setObjectName('previewSelectionPanel')
+        self.setProperty('studioManagedScale', True)
         self.setMinimumWidth(0)
         self.columns = 3
         self.tiles, self.groups = {}, {}
@@ -290,8 +291,8 @@ class PreviewSelectionPanel(QWidget):
         self._content.setMinimumWidth(0)
         self._content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._content_layout = QVBoxLayout(self._content)
-        self._content_layout.setContentsMargins(16, 16, 16, 8)
-        self._content_layout.setSpacing(20)
+        self._content_layout.setContentsMargins(px(16), px(16), px(16), px(8))
+        self._content_layout.setSpacing(px(20))
         for kind, images in zip(_KINDS, (carousel, detail)):
             self._add_group(kind, images)
         self._content_layout.addStretch(1)
@@ -303,6 +304,9 @@ class PreviewSelectionPanel(QWidget):
         self._layout.addWidget(self.hint_label)
         self.retranslate_ui()
         self.refresh_colors()
+        for child in self.findChildren(QWidget):
+            child.setProperty('studioManagedScale', True)
+        self.refresh_interface_scale()
         register_retranslate(self)
 
     def _add_group(self, kind, images):
@@ -310,14 +314,14 @@ class PreviewSelectionPanel(QWidget):
         section.setMinimumWidth(0)
         vertical = QVBoxLayout(section)
         vertical.setContentsMargins(0, 0, 0, 0)
-        vertical.setSpacing(12)
+        vertical.setSpacing(px(12))
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
         title = _label(13, section, bold=True)
         title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         clear_button = QPushButton(section)
-        clear_button.setFixedHeight(26)
+        clear_button.setFixedHeight(px(26))
         font = clear_button.font()
         font.setFamily(materials.ui_font_family())
         font.setPixelSize(11)
@@ -329,12 +333,12 @@ class PreviewSelectionPanel(QWidget):
         vertical.addLayout(header)
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(8)
+        grid.setSpacing(px(8))
         grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         vertical.addLayout(grid)
         empty = _label(12, section, wrap=True)
         empty.setAlignment(Qt.AlignCenter)
-        empty.setMinimumHeight(48)
+        empty.setMinimumHeight(px(48))
         vertical.addWidget(empty)
         tiles = []
         for index, value in enumerate(images or ()):

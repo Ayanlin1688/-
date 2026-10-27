@@ -50,6 +50,8 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        from ui.components.custom_widgets import ensure_ui_font
+        ensure_ui_font()
 
     def setUp(self):
         set_language('zh-CN')
@@ -133,6 +135,12 @@ class PlatformPreviewDialogTestBase(unittest.TestCase):
 
     def assert_no_horizontal_overflow(self, dialog):
         for scroll in dialog.findChildren(QScrollArea):
+            if scroll is dialog.scroll:
+                minimum = px(400 if dialog.is_mobile else 900) + px(24)
+                self.assertGreaterEqual(scroll.widget().width(), minimum)
+                self.assertEqual(scroll.horizontalScrollBar().maximum(),
+                                 max(0, scroll.widget().width() - scroll.viewport().width()))
+                continue
             self.assertEqual(scroll.horizontalScrollBar().maximum(), 0,
                              scroll.objectName())
             if scroll.widget() is not None:
@@ -447,8 +455,7 @@ class PlatformPreviewOverlayLayoutTests(PlatformPreviewDialogTestBase):
                 self.assertEqual(dialog.size(), parent.size())
                 self.assertEqual(dialog.overlay_header.height(), px(48))
                 self.assertEqual(dialog.disclaimer_bar.height(), px(28))
-                expected_width = px(232) if dialog.width() < px(1100) else px(260)
-                self.assertEqual(dialog.selection_panel.width(), expected_width)
+                self.assertEqual(dialog.selection_panel.width(), px(260))
                 self.assertEqual(dialog.shell.width(), px(400))
                 self.assertEqual(dialog.shell.height(), px(730))
                 header = self.rect_in(dialog.overlay_header, dialog)
@@ -469,11 +476,11 @@ class PlatformPreviewOverlayLayoutTests(PlatformPreviewDialogTestBase):
                 dialog.close()
                 parent.close()
 
-    def test_narrow_window_uses_two_thumbnail_columns_without_horizontal_scroll(self):
+    def test_narrow_window_keeps_three_thumbnail_columns_and_readable_shell(self):
         dialog = self.mobile_dialog(parent=self.parent_window(1000, 900), show=True)
         panel = dialog.selection_panel
-        self.assertEqual(panel.width(), px(232))
-        self.assertEqual(panel.columns, 2)
+        self.assertEqual(panel.width(), px(260))
+        self.assertEqual(panel.columns, 3)
         self.assert_no_horizontal_overflow(dialog)
         for tiles in panel.tiles.values():
             for tile in tiles:
@@ -492,6 +499,47 @@ class PlatformPreviewOverlayLayoutTests(PlatformPreviewDialogTestBase):
 
 
 class PlatformPreviewFooterGeometryTests(PlatformPreviewDialogTestBase):
+    def test_parent_resize_preserves_shell_structure_and_scroll_access_matrix(self):
+        for scale in (1.0, 1.25, 1.5, 1.75):
+            apply_interface_scale(self.app, FakeScreen(), scale)
+            for mode in ('light', 'dark'):
+                apply_ui_mode(mode)
+                parent = self.parent_window()
+                dialog = self.dialog(parent=parent, show=True)
+                for index in (0, 1):
+                    dialog.set_platform_index(index)
+                    for size in ((1366, 768), (1280, 800), (1600, 900),
+                                 (1920, 1080), (1024, 700)):
+                        with self.subTest(scale=scale, theme=mode, platform=index, size=size):
+                            parent.resize(*size)
+                            flush_layout(self.app, dialog)
+                            self.assertEqual(dialog.size(), parent.size())
+                            self.assertEqual(dialog.selection_panel.width(), px(260))
+                            shell = dialog.shell
+                            if dialog.is_mobile:
+                                self.assertEqual(shell.width(), px(400))
+                                self.assertEqual(shell.height(), px(730))
+                                viewport = self.rect_in(shell.scroll.viewport(), shell)
+                                footer = self.rect_in(shell.bottom_bar, shell)
+                                self.assertTrue(shell.rect().contains(footer))
+                                self.assertLess(viewport.bottom(), footer.top())
+                            else:
+                                self.assertEqual(shell.main_layout.direction(), 0)
+                                self.assertGreaterEqual(shell.width(), px(900))
+                            # The shell remains centered within the scrollable canvas.
+                            margins = dialog.shell_layout.contentsMargins()
+                            inner_width = dialog.shell_host.width() - margins.left() - margins.right()
+                            self.assertAlmostEqual(shell.x() - margins.left(),
+                                                   (inner_width - shell.width()) / 2, delta=1)
+                            self.assert_no_horizontal_overflow(dialog)
+                            self.assertEqual(dialog.scroll.horizontalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+                            self.assertEqual(dialog.scroll.horizontalScrollBar().isVisible(),
+                                             dialog.scroll.horizontalScrollBar().maximum() > 0)
+                            dialog.scroll.ensureWidgetVisible(shell, 0, 0)
+                            self.assertGreaterEqual(dialog.scroll.horizontalScrollBar().value(), 0)
+                dialog.close()
+                parent.close()
+
     def test_phone_footer_and_scrolling_rows_stay_inside_shell_at_all_scales(self):
         for scale in (1.0, 1.25, 1.5, 1.75):
             apply_interface_scale(self.app, FakeScreen(), scale)

@@ -46,7 +46,9 @@ class MainWindow(FluentWindow):
         app = QApplication.instance()
         if app is not None and not getattr(app, '_yanlin_ui_font_initialized', False):
             ensure_ui_font()
-            app.setFont(QFont(ui_font_family(), 9))
+            font = QFont(app.font())
+            font.setPointSize(9)
+            app.setFont(font)
             app._yanlin_ui_font_initialized = True
         manager = config_manager or ConfigManager(migrate=True)
         manager.load_config()
