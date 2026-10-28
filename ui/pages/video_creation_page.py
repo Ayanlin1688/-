@@ -769,11 +769,12 @@ class VideoCreationPage(QWidget):
         title_row = QHBoxLayout(); self.parameters_title = StrongBodyLabel(tr('生成参数'), panel); title_row.addWidget(self.parameters_title); title_row.addStretch(1); self.parameters_toggle = QToolButton(panel); self.parameters_toggle.setObjectName('videoParametersToggle'); self.parameters_toggle.setText('⌃'); self.parameters_toggle.setToolTip(tr('收起')); self.parameters_toggle.setCheckable(True); self.parameters_toggle.setChecked(True); self.parameters_toggle.clicked.connect(self._toggle_parameters); title_row.addWidget(self.parameters_toggle); layout.addLayout(title_row)
         self.parameters_content = QWidget(panel); content = QVBoxLayout(self.parameters_content); content.setContentsMargins(0, 0, 0, 0); content.setSpacing(px(8))
         duration_row = QHBoxLayout(); self.duration_label = QLabel(tr('⏱ 渲染时长'), self.parameters_content); duration_row.addWidget(self.duration_label); self.duration_spin = QSpinBox(self.parameters_content); self.duration_spin.setObjectName('videoDurationSpin'); self.duration_spin.setRange(4, 15); self.duration_spin.setValue(5); self.duration_spin.valueChanged.connect(self._duration_changed); duration_row.addWidget(self.duration_spin); self.duration_range_label = QLabel('', self.parameters_content); duration_row.addWidget(self.duration_range_label); duration_row.addStretch(1); content.addLayout(duration_row)
-        duration_shortcuts = self.duration_shortcuts = QGridLayout(); duration_shortcuts.setHorizontalSpacing(px(8)); duration_shortcuts.setVerticalSpacing(px(8)); self.duration_buttons = []
-        for index, value in enumerate((5, 10, 15)):
-            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content); button.setCheckable(True); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); button.setMinimumWidth(max(px(64), button.sizeHint().width() + px(12))); button.clicked.connect(lambda _=False, v=value: self.duration_spin.setValue(v)); self.duration_buttons.append(button); duration_shortcuts.addWidget(button, 0, index)
-        for column in range(3):
-            duration_shortcuts.setColumnStretch(column, 1)
+        # 快捷按钮只由 _rebuild_duration_buttons 创建。初始化时不要先放一套
+        # 默认按钮，否则模型首次刷新时 deleteLater 可能在 Windows 上留下残影。
+        duration_shortcuts = self.duration_shortcuts = QGridLayout()
+        duration_shortcuts.setHorizontalSpacing(px(8))
+        duration_shortcuts.setVerticalSpacing(px(8))
+        self.duration_buttons = []
         content.addLayout(duration_shortcuts)
         self.model_parameters_title = StrongBodyLabel(tr('🎨 模型专属参数'), self.parameters_content); self.model_parameters_title.setObjectName('videoModelParametersTitle'); content.addWidget(self.model_parameters_title)
         row = QGridLayout(); row.setHorizontalSpacing(px(8)); self.ratio_label = QLabel(tr('🎨 画面'), self.parameters_content); self.ratio_combo = ComboBox(self.parameters_content); self.ratio_combo.setObjectName('videoRatioCombo'); self.aspect_ratio_combo = self.ratio_combo; self.ratio_combo.addItems(['9:16', '16:9', '1:1']); self.ratio_combo.currentTextChanged.connect(self._ratio_changed); self.output_size_label = QLabel(tr('输出尺寸'), self.parameters_content); self.output_size_combo = ComboBox(self.parameters_content); self.output_size_combo.setObjectName('videoOutputSizeCombo'); row.addWidget(self.ratio_label, 0, 0); row.addWidget(self.output_size_label, 0, 1); row.addWidget(self.ratio_combo, 1, 0); row.addWidget(self.output_size_combo, 1, 1); row.setColumnStretch(0, 1); row.setColumnStretch(1, 1); content.addLayout(row)
@@ -1191,22 +1192,7 @@ class VideoCreationPage(QWidget):
         previous = self.duration_spin.value()
         value = caps['default_duration'] if changed and caps['default_duration'] == 30 else min(caps['durations'], key=lambda n: abs(n - previous))
         self.duration_spin.setRange(min(caps['durations']), max(caps['durations'])); self.duration_spin.setValue(value)
-        while self.duration_shortcuts.count():
-            item = self.duration_shortcuts.takeAt(0)
-            item.widget().deleteLater()
-        self.duration_buttons = []
-        presets = tuple(caps['quick_presets'])
-        two_columns = len(presets) == 4
-        for index, value in enumerate(presets):
-            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content)
-            button.setProperty('duration', value); button.setCheckable(True)
-            button.setMinimumWidth(max(px(64), button.sizeHint().width() + px(12))); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            button.clicked.connect(lambda _=False, n=value: self._choose_duration(n))
-            self.duration_buttons.append(button)
-            self.duration_shortcuts.addWidget(button, index // 2 if two_columns else 0,
-                                              index % 2 if two_columns else index)
-        for column in range(3):
-            self.duration_shortcuts.setColumnStretch(column, 1 if (two_columns and column < 2) or (not two_columns and column < len(presets)) else 0)
+        self._rebuild_duration_buttons(tuple(caps['quick_presets']))
         self._duration_changed(self.duration_spin.value())
         self._style_duration_buttons()
         self._update_duration_range_label()
@@ -1227,6 +1213,33 @@ class VideoCreationPage(QWidget):
         self._ratio_changed(self.ratio_combo.currentText())
         if self.output_size_combo.findText(previous_size) >= 0: self.output_size_combo.setCurrentText(previous_size)
         self._update_form_state()
+
+    def _rebuild_duration_buttons(self, presets):
+        """Replace every shortcut widget before creating the new model set."""
+        while self.duration_shortcuts.count():
+            item = self.duration_shortcuts.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        self.duration_buttons.clear()
+        presets = tuple(int(value) for value in presets)
+        two_columns = len(presets) == 4
+        columns = 2 if two_columns else max(1, len(presets))
+        for index, value in enumerate(presets):
+            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content)
+            button.setProperty('duration', value)
+            button.setCheckable(True)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setMinimumWidth(max(px(64), button.sizeHint().width() + px(12)))
+            button.clicked.connect(lambda _=False, n=value: self._choose_duration(n))
+            self.duration_buttons.append(button)
+            row = index // columns if two_columns else 0
+            column = index % columns if two_columns else index
+            self.duration_shortcuts.addWidget(button, row, column)
+        for column in range(max(3, columns)):
+            self.duration_shortcuts.setColumnStretch(column, 1 if column < columns else 0)
 
     def _update_duration_range_label(self):
         if self._capabilities:

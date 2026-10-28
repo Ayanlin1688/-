@@ -994,6 +994,8 @@ class EcommerceBatchPage(QWidget):
     preview_group_requested = pyqtSignal(str)
     detail_group_requested = pyqtSignal(str)
     regenerate_group_requested = pyqtSignal(str)
+    running_changed = pyqtSignal(bool)
+    stop_requested = pyqtSignal()
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -1001,6 +1003,10 @@ class EcommerceBatchPage(QWidget):
         self.config_manager = config_manager
         self.rows = []
         self._busy = False
+        self._running = False
+        self._run_total = 0
+        self._last_run_done = 0
+        self._last_run_total = 0
         self._run_rows = None
         self._lightbox = None
         self._loading = True
@@ -1099,12 +1105,23 @@ class EcommerceBatchPage(QWidget):
             tr('把图片拖进图片格，或在图片格 / 本行名称与信息框里按 Ctrl+V 粘贴截图'),
             self.footer)
         self.footer_hint.setWordWrap(True)
+        self.run_status_label = CaptionLabel('', self.footer)
+        self.run_status_label.setObjectName('batchRunStatus')
+        self.run_status_label.setWordWrap(True)
+        self.run_status_label.setVisible(False)
+        self.stop_button = PushButton(tr('停止后续运行'), self.footer)
+        self.stop_button.setObjectName('batchStopButton')
+        self.stop_button.setVisible(False)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
         self.submit_button = PrimaryPushButton(tr('开始批量制作（0）'), self.footer)
         self.submit_button.setObjectName('batchSubmitButton')
         self.submit_button.setEnabled(False)
         self.submit_button.setToolTip(tr('没有可提交的行'))
         self.submit_button.clicked.connect(self.submit)
         self._footer_layout.addWidget(self.footer_hint, 1)
+        self._footer_layout.addWidget(self.run_status_label, 1)
+        self._footer_layout.addWidget(self.stop_button, 0, Qt.AlignVCenter)
         self._footer_layout.addWidget(self.submit_button, 0, Qt.AlignVCenter)
         shell.addWidget(self.footer)
 
@@ -1616,6 +1633,8 @@ class EcommerceBatchPage(QWidget):
         return row
 
     def set_busy(self, busy):
+        if self._running and not busy:
+            return
         self._busy = bool(busy)
         self._panels[0].setEnabled(not self._busy)
         for button in (self.add_one_button, self.add_five_button,
@@ -1625,6 +1644,54 @@ class EcommerceBatchPage(QWidget):
             row.set_busy(self._busy)
         self._refresh_summary()
 
+    def set_running(self, running, total=0):
+        running = bool(running)
+        if running and not self._running:
+            self._last_run_done = 0
+            self._run_total = max(0, int(total or len(self.rows)))
+            self._last_run_total = self._run_total
+        elif running and total:
+            self._run_total = max(0, int(total))
+            self._last_run_total = self._run_total
+        elif not running:
+            self._last_run_done = self._count_run_done()
+            self._last_run_total = self._run_total or self._last_run_total
+        self._running = running
+        self._busy = running
+        self._panels[0].setEnabled(not running)
+        for button in (self.add_one_button, self.add_five_button,
+                       self.select_all_button, self.clear_button):
+            button.setEnabled(not running)
+        for row in self.rows:
+            row.set_busy(running)
+        self.footer_hint.setVisible(not running)
+        self.run_status_label.setVisible(running or bool(self._last_run_total))
+        self.stop_button.setVisible(running)
+        self.stop_button.setEnabled(running)
+        self._refresh_summary()
+        self.running_changed.emit(running)
+
+    def _run_row_values(self):
+        rows = self._run_rows.values() if self._run_rows is not None else ()
+        return [row for row in rows if row in self.rows]
+
+    def _count_run_done(self):
+        terminal = {'succeeded', 'completed', 'partial', 'failed', 'cancelled', 'canceled'}
+        return sum(row._group_state in terminal for row in self._run_row_values())
+
+    def mark_row_cancelled(self, row_index, message=''):
+        row = self._row_for_index(row_index)
+        if row is None:
+            return False
+        row.set_group_state({
+            'group_id': row.group_id,
+            'status': 'cancelled',
+            'error': str(message or ''),
+            'totals': {'total': 0, 'cancelled': 0},
+        })
+        self._refresh_summary()
+        return True
+
     def begin_run(self, row_indices):
         self._run_rows = {row.row_index: row for row in self.rows
                           if row.row_index in row_indices}
@@ -1633,6 +1700,8 @@ class EcommerceBatchPage(QWidget):
         return dict(self._run_rows)
 
     def end_run(self):
+        self._last_run_done = self._count_run_done()
+        self._last_run_total = self._run_total or self._last_run_total
         self._run_rows = None
 
     def _row_for_index(self, row_index):
@@ -1653,6 +1722,7 @@ class EcommerceBatchPage(QWidget):
         payload = dict(group) if isinstance(group, dict) else {}
         payload.setdefault('row_index', int(row_index))
         self.row_group_updated.emit(payload)
+        self._refresh_summary()
         return True
 
     def mark_row_failed(self, row_index, message=''):
@@ -1660,6 +1730,7 @@ class EcommerceBatchPage(QWidget):
         if row is None:
             return False
         row.set_failed_state(message)
+        self._refresh_summary()
         return True
 
     def _preview_row_images(self, paths, index=0):
@@ -2142,8 +2213,25 @@ class EcommerceBatchPage(QWidget):
         all_selected = total > 0 and selected == total
         self.select_all_button.setText(
             tr('取消全选') if all_selected else tr('全选'))
-        self.submit_button.setText(tr('开始批量制作（{count}）').format(
-            count=ready))
+        if self._running:
+            done = self._count_run_done()
+            active = sum(row._group_state in ('analyzing', 'generating')
+                         for row in self._run_row_values())
+            processed = min(self._run_total, done + active)
+            self.run_status_label.setText(
+                tr('批量制作中 处理中 {done}/{total}').format(
+                    done=processed, total=self._run_total))
+            self.submit_button.setText(tr('批量制作中…'))
+        elif self._last_run_total:
+            self.run_status_label.setText(
+                tr('完成 {done}/{total}').format(
+                    done=self._last_run_done, total=self._last_run_total))
+            self.submit_button.setText(tr('开始批量制作（{count}）').format(
+                count=ready))
+        else:
+            self.run_status_label.clear()
+            self.submit_button.setText(tr('开始批量制作（{count}）').format(
+                count=ready))
         self.submit_button.setEnabled(ready > 0 and not self._busy)
         self.submit_button.setToolTip('' if ready else tr('没有可提交的行'))
 

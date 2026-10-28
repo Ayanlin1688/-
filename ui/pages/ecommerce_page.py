@@ -325,6 +325,7 @@ class EcommercePage(QWidget):
         self.batch_page.preview_group_requested.connect(self._show_platform_preview)
         self.batch_page.detail_group_requested.connect(self._open_batch_detail)
         self.batch_page.regenerate_group_requested.connect(self._regenerate_batch_group)
+        self.batch_page.stop_requested.connect(self.cancel_generation)
         self.batch_view = QWidget()
         self.batch_view.setObjectName('ecommerceBatchView')
         batch_layout = QVBoxLayout(self.batch_view)
@@ -594,9 +595,9 @@ class EcommercePage(QWidget):
         self.log_box.clear()
         self._append_log(tr('批量制作：共 {count} 行，按顺序逐行提交').format(
             count=len(groups)), 'info')
-        self.show_task_list()
         row_indices = {int(item.get('row_index') or 0) for item in groups}
         self._batch_row_failures.clear()
+        self.batch_page.set_running(True, total=len(row_indices))
         self._batch_row_snapshot = self.batch_page.begin_run(row_indices)
         self._launch_worker(dict(groups=groups), operation='batch')
 
@@ -1738,7 +1739,10 @@ class EcommercePage(QWidget):
         elapsed = max(0, int(now - self._analysis_started_at))
         self.analysis_view.set_analysis_elapsed(elapsed)
         self.stage_label.setText(tr('AI分析中… 已用时 {seconds} 秒').format(seconds=elapsed))
-        self.summary_label.setText(tr('AI分析中… 已用时 {seconds} 秒').format(seconds=elapsed))
+        # The stage label owns the live analysis sentence.  Keep the adjacent
+        # summary slot available for model/count information without repeating
+        # the same status in the header.
+        self.summary_label.clear()
         last_chunk = self._analysis_last_reasoning_at or self._analysis_started_at
         self.analysis_view.set_analysis_warnings(
             inactive=(now - last_chunk >= 30), slow=(elapsed >= 90))
@@ -2037,7 +2041,10 @@ class EcommercePage(QWidget):
         self.start_button.setEnabled(False)
         self.result_panel.set_busy(True)
         self.task_list.set_busy(True)
-        self.batch_page.set_busy(True)
+        if operation == 'batch':
+            self.batch_page.set_running(True, total=len(self._batch_row_snapshot))
+        else:
+            self.batch_page.set_busy(True)
         self.cancel_button.setEnabled(True)
         self._sync_right_states()
         worker.start()
@@ -2220,7 +2227,6 @@ class EcommercePage(QWidget):
                 self._notice(message, warning=True)
             else:
                 self._append_log(tr('批量制作结束，可在任务列表查看各任务组'), 'info')
-            self.show_task_list()
             self._flush_history_refresh()
             self._sync_right_states()
             return
@@ -2245,6 +2251,7 @@ class EcommercePage(QWidget):
 
     @pyqtSlot()
     def _thread_stopped(self):
+        operation = getattr(self._worker, 'operation', '') if self._worker else ''
         self._stop_analysis_watchdog()
         self._analysis_started_at = None
         self._analysis_last_reasoning_at = None
@@ -2260,9 +2267,13 @@ class EcommercePage(QWidget):
                 group = store.get_group(row.group_id)
                 if group:
                     self._on_batch_row_changed(index, group)
+            elif operation == 'batch' and row in self.batch_page.rows:
+                self.batch_page.mark_row_cancelled(index)
         self._worker = None
         self._batch_row_snapshot = {}
         self._batch_row_failures.clear()
+        if operation == 'batch':
+            self.batch_page.set_running(False)
         self.batch_page.end_run()
         self.cancel_event = threading.Event()
         for card in self._form_cards:
@@ -2274,8 +2285,8 @@ class EcommercePage(QWidget):
         self.result_panel.set_busy(False)
         self.task_list.set_busy(False)
         try:
-            self.batch_page.setEnabled(True)
-            self.batch_page.set_busy(False)
+            if operation != 'batch':
+                self.batch_page.set_busy(False)
         except RuntimeError:
             pass
         self._refresh_conflicts()

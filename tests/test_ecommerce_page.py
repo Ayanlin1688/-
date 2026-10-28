@@ -1093,9 +1093,23 @@ class EcommercePageTests(unittest.TestCase):
         self.assertEqual(len({group['group_id'] for group in saved}), 2)
         self.assertTrue(all(group['status'] == 'succeeded' for group in saved))
         self.assertEqual(len(page.task_list.groups()), 2)
-        self.assertEqual(page.current_view_index(), page.TASK_VIEW)
+        # 批量运行完成后仍停留在批量页，用户可以直接看到每行状态和操作。
+        self.assertEqual(page.current_view_index(), page.BATCH_VIEW)
+        self.assertFalse(batch._running)
+        self.assertTrue(batch.add_one_button.isEnabled())
+        self.assertEqual(batch.run_status_label.text(), '完成 2/2')
         self.assertEqual(self.image.call_count, 4)
         self.assertNotIn(TEST_KEY, self.ui_text())
+
+    def test_batch_stop_button_requests_page_cancellation(self):
+        page = self.page
+        page._show_batch_view()
+        page._worker = Mock()
+        page.batch_page.set_running(True, total=1)
+        page.batch_page.stop_button.click()
+        self.assertTrue(page.cancel_event.is_set())
+        page.batch_page.set_running(False)
+        page._worker = None
 
     def test_batch_submit_without_ready_rows_is_rejected(self):
         page = self.page

@@ -793,6 +793,38 @@ class _BatchCase(unittest.TestCase):
         self.assertFalse(row.regenerate_button.isEnabled())
         page.set_busy(False)
 
+    def test_running_state_locks_editing_keeps_row_actions_and_reports_completion(self):
+        page, row = self.page, self.page.rows[0]
+        path = self.png_file('running.png')
+        row.set_images([path])
+        row.set_name('运行商品')
+        row.set_info('运行信息')
+        page.begin_run({1})
+        row.set_group_state({
+            'group_id': 'running-group', 'status': 'succeeded',
+            'totals': {'total': 1, 'succeeded': 1},
+        })
+        stop = QSignalSpy(page.stop_requested)
+        page.show()
+        self.app.processEvents()
+        page.set_running(True, total=1)
+        self.assertTrue(page._running)
+        self.assertTrue(page.stop_button.isVisible())
+        self.assertIn('批量制作中', page.run_status_label.text())
+        self.assertFalse(page.add_one_button.isEnabled())
+        self.assertFalse(row.name_edit.isEnabled())
+        self.assertTrue(row.image_cell.thumb.isEnabled())
+        self.assertTrue(row.platform_preview_button.isEnabled())
+        page.stop_button.click()
+        self.assertEqual(len(stop), 1)
+
+        page.set_running(False)
+        page.end_run()
+        self.assertFalse(page._running)
+        self.assertFalse(page.stop_button.isVisible())
+        self.assertTrue(page.add_one_button.isEnabled())
+        self.assertIn('完成 1/1', page.run_status_label.text())
+
     def test_batch_row_group_progress_states(self):
         row = self.page.rows[0]
         cases = [

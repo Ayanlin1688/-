@@ -154,8 +154,9 @@ class PreviewImage(QWidget):
         self.has_image = False
         self._edge = int(edge)
         self.missing_text = missing_text
+        self._fallback_height = int(height)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setFixedHeight(int(height))
+        self.setFixedHeight(self._fallback_height)
         self.setMinimumWidth(0)
         self.setCursor(Qt.PointingHandCursor)
         self.set_image(self.image_path)
@@ -165,7 +166,23 @@ class PreviewImage(QWidget):
         self._image = _load_image(self.image_path)
         self.has_image = not self._image.isNull()
         self.setToolTip(self.image_path)
+        self._fit_image_height()
         self.update()
+
+    def _fit_image_height(self):
+        """Keep the preview's natural aspect ratio inside a bounded viewport."""
+        image = getattr(self, '_image', QImage())
+        if image.isNull() or self.width() <= 0:
+            target = self._fallback_height
+        else:
+            target = round(self.width() * image.height() / max(1, image.width()))
+            target = max(px(160), min(px(720), target))
+        if self.height() != target:
+            self.setFixedHeight(target)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_image_height()
 
     def paintEvent(self, event):
         painter = QPainter(self)

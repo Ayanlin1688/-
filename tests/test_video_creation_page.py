@@ -483,6 +483,29 @@ class VideoCreationPageTests(unittest.TestCase):
                 self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 30)[index])
                 self.assertEqual([item.isChecked() for item in self.page.duration_buttons], [i == index for i in range(4)])
 
+    def test_duration_shortcuts_rebuild_without_ghost_widgets_across_model_switches(self):
+        self._use_models(['video-v3', 'wan-3.0', 'video-v2', 'MiniMax-H3'])
+        expected = {
+            'video-v3': ('5秒', '10秒', '15秒', '30秒'),
+            'wan-3.0': ('5秒', '10秒', '15秒', '30秒'),
+            'video-v2': ('5秒', '10秒', '15秒'),
+            'MiniMax-H3': ('5秒', '10秒', '15秒'),
+        }
+        for _ in range(3):
+            for model, labels in expected.items():
+                self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
+                self.app.processEvents()
+                self.assertEqual([button.text() for button in self.page.duration_buttons], list(labels))
+                self.assertEqual(self.page.duration_shortcuts.count(), len(labels))
+                self.assertTrue(all(button.isVisible() for button in self.page.duration_buttons))
+                self.assertEqual(len({id(button) for button in self.page.duration_buttons}), len(labels))
+                for index, button in enumerate(self.page.duration_buttons):
+                    row, column, row_span, column_span = self.page.duration_shortcuts.getItemPosition(index)
+                    if len(labels) == 4:
+                        self.assertEqual((row, column, row_span, column_span), (index // 2, index % 2, 1, 1))
+                    else:
+                        self.assertEqual((row, column, row_span, column_span), (0, index, 1, 1))
+
     def test_duration_selected_fill_follows_theme(self):
         from PyQt5.QtGui import QColor
         from ui.materials import ecommerce_color
