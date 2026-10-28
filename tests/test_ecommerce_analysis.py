@@ -515,6 +515,21 @@ class AnalysisStreamTests(unittest.TestCase):
                 analyze_stream(server.base_url, FIXTURE_KEY, DEFAULT_ANALYSIS_MODEL, '', '', timeout=(1, 0.05))
             self.assertEqual(len(server.calls), 1)
 
+    def test_long_read_timeout_is_chinese_and_never_retries_or_switches(self):
+        with patch.object(HttpClient, 'request',
+                          side_effect=requests.exceptions.ReadTimeout('read timed out')) as request:
+            with self.assertRaises(EcommerceAnalysisError) as caught:
+                analyze_stream('https://analysis.example/v1', FIXTURE_KEY,
+                               DEFAULT_ANALYSIS_MODEL, '', '', timeout=(15, 180))
+        request.assert_called_once()
+        error = caught.exception
+        self.assertEqual(error.category, 'analysis_timeout')
+        self.assertEqual(error.user_message,
+                         '模型 gemini-3.8-flash：分析超时（180 秒），请切换模型或线路后重试')
+        self.assertFalse(error.retryable)
+        self.assertFalse(error.switchable)
+        self.assertNotIn(FIXTURE_KEY, str(error))
+
     def test_connection_error_is_wrapped(self):
         # Reserve a loopback port and close it, producing a local connection refusal.
         with LocalAnalysisServer(b'') as server:

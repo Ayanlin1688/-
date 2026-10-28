@@ -18,6 +18,8 @@ from core.thinking_params import (
 
 
 DEFAULT_ANALYSIS_MODEL = 'gemini-3.8-flash'
+ANALYSIS_TIMEOUT_SECONDS = 180
+DEFAULT_ANALYSIS_TIMEOUT = (15, ANALYSIS_TIMEOUT_SECONDS)
 
 
 class EcommerceAnalysisError(Exception):
@@ -129,7 +131,7 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
 
 
 def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
-                   timeout=(15, 120), on_content=None, on_reasoning=None, thinking=False,
+                   timeout=DEFAULT_ANALYSIS_TIMEOUT, on_content=None, on_reasoning=None, thinking=False,
                    reference_paths=None):
     """Return complete content and reasoning, notifying callbacks per delta.
 
@@ -208,7 +210,18 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
                                      switchable=error.switchable) from None
     except (RequestError, requests.RequestException) as error:
         response_status = status_code if status_code is not None else getattr(error, 'status_code', None)
-        classification = (classify_connection_error(error) if response_status is None or 200 <= response_status < 300
+        read_timeout = ('read timed out' in str(error).casefold()
+                        or 'read timeout' in str(error).casefold())
+        try:
+            read_timeout_seconds = float(timeout[1])
+        except (TypeError, ValueError, IndexError):
+            read_timeout_seconds = 0
+        if read_timeout and read_timeout_seconds >= 30:
+            classification = dict(
+                message=f'分析超时（{int(read_timeout_seconds)} 秒），请切换模型或线路后重试',
+                category='analysis_timeout', retryable=False, switchable=False)
+        else:
+            classification = (classify_connection_error(error) if response_status is None or 200 <= response_status < 300
                           else classify_http_error(response_status, client.redact(getattr(error, 'body', ''))))
         raise EcommerceAnalysisError(
             f'模型 {client.redact(request_model)}：{classification["message"]}',

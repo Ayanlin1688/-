@@ -1820,6 +1820,28 @@ class EcommercePageTests(unittest.TestCase):
         self.assertNotIn(TEST_KEY, error + self.ui_text() + str(self.notices.call_args))
         self.assertTrue(self.page.start_button.isEnabled())
         self.image.assert_not_called()
+        self.assertFalse(self.page._analysis_timer.isActive())
+        self.assertEqual(self.page.analysis_view._analysis_state, 'failed')
+        self.assertFalse(self.page.analysis_view.retry_button.isHidden())
+        with patch.object(self.page, 'start_generation') as retry:
+            self.page.analysis_view.retry_button.click()
+            retry.assert_called_once_with()
+
+    def test_analysis_watchdog_shows_inactivity_and_slow_state_without_network_work(self):
+        self.page._worker = object()
+        self.page._analysis_started_at = time.monotonic() - 91
+        self.page._analysis_last_reasoning_at = time.monotonic() - 31
+        try:
+            self.page._tick_analysis()
+            self.assertIn('91', self.page.stage_label.text())
+            self.assertFalse(self.page.analysis_view.inactivity_warning.isHidden())
+            self.assertFalse(self.page.analysis_view.slow_warning.isHidden())
+            self.assertIn('91', self.page.step_bar.progress_label.text())
+        finally:
+            self.page._worker = None
+            self.page._analysis_started_at = None
+            self.page._analysis_last_reasoning_at = None
+            self.page._stop_analysis_watchdog()
 
     def test_partial_image_failure_and_warning_logs_are_redacted(self):
         self.fill_valid()

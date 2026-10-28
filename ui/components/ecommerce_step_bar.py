@@ -53,6 +53,7 @@ class EcommerceStepBar(QWidget):
         super().__init__(parent)
         self.setObjectName('ecommerceStepBar')
         self._stage = None
+        self._progress_text = ''
         self.circles, self.labels, self.lines = [], [], []
         self._step_layouts = []
         self._layout = QHBoxLayout(self)
@@ -79,6 +80,12 @@ class EcommerceStepBar(QWidget):
                 line.setProperty('lineState', 'pending')
                 self.lines.append(line)
                 self._layout.addWidget(line, 1)
+        self.progress_label = QLabel(self)
+        self.progress_label.setObjectName('ecommerceStepProgress')
+        self.progress_label.setTextFormat(Qt.PlainText)
+        self.progress_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.progress_label.setMinimumWidth(px(72))
+        self._layout.addWidget(self.progress_label, 0)
         register_retranslate(self)
         materials.register_theme_callback(self.refresh_colors)
         self.refresh_interface_scale()
@@ -113,6 +120,13 @@ class EcommerceStepBar(QWidget):
         self.retranslate_ui()
         self.refresh_colors()
 
+    def set_progress(self, text):
+        text = str(text or '')
+        if text == self._progress_text:
+            return
+        self._progress_text = text
+        self.progress_label.setText(text)
+
     def retranslate_ui(self):
         self.labels[0].setText(tr('AI 分析'))
         self.labels[1].setText(tr('生成图片'))
@@ -132,14 +146,25 @@ class EcommerceStepBar(QWidget):
         for line in self.lines:
             line.setFixedHeight(max(1, px(2)))
             line.setMinimumWidth(px(8))
+        self.progress_label.setMinimumWidth(px(72))
+        font = self.progress_label.font()
+        font.setFamily(materials.ui_font_family())
+        font.setPixelSize(px(11))
+        self.progress_label.setFont(font)
         self.refresh_colors()
 
     def refresh_colors(self):
         for label in self.labels:
             state = label.property('stepState')
             color = (materials.ecommerce_color('completion_error') if state == 'failed'
-                     else materials.text_color(3 if state == 'pending' else 1))
+                     else materials.ecommerce_color('step_pending') if state == 'pending'
+                     else materials.text_color(1))
             label.setStyleSheet('color: %s; background: transparent;' % color)
+            font = label.font()
+            font.setBold(state == 'active')
+            label.setFont(font)
+        self.progress_label.setStyleSheet(
+            'background: transparent; color: %s;' % materials.ecommerce_color('step_pending'))
         for line in self.lines:
             key = 'step_done' if line.property('lineState') == 'done' else 'step_line'
             line.setStyleSheet('background: %s; border: none; border-radius: %dpx;'

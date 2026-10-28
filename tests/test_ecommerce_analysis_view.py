@@ -6,13 +6,13 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtTest import QTest
+from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import QApplication
 
 from core.i18n import set_language, tr
 from tests.qt_scale_support import flush_layout, reset_interface_scaling
-from ui import tokens
+from ui import materials, tokens
 from ui.components.ecommerce_analysis_view import (
     EcommerceAnalysisView, MAX_PROMPT_LENGTH, MAX_PROMPT_TEXT, MAX_REASONING_CHUNKS,
 )
@@ -87,6 +87,55 @@ class EcommerceAnalysisViewTests(unittest.TestCase):
         self.view.set_prompt_items([{'kind': 'detail', 'seq': index, 'prompt': 'z' * MAX_PROMPT_LENGTH}
                                     for index in range(20)])
         self.assertLessEqual(len(self.view.prompt_edit.toPlainText()), MAX_PROMPT_TEXT + 1)
+
+    def test_analysis_states_update_status_colors_elapsed_error_and_retry(self):
+        retry = QSignalSpy(self.view.retry_requested)
+        palette = {
+            'analyzing': materials.ecommerce_color('analysis_active'),
+            'finished': materials.ecommerce_color('analysis_finished'),
+            'failed': materials.ecommerce_color('analysis_failed'),
+        }
+
+        self.view.set_analysis_state('analyzing', 12, 'fixture-chat')
+        self.assertIn('12', self.view.status_detail.text())
+        self.assertTrue(self.view.status_label.text().startswith('思考中…'))
+        self.assertIn('fixture-chat', self.view.status_detail.text())
+        self.assertIn(palette['analyzing'], self.view.status_label.styleSheet())
+        self.view.set_analysis_state('finished', 13, 'fixture-chat')
+        self.assertIn('13', self.view.status_label.text())
+        self.assertIn(palette['finished'], self.view.status_label.styleSheet())
+
+        self.view.set_analysis_state('failed', 14, 'fixture-chat', '分析超时，请切换模型')
+        self.assertEqual(self.view.status_label.text(), '分析失败')
+        self.assertTrue(self.view.retry_button.isVisible())
+        self.assertIn('分析超时', self.view.status_error.text())
+        self.assertIn(palette['failed'], self.view.status_label.styleSheet())
+        QTest.mouseClick(self.view.retry_button, Qt.LeftButton)
+        self.assertEqual(len(retry), 1)
+
+        self.view.set_analysis_state('cancelled', 15, 'fixture-chat')
+        self.assertEqual(self.view.status_label.text(), '分析已取消')
+        self.assertFalse(self.view.retry_button.isVisible())
+
+    def test_raw_output_is_collapsed_until_requested_and_stream_updates_in_place(self):
+        self.view.append_raw_output('{"partial":')
+        self.view.append_raw_output('"thinking"}')
+        self.assertFalse(self.view.raw_edit.isVisible())
+        self.assertEqual(self.view._raw_output, '{"partial":"thinking"}')
+        QTest.mouseClick(self.view.raw_toggle, Qt.LeftButton)
+        self.assertTrue(self.view.raw_edit.isVisible())
+        self.assertEqual(self.view.raw_edit.toPlainText(), self.view._raw_output)
+        self.view.append_raw_output(' more')
+        self.assertEqual(self.view.raw_edit.toPlainText(), '{"partial":"thinking"} more')
+
+    def test_long_prompt_can_expand_after_default_truncation(self):
+        prompt = '提示词内容' * (MAX_PROMPT_LENGTH // 5 + 5)
+        self.view.set_prompt_items([{'kind': 'carousel', 'seq': 1, 'prompt': prompt}])
+        self.assertTrue(self.view.prompt_expand_button.isVisible())
+        self.assertNotIn(prompt, self.view.prompt_edit.toPlainText())
+        QTest.mouseClick(self.view.prompt_expand_button, Qt.LeftButton)
+        self.assertIn(prompt, self.view.prompt_edit.toPlainText())
+        self.assertEqual(self.view.prompt_expand_button.text(), '收起完整提示词')
 
     def test_clear_resets_text_and_expansion_for_next_creation(self):
         self.view.append_reasoning('上一任务')

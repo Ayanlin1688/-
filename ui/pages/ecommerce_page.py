@@ -4,6 +4,8 @@ from copy import deepcopy
 from collections import deque
 import os
 import threading
+import time
+import inspect
 from urllib.parse import urlsplit
 
 from PyQt5.QtCore import QEvent, Qt, QThread, QSignalBlocker, QTimer, pyqtSignal, pyqtSlot
@@ -77,6 +79,7 @@ class EcommerceWorker(QThread):
     group_changed = pyqtSignal(object)
     item_changed = pyqtSignal(object)
     log_message = pyqtSignal(str, str)
+    analysis_content = pyqtSignal(str)
     finished = pyqtSignal(str, str)
     batch_row_changed = pyqtSignal(int, object)
     batch_row_failed = pyqtSignal(int, str)
@@ -110,6 +113,34 @@ class EcommerceWorker(QThread):
             manager.on_group = on_group
             manager.on_item = lambda rec: self.item_changed.emit(redact_structure(rec, self._clean))
             manager.on_log = lambda msg, level: self.log_message.emit(self._clean(msg), level)
+            # Forward streamed analysis content without breaking older test
+            # doubles whose callback does not accept ``on_content``.
+            analysis_func = getattr(manager, 'analysis_func', None)
+            if analysis_func is not None:
+                try:
+                    signature_target = getattr(analysis_func, 'side_effect', None) or analysis_func
+                    signature = inspect.signature(signature_target)
+                    accepts_content = (
+                        'on_content' in signature.parameters
+                        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+                               for parameter in signature.parameters.values())
+                    )
+                except (TypeError, ValueError):
+                    accepts_content = True
+                if accepts_content:
+                    def streaming_analysis(*args, **kwargs):
+                        previous = kwargs.get('on_content')
+
+                        def on_content(chunk):
+                            if chunk:
+                                self.analysis_content.emit(self._clean(chunk))
+                            if previous is not None:
+                                previous(chunk)
+
+                        kwargs['on_content'] = on_content
+                        return analysis_func(*args, **kwargs)
+
+                    manager.analysis_func = streaming_analysis
             runners = {
                 'start': manager.start_group,
                 'regenerate': manager.regenerate_items,
@@ -199,6 +230,14 @@ class EcommercePage(QWidget):
         self._prompt_items = {}
         self._right_state = 'idle'
         self._right_launch_stage = None
+        self._analysis_timer = QTimer(self)
+        self._analysis_timer.setInterval(1000)
+        self._analysis_timer.timeout.connect(self._tick_analysis)
+        self._analysis_started_at = None
+        self._analysis_last_reasoning_at = None
+        self._analysis_model_name = ''
+        self._analysis_group_id = None
+        self._analysis_failed = False
         self.item_labels = {}
         self._logs = []
         self._logged_group_errors = {}
@@ -468,6 +507,7 @@ class EcommercePage(QWidget):
         status_row.addWidget(self.summary_label, 1)
         self.right_header_host.layout().addWidget(self.right_state_row)
         self.analysis_view = EcommerceAnalysisView(self.result_content)
+        self.analysis_view.retry_requested.connect(self._retry_analysis)
         self.submission_view = EcommerceSubmissionView(self.result_content)
         self.submission_view.cancel_requested.connect(lambda: self.cancel_generation())
         self.submission_view.retry_requested.connect(lambda key: self._run_regenerate([key]))
@@ -902,7 +942,9 @@ class EcommercePage(QWidget):
         """唯一的右栏状态入口：数据驱动可见性，校验早退不改变空态。"""
         group = self._group or {}
         status = group.get('status')
-        if self._right_launch_stage:
+        if self._analysis_failed and self._analysis_group_id == group.get('group_id'):
+            state = 'analysis_failed'
+        elif self._right_launch_stage:
             state = self._right_launch_stage
         elif status in ('succeeded', 'partial', 'failed', 'cancelled'):
             state = 'finished'
@@ -929,12 +971,29 @@ class EcommercePage(QWidget):
         self.submission_view.cancel_button.setText(tr('取消中…') if self.busy and self.cancel_event.is_set() else tr('取消'))
         incomplete = status in ('partial', 'failed', 'cancelled') or failed > 0
         self.step_bar.set_stage('cancelled' if status == 'cancelled'
-                                else 'failed' if state == 'finished' and incomplete else state)
+                                else 'failed' if state in ('analysis_failed', 'finished') and incomplete else state)
+        if state == 'analyzing':
+            self.step_bar.set_progress(tr('分析中… 已用时 {seconds} 秒').format(
+                seconds=self.analysis_view._analysis_elapsed))
+        elif state == 'generating':
+            self.step_bar.set_progress(tr('生成中 {done}/{total}').format(
+                done=ok + failed, total=total))
+        elif state == 'analysis_failed':
+            self.step_bar.set_progress(tr('分析失败'))
+        elif status == 'cancelled':
+            self.step_bar.set_progress(tr('已取消'))
+        elif incomplete:
+            self.step_bar.set_progress(tr('部分失败 {failed}/{total}').format(
+                failed=failed, total=total))
+        elif state == 'finished':
+            self.step_bar.set_progress(tr('完成'))
+        else:
+            self.step_bar.set_progress('')
         for widget, visible in (
                 (self.right_header_host, state != 'idle'),
-                (self.right_state_row, state in ('analyzing', 'generating')),
+                (self.right_state_row, state in ('analyzing', 'analysis_failed', 'generating')),
                 (self.empty_state, state == 'idle'),
-                (self.analysis_view, state == 'analyzing'),
+                (self.analysis_view, state in ('analyzing', 'analysis_failed')),
                 (self.submission_view, state == 'generating'),
                 (self.completion_bar, state == 'finished'),
                 (self.result_panel, state == 'finished'),
@@ -1610,13 +1669,52 @@ class EcommercePage(QWidget):
         self._secrets = tuple(resolve_line(config, capability).get('api_key', '')
                                for capability in ('chat', 'image'))
         self._clear_results()
+        self._analysis_failed = False
+        self._analysis_group_id = None
+        self._analysis_model_name = str(self.analysis_model_picker.value() or '')
+        self._analysis_started_at = time.monotonic()
+        self._analysis_last_reasoning_at = self._analysis_started_at
+        self.analysis_view.set_analysis_state('analyzing', 0, self._analysis_model_name)
+        self.analysis_view.set_analysis_warnings()
+        self._analysis_timer.start()
         self._logs.clear()
         self.log_box.clear()
         self.stage_label.setText(tr('等待开始'))
         self._append_log(tr('AI 分析需要含文本模型权限的密钥；图片按所选配置生成。'), 'info')
         self._launch_worker(arguments)
 
+    def _retry_analysis(self):
+        if self.busy:
+            return
+        self.start_generation()
+
+    @pyqtSlot(str)
+    def _on_analysis_content(self, chunk):
+        if chunk:
+            self._analysis_last_reasoning_at = time.monotonic()
+            self.analysis_view.append_raw_output(chunk)
+
+    def _stop_analysis_watchdog(self):
+        self._analysis_timer.stop()
+
+    def _tick_analysis(self):
+        if not self.busy or self._analysis_started_at is None:
+            self._stop_analysis_watchdog()
+            return
+        now = time.monotonic()
+        elapsed = max(0, int(now - self._analysis_started_at))
+        self.analysis_view.set_analysis_elapsed(elapsed)
+        self.stage_label.setText(tr('AI分析中… 已用时 {seconds} 秒').format(seconds=elapsed))
+        self.summary_label.setText(tr('AI分析中… 已用时 {seconds} 秒').format(seconds=elapsed))
+        last_chunk = self._analysis_last_reasoning_at or self._analysis_started_at
+        self.analysis_view.set_analysis_warnings(
+            inactive=(now - last_chunk >= 30), slow=(elapsed >= 90))
+        self.step_bar.set_progress(tr('分析中… 已用时 {seconds} 秒').format(seconds=elapsed))
+
     def _clear_results(self):
+        self._stop_analysis_watchdog()
+        self._analysis_started_at = None
+        self._analysis_last_reasoning_at = None
         self._group, self._items = None, {}
         self._right_launch_stage = None
         self._reasoning_chunks.clear()
@@ -1869,6 +1967,7 @@ class EcommercePage(QWidget):
         worker.group_changed.connect(self._on_group, Qt.QueuedConnection)
         worker.item_changed.connect(self._on_item, Qt.QueuedConnection)
         worker.log_message.connect(self._append_log, Qt.QueuedConnection)
+        worker.analysis_content.connect(self._on_analysis_content, Qt.QueuedConnection)
         worker.finished.connect(self._on_result, Qt.QueuedConnection)
         if operation == 'batch':
             worker.batch_row_changed.connect(self._on_batch_row_changed, Qt.QueuedConnection)
@@ -1912,6 +2011,35 @@ class EcommercePage(QWidget):
                 if row.group_id == record['group_id']:
                     row.set_group_state(self._group)
         status = self._group['status']
+        group_id = self._group.get('group_id')
+        if status == 'analyzing':
+            self._analysis_group_id = group_id
+            self._analysis_failed = False
+            if self._analysis_started_at is None:
+                self._analysis_started_at = time.monotonic()
+                self._analysis_last_reasoning_at = self._analysis_started_at
+                self._analysis_timer.start()
+            self.analysis_view.set_analysis_state('analyzing',
+                                                  self.analysis_view._analysis_elapsed,
+                                                  self._analysis_model_name)
+        elif status == 'generating' and self._analysis_group_id == group_id:
+            elapsed = self.analysis_view._analysis_elapsed
+            self._stop_analysis_watchdog()
+            self._analysis_started_at = None
+            self.analysis_view.set_analysis_state('finished', elapsed, self._analysis_model_name)
+            self.analysis_view.set_analysis_warnings()
+        elif status == 'failed' and self._analysis_group_id == group_id and self._analysis_started_at is not None:
+            self._analysis_failed = True
+            self._stop_analysis_watchdog()
+            self._analysis_started_at = None
+            self.analysis_view.set_analysis_state('failed', self.analysis_view._analysis_elapsed,
+                                                  self._analysis_model_name, self._group.get('error', ''))
+        elif status == 'cancelled' and self._analysis_group_id == group_id:
+            self._stop_analysis_watchdog()
+            self._analysis_started_at = None
+            self.analysis_view.set_analysis_state('cancelled', self.analysis_view._analysis_elapsed,
+                                                  self._analysis_model_name)
+            self.analysis_view.set_analysis_warnings()
         self.stage_label.setText(tr('取消中…') if self.busy and self.cancel_event.is_set()
                                  and status in ('analyzing', 'generating') else _stage_text(status))
         if status not in ('analyzing', 'generating'):
@@ -1922,7 +2050,6 @@ class EcommercePage(QWidget):
             for item in self.config_manager.ecommerce_store().list_items(self._group['group_id']):
                 self._on_item(item)
         error = self._group.get('error')
-        group_id = self._group.get('group_id')
         if error and self._logged_group_errors.get(group_id) != error:
             self._logged_group_errors[group_id] = error
             self._append_log(error, 'error')
@@ -1981,6 +2108,11 @@ class EcommercePage(QWidget):
     def _append_log(self, message, level='info'):
         message = self._clean(message)
         if message.startswith('[思考中] '):
+            self._analysis_last_reasoning_at = time.monotonic()
+            if self._analysis_started_at is not None:
+                self.analysis_view.set_analysis_state('analyzing',
+                                                      self.analysis_view._analysis_elapsed,
+                                                      self._analysis_model_name)
             chunk = message[len('[思考中] '):]
             self._reasoning_chunks.append(chunk)
             self.analysis_view.append_reasoning(chunk)
@@ -2015,6 +2147,12 @@ class EcommercePage(QWidget):
             self._sync_right_states()
             return
         if error:
+            if self._analysis_group_id == (group_id or (self._group or {}).get('group_id')) and self._analysis_started_at is not None:
+                self._analysis_failed = True
+                self._stop_analysis_watchdog()
+                self._analysis_started_at = None
+                self.analysis_view.set_analysis_state('failed', self.analysis_view._analysis_elapsed,
+                                                      self._analysis_model_name, error)
             self.stage_label.setText(tr('失败'))
             group_id = group_id or (self._group or {}).get('group_id')
             if self._logged_group_errors.get(group_id) != error:
@@ -2029,6 +2167,9 @@ class EcommercePage(QWidget):
 
     @pyqtSlot()
     def _thread_stopped(self):
+        self._stop_analysis_watchdog()
+        self._analysis_started_at = None
+        self._analysis_last_reasoning_at = None
         self._right_launch_stage = None
         # Pool callbacks may be queued from different threads. Read the final
         # database snapshot once more before enabling regeneration actions.
