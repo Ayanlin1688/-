@@ -392,6 +392,13 @@ class ManualVideoManager:
         caps = capabilities(model, self._video_catalog())
         if type(duration) is not int or duration not in caps['durations']:
             raise ValueError('渲染时长不在当前模型支持范围内')
+        if ratio not in caps['ratios']:
+            raise ValueError('画面比例不在当前模型支持范围内')
+        allowed_sizes = set(caps.get('output_sizes', {}).get(ratio, ())) | set(caps.get('resolutions', ()))
+        if (output_size and allowed_sizes and output_size not in allowed_sizes
+                and family_for(model, self._video_catalog()) not in ('video-v1', 'grok-imagine-1.5-video')
+                and 'veo' not in model.lower() and 'gemini' not in model.lower()):
+            raise ValueError('输出尺寸不在当前模型支持范围内')
         if type(count) is not int or not 1 <= count <= 10:
             raise ValueError('生成次数必须为 1 到 10')
         if refs is None:
@@ -951,6 +958,17 @@ class ManualVideoManager:
                 api_key = str(line.get('api_key') or '')
                 if api_key:
                     body = str(body).replace(api_key, '[REDACTED]')
+                # Relay validation errors expose a stable "at most N" shape.
+                # Translate it before the generic HTTP classifier so users do
+                # not see a raw English provider sentence and do not retry the
+                # same invalid request.
+                match = re.search(r'(videos?|audios?|images?)\s+supports?\s+at\s+most\s+(\d+)', str(body), re.I)
+                if match:
+                    kind = {'video': '视频', 'videos': '视频',
+                            'audio': '音频', 'audios': '音频',
+                            'image': '图片', 'images': '图片'}[match.group(1).lower()]
+                    limit = int(match.group(2))
+                    return f'上游该模型最多支持 {limit} 个参考{kind}', 'invalid_parameters', status, False
                 classified = classify_http_error(status, str(body), kind='video')
                 return classified['message'], classified['category'], status, classified['retryable']
             classification = classify_connection_error(error)

@@ -12,7 +12,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
             ('MiniMax-H3', tuple(range(4, 16)), 5, (9, 3, 3), (5, 10, 15)),
             ('video-v2', (5, 10, 15), 5, (9, 3, 3), (5, 10, 15)),
             ('video-v3', tuple(range(4, 31)), 30, (30, 10, 10), (5, 10, 15, 30)),
-            ('wan-3.0', (5, 10, 15), 5, (10, 5, 5), (5, 10, 15)),
+            ('wan-3.0', (5, 10, 15, 30), 5, (10, 3, 5), (5, 10, 15, 30)),
         ):
             with self.subTest(model=model):
                 result = capabilities(model)

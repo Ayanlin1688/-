@@ -20,6 +20,17 @@ from PyQt5.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget, QApplication,
 )
 from PyQt5.QtCore import QUrl
+
+
+def _prefer_windows_media_backend():
+    # WMF is available on Windows 10/11 and decodes MP4 without requiring
+    # third-party DirectShow codecs. Preserve an explicit user preference;
+    # Qt can still fall back to DirectShow when WMF is unavailable.
+    if os.name == 'nt':
+        os.environ.setdefault('QT_MULTIMEDIA_PREFERRED_PLUGINS', 'windowsmediafoundation,directshow')
+
+
+_prefer_windows_media_backend()
 try:
     from PyQt5.QtMultimedia import (QAbstractVideoBuffer, QAbstractVideoSurface, QMediaContent,
                                     QMediaPlayer, QVideoFrame, QVideoSurfaceFormat)
@@ -143,6 +154,273 @@ class _VideoPreviewWidget(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class _ElidedMediaName(QLabel):
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self._full_text = str(text or '')
+        self.setToolTip(self._full_text)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._update_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_text()
+
+    def _update_text(self):
+        self.setText(self.fontMetrics().elidedText(self._full_text, Qt.ElideMiddle,
+                                                   max(0, self.width())))
+
+
+class _ReferenceVideoDialog(QDialog):
+    """Use the same Qt frame surface as the result preview for local references."""
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setWindowTitle(tr('参考视频预览'))
+        self.resize(px(720), px(520))
+        self.player = QMediaPlayer(self)
+        if not self.player.isAvailable():
+            self.deleteLater()
+            raise RuntimeError('media backend unavailable')
+        layout = QVBoxLayout(self)
+        layout.addWidget(_ElidedMediaName(Path(path).name, self))
+        self.video = _VideoPreviewWidget(self)
+        layout.addWidget(self.video, 1)
+        self.play_button = PushButton(tr('暂停'), self)
+        layout.addWidget(self.play_button)
+        self.player.setVideoOutput(self.video.surface)
+        self.play_button.clicked.connect(self._toggle)
+        self.player.stateChanged.connect(lambda state: self.play_button.setText(
+            tr('暂停') if state == QMediaPlayer.PlayingState else tr('播放')))
+        self.player.error.connect(self._failed)
+        self._path = str(path)
+        self._fallback_opened = False
+        style_page(self)
+        style_controls(self)
+
+    def play(self):
+        self.show()
+        self.player.setMedia(QMediaContent(QUrl.fromLocalFile(self._path)))
+        self.player.play()
+
+    def _toggle(self):
+        if self.player.state() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def _failed(self, *_args):
+        if self._fallback_opened:
+            return
+        self._fallback_opened = True
+        parent = self.parentWidget()
+        self.close()
+        if parent is not None:
+            parent._open_system_video()
+
+    def closeEvent(self, event):
+        _ReferenceMediaRow._release_player(self.player)
+        super().closeEvent(event)
+
+
+class _ReferenceMediaRow(QFrame):
+    remove_requested = pyqtSignal(str)
+
+    def __init__(self, path, kind, warning_callback, parent=None):
+        super().__init__(parent)
+        self.path, self.kind = str(path), str(kind)
+        self.warning_callback = warning_callback
+        self.setObjectName('videoReferenceMediaRow')
+        self.setMinimumHeight(px(44))
+        self._player = None
+        self._duration_player = None
+        self._play_requested = False
+        self._audio_loaded = False
+        self._video_dialog = None
+        self.name_label = _ElidedMediaName(Path(self.path).name, self)
+        self.name_label.setObjectName('videoReferenceMediaName')
+        try:
+            size = Path(self.path).stat().st_size
+            size_text = f'{size / 1024**2:.1f} MB' if size >= 1024**2 else f'{max(1, size // 1024)} KB'
+        except OSError:
+            size_text = '—'
+        self._size_text = size_text
+        self.meta_label = QLabel(size_text, self)
+        self.meta_label.setObjectName('videoReferenceMediaMeta')
+        self.play_button = ToolButton(FIF.PLAY, self)
+        self.play_button.setObjectName('videoReferenceMediaPlay')
+        self.play_button.setFixedSize(px(30), px(30))
+        self.play_button.setToolTip(tr('播放'))
+        self.play_button.clicked.connect(self.toggle_playback)
+        self.remove_button = ToolButton(FIF.DELETE, self)
+        self.remove_button.setObjectName('videoReferenceMediaRemove')
+        self.remove_button.setFixedSize(px(30), px(30))
+        self.remove_button.setToolTip(tr('删除参考素材'))
+        self.remove_button.clicked.connect(lambda: self.remove_requested.emit(self.path))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(px(8), px(4), px(4), px(4))
+        layout.setSpacing(px(8))
+        layout.addWidget(self.name_label, 1)
+        layout.addWidget(self.meta_label)
+        layout.addWidget(self.play_button)
+        layout.addWidget(self.remove_button)
+        if self.kind == 'videos':
+            self._try_add_video_duration()
+        elif self.kind == 'audios':
+            self._try_add_audio_player()
+        self.setCursor(Qt.PointingHandCursor)
+        self._refresh_style()
+
+    def _try_add_video_duration(self):
+        if QMediaPlayer is None:
+            return
+        try:
+            player = QMediaPlayer(self)
+            if not player.isAvailable():
+                player.deleteLater()
+                return
+            self._duration_player = player
+            player.durationChanged.connect(self._set_duration)
+            try:
+                player.error.connect(self._release_duration_player)
+            except (AttributeError, TypeError):
+                pass
+            player.setMedia(QMediaContent(QUrl.fromLocalFile(self.path)))
+        except Exception:
+            self._duration_player = None
+
+    def _try_add_audio_player(self):
+        if QMediaPlayer is None:
+            return
+        try:
+            player = QMediaPlayer(self)
+            if not player.isAvailable():
+                player.deleteLater()
+                return
+            self._player = player
+            player.stateChanged.connect(self._state_changed)
+            try:
+                player.error.connect(self._playback_failed)
+            except (AttributeError, TypeError):
+                pass
+        except Exception:
+            self._player = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.toggle_playback()
+        super().mousePressEvent(event)
+
+    def _state_changed(self, state):
+        playing = QMediaPlayer is not None and state == QMediaPlayer.PlayingState
+        self.play_button.setIcon(FIF.PAUSE.icon() if playing else FIF.PLAY.icon())
+        self.play_button.setToolTip(tr('暂停') if playing else tr('播放'))
+
+    def _set_duration(self, milliseconds):
+        if int(milliseconds or 0) > 0:
+            seconds = int(milliseconds) // 1000
+            self.meta_label.setText(f'{self._size_text} · {seconds // 60:02d}:{seconds % 60:02d}')
+            QTimer.singleShot(0, self._release_duration_player)
+
+    def _release_duration_player(self, *_args):
+        if self._duration_player is not None:
+            self._release_player(self._duration_player)
+
+    @staticmethod
+    def _release_player(player):
+        # DirectShow retains the file handle after stop(); detach its source
+        # before the row is removed or its local file can be deleted.
+        blocker = QSignalBlocker(player)
+        player.stop()
+        player.setMedia(QMediaContent())
+        del blocker
+
+    def toggle_playback(self):
+        if self.kind == 'videos':
+            if self._video_dialog is not None:
+                self._video_dialog.raise_()
+                self._video_dialog.activateWindow()
+                return True
+            if QMediaPlayer is not None and QAbstractVideoSurface is not None:
+                try:
+                    dialog = _ReferenceVideoDialog(self.path, self)
+                    self._video_dialog = dialog
+                    dialog.finished.connect(lambda _result, current=dialog: self._video_dialog_closed(current))
+                    dialog.destroyed.connect(lambda _obj=None, current=dialog: self._video_dialog_closed(current))
+                    dialog.play()
+                    return True
+                except Exception:
+                    self._video_dialog = None
+            return self._open_system_video()
+        if self._player is None:
+            self.warning_callback(tr('当前设备无法播放音频，请检查系统音频输出'))
+            return False
+        try:
+            if self._player.state() == QMediaPlayer.PlayingState:
+                self._player.pause()
+            else:
+                self._play_requested = True
+                if not self._audio_loaded:
+                    self._player.setMedia(QMediaContent(QUrl.fromLocalFile(self.path)))
+                    self._audio_loaded = True
+                self._player.play()
+            return True
+        except Exception:
+            self._playback_failed()
+            return False
+
+    def _video_dialog_closed(self, dialog):
+        if self._video_dialog is dialog:
+            self._video_dialog = None
+
+    def _open_system_video(self):
+        try:
+            if QDesktopServices.openUrl(QUrl.fromLocalFile(self.path)):
+                self.warning_callback(tr('已使用系统默认播放器打开参考视频'))
+                return True
+        except Exception:
+            pass
+        self.warning_callback(tr('无法打开参考视频，请检查文件关联'))
+        return False
+
+    def _playback_failed(self, *_args):
+        self._state_changed(QMediaPlayer.StoppedState if QMediaPlayer is not None else 0)
+        if self._play_requested:
+            self._play_requested = False
+            self._audio_loaded = False
+            if self._player is not None:
+                self._release_player(self._player)
+            self.warning_callback(tr('音频播放失败，请检查文件或系统音频输出'))
+
+    def stop(self):
+        self._play_requested = False
+        self._audio_loaded = False
+        if self._video_dialog is not None:
+            self._video_dialog.close()
+        for player in (self._player, self._duration_player):
+            if player is not None:
+                self._release_player(player)
+
+    def refresh_interface_scale(self):
+        self.setMinimumHeight(px(44))
+        for button in (self.play_button, self.remove_button):
+            button.setFixedSize(px(30), px(30))
+            button.setIconSize(QSize(px(16), px(16)))
+        self.layout().setContentsMargins(px(8), px(4), px(4), px(4))
+        self.layout().setSpacing(px(8))
+
+    def _refresh_style(self):
+        self.setStyleSheet(
+            'QFrame#videoReferenceMediaRow {background:%s; border:1px solid %s; border-radius:%dpx;}'
+            'QLabel#videoReferenceMediaMeta {color:%s;}'
+            % (_color('video_creation_surface'), _color('video_creation_border'), px(6),
+               _color('video_creation_muted')))
+
+    def refresh_colors(self):
+        self._refresh_style()
 
 
 def _dispose_worker(worker):
@@ -408,6 +686,8 @@ class VideoCreationPage(QWidget):
         self._history_dirty = True
         self._upload_worker = None
         self._media_names = {}
+        self._media_local_paths = {}
+        self._media_rows = {'videos': [], 'audios': []}
         self._retry_upload = None
         self._capabilities = None
         self._active_model = ''
@@ -429,7 +709,7 @@ class VideoCreationPage(QWidget):
         self.workspace_link = PushButton(FIF.DOCUMENT, tr('AI 视频工作台'), self); self.workspace_link.setObjectName('videoWorkspaceLink'); self.workspace_link.clicked.connect(self.navigate_workspace.emit); header.addWidget(self.workspace_link); root.addLayout(header)
         self.body_layout = QBoxLayout(QBoxLayout.LeftToRight); self.body_layout.setSpacing(px(24));
         self.left_column = QWidget(self); self.left_column.setMinimumWidth(0); self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); left = QVBoxLayout(self.left_column); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(px(12)); left.addWidget(self._build_settings_card(), 1); self.body_layout.addWidget(self.left_column, 0)
-        self.right_column = QWidget(self); self.right_column.setMinimumWidth(0); self.right_column.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred); right = QVBoxLayout(self.right_column); right.setContentsMargins(0, 0, 0, 0); right.setSpacing(px(12)); right.addWidget(self._build_preview_card(), 0); right.addWidget(self._build_history_card(), 1); self.body_layout.addWidget(self.right_column, 1); root.addLayout(self.body_layout, 1); self._fit_columns()
+        self.right_column = QWidget(self); self.right_column.setMinimumWidth(0); self.right_column.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred); right = QVBoxLayout(self.right_column); right.setContentsMargins(0, 0, 0, 0); right.setSpacing(px(12)); right.addWidget(self._build_preview_card(), 2); right.addWidget(self._build_history_card(), 1); self.body_layout.addWidget(self.right_column, 1); root.addLayout(self.body_layout, 1); self._fit_columns()
 
     def _build_settings_card(self):
         card = _VideoCard('videoCreationSettingsCard', self.left_column); card.setMinimumWidth(0); card.setMaximumWidth(px(372)); card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); layout = QVBoxLayout(card); layout.setContentsMargins(px(16), px(16), px(16), px(16)); layout.setSpacing(px(12))
@@ -468,12 +748,19 @@ class VideoCreationPage(QWidget):
         self.reference_images_button = PushButton(tr('选择图片'), panel)
         self.reference_images_button.clicked.connect(self._choose_reference_images)
         self.reference_images_button.setVisible(False)
-        unsupported = ''
-        self.reference_videos_label = QLabel(tr('参考视频（0/3）'), panel); layout.addWidget(self.reference_videos_label); self.reference_videos_button = PushButton(tr('选择视频'), panel); self.reference_videos_button.clicked.connect(lambda: self._choose_media('videos')); layout.addWidget(self.reference_videos_button); self.reference_videos_hint = QLabel(unsupported, panel); self.reference_videos_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_videos_hint.setWordWrap(True); layout.addWidget(self.reference_videos_hint)
-        self.reference_audios_label = QLabel(tr('参考音频（0/3）'), panel); layout.addWidget(self.reference_audios_label); self.reference_audios_button = PushButton(tr('选择音频'), panel); self.reference_audios_button.clicked.connect(lambda: self._choose_media('audios')); layout.addWidget(self.reference_audios_button); self.reference_audios_hint = QLabel(unsupported, panel); self.reference_audios_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_audios_hint.setWordWrap(True); layout.addWidget(self.reference_audios_hint)
+        self.reference_videos_label = QLabel(tr('参考视频（0/3）'), panel); layout.addWidget(self.reference_videos_label); self.reference_videos_button = PushButton(tr('选择视频'), panel); self.reference_videos_button.clicked.connect(lambda: self._choose_media('videos')); layout.addWidget(self.reference_videos_button)
+        self.reference_videos_rows_host = QWidget(panel); self.reference_videos_rows_layout = QVBoxLayout(self.reference_videos_rows_host); self.reference_videos_rows_layout.setContentsMargins(0, 0, 0, 0); self.reference_videos_rows_layout.setSpacing(px(6)); layout.addWidget(self.reference_videos_rows_host)
+        self.reference_videos_hint = QLabel('', panel); self.reference_videos_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_videos_hint.setWordWrap(True); self.reference_videos_hint.setVisible(False); layout.addWidget(self.reference_videos_hint)
+        self.reference_audios_label = QLabel(tr('参考音频（0/3）'), panel); layout.addWidget(self.reference_audios_label); self.reference_audios_button = PushButton(tr('选择音频'), panel); self.reference_audios_button.clicked.connect(lambda: self._choose_media('audios')); layout.addWidget(self.reference_audios_button)
+        self.reference_audios_rows_host = QWidget(panel); self.reference_audios_rows_layout = QVBoxLayout(self.reference_audios_rows_host); self.reference_audios_rows_layout.setContentsMargins(0, 0, 0, 0); self.reference_audios_rows_layout.setSpacing(px(6)); layout.addWidget(self.reference_audios_rows_host)
+        self.reference_audios_hint = QLabel('', panel); self.reference_audios_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_audios_hint.setWordWrap(True); self.reference_audios_hint.setVisible(False); layout.addWidget(self.reference_audios_hint)
         self.reference_hint = QLabel(tr('参考素材按图片、视频、音频顺序提交，可在画面描述中引用。'), panel); self.reference_hint.setWordWrap(True); self.reference_hint.setObjectName('videoReferenceHint'); layout.addWidget(self.reference_hint)
         self.upload_status = QLabel('', panel); self.upload_status.setWordWrap(True); layout.addWidget(self.upload_status)
         self.retry_upload_button = PushButton(tr('重试上传'), panel); self.retry_upload_button.hide(); self.retry_upload_button.clicked.connect(self._retry_media_upload); layout.addWidget(self.retry_upload_button)
+        self.discard_upload_button = PushButton(tr('移除失败素材'), panel)
+        self.discard_upload_button.hide()
+        self.discard_upload_button.clicked.connect(self._discard_failed_upload)
+        layout.addWidget(self.discard_upload_button)
         self._rebuild_reference_images()
         return panel
 
@@ -482,9 +769,11 @@ class VideoCreationPage(QWidget):
         title_row = QHBoxLayout(); self.parameters_title = StrongBodyLabel(tr('生成参数'), panel); title_row.addWidget(self.parameters_title); title_row.addStretch(1); self.parameters_toggle = QToolButton(panel); self.parameters_toggle.setObjectName('videoParametersToggle'); self.parameters_toggle.setText('⌃'); self.parameters_toggle.setToolTip(tr('收起')); self.parameters_toggle.setCheckable(True); self.parameters_toggle.setChecked(True); self.parameters_toggle.clicked.connect(self._toggle_parameters); title_row.addWidget(self.parameters_toggle); layout.addLayout(title_row)
         self.parameters_content = QWidget(panel); content = QVBoxLayout(self.parameters_content); content.setContentsMargins(0, 0, 0, 0); content.setSpacing(px(8))
         duration_row = QHBoxLayout(); self.duration_label = QLabel(tr('⏱ 渲染时长'), self.parameters_content); duration_row.addWidget(self.duration_label); self.duration_spin = QSpinBox(self.parameters_content); self.duration_spin.setObjectName('videoDurationSpin'); self.duration_spin.setRange(4, 15); self.duration_spin.setValue(5); self.duration_spin.valueChanged.connect(self._duration_changed); duration_row.addWidget(self.duration_spin); self.duration_range_label = QLabel('', self.parameters_content); duration_row.addWidget(self.duration_range_label); duration_row.addStretch(1); content.addLayout(duration_row)
-        duration_shortcuts = self.duration_shortcuts = QHBoxLayout(); duration_shortcuts.setSpacing(px(8)); self.duration_buttons = []
-        for value in (5, 10, 15):
-            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content); button.setCheckable(True); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); button.setMinimumWidth(max(px(56), button.sizeHint().width())); button.clicked.connect(lambda _=False, v=value: self.duration_spin.setValue(v)); self.duration_buttons.append(button); duration_shortcuts.addWidget(button, 1)
+        duration_shortcuts = self.duration_shortcuts = QGridLayout(); duration_shortcuts.setHorizontalSpacing(px(8)); duration_shortcuts.setVerticalSpacing(px(8)); self.duration_buttons = []
+        for index, value in enumerate((5, 10, 15)):
+            button = PushButton(tr('{n}秒').format(n=value), self.parameters_content); button.setCheckable(True); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); button.setMinimumWidth(max(px(64), button.sizeHint().width() + px(12))); button.clicked.connect(lambda _=False, v=value: self.duration_spin.setValue(v)); self.duration_buttons.append(button); duration_shortcuts.addWidget(button, 0, index)
+        for column in range(3):
+            duration_shortcuts.setColumnStretch(column, 1)
         content.addLayout(duration_shortcuts)
         self.model_parameters_title = StrongBodyLabel(tr('🎨 模型专属参数'), self.parameters_content); self.model_parameters_title.setObjectName('videoModelParametersTitle'); content.addWidget(self.model_parameters_title)
         row = QGridLayout(); row.setHorizontalSpacing(px(8)); self.ratio_label = QLabel(tr('🎨 画面'), self.parameters_content); self.ratio_combo = ComboBox(self.parameters_content); self.ratio_combo.setObjectName('videoRatioCombo'); self.aspect_ratio_combo = self.ratio_combo; self.ratio_combo.addItems(['9:16', '16:9', '1:1']); self.ratio_combo.currentTextChanged.connect(self._ratio_changed); self.output_size_label = QLabel(tr('输出尺寸'), self.parameters_content); self.output_size_combo = ComboBox(self.parameters_content); self.output_size_combo.setObjectName('videoOutputSizeCombo'); row.addWidget(self.ratio_label, 0, 0); row.addWidget(self.output_size_label, 0, 1); row.addWidget(self.ratio_combo, 1, 0); row.addWidget(self.output_size_combo, 1, 1); row.setColumnStretch(0, 1); row.setColumnStretch(1, 1); content.addLayout(row)
@@ -591,23 +880,14 @@ class VideoCreationPage(QWidget):
             ratio = 9 / 16
         if self.preview_stack.currentIndex() == 2 and self.video_widget is not None and not self.video_widget._image.isNull():
             ratio = self.video_widget._image.width() / self.video_widget._image.height()
-        available_width = max(px(1), self.preview_area.parentWidget().contentsRect().width() - px(32))
-        # Budget against the viewport, not the scroll content's growing size.
         card = self.preview_area.parentWidget()
-        layout = card.layout()
-        margins = layout.contentsMargins()
-        overhead = margins.top() + margins.bottom() + layout.spacing() * (layout.count() - 1)
-        for index in range(layout.count()):
-            item = layout.itemAt(index)
-            if item.widget() is self.preview_area:
-                continue
-            if item.widget() is not None and item.widget().isHidden():
-                continue
-            overhead += item.sizeHint().height()
-        header = self.title_label.height() + self.caption_label.height() + px(24)
-        available_height = max(px(160), self.body_scroll.viewport().height() - header - px(36) - overhead)
-        self._preview_available_height = available_height
+        available_width = max(px(1), card.contentsRect().width() - px(32))
+        # Base the budget on the viewport, not the card's previous height:
+        # the card includes this fixed-size preview and would feed back into
+        # its own next measurement. Extra form content remains scrollable.
+        available_height = min(px(720), max(px(440), self.body_scroll.viewport().height() - px(240)))
         height = min(available_height, int(available_width / ratio))
+        self._preview_available_height = height
         self.preview_area.setFixedSize(max(1, round(height * ratio)), height)
         self.preview_area.layout().setContentsMargins(0, 0, 0, 0)
 
@@ -654,6 +934,7 @@ class VideoCreationPage(QWidget):
             item = self.reference_images_grid.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def _rebuild_reference_images(self):
@@ -758,7 +1039,7 @@ class VideoCreationPage(QWidget):
             return False
         worker = _MediaUploadWorker(self.config_manager, paths, kind, self)
         self._upload_worker = worker; self._workers.append(worker)
-        self._retry_upload = None; self.retry_upload_button.hide()
+        self._retry_upload = None; self.retry_upload_button.hide(); self.discard_upload_button.hide()
         self.upload_status.setText(tr('正在上传参考素材（{n}/{total}）').format(n=0, total=len(paths)))
         worker.uploaded.connect(self._media_uploaded)
         worker.progress.connect(lambda n, total: self.upload_status.setText(tr('正在上传参考素材（{n}/{total}）').format(n=n, total=total)))
@@ -773,11 +1054,64 @@ class VideoCreationPage(QWidget):
             return
         refs.append(url)
         self._media_names[url] = Path(path).name
+        self._media_local_paths[url] = str(path)
         self._sync_reference_labels(rebuild=False)
+
+    def _clear_media_rows(self, kind):
+        layout = getattr(self, 'reference_' + kind + '_rows_layout', None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.stop()
+                widget.hide()
+                widget.deleteLater()
+        self._media_rows[kind] = []
+
+    def _rebuild_media_rows(self, kind):
+        layout = getattr(self, 'reference_' + kind + '_rows_layout', None)
+        if layout is None:
+            return
+        existing = {row.path: row for row in self._media_rows[kind]}
+        while layout.count():
+            layout.takeAt(0)
+        rows = []
+        for url in list(getattr(self, 'reference_' + kind, [])):
+            path = self._media_local_paths.get(url)
+            if not path or not Path(path).is_file():
+                continue
+            row = existing.pop(str(path), None)
+            if row is None:
+                row = _ReferenceMediaRow(path, kind, self._warning, self)
+                row.remove_requested.connect(lambda _path, media_kind=kind: self._remove_reference_media(media_kind, _path))
+            layout.addWidget(row)
+            row.show()
+            rows.append(row)
+        for row in existing.values():
+            row.stop()
+            row.hide()
+            row.deleteLater()
+        self._media_rows[kind] = rows
+
+    def _remove_reference_media(self, kind, path):
+        path = str(path)
+        refs = getattr(self, 'reference_' + kind)
+        removed = [url for url in refs if self._media_local_paths.get(url) == path]
+        if not removed:
+            return False
+        for url in removed:
+            refs.remove(url)
+            self._media_local_paths.pop(url, None)
+            self._media_names.pop(url, None)
+        self._sync_reference_labels()
+        self._update_form_state()
+        return True
 
     def _media_upload_failed(self, worker, message):
         self._retry_upload = (list(worker.remaining), worker.kind)
-        self.upload_status.setText(message); self.retry_upload_button.show()
+        self.upload_status.setText(message); self.retry_upload_button.show(); self.discard_upload_button.show()
         self._warning(message)
 
     def _media_upload_finished(self, worker):
@@ -795,6 +1129,13 @@ class VideoCreationPage(QWidget):
         if self._retry_upload:
             self._accept_media_files(*self._retry_upload)
 
+    def _discard_failed_upload(self):
+        self._retry_upload = None
+        self.retry_upload_button.hide()
+        self.discard_upload_button.hide()
+        self.upload_status.clear()
+        self._update_form_state()
+
     def _sync_reference_labels(self, rebuild=True):
         caps = self._capabilities or dict(max_images=9, max_videos=3, max_audios=3)
         for kind, label, key in (('images', self.reference_images_label, tr('参考图片（{n}/{limit}）')),
@@ -809,6 +1150,12 @@ class VideoCreationPage(QWidget):
                 hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
                 hint.setText('\n'.join(hint.fontMetrics().elidedText(name, Qt.ElideMiddle, px(290)) for name in names))
                 hint.setToolTip('\n'.join(names))
+                hint.setVisible(False)
+                self._rebuild_media_rows(kind)
+                if kind == 'videos' and str(self._active_model).lower() == 'wan-3.0':
+                    label.setToolTip(tr('当前接口最多 3 个参考视频'))
+                else:
+                    label.setToolTip('')
         if rebuild:
             self._rebuild_reference_images()
 
@@ -848,20 +1195,32 @@ class VideoCreationPage(QWidget):
             item = self.duration_shortcuts.takeAt(0)
             item.widget().deleteLater()
         self.duration_buttons = []
-        for value in caps['quick_presets']:
+        presets = tuple(caps['quick_presets'])
+        two_columns = len(presets) == 4
+        for index, value in enumerate(presets):
             button = PushButton(tr('{n}秒').format(n=value), self.parameters_content)
             button.setProperty('duration', value); button.setCheckable(True)
-            button.setMinimumWidth(px(48)); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setMinimumWidth(max(px(64), button.sizeHint().width() + px(12))); button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.clicked.connect(lambda _=False, n=value: self._choose_duration(n))
-            self.duration_buttons.append(button); self.duration_shortcuts.addWidget(button, 1)
+            self.duration_buttons.append(button)
+            self.duration_shortcuts.addWidget(button, index // 2 if two_columns else 0,
+                                              index % 2 if two_columns else index)
+        for column in range(3):
+            self.duration_shortcuts.setColumnStretch(column, 1 if (two_columns and column < 2) or (not two_columns and column < len(presets)) else 0)
         self._duration_changed(self.duration_spin.value())
+        self._style_duration_buttons()
         self._update_duration_range_label()
         clipped = False
         for kind in ('images', 'videos', 'audios'):
             values = getattr(self, 'reference_' + kind)
             limit = caps['max_' + kind]
             clipped |= len(values) > limit
-            setattr(self, 'reference_' + kind, values[:limit])
+            kept = list(values[:limit])
+            dropped = set(values[limit:])
+            setattr(self, 'reference_' + kind, kept)
+            for url in dropped:
+                self._media_local_paths.pop(url, None)
+                self._media_names.pop(url, None)
         if clipped:
             self._warning(tr('已按当前模型上限裁剪参考素材'))
         self._sync_reference_labels()
@@ -872,7 +1231,8 @@ class VideoCreationPage(QWidget):
     def _update_duration_range_label(self):
         if self._capabilities:
             values = self._capabilities['durations']
-            self.duration_range_label.setText(tr('秒（{values}）').format(values=(' / '.join(map(str, values)) if len(values) <= 3 else f'{values[0]}–{values[-1]}')))
+            continuous = tuple(values) == tuple(range(values[0], values[-1] + 1))
+            self.duration_range_label.setText(tr('秒（{values}）').format(values=(f'{values[0]}–{values[-1]}' if continuous else ' / '.join(map(str, values)))))
 
     def _load_config_defaults(self):
         defaults = (getattr(self.config_manager, 'config', {}) or {}).get('video_creation') or {}; self._configured_model = str(defaults.get('model') or ''); self.mode = str(defaults.get('mode') or 'text'); self.ratio_combo.setCurrentText(str(defaults.get('ratio') or '9:16')); self.output_size_combo.setCurrentText(str(defaults.get('output_size') or '')); self.duration_spin.setValue(int(defaults.get('duration') or 5)); self.count_spin.setValue(int(defaults.get('count') or 1))
@@ -892,6 +1252,15 @@ class VideoCreationPage(QWidget):
         self.duration_spin.setValue(value)
         self._duration_changed(self.duration_spin.value())
 
+    def _style_duration_buttons(self):
+        rules = ('PushButton:checked {background:%s; color:%s; border:1px solid %s; font-weight:600;}'
+                 'PushButton:checked:hover {background:%s; color:%s;}') % (
+                     _color('video_creation_primary'), _color('video_creation_preview_text'),
+                     _color('video_creation_primary'), _color('video_creation_primary'),
+                     _color('video_creation_preview_text'))
+        for button in self.duration_buttons:
+            setCustomStyleSheet(button, rules, rules)
+
     def _count_changed(self, value): self.generate_button.setText(tr('▶ 生成视频 ×{n}').format(n=int(value))); self._update_form_state()
     def _prompt_text_changed(self):
         text = self.prompt_edit.toPlainText()
@@ -905,9 +1274,10 @@ class VideoCreationPage(QWidget):
         self._update_form_state()
     def _update_form_state(self):
         uploading = self._upload_worker is not None
+        failed_upload = self.mode == 'reference' and self._retry_upload is not None
         valid = bool(self.prompt_edit.toPlainText().strip()) and len(self.prompt_edit.toPlainText()) <= 5000 and bool(self.model_combo.currentData())
         supported = self._model_supported()
-        self.generate_button.setEnabled(valid and supported and not uploading)
+        self.generate_button.setEnabled(valid and supported and not uploading and not failed_upload)
         self.generate_button.setToolTip('' if supported else tr('当前模型不支持视频提交，请同步模型或更换模型'))
         self.model_combo.setEnabled(not uploading)
         for kind, button in (('videos', self.reference_videos_button), ('audios', self.reference_audios_button)):
@@ -956,6 +1326,8 @@ class VideoCreationPage(QWidget):
             self._warning(tr('当前模型不支持视频提交，请同步模型或更换模型')); return False
         if self._upload_worker is not None:
             self._warning(tr('参考素材正在上传，请稍候')); return False
+        if self.mode == 'reference' and self._retry_upload is not None:
+            self._warning(tr('参考素材上传失败，请重试或移除失败素材')); return False
         caps = capabilities(model, self._records)
         if (self.duration_spin.value() not in caps['durations'] or self.ratio_combo.currentText() not in caps['ratios']
                 or self.output_size_combo.currentText() not in caps['output_sizes'].get(self.ratio_combo.currentText(), ())):
@@ -1216,15 +1588,29 @@ class VideoCreationPage(QWidget):
         if _ORPHAN_WORKERS and not _SHUTDOWN_HOOK_CONNECTED and QCoreApplication.instance() is not None:
             QCoreApplication.instance().aboutToQuit.connect(_wait_orphan_workers); _SHUTDOWN_HOOK_CONNECTED = True
         return self.has_running_workers()
-    def closeEvent(self, event): self.shutdown_workers(); super().closeEvent(event)
+    def closeEvent(self, event):
+        for rows in self._media_rows.values():
+            for row in rows:
+                row.stop()
+        self.shutdown_workers()
+        super().closeEvent(event)
     def showEvent(self, event):
         super().showEvent(event)
         if self._history_dirty:
             self.refresh_history()
 
     def refresh_interface_scale(self):
+        for button in self.duration_buttons:
+            button.setMinimumWidth(max(px(64), button.fontMetrics().horizontalAdvance(button.text()) + px(24)))
+        for rows in self._media_rows.values():
+            for row in rows:
+                row.refresh_interface_scale()
         self._fit_columns(); self.body_layout.invalidate(); self.body_layout.activate(); self.body_content.updateGeometry(); self._update_preview_geometry()
     def refresh_colors(self):
+        self._style_duration_buttons()
+        for rows in self._media_rows.values():
+            for row in rows:
+                row.refresh_colors()
         for card in self.findChildren(_VideoCard): card.refresh_colors()
         self.caption_label.setStyleSheet('color:%s;' % _color('video_creation_muted'))
         self.status_badge.setFixedHeight(px(24))
@@ -1298,6 +1684,12 @@ class VideoCreationPage(QWidget):
         self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('视频生成后会自动保存到本地，可在任务历史中查看。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(rebuild=False); self._update_duration_range_label(); self._duration_changed(self.duration_spin.value()); self._count_changed(self.count_spin.value()); self._update_form_state()
         for row in self.history_list.findChildren(_HistoryRow):
             row.retranslate_ui()
+        self.retry_upload_button.setText(tr('重试上传'))
+        self.discard_upload_button.setText(tr('移除失败素材'))
+        for rows in self._media_rows.values():
+            for row in rows:
+                row.remove_button.setToolTip(tr('删除参考素材'))
+                row._state_changed(row._player.state() if row._player is not None else 0)
         if self.media_play_button is not None: self.media_play_button.setToolTip(tr('暂停') if self.media_player is not None and self.media_player.state() == QMediaPlayer.PlayingState else tr('播放'))
         if self.media_mute_button is not None: self.media_mute_button.setToolTip(tr('取消静音') if self.media_player is not None and self.media_player.isMuted() else tr('静音'))
         if self.media_fullscreen_button is not None: self.media_fullscreen_button.setToolTip(tr('退出全屏') if self.video_widget is not None and self.video_widget.isFullScreen() else tr('全屏'))

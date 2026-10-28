@@ -15,6 +15,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication, QBoxLayout, QFrame, QToolButton, QAbstractButton, QCheckBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtTest import QTest
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from qfluentwidgets import PushButton, ToolButton
 
 from core.config_manager import ConfigManager
@@ -24,6 +25,45 @@ from tests.test_interface_scaling import FakeScreen
 from ui.scaling import apply_interface_scale
 from ui.tokens import px
 from ui.pages.video_creation_page import VideoCreationPage, _HistoryRow
+
+
+class _ReferencePlayerFixture(QObject):
+    PlayingState, PausedState, StoppedState = 1, 2, 0
+    stateChanged = pyqtSignal(int)
+    durationChanged = pyqtSignal(int)
+    error = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_state = self.StoppedState
+        self.sources = []
+        self.play_calls = 0
+
+    def isAvailable(self):
+        return True
+
+    def state(self):
+        return self.current_state
+
+    def setMedia(self, source):
+        self.sources.append(source)
+
+    def setVideoOutput(self, surface):
+        self.surface = surface
+
+    def _change(self, state):
+        self.current_state = state
+        self.stateChanged.emit(state)
+
+    def play(self):
+        self.play_calls += 1
+        self._change(self.PlayingState)
+
+    def pause(self):
+        self._change(self.PausedState)
+
+    def stop(self):
+        self._change(self.StoppedState)
 
 
 class VideoCreationPageTests(unittest.TestCase):
@@ -77,12 +117,167 @@ class VideoCreationPageTests(unittest.TestCase):
             QTest.qWait(10)
         self.assertIsNone(self.page._upload_worker)
 
+    def _add_media(self, kind, name):
+        path = self.root / name
+        path.write_bytes(b'local reference fixture')
+        self.page._media_uploaded(kind, str(path), 'https://fixture.test/' + name)
+        return path, self.page._media_rows[kind][-1]
+
+    def test_reference_audio_play_pause_end_error_remove_and_no_reupload(self):
+        self.page._set_mode('reference')
+        self.page.prompt_edit.setPlainText('参考素材测试')
+        with patch('ui.pages.video_creation_page.QMediaPlayer', _ReferencePlayerFixture), patch.object(self.page, '_warning') as warning:
+            path, row = self._add_media('audios', '中文旁白.wav')
+            player = row._player
+            self.assertEqual(player.sources, [])
+            warning.assert_not_called()
+            QTest.mouseClick(row.play_button, Qt.LeftButton)
+            self.assertEqual(row.play_button.toolTip(), '暂停')
+            self.assertEqual(Path(player.sources[0].canonicalUrl().toLocalFile()), path)
+            QTest.mouseClick(row.play_button, Qt.LeftButton)
+            self.assertEqual(row.play_button.toolTip(), '播放')
+            QTest.mouseClick(row, Qt.LeftButton)
+            self.assertEqual(len(player.sources), 1)
+            player.stop()
+            self.assertEqual(row.play_button.toolTip(), '播放')
+            QTest.mouseClick(row.play_button, Qt.LeftButton)
+            player.error.emit(1)
+            self.assertEqual(row.play_button.toolTip(), '播放')
+            self.assertTrue(player.sources[-1].isNull())
+            warning.assert_called_once_with('音频播放失败，请检查文件或系统音频输出')
+            QTest.mouseClick(row.play_button, Qt.LeftButton)
+            self.assertEqual(Path(player.sources[-1].canonicalUrl().toLocalFile()), path)
+            QTest.mouseClick(row.remove_button, Qt.LeftButton)
+            self.assertEqual(self.page.reference_audios, [])
+            self.assertEqual(self.page.reference_audios_label.text(), '参考音频（0/3）')
+            self.assertNotIn('https://fixture.test/' + path.name, self.page._media_local_paths)
+            self.assertTrue(player.sources[-1].isNull())
+            self.assertTrue(self.page.generate_button.isEnabled())
+
+    def test_reference_video_dialog_reopen_duration_and_system_fallback(self):
+        with patch('ui.pages.video_creation_page.QMediaPlayer', _ReferencePlayerFixture), patch.object(self.page, '_warning') as warning:
+            path, row = self._add_media('videos', '产品演示.mp4')
+            row._duration_player.durationChanged.emit(125000)
+            QTest.qWait(10)
+            self.assertIn('02:05', row.meta_label.text())
+            self.assertTrue(row._duration_player.sources[-1].isNull())
+            self.assertTrue(row.toggle_playback())
+            dialog = row._video_dialog
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(Path(dialog.player.sources[0].canonicalUrl().toLocalFile()), path)
+            QTest.mouseClick(dialog.play_button, Qt.LeftButton)
+            self.assertEqual(dialog.play_button.text(), '播放')
+            dialog.close()
+            self.assertTrue(dialog.player.sources[-1].isNull())
+            self.assertIsNone(row._video_dialog)
+            self.assertTrue(row.toggle_playback())
+            self.assertIsNot(row._video_dialog, dialog)
+            row.stop()
+            warning.assert_not_called()
+        with patch('ui.pages.video_creation_page.QMediaPlayer', None), patch('ui.pages.video_creation_page.QDesktopServices.openUrl', return_value=True) as open_url, patch.object(row, 'warning_callback') as warning:
+            self.assertTrue(row.toggle_playback())
+            self.assertEqual(Path(open_url.call_args.args[0].toLocalFile()), path)
+            warning.assert_called_once_with('已使用系统默认播放器打开参考视频')
+        with patch('ui.pages.video_creation_page.QMediaPlayer', None), patch('ui.pages.video_creation_page.QDesktopServices.openUrl', side_effect=OSError('fixture')), patch.object(row, 'warning_callback') as warning:
+            self.assertFalse(row.toggle_playback())
+            warning.assert_called_once_with('无法打开参考视频，请检查文件关联')
+
+    def test_audio_backend_unavailable_warns_only_on_play(self):
+        with patch('ui.pages.video_creation_page.QMediaPlayer', None), patch.object(self.page, '_warning') as warning:
+            _path, row = self._add_media('audios', '无设备.mp3')
+            warning.assert_not_called()
+            self.assertFalse(row.toggle_playback())
+            warning.assert_called_once_with('当前设备无法播放音频，请检查系统音频输出')
+
+    def test_windows_media_backend_prefers_wmf_and_preserves_explicit_override(self):
+        from ui.pages.video_creation_page import _prefer_windows_media_backend
+        key = 'QT_MULTIMEDIA_PREFERRED_PLUGINS'
+        with patch.dict(os.environ, {}, clear=False), patch('os.name', 'nt'):
+            os.environ.pop(key, None)
+            _prefer_windows_media_backend()
+            self.assertEqual(os.environ[key], 'windowsmediafoundation,directshow')
+            os.environ[key] = 'directshow'
+            _prefer_windows_media_backend()
+            self.assertEqual(os.environ[key], 'directshow')
+        with patch.dict(os.environ, {}, clear=False), patch('os.name', 'posix'):
+            os.environ.pop(key, None)
+            _prefer_windows_media_backend()
+            self.assertNotIn(key, os.environ)
+
+    def test_media_rows_and_submit_reachable_all_scales_and_themes(self):
+        from ui.theme import apply_ui_mode
+        from PyQt5.QtCore import QPoint
+        self.page._set_mode('reference')
+        with patch('ui.pages.video_creation_page.QMediaPlayer', _ReferencePlayerFixture):
+            self._add_media('videos', '很长的参考视频文件名用于验证省略和提示.mp4')
+            self._add_media('audios', '音频旁白.wav')
+        try:
+            for theme in ('light', 'dark'):
+                apply_ui_mode(theme)
+                self.page.refresh_colors()
+                for scale in ('1.0', '1.25', '1.5', '1.75'):
+                    apply_interface_scale(self.app, FakeScreen(), scale)
+                    self.page.resize(1024, 700)
+                    flush_layout(self.app, self.page)
+                    for kind in ('videos', 'audios'):
+                        row = self.page._media_rows[kind][0]
+                        self.assertGreaterEqual(row.height(), px(44))
+                        self.assertEqual(row.name_label.toolTip(), Path(row.path).name)
+                        widgets = (row.name_label, row.meta_label, row.play_button, row.remove_button)
+                        for widget in widgets:
+                            self.assertTrue(row.rect().contains(widget.geometry()))
+                        for left, right in zip(widgets, widgets[1:]):
+                            self.assertLess(left.geometry().right(), right.x())
+                        self.assertGreaterEqual(row.meta_label.width(), row.meta_label.fontMetrics().horizontalAdvance(row.meta_label.text()))
+                        self.page.body_scroll.ensureWidgetVisible(row)
+                        self.app.processEvents()
+                        point = row.mapTo(self.page.body_scroll.viewport(), row.play_button.geometry().center())
+                        self.assertTrue(self.page.body_scroll.viewport().rect().contains(point))
+                    self.page.body_scroll.ensureWidgetVisible(self.page.generate_button)
+                    self.app.processEvents()
+                    center = self.page.generate_button.mapTo(self.page.body_scroll.viewport(), self.page.generate_button.rect().center())
+                    self.assertTrue(self.page.body_scroll.viewport().rect().contains(center))
+        finally:
+            apply_ui_mode('light')
+
+    def test_wan_clips_reference_videos_to_real_api_limit_and_rejects_fourth(self):
+        self._use_models(['video-v3', 'wan-3.0'])
+        self.page._set_mode('reference')
+        with patch('ui.pages.video_creation_page.QMediaPlayer', _ReferencePlayerFixture):
+            entries = [self._add_media('videos', f'video-{index}.mp4') for index in range(5)]
+        with patch.object(self.page, '_warning') as warning:
+            self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('wan-3.0'))
+        warning.assert_called_once_with('已按当前模型上限裁剪参考素材')
+        self.assertEqual(len(self.page._media_rows['videos']), 3)
+        self.assertEqual(len(self.page._media_local_paths), 3)
+        self.assertEqual(self.page.reference_videos_label.text(), '参考视频（3/3）')
+        self.assertEqual(self.page.reference_videos_label.toolTip(), '当前接口最多 3 个参考视频')
+        with patch.object(self.page, '_warning') as warning, patch('ui.pages.video_creation_page.ImageUploader.from_config') as uploader:
+            self.assertFalse(self.page._accept_media_files([str(entries[3][0])], 'videos'))
+            uploader.assert_not_called()
+        warning.assert_called_once_with('参考素材超出模型上限，最多 3 个')
+        self.page.duration_buttons[-1].click()
+        self.assertEqual(self.page.duration_spin.value(), 30)
+
+    def test_reference_upload_failure_blocks_submit_until_retry_or_explicit_removal(self):
+        self.page._set_mode('reference')
+        self.page.prompt_edit.setPlainText('不可静默忽略上传失败素材')
+        worker = Mock(remaining=['fixture.mp4'], kind='videos')
+        with patch.object(self.page, '_warning'):
+            self.page._media_upload_failed(worker, '素材上传被拒绝，请检查文件格式与大小')
+            self.page._update_form_state()
+            self.assertFalse(self.page.generate_button.isEnabled())
+            self.assertFalse(self.page.submit_generation())
+        self.page.discard_upload_button.click()
+        self.assertIsNone(self.page._retry_upload)
+        self.assertTrue(self.page.generate_button.isEnabled())
+
     def test_model_capabilities_link_duration_presets_media_and_output_sizes(self):
         self._use_models(['MiniMax-H3', 'video-v3', 'wan-3.0'])
         for model, duration, limits, presets, resolutions in (
                 ('MiniMax-H3', (4, 15), (9, 3, 3), (5, 10, 15), ('768p', '1080p', '2K', '4K')),
                 ('video-v3', (4, 30), (30, 10, 10), (5, 10, 15, 30), ('720p',)),
-                ('wan-3.0', (5, 15), (10, 5, 5), (5, 10, 15), ('720p',))):
+                ('wan-3.0', (5, 30), (10, 3, 5), (5, 10, 15, 30), ('720p',))):
             self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
             self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), duration)
             self.assertEqual(tuple(button.property('duration') for button in self.page.duration_buttons), presets)
@@ -227,6 +422,44 @@ class VideoCreationPageTests(unittest.TestCase):
             flush_layout(self.app, self.page)
             self.assertAlmostEqual(self.page.preview_area.width()/self.page.preview_area.height(), 3/4, delta=.01)
 
+    def test_preview_1366_and_1920_is_large_centered_bounded_all_scales(self):
+        from ui.theme import apply_ui_mode
+        from PyQt5.QtGui import QImage
+        try:
+            for theme in ('light', 'dark'):
+                apply_ui_mode(theme)
+                self.page.refresh_colors()
+                for scale in ('1.0', '1.25', '1.5', '1.75'):
+                    apply_interface_scale(self.app, FakeScreen(), scale)
+                    for window_size in ((1366, 768), (1920, 1080)):
+                        self.page.resize(*window_size)
+                        for ratio in ('9:16', '16:9', '1:1'):
+                            with self.subTest(theme=theme, scale=scale, size=window_size, ratio=ratio):
+                                self.page.ratio_combo.setCurrentText(ratio)
+                                flush_layout(self.app, self.page)
+                                area = self.page.preview_area
+                                card = area.parentWidget()
+                                self.assertTrue(card.rect().contains(area.geometry()))
+                                self.assertAlmostEqual(area.geometry().center().x(), card.rect().center().x(), delta=2)
+                                self.assertLessEqual(area.height(), px(720))
+                                width, height = map(int, ratio.split(':'))
+                                self.assertAlmostEqual(area.width() / area.height(), width / height, delta=.01)
+                                if ratio == '9:16':
+                                    self.assertGreaterEqual(area.height(), px(420))
+                                    self.assertGreaterEqual(area.height() / (card.height() - px(32)), .55)
+                                previous = area.size()
+                                for _ in range(3):
+                                    self.page._update_preview_geometry()
+                                    self.app.processEvents()
+                                self.assertEqual(area.size(), previous)
+            if self.page.video_widget is not None:
+                self.page.preview_stack.setCurrentIndex(2)
+                self.page.video_widget._set_frame(QImage(720, 1280, QImage.Format_RGB32))
+                flush_layout(self.app, self.page)
+                self.assertAlmostEqual(self.page.preview_area.width() / self.page.preview_area.height(), 9/16, delta=.01)
+        finally:
+            apply_ui_mode('light')
+
     def test_v3_four_duration_shortcuts_fit_all_scales(self):
         self._use_models(['video-v3'])
         for scale in ('1.0', '1.25', '1.5', '1.75'):
@@ -237,8 +470,42 @@ class VideoCreationPageTests(unittest.TestCase):
             for index, button in enumerate(self.page.duration_buttons):
                 self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + px(12))
                 self.assertTrue(self.page.parameters_content.rect().contains(button.geometry()))
-                if index:
-                    self.assertGreater(button.x(), self.page.duration_buttons[index-1].geometry().right())
+                row, column, row_span, column_span = self.page.duration_shortcuts.getItemPosition(index)
+                self.assertEqual((row, column, row_span, column_span), (index // 2, index % 2, 1, 1))
+                if column:
+                    self.assertEqual(button.y(), self.page.duration_buttons[index-1].y())
+                    self.assertGreaterEqual(button.x() - self.page.duration_buttons[index-1].geometry().right() - 1, px(8))
+                if row:
+                    self.assertEqual(button.x(), self.page.duration_buttons[index-2].x())
+                    self.assertGreaterEqual(button.y() - self.page.duration_buttons[index-2].geometry().bottom() - 1, px(8))
+                self.assertAlmostEqual(button.width(), self.page.duration_buttons[0].width(), delta=1)
+                button.click()
+                self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 30)[index])
+                self.assertEqual([item.isChecked() for item in self.page.duration_buttons], [i == index for i in range(4)])
+
+    def test_duration_selected_fill_follows_theme(self):
+        from PyQt5.QtGui import QColor
+        from ui.materials import ecommerce_color
+        from ui.theme import apply_ui_mode
+        self._use_models(['video-v3', 'wan-3.0'])
+        try:
+            for theme in ('light', 'dark'):
+                apply_ui_mode(theme)
+                self.page.refresh_colors()
+                for model in ('video-v3', 'wan-3.0'):
+                    self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
+                    for scale in ('1.0', '1.25', '1.5', '1.75'):
+                        apply_interface_scale(self.app, FakeScreen(), scale)
+                        self.page.refresh_interface_scale()
+                        flush_layout(self.app, self.page)
+                        for button in self.page.duration_buttons:
+                            button.click()
+                            self.app.processEvents()
+                            rendered = button.grab().toImage()
+                            self.assertEqual(rendered.pixelColor(px(8), button.height() // 2).name(),
+                                             QColor(ecommerce_color('video_creation_primary')).name())
+        finally:
+            apply_ui_mode('light')
 
     def test_header_models_and_api_status(self):
         from ui.materials import ecommerce_color

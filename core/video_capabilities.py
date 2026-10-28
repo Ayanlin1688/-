@@ -46,7 +46,9 @@ def capabilities(model, catalog=None):
         resolutions = ('480p',) if '480p' in lower else ('720p',)
         limits, audio, seed = (30, 10, 10), True, True
     elif lower == 'wan-3.0':
-        durations, limits = (5, 10, 15), (10, 5, 5)
+        # Expose the requested 30s capability; the observed OpenAI-video 400
+        # establishes a separate limit of three reference videos.
+        durations, presets, limits = (5, 10, 15, 30), (5, 10, 15, 30), (10, 3, 5)
     elif family in ('video-v1', 'grok-imagine-1.5-video'):
         # Preserve the existing, separately verified legacy protocols.
         from .model_parameters import legacy_model_options

@@ -477,12 +477,12 @@ class ManualVideoTests(unittest.TestCase):
                          [mock.call(str(video), kind='videos'), mock.call(str(audio), kind='audios')])
 
     def test_family_reference_limits_and_v3_thirty_seconds(self):
-        for model, image_limit, media_limit, duration in (
-            ('MiniMax-H3', 9, 3, 15), ('video-v2', 9, 3, 10),
-            ('video-v3', 30, 10, 30), ('wan-3.0', 10, 5, 15)):
+        for model, image_limit, video_limit, audio_limit, duration in (
+            ('MiniMax-H3', 9, 3, 3, 15), ('video-v2', 9, 3, 3, 10),
+            ('video-v3', 30, 10, 10, 30), ('wan-3.0', 10, 3, 5, 30)):
             refs = {'images': ['https://img/a.png'] * image_limit,
-                    'videos': ['https://media/a.mp4'] * media_limit,
-                    'audios': ['https://media/a.wav'] * media_limit}
+                    'videos': ['https://media/a.mp4'] * video_limit,
+                    'audios': ['https://media/a.wav'] * audio_limit}
             records = self.manager.prepare_tasks('fixture', model, duration=duration, refs=refs)
             self.assertEqual(records[0]['refs'], refs)
             for kind in refs:
@@ -512,6 +512,55 @@ class ManualVideoTests(unittest.TestCase):
         error = RequestError('HTTP 429: too many requests', 429, 'too many requests')
         self.assertEqual(self.manager._classify_failure(error),
                          ('上游限流（429），请稍后重试或更换模型', 'rate_limit', 429, True))
+
+    def test_reference_count_400_is_chinese_and_never_resubmits(self):
+        for kind, label, limit in (('videos', '视频', 3), ('audios', '音频', 5), ('images', '图片', 9)):
+            with self.subTest(kind=kind):
+                error = RequestError('provider rejected', 400,
+                                     '{"error":"%s supports at most %s reference %s"}' % (kind, limit, kind))
+                client = mock.MagicMock()
+                client.create_task.side_effect = error
+                task = self._tasks()[0]
+                with mock.patch('core.manual_video.ApiClient', return_value=client):
+                    result = self.manager.run_tasks([task])[0]
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['error'], f'上游该模型最多支持 {limit} 个参考{label}')
+                self.assertEqual(result['error_category'], 'invalid_parameters')
+                self.assertFalse(result['retryable'])
+                client.create_task.assert_called_once()
+                client.query_task.assert_not_called()
+
+    def test_wan_and_v3_real_payload_limits_and_sizes_match_ui_capabilities(self):
+        from core.video_capabilities import capabilities
+        from core.model_parameters import validate_task_parameters
+        for model, video_limit, audio_limit in (('wan-3.0', 3, 5), ('video-v3', 10, 10)):
+            caps = capabilities(model)
+            for ratio in caps['ratios']:
+                size = caps['output_sizes'][ratio][0]
+                refs = {'videos': ['https://fixture.test/reference.mp4'] * video_limit,
+                        'audios': ['https://fixture.test/reference.wav'] * audio_limit}
+                task = self.manager.prepare_tasks('fixture', model, ratio=ratio, output_size=size,
+                                                  duration=30, refs=refs)[0]
+                _FakeApiClient.create_calls = []
+                with mock.patch('core.manual_video.ApiClient', _FakeApiClient), \
+                        mock.patch('core.manual_video.VideoDownloader', _FakeDownloader), \
+                        mock.patch('core.image_uploader.ImageUploader.from_config') as uploader:
+                    result = self.manager.run_tasks([task])[0]
+                self.assertEqual(result['status'], 'succeeded')
+                uploader.assert_not_called()
+                model_id, prompt, images, params, catalog = _FakeApiClient.create_calls[0]
+                payload = validate_task_parameters(model_id, prompt, params, len(images), catalog)
+                self.assertEqual(payload['videos'], refs['videos'])
+                self.assertEqual(payload['audios'], refs['audios'])
+                self.assertEqual(payload['resolution'], '720p')
+                self.assertEqual(payload.get('duration', int(payload.get('seconds', 0))), 30)
+                invalid = dict(params, videos=params['videos'] + ['https://fixture.test/fourth.mp4'])
+                with self.assertRaisesRegex(ValueError, '参考视频'):
+                    validate_task_parameters(model_id, prompt, invalid, 0, catalog)
+        with self.assertRaisesRegex(ValueError, '画面比例'):
+            self.manager.prepare_tasks('fixture', 'wan-3.0', ratio='7:11', duration=30)
+        with self.assertRaisesRegex(ValueError, '输出尺寸'):
+            self.manager.prepare_tasks('fixture', 'wan-3.0', output_size='4K', duration=30)
 
     def test_resolution_mapping_and_veo_inline_video_data(self):
         self.assertEqual(self.manager._api_resolution('video-v2', '1920x1088'), '1080p')
