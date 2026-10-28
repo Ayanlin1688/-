@@ -92,21 +92,16 @@ class ThinkingPayloadTests(unittest.TestCase):
             'thinkingMode': {'type': 'enabled'},
         })
 
-    def test_openai_deepseek_disabled_uses_thinking_mode_disabled(self):
-        self.assertEqual(thinking_payload('openai', 'deepseek-chat', False),
-                         {'thinkingMode': {'type': 'disabled'}})
+    def test_openai_disabled_is_clean_for_every_model(self):
+        for model in ('deepseek-chat', 'gemini-3.8-flash', 'o3-mini'):
+            with self.subTest(model=model):
+                self.assertEqual(thinking_payload('openai', model, False), {})
 
     def test_openai_gemini_model_enabled_includes_thinking_config(self):
         self.assertEqual(thinking_payload('openai', 'gemini-3.8-flash', True), {
-            'reasoning_effort': 'medium',
-            'enable_thinking': True,
-            'chat_template_kwargs': {'enable_thinking': True},
             'thinkingConfig': GEMINI_3_CONFIG,
         })
         self.assertEqual(thinking_payload('openai', 'gemini-2.5-flash', True), {
-            'reasoning_effort': 'medium',
-            'enable_thinking': True,
-            'chat_template_kwargs': {'enable_thinking': True},
             'thinkingConfig': GEMINI_BUDGET_CONFIG,
         })
 
@@ -119,11 +114,8 @@ class ThinkingPayloadTests(unittest.TestCase):
                     'chat_template_kwargs': {'enable_thinking': True},
                 })
 
-    def test_openai_other_reasoning_disabled_sends_enable_thinking_false(self):
-        self.assertEqual(thinking_payload('openai', 'o3-mini', False), {
-            'enable_thinking': False,
-            'chat_template_kwargs': {'enable_thinking': False},
-        })
+    def test_openai_other_reasoning_disabled_is_clean(self):
+        self.assertEqual(thinking_payload('openai', 'o3-mini', False), {})
 
     def test_openai_non_reasoning_models_get_no_parameters_in_both_states(self):
         for model in ('gpt-image-2', 'gpt-4o', 'video-v3', 'claude-sonnet-4-6'):
@@ -184,17 +176,18 @@ class ApplyThinkingPayloadTests(unittest.TestCase):
         self.assertEqual(payload, {'model': 'deepseek-v4-pro', 'messages': [],
                                    'stream': True, 'temperature': 0.7})
 
-    def test_openai_disabled_maps_thinking_mode_to_top_level_disabled(self):
+    def test_openai_disabled_removes_all_thinking_fields(self):
         result = apply_thinking_to_payload({}, 'openai', 'deepseek-chat', False)
-        self.assertEqual(result, {'thinking': {'type': 'disabled'}})
+        self.assertEqual(result, {})
 
     def test_openai_gemini_maps_thinking_config_to_extra_body_google(self):
         result = apply_thinking_to_payload(
             {'model': 'gemini-3.8-flash'}, 'openai', 'gemini-3.8-flash', True)
         self.assertEqual(result['extra_body'], {
             'google': {'thinking_config': GEMINI_3_GOOGLE_CONFIG}})
-        self.assertEqual(result['enable_thinking'], True)
-        self.assertEqual(result['chat_template_kwargs'], {'enable_thinking': True})
+        self.assertNotIn('reasoning_effort', result)
+        self.assertNotIn('enable_thinking', result)
+        self.assertNotIn('chat_template_kwargs', result)
         self.assertNotIn('thinkingConfig', result)
         self.assertNotIn('generationConfig', result)
         self.assertEqual(result['model'], 'gemini-3.8-flash')

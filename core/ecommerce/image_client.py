@@ -36,6 +36,7 @@ class EcommerceImageError(Exception):
         self.failed_before_response = failed_before_response
         classification = classify_http_error(status_code, clean(str(body_excerpt)) or self.message, kind='image')
         self.category = classification['category']
+        self.user_message = classification['message'] if status_code is not None else self.message
         self.switchable = classification['switchable'] if status_code is not None else retry_safe is not False
         self.retry_safe = (classification['retryable']
                            if retry_safe is None and status_code is not None else retry_safe)

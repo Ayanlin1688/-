@@ -95,6 +95,11 @@ class EcommerceWorker(QThread):
     def _clean(self, value):
         return redact_text(value, self.secrets)
 
+    @staticmethod
+    def _user_error(error):
+        """Return the short user-facing message while retaining raw text in diagnostics."""
+        return getattr(error, 'user_message', None) or str(error)
+
     def run(self):
         group_id = self.arguments.get('group_id', '')
         current_row_index = 0
@@ -159,7 +164,7 @@ class EcommerceWorker(QThread):
                         group_arguments.pop('group_id', None)
                         runners['start'](**group_arguments, cancel_event=self.cancel_event)
                     except Exception as error:  # noqa: BLE001 - 单行失败不阻断后续行
-                        last_error = self._clean(error)
+                        last_error = self._clean(self._user_error(error))
                         self.batch_row_failed.emit(current_row_index, last_error)
                         self.log_message.emit(
                             tr('批量第 {index} 行失败：{message}').format(
@@ -169,7 +174,7 @@ class EcommerceWorker(QThread):
             group_id = runners[self.operation](**self.arguments, cancel_event=self.cancel_event)
             self.finished.emit(group_id, '')
         except Exception as error:
-            message = self._clean(error)
+            message = self._clean(self._user_error(error))
             if self.operation == 'batch':
                 groups = [item for item in (self.arguments.get('groups') or ())
                           if isinstance(item, dict)]
@@ -1686,8 +1691,20 @@ class EcommercePage(QWidget):
 
     def _make_manager(self):
         # Model values are snapshotted on the UI thread before the worker starts.
+        controller = getattr(self.config_manager, 'model_catalog_controller', None)
+        live_catalog = {}
+        if controller is not None:
+            for capability in ('chat', 'image'):
+                try:
+                    snapshot = controller.snapshot_for(capability)
+                except Exception:
+                    snapshot = {}
+                live_catalog[capability] = snapshot if isinstance(snapshot, dict) else {}
         return EcommerceImageManager.build_from_config(
-            self.config_manager, overrides=dict(self._manager_overrides))
+            self.config_manager, overrides=dict(self._manager_overrides),
+            # Keep the same live /v1/models snapshot used by the selectors so
+            # failover never invents provider IDs or falls back to stale names.
+            model_catalog=live_catalog)
 
     def start_generation(self):
         if self.busy:

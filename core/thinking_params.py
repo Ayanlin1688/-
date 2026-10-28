@@ -88,11 +88,9 @@ def gemini_thinking_config(model):
 
 
 def _thinking_off(kind, model):
-    if kind == 'openai' and is_deepseek(model):
-        return {'thinkingMode': {'type': 'disabled'}}
-    if kind == 'openai' and is_reasoning(model):
-        return {'enable_thinking': False,
-                'chat_template_kwargs': {'enable_thinking': False}}
+    # A disabled request is intentionally clean for every OpenAI-compatible
+    # model.  Some gateways reject an explicit false value as a conflict with
+    # their standard effort, and omitting all thinking keys is portable.
     return {}
 
 
@@ -103,12 +101,13 @@ def _thinking_on(kind, model):
         if is_deepseek(model):
             return {'reasoning_effort': 'high',
                     'thinkingMode': {'type': 'enabled'}}
-        params = {'reasoning_effort': 'medium',
-                  'enable_thinking': True,
-                  'chat_template_kwargs': {'enable_thinking': True}}
         if _GEMINI_RE.search(str(model or '')):
-            params['thinkingConfig'] = gemini_thinking_config(model)
-        return params
+            # One representation only.  apply_thinking_to_payload maps this
+            # logical value to extra_body.google.thinking_config.
+            return {'thinkingConfig': gemini_thinking_config(model)}
+        return {'reasoning_effort': 'medium',
+                'enable_thinking': True,
+                'chat_template_kwargs': {'enable_thinking': True}}
     if kind == 'anthropic':
         return {
             'thinking': {'type': 'enabled', 'budget_tokens': _ANTHROPIC_THINKING_BUDGET},
@@ -163,9 +162,48 @@ def apply_thinking_to_payload(payload, kind, model, enabled):
     result = dict(payload) if isinstance(payload, dict) else {}
     params = thinking_payload(kind, model, enabled)
     if not params:
+        for key in ('reasoning_effort', 'enable_thinking', 'chat_template_kwargs',
+                    'thinking', 'thinkingConfig', 'thinking_config', 'thinkingMode',
+                    'thinkingConfig'):
+            result.pop(key, None)
+        extra_body = result.get('extra_body')
+        if isinstance(extra_body, dict):
+            extra_body = dict(extra_body)
+            google = extra_body.get('google')
+            if isinstance(google, dict):
+                google = dict(google)
+                google.pop('thinking_config', None)
+                if google:
+                    extra_body['google'] = google
+                else:
+                    extra_body.pop('google', None)
+            if extra_body:
+                result['extra_body'] = extra_body
+            else:
+                result.pop('extra_body', None)
+        generation = result.get('generationConfig')
+        if isinstance(generation, dict):
+            generation = dict(generation)
+            generation.pop('thinkingConfig', None)
+            generation.pop('thinking_config', None)
+            if generation:
+                result['generationConfig'] = generation
+            else:
+                result.pop('generationConfig', None)
+        generation = result.get('generation_config')
+        if isinstance(generation, dict):
+            generation = dict(generation)
+            generation.pop('thinkingConfig', None)
+            generation.pop('thinking_config', None)
+            if generation:
+                result['generation_config'] = generation
+            else:
+                result.pop('generation_config', None)
         return result
 
     if kind == 'openai':
+        for key in ('reasoning_effort', 'enable_thinking', 'chat_template_kwargs', 'thinking'):
+            result.pop(key, None)
         for key in ('reasoning_effort', 'enable_thinking', 'chat_template_kwargs'):
             if key in params:
                 result[key] = _copy_value(params[key])
@@ -175,6 +213,9 @@ def apply_thinking_to_payload(payload, kind, model, enabled):
         if isinstance(config, dict) and _GEMINI_RE.search(str(model or '')):
             extra_body = result.get('extra_body')
             extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+            # The Gemini gateway treats sibling keys under ``google`` as a
+            # second settings representation.  Keep only the one supported
+            # thinking object while preserving unrelated ``extra_body`` keys.
             extra_body['google'] = {'thinking_config': _google_thinking_config(config)}
             result['extra_body'] = extra_body
         return result

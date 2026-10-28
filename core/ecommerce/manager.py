@@ -63,7 +63,7 @@ class EcommerceImageManager:
                  concurrency=5, log=None, *, analysis_func=None, image_func=None,
                  on_group=None, on_item=None, on_log=None, analysis_base_url=None,
                  analysis_api_key=None, image_base_url=None, image_api_key=None,
-                 analysis_model_candidates=(), image_model_candidates=()):
+                 analysis_model_candidates=(), image_model_candidates=(), model_catalog=None):
         self.base_url = base_url
         self.api_key = api_key
         self.analysis_base_url = base_url if analysis_base_url is None else analysis_base_url
@@ -76,6 +76,7 @@ class EcommerceImageManager:
         self.image_model = normalize_model_id(image_model)
         self.analysis_model_candidates = self._unique_models(analysis_model_candidates)
         self.image_model_candidates = self._unique_models(image_model_candidates)
+        self.model_catalog = model_catalog if isinstance(model_catalog, dict) else {}
         self.concurrency = max(1, int(concurrency))
         self.log = log
         self.analysis_func = analysis_func if analysis_func is not None else analyze_and_parse
@@ -88,7 +89,7 @@ class EcommerceImageManager:
         self._deliveries = {}
 
     @classmethod
-    def build_from_config(cls, config_manager, store=None, overrides=None):
+    def build_from_config(cls, config_manager, store=None, overrides=None, model_catalog=None):
         config = config_manager.config
         analysis_line = resolve_line(config, 'chat')
         image_line = resolve_line(config, 'image')
@@ -96,6 +97,16 @@ class EcommerceImageManager:
         overrides = overrides if isinstance(overrides, dict) else {}
         analysis_model = normalize_model_id(overrides.get('analysis_model', ecommerce.get('analysis_model', DEFAULT_ANALYSIS_MODEL)))
         image_model = normalize_model_id(overrides.get('image_model', ecommerce.get('image_model', DEFAULT_IMAGE_MODEL)))
+        controller = getattr(config_manager, 'model_catalog_controller', None)
+        catalog = model_catalog if isinstance(model_catalog, dict) else {}
+        if not catalog and controller is not None:
+            for capability in ('chat', 'image'):
+                try:
+                    snapshot = controller.snapshot_for(capability)
+                except Exception:
+                    snapshot = {}
+                if isinstance(snapshot, dict):
+                    catalog[capability] = snapshot
         output = (config.get('paths', {}).get('output') or config.get('output_dir')
                   or config_manager.path.parent / 'output')
         return cls(
@@ -107,7 +118,8 @@ class EcommerceImageManager:
             analysis_base_url=analysis_line['base_url'], analysis_api_key=analysis_line['api_key'],
             image_base_url=image_line['base_url'], image_api_key=image_line['api_key'],
             analysis_model_candidates=cls._pool_candidates(config.get('chat_model_pool'), analysis_model),
-            image_model_candidates=cls._pool_candidates(config.get('image_model_pool'), image_model))
+            image_model_candidates=cls._pool_candidates(config.get('image_model_pool'), image_model),
+            model_catalog=catalog)
 
     @staticmethod
     def _unique_models(models):
@@ -140,23 +152,62 @@ class EcommerceImageManager:
         if status is not None:
             if 200 <= status < 300:
                 return False
-            return getattr(error, 'switchable', classify_http_error(
-                status, getattr(error, 'body_excerpt', '') or str(error))['switchable'])
-        return getattr(error, 'switchable', True)
+            classification = classify_http_error(
+                status, getattr(error, 'body_excerpt', '') or str(error),
+                kind='image' if error.__class__.__name__.endswith('ImageError') else 'chat')
+            category = getattr(error, 'category', classification['category'])
+            # Failover is reserved for a model/parameter rejection.  Auth,
+            # network, rate-limit and upstream failures are line-wide and
+            # must not silently try another model with the same credentials.
+            return category in {'model_not_found', 'model_unsupported', 'reasoning_conflict'}
+        return False
 
     @staticmethod
     def _can_skip_to_next(error):
         """Return whether a failed candidate may be replaced by the next one."""
-        if getattr(error, 'status_code', None) in (401, 403):
-            return True
         return EcommerceImageManager._can_switch(error)
 
     @staticmethod
     def _line_host(base_url):
         return (urlsplit(str(base_url or '').strip()).hostname or '').lower() or tr('未配置')
 
+    @staticmethod
+    def _user_error(error):
+        return getattr(error, 'user_message', None) or getattr(error, 'message', None) or str(error)
+
+    def _catalog_model_ids(self, capability):
+        """Return usable model ids from the live catalog snapshot.
+
+        Older snapshots used ``text``/``llm`` for chat records and some test or
+        provider snapshots omit ``kind`` while retaining endpoint metadata.
+        Accept those equivalent forms without inventing model names.
+        """
+        catalog = self.model_catalog.get(capability, {})
+        if not isinstance(catalog, dict):
+            return []
+        result = []
+        accepted = {'chat', 'text', 'llm'} if capability == 'chat' else {'image'}
+        for key, record in catalog.items():
+            if not isinstance(record, dict) or not record.get('available', True):
+                continue
+            model = normalize_model_id(record.get('id') or key)
+            if not model:
+                continue
+            kind = str(record.get('kind') or record.get('type') or '').casefold()
+            endpoints = record.get('supported_endpoint_types', record.get('endpoint_types', ()))
+            if isinstance(endpoints, str):
+                endpoints = [endpoints]
+            endpoint_text = {str(value).casefold() for value in (endpoints or ())}
+            if kind in accepted or (
+                    capability == 'chat' and endpoint_text.intersection({'chat', 'chat/completions', 'llm'})) or (
+                    capability == 'image' and endpoint_text.intersection({'image', 'images', 'openai-image'})):
+                if model not in result:
+                    result.append(model)
+        return result
+
     def _analysis_candidates(self):
-        return self._unique_models([self.analysis_model, *self.analysis_model_candidates])
+        return self._unique_models([self.analysis_model, *self.analysis_model_candidates,
+                                    *self._catalog_model_ids('chat')])[:3]
 
     @staticmethod
     def _wait_analysis_retry(delay, cancel_event):
@@ -166,7 +217,8 @@ class EcommerceImageManager:
                 raise Cancelled('已取消 AI 分析')
 
     def _run_analysis(self, system, user, carousel_count, detail_count, thinking, log_reasoning,
-                      cancel_event=None, reference_paths=(), fallback_paths=None):
+                      cancel_event=None, reference_paths=(), fallback_paths=None,
+                      style_image_paths=()):
         candidates = self._analysis_candidates()
         reference_paths = list(reference_paths)
         reduced = False
@@ -182,7 +234,8 @@ class EcommerceImageManager:
                     raw_items, reasoning = self.analysis_func(
                         self.analysis_base_url, self.analysis_api_key, model, system, user,
                         carousel_count, detail_count, thinking=bool(thinking), on_reasoning=log_reasoning,
-                        **({'reference_paths': reference_paths} if reference_paths else {}))
+                        **({'reference_paths': reference_paths} if reference_paths else {}),
+                        **({'style_image_paths': style_image_paths} if style_image_paths else {}))
                     break
                 except EcommerceAnalysisError as error:
                     failures.append(error)
@@ -206,8 +259,7 @@ class EcommerceImageManager:
                             old=model, reason=error.user_message, new=next_model), 'warning')
                         failed = True
                         break
-                    reason = (error.user_message if error.status_code is None
-                              or not 200 <= error.status_code < 300 else self._clean(error.message))
+                    reason = getattr(error, 'user_message', self._clean(error.message))
                     if failures and all(getattr(item, 'status_code', None) in (401, 403)
                                         for item in failures):
                         message = (f'密钥无效或没有该模型的调用权限（已尝试模型 '
@@ -215,9 +267,14 @@ class EcommerceImageManager:
                     else:
                         message = (f'AI 分析失败：{reason}（已重试 {retries} 次、尝试模型 '
                                    f'{"、".join(attempted)}），请稍后再试或更换文本模型')
-                    raise EcommerceAnalysisError(self._clean(message), error.status_code,
-                                                 self._clean(error.body_excerpt), retryable=False,
-                                                 switchable=False) from None
+                    summary_error = EcommerceAnalysisError(
+                        self._clean(message), error.status_code,
+                        self._clean(error.body_excerpt), retryable=False,
+                        switchable=False)
+                    # Keep the complete Chinese candidate summary for the UI;
+                    # status classification remains available for diagnostics.
+                    summary_error.user_message = self._clean(message)
+                    raise summary_error from None
                 except Cancelled:
                     raise
                 except Exception:
@@ -242,7 +299,8 @@ class EcommerceImageManager:
         raise EcommerceAnalysisError(f'分析模型尝试失败（{"、".join(attempted)}）')
 
     def _image_candidates(self, model):
-        return self._unique_models([model, self.image_model, *self.image_model_candidates])
+        return self._unique_models([model, self.image_model, *self.image_model_candidates,
+                                    *self._catalog_model_ids('image')])[:3]
 
     @staticmethod
     def _multi_image_rejection(error):
@@ -305,28 +363,36 @@ class EcommerceImageManager:
                         and position + 1 < len(candidates) and self._can_skip_to_next(error)):
                     next_model = candidates[position + 1]
                     self._log(tr('图片模型 {old} 不可用（{reason}），切换 {new}').format(
-                        old=model, reason=self._clean(error), new=next_model), 'warning')
+                        old=model, reason=self._clean(self._user_error(error)), new=next_model), 'warning')
                     continue
                 if failures and all(getattr(failure, 'status_code', None) in (401, 403)
                                     for failure in failures):
                     message = (f'密钥无效或没有该模型的调用权限（已尝试模型 '
                                f'{"、".join(attempted)}），请检查密钥或更换图片模型')
-                    raise EcommerceImageError(message, error.status_code,
-                                              self._clean(error.body_excerpt),
-                                              error.failed_before_response,
-                                              retry_safe=False) from None
+                    summary_error = EcommerceImageError(
+                        message, error.status_code,
+                        self._clean(error.body_excerpt),
+                        error.failed_before_response,
+                        retry_safe=False)
+                    summary_error.user_message = self._clean(message)
+                    raise summary_error from None
                 if len(attempted) > 1:
-                    message = f'图片模型尝试失败（{"、".join(attempted)}）：{self._clean(error)}'
-                    raise EcommerceImageError(message, error.status_code,
-                                              self._clean(error.body_excerpt),
-                                              error.failed_before_response,
-                                              retry_safe=error.retry_safe) from None
+                    message = f'图片模型尝试失败（{"、".join(attempted)}）：{self._clean(self._user_error(error))}'
+                    summary_error = EcommerceImageError(
+                        message, error.status_code,
+                        self._clean(error.body_excerpt),
+                        error.failed_before_response,
+                        retry_safe=error.retry_safe)
+                    summary_error.user_message = self._clean(message)
+                    raise summary_error from None
                 raise
         if failures and all(getattr(failure, 'status_code', None) in (401, 403)
                             for failure in failures):
-            raise EcommerceImageError(
+            summary_error = EcommerceImageError(
                 f'密钥无效或没有该模型的调用权限（已尝试模型 {"、".join(attempted)}），请检查密钥或更换图片模型',
                 retry_safe=False)
+            summary_error.user_message = self._clean(summary_error.message)
+            raise summary_error
         raise EcommerceImageError(f'图片模型尝试失败（{"、".join(attempted)}）')
 
     def _clean(self, value):
@@ -497,7 +563,7 @@ class EcommerceImageManager:
                 items, _reasoning = self._run_analysis(
                     system, append_reference_order(user, len(products), style_count=len(styles)),
                     carousel_count, detail_count, thinking, log_reasoning, cancel_event,
-                    reference_paths=references,
+                    reference_paths=references, style_image_paths=styles,
                     fallback_paths=references[:len(products) + 1] if len(styles) > 1 else None)
             except Cancelled:
                 # No prompts exist yet. Keep every planned output visibly skipped,
@@ -512,13 +578,15 @@ class EcommerceImageManager:
                 self._finalize(group_id, cancelled=True)
                 return group_id
             except Exception as error:
-                message = self._clean(str(error))
+                message = self._clean(self._user_error(error))
                 if not message.startswith('AI 分析失败：'):
                     message = 'AI 分析失败：' + message
                 self._group(dict(group_id=group_id, status='failed', error=message))
-                raise EcommerceAnalysisError(
+                summary_error = EcommerceAnalysisError(
                     message, getattr(error, 'status_code', None),
-                    self._clean(getattr(error, 'body_excerpt', ''))) from None
+                    self._clean(getattr(error, 'body_excerpt', '')))
+                summary_error.user_message = self._clean(message)
+                raise summary_error from None
             records = []
             for item in items:
                 records.append(dict(
@@ -578,7 +646,7 @@ class EcommerceImageManager:
                 timing['request_seconds'] = finished - started
             elif write_started is not None:
                 timing['write_seconds'] = finished - write_started
-            message = self._clean(str(error))
+            message = self._clean(self._user_error(error))
             self._item(dict(item, status='failed', error=message))
             self._touch_group(group['group_id'])
             self._log(f'{item["kind"]} {item["seq"]} 出图失败：{message}', 'error')

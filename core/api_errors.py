@@ -29,6 +29,21 @@ def classify_http_error(status_code, body_text, *, kind='chat'):
         return result('内容被上游安全审核拒绝，请修改提示词或参考图后重新生成', 'content_policy')
     if status_code in (401, 403):
         return result('密钥无效或没有该模型的调用权限', 'authentication')
+    if status_code in (400, 422) and (
+            ('reasoning settings conflict' in text)
+            or ('thinking_config' in text and ('effort' in text or 'thinking' in text))
+            or ('unsupported' in text and any(word in text for word in (
+                'reasoning', 'thinking', 'enable_thinking', 'chat_template')))):
+        return result('该模型不支持当前思考参数', 'reasoning_conflict', switchable=True)
+    model_parameter_rejection = any(word in text for word in (
+        'model not found', 'model_not_found', 'unknown model', 'unsupported model',
+        'model unavailable', 'model does not support', '不支持该模型', '模型不可用'))
+    if status_code in (400, 422) and (
+            model_parameter_rejection
+            or ('parameter' in text and any(word in text for word in (
+                'reasoning', 'thinking', 'model id', 'model_id', 'model name',
+                '模型', '参数不支持')))):
+        return result('该模型不支持当前请求参数', 'model_unsupported', switchable=True)
     if status_code == 404 and any(word in text for word in (
             'model', '模型', 'not_found', 'not found', '无渠道')):
         return result('模型不存在或未在该中转站开通', 'model_not_found', switchable=True)

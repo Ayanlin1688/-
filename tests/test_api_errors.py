@@ -20,17 +20,21 @@ class ApiErrorTests(unittest.TestCase):
                         message='内容被上游安全审核拒绝，请修改提示词或参考图后重新生成',
                         category='content_policy', retryable=False, switchable=False))
 
-    def test_parameter_rejections_are_generic_non_retryable_errors(self):
+    def test_parameter_rejections_are_model_switchable_when_model_specific(self):
         for code in (400, 422):
-            for message in ('Unknown parameter: response_format', 'unsupported size 4096x7282',
-                            'upstream_error: unsupported response_format',
-                            'service unavailable for requested size'):
+            for message in ('Unknown parameter: reasoning_effort', 'unsupported model parameter',
+                            'model does not support this option'):
                 with self.subTest(code=code, message=message):
                     body = json.dumps({'error': {'type': 'invalid_request_error', 'message': message}})
                     result = classify_http_error(code, body)
-                    self.assertEqual(result, dict(message=f'HTTP {code}：{message}',
-                                                  category='http', retryable=False, switchable=False))
+                    self.assertEqual(result, dict(message='该模型不支持当前请求参数',
+                                                  category='model_unsupported', retryable=False, switchable=True))
                     self.assertNotIn('安全审核', result['message'])
+        for message in ('unsupported size 4096x7282',
+                        'upstream_error: unsupported response_format',
+                        'service unavailable for requested size'):
+            result = classify_http_error(400, json.dumps({'error': {'message': message}}))
+            self.assertEqual(result['category'], 'http')
         self.assertEqual(classify_http_error(400, '{"error":{"type":"invalid_request_error"}}'),
                          dict(message='HTTP 400：上游请求被拒绝，请检查线路与参数',
                               category='http', retryable=False, switchable=False))

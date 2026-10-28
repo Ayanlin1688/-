@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import base64
+import logging
 import mimetypes
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
 import requests
+from PyQt5.QtCore import QByteArray, QBuffer, QIODevice
+from PyQt5.QtGui import QImage
 
 from core.http_client import HttpClient, RequestError
 from core.api_errors import classify_http_error, classify_connection_error
@@ -20,6 +23,53 @@ from core.thinking_params import (
 DEFAULT_ANALYSIS_MODEL = 'gemini-3.8-flash'
 ANALYSIS_TIMEOUT_SECONDS = 180
 DEFAULT_ANALYSIS_TIMEOUT = (15, ANALYSIS_TIMEOUT_SECONDS)
+
+
+def _thinking_conflict(status_code, body):
+    """Recognize the provider's parameter-conflict response without parsing secrets."""
+    if status_code != 400:
+        return False
+    text = str(body or '').casefold()
+    return ('reasoning settings conflict' in text
+            or ('thinking_config' in text and 'effort' in text)
+            or ('thinking' in text and 'effort' in text and 'conflict' in text))
+
+
+def _analysis_reference_selection(reference_paths, style_image_paths=()):
+    paths = [str(Path(path)) for path in (reference_paths or ())]
+    styles = [str(Path(path)) for path in (style_image_paths or ())]
+    if styles:
+        style_set = set(styles)
+        products = [path for path in paths if path not in style_set]
+        selected = products[:3]
+        if styles[-1] in paths:
+            selected.append(styles[-1])
+        return selected[:4]
+    return paths[:4]
+
+
+def _encode_analysis_reference(path):
+    """Compress one analysis-only reference to a bounded JPEG data payload."""
+    file = Path(path)
+    try:
+        original = file.read_bytes()
+    except OSError:
+        raise EcommerceAnalysisError('参考图无法读取，请重新选择图片') from None
+    image = QImage()
+    if not image.loadFromData(QByteArray(original)):
+        raise EcommerceAnalysisError('参考图格式无法读取，请重新选择图片') from None
+    longest = max(image.width(), image.height())
+    if longest > 768:
+        scale = 768.0 / longest
+        image = image.scaled(max(1, round(image.width() * scale)),
+                             max(1, round(image.height() * scale)),
+                             aspectRatioMode=1, transformMode=1)
+    image = image.convertToFormat(QImage.Format_RGB888)
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    if not image.save(buffer, 'JPEG', 80):
+        raise EcommerceAnalysisError('参考图压缩失败，请重新选择图片') from None
+    return 'image/jpeg', bytes(buffer.data().toBase64()).decode('ascii')
 
 
 class EcommerceAnalysisError(Exception):
@@ -35,7 +85,11 @@ class EcommerceAnalysisError(Exception):
         else:
             classification = classify_http_error(status_code, body_excerpt or self.message)
         self.category = category or classification['category']
-        self.user_message = self.message if category is not None else classification['message']
+        # HTTP responses are provider-facing details.  Keep the raw, redacted
+        # message for diagnostics, while exposing the short classified Chinese
+        # text to manager/UI callers even when a caller supplied a category.
+        self.user_message = (self.message if status_code is None or accepted
+                             else classification['message'])
         self.retryable = not accepted and (classification['retryable'] if retryable is None else retryable)
         self.switchable = not accepted and (classification['switchable'] if switchable is None else switchable)
         super().__init__(self.message)
@@ -132,7 +186,7 @@ def _read_sse(response, redact, on_content, on_reasoning, *, gemini=False):
 
 def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
                    timeout=DEFAULT_ANALYSIS_TIMEOUT, on_content=None, on_reasoning=None, thinking=False,
-                   reference_paths=None):
+                   reference_paths=None, style_image_paths=None):
     """Return complete content and reasoning, notifying callbacks per delta.
 
     Reuse the shared requests session and redaction. POST is sent once; a failed
@@ -140,66 +194,81 @@ def analyze_stream(base_url, api_key, model, system_prompt, user_prompt, *,
     """
     client = HttpClient(api_key=api_key, timeout=timeout)
     status_code = None
-    request_model = resolve_request_model(base_url, model, thinking)
-    payload = {
-        'model': request_model,
-        'messages': [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt},
-        ],
-        'stream': True,
-    }
-    if request_model != 'deepseek-reasoner':
-        payload['temperature'] = 0.7
-    gemini = is_gemini_native(base_url)
-    url = base_url.strip().rstrip('/') + '/chat/completions'
-    headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
-    if gemini:
-        url = base_url.strip().rstrip('/') + f'/models/{request_model}:streamGenerateContent?alt=sse'
-        headers['x-goog-api-key'] = api_key
+    request_model = str(model or '')
+    selected_paths = []
+    images = []
+
+    def build_request(request_thinking):
+        request_model = resolve_request_model(base_url, model, request_thinking)
         payload = {
-            'systemInstruction': {'parts': [{'text': system_prompt}]},
-            'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
-            'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'},
+            'model': request_model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            'stream': True,
         }
-        payload = apply_thinking_to_payload(payload, 'gemini', request_model, thinking)
-    else:
-        # 矩阵参数按模型名映射；OpenAI 兼容线路上的 claude 不再盲发 thinking。
-        payload = apply_thinking_to_payload(payload, 'openai', request_model, thinking)
-    if reference_paths:
-        images = []
-        for path in reference_paths:
-            file = Path(path)
-            mime = mimetypes.guess_type(str(file))[0] or 'image/png'
-            try:
-                encoded = base64.b64encode(file.read_bytes()).decode('ascii')
-            except OSError:
-                client.close()
-                raise EcommerceAnalysisError('参考图无法读取，请重新选择图片') from None
-            images.append((mime, encoded))
+        if request_model != 'deepseek-reasoner':
+            payload['temperature'] = 0.7
+        gemini = is_gemini_native(base_url)
+        url = base_url.strip().rstrip('/') + '/chat/completions'
+        headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
         if gemini:
-            payload['contents'][0]['parts'].extend(
-                {'inlineData': {'mimeType': mime, 'data': data}} for mime, data in images)
+            url = base_url.strip().rstrip('/') + f'/models/{request_model}:streamGenerateContent?alt=sse'
+            headers['x-goog-api-key'] = api_key
+            payload = {
+                'systemInstruction': {'parts': [{'text': system_prompt}]},
+                'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
+                'generationConfig': {'temperature': 0.7, 'responseMimeType': 'application/json'},
+            }
+            payload = apply_thinking_to_payload(payload, 'gemini', request_model, request_thinking)
         else:
-            payload['messages'][1]['content'] = [
-                {'type': 'text', 'text': user_prompt},
-                *({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{data}'}}
-                  for mime, data in images)]
+            payload = apply_thinking_to_payload(payload, 'openai', request_model, request_thinking)
+        if images:
+            if gemini:
+                payload['contents'][0]['parts'].extend(
+                    {'inlineData': {'mimeType': mime, 'data': data}} for mime, data in images)
+            else:
+                payload['messages'][1]['content'] = [
+                    {'type': 'text', 'text': user_prompt},
+                    *({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{data}'}}
+                      for mime, data in images)]
+        return request_model, gemini, url, headers, payload
+
+    request_thinking = bool(thinking)
+    conflict_retry = False
     try:
-        with client.request(
-            'POST', url,
-            check_status=False, stream=True,
-            headers=headers,
-            json=payload,
-        ) as response:
-            status_code = response.status_code
-            if not 200 <= status_code < 300:
-                excerpt = client.redact(response.text)[:500]
-                classification = classify_http_error(status_code, client.redact(response.text))
-                raise EcommerceAnalysisError(
-                    classification['message'], status_code, excerpt, **{
-                        name: classification[name] for name in ('category', 'retryable', 'switchable')})
-            return _read_sse(response, client.redact, on_content, on_reasoning, gemini=gemini)
+        selected_paths = _analysis_reference_selection(reference_paths, style_image_paths)
+        images = [_encode_analysis_reference(path) for path in selected_paths]
+        if selected_paths:
+            logging.getLogger('storyboard').info(
+                '分析使用 %d 张压缩图（原图 %d 张）', len(selected_paths), len(reference_paths or ()))
+        while True:
+            request_model, gemini, url, headers, payload = build_request(request_thinking)
+            with client.request(
+                'POST', url,
+                check_status=False, stream=True,
+                headers=headers,
+                json=payload,
+            ) as response:
+                status_code = response.status_code
+                if not 200 <= status_code < 300:
+                    raw_body = response.text
+                    if (request_thinking and not conflict_retry
+                            and _thinking_conflict(status_code, raw_body)):
+                        conflict_retry = True
+                        logging.getLogger('storyboard').warning(
+                            '该模型不支持当前思考参数，已自动关闭思考重试')
+                        request_thinking = False
+                        continue
+                    excerpt = client.redact(raw_body)[:500]
+                    classification = classify_http_error(status_code, client.redact(raw_body))
+                    raise EcommerceAnalysisError(
+                        classification['message'], status_code, excerpt, **{
+                            name: classification[name] for name in ('category', 'retryable', 'switchable')})
+                # Once _read_sse starts consuming a 2xx response, any later
+                # parse/transport error must propagate without replaying it.
+                return _read_sse(response, client.redact, on_content, on_reasoning, gemini=gemini)
     except EcommerceAnalysisError as error:
         message = error.message
         if client.redact(request_model) not in message:
@@ -303,11 +372,12 @@ def parse_prompt_items(text, carousel_count, detail_count):
 
 def analyze_and_parse(base_url, api_key, model, system_prompt, user_prompt,
                       carousel_count, detail_count, *, on_content=None, on_reasoning=None, thinking=False,
-                      reference_paths=None):
+                      reference_paths=None, style_image_paths=None):
     full_text, reasoning_text = analyze_stream(
         base_url, api_key, model, system_prompt, user_prompt,
         on_content=on_content, on_reasoning=on_reasoning, thinking=thinking,
-        **({'reference_paths': reference_paths} if reference_paths else {}))
+        **({'reference_paths': reference_paths} if reference_paths else {}),
+        **({'style_image_paths': style_image_paths} if style_image_paths else {}))
     try:
         items = parse_prompt_items(full_text, carousel_count, detail_count)
     except EcommerceAnalysisError as error:

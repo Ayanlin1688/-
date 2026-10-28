@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import requests
+from PyQt5.QtGui import QImage
 
 from core.ecommerce import analysis
 from core.ecommerce.analysis import (
@@ -248,7 +249,9 @@ class AnalysisStreamTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / f'image-{i}.png' for i in range(9)]
             for i, path in enumerate(paths):
-                path.write_bytes(bytes([i + 1]) * 5)
+                image = QImage(1600, 900, QImage.Format_RGB32)
+                image.fill(0xFF000000 | ((i + 1) * 0x00010101))
+                self.assertTrue(image.save(str(path), 'PNG'))
             for gemini in (False, True):
                 with self.subTest(gemini=gemini), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
                     base = server.base_url.replace('/v1', '/v1beta') if gemini else server.base_url
@@ -264,8 +267,15 @@ class AnalysisStreamTests(unittest.TestCase):
                         parts = body['messages'][1]['content']
                         data = [part['image_url']['url'].split(',', 1)[1] for part in parts[1:]]
                         self.assertEqual(parts[0], {'type': 'text', 'text': 'user'})
-                    self.assertEqual([base64.b64decode(item) for item in data],
-                                     [path.read_bytes() for path in paths])
+                    self.assertEqual(len(data), 4)
+                    decoded = [base64.b64decode(item) for item in data]
+                    self.assertTrue(all(item.startswith(b'\xff\xd8') for item in decoded))
+                    self.assertLessEqual(len(decoded), 4)
+                    # Every compressed image is bounded to the analysis budget.
+                    for encoded in decoded:
+                        image = QImage()
+                        self.assertTrue(image.loadFromData(encoded, 'JPEG'))
+                        self.assertLessEqual(max(image.width(), image.height()), 768)
 
     def test_sse_joins_frame_fragments_reasoning_and_skips_usage(self):
         text = json.dumps(prompt_items(), ensure_ascii=False)
@@ -300,9 +310,6 @@ class AnalysisStreamTests(unittest.TestCase):
             'messages': [{'role': 'system', 'content': '系统提示'},
                          {'role': 'user', 'content': '用户提示'}],
             'stream': True, 'temperature': 0.7,
-            # 关闭思考时 openai 兼容线路的 reasoning 模型会收到显式关闭参数。
-            'enable_thinking': False,
-            'chat_template_kwargs': {'enable_thinking': False},
         })
         self.assertEqual(items, prompt_items())
         self.assertEqual(thoughts, ''.join(reasoning))
@@ -390,11 +397,11 @@ class AnalysisStreamTests(unittest.TestCase):
                 self.analyze_via_local_fixture(
                     server, 'https://text.example/v1', model, thinking=True)
                 body = server.calls[0][3]
-            self.assertEqual(body['reasoning_effort'], 'medium')
-            self.assertIs(body['enable_thinking'], True)
-            self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': True})
             self.assertEqual(body['extra_body'],
                              {'google': {'thinking_config': thinking_config}})
+            self.assertNotIn('reasoning_effort', body)
+            self.assertNotIn('enable_thinking', body)
+            self.assertNotIn('chat_template_kwargs', body)
             # thinkingConfig 逻辑参数只映射到 extra_body，不留在顶层。
             self.assertNotIn('thinkingConfig', body)
             self.assertEqual(body['temperature'], 0.7)
@@ -422,21 +429,12 @@ class AnalysisStreamTests(unittest.TestCase):
                 self.assertNotIn(key, body)
 
     def test_thinking_off_sends_closed_parameters_only_for_reasoning_models(self):
-        cases = (
-            ('deepseek-chat', {'thinking': {'type': 'disabled'}}),
-            ('gemini-3.8-flash', {'enable_thinking': False,
-                                  'chat_template_kwargs': {'enable_thinking': False}}),
-            ('gpt-image-2', {}),
-        )
-        for model, expected in cases:
+        for model in ('deepseek-chat', 'gemini-3.8-flash', 'gpt-image-2'):
             with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
                 self.analyze_via_local_fixture(
                     server, 'https://text.example/v1', model, thinking=False)
                 body = server.calls[0][3]
-            for key, value in expected.items():
-                self.assertEqual(body[key], value)
-            self.assertEqual(set(body) - {'model', 'messages', 'stream', 'temperature'},
-                             set(expected))
+            self.assertEqual(set(body), {'model', 'messages', 'stream', 'temperature'})
 
     def test_no_reasoning_and_no_callbacks_are_valid(self):
         body = (sse_frame({'choices': [{'delta': {'content': '正文'}}]})
