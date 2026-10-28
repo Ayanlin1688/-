@@ -422,6 +422,7 @@ class RowImageCell(QWidget):
     """行内图片格：首图 / 「+」+ 产品图计数 + 画廊选图 / 已用图片 / 输入。"""
 
     browse_requested = pyqtSignal()
+    preview_requested = pyqtSignal(object, int)
     gallery_requested = pyqtSignal()
     used_requested = pyqtSignal()
     url_requested = pyqtSignal()
@@ -495,6 +496,7 @@ class RowImageCell(QWidget):
         self.thumb.set_path(self._paths[0] if self._paths else '')
         self.count_label.setText(
             tr('产品图 {count}/6').format(count=len(self._paths)))
+        self.thumb.setToolTip(tr('图片预览') if self._paths else tr('添加产品图'))
         self.updateGeometry()
 
     def add_paths(self, paths):
@@ -566,7 +568,10 @@ class RowImageCell(QWidget):
 
     def _on_thumb_clicked(self):
         self.setFocus(Qt.MouseFocusReason)
-        self.browse_requested.emit()
+        if self._paths:
+            self.preview_requested.emit(list(self._paths), 0)
+        else:
+            self.browse_requested.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +590,10 @@ class EcommerceBatchRow(QFrame):
     url_requested = pyqtSignal(object)
     files_dropped = pyqtSignal(object, object)
     paste_requested = pyqtSignal(object)
+    preview_requested = pyqtSignal(object, int)
+    platform_preview_requested = pyqtSignal(object)
+    detail_requested = pyqtSignal(object)
+    regenerate_requested = pyqtSignal(object)
 
     def __init__(self, page, *, image_paths=None, product_name='',
                  product_info='', parent=None):
@@ -594,6 +603,12 @@ class EcommerceBatchRow(QFrame):
         self.setFrameShape(QFrame.NoFrame)
         self._style_key = ''
         self._badge_key = ''
+        self._group_id = ''
+        self._group_state = ''
+        self._group_data = {}
+        self._failure_message = ''
+        self._success_count = 0
+        self._busy = False
 
         self.checkbox = CheckBox(self)
         self.checkbox.setObjectName('batchRowSelect')
@@ -623,6 +638,8 @@ class EcommerceBatchRow(QFrame):
         self.image_cell = RowImageCell(self)
         self.image_cell.browse_requested.connect(
             lambda: self.browse_requested.emit(self))
+        self.image_cell.preview_requested.connect(
+            lambda paths, index: self.preview_requested.emit(paths, index))
         self.image_cell.gallery_requested.connect(
             lambda: self.gallery_requested.emit(self))
         self.image_cell.used_requested.connect(
@@ -660,6 +677,27 @@ class EcommerceBatchRow(QFrame):
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(px(4))
         status_layout.addWidget(self.status_badge, 0, Qt.AlignLeft)
+        self.progress_label = CaptionLabel('', self)
+        self.progress_label.setObjectName('batchRowProgress')
+        self.progress_label.setWordWrap(True)
+        status_layout.addWidget(self.progress_label, 0, Qt.AlignLeft)
+        actions = WrapLayout(spacing=px(4))
+        self.platform_preview_button = PushButton(tr('查看平台效果'), self)
+        self.detail_button = PushButton(tr('打开详情'), self)
+        self.regenerate_button = PushButton(tr('重新制作'), self)
+        for button in (self.platform_preview_button, self.detail_button,
+                       self.regenerate_button):
+            button.setObjectName('batchRowAction')
+            button.setFixedHeight(px(28))
+            button.setCursor(Qt.PointingHandCursor)
+            actions.addWidget(button)
+        self.platform_preview_button.clicked.connect(
+            lambda: self.platform_preview_requested.emit(self))
+        self.detail_button.clicked.connect(
+            lambda: self.detail_requested.emit(self))
+        self.regenerate_button.clicked.connect(
+            lambda: self.regenerate_requested.emit(self))
+        status_layout.addLayout(actions)
         status_layout.addStretch(1)
 
         self._grid = QGridLayout(self)
@@ -753,6 +791,101 @@ class EcommerceBatchRow(QFrame):
     def status_text(self):
         return tr('就绪') if self.ready else tr('待完善')
 
+    @property
+    def group_id(self):
+        return self._group_id
+
+    def set_busy(self, busy):
+        self._busy = bool(busy)
+        for control in (self.checkbox, self.copy_button, self.delete_button,
+                        self.name_edit, self.info_edit, self.image_cell.gallery_button,
+                        self.image_cell.used_button, self.image_cell.url_button):
+            control.setEnabled(not self._busy)
+        self.image_cell.setAcceptDrops(not self._busy)
+        self.image_cell.thumb.setAcceptDrops(not self._busy)
+        self.image_cell.thumb.setEnabled(not self._busy or bool(self.product_image_paths))
+        self._refresh_action_states()
+
+    def reset_state(self):
+        self._group_id = ''
+        self._group_state = ''
+        self._group_data = {}
+        self._failure_message = ''
+        self._success_count = 0
+        self.refresh_state()
+
+    def set_failed_state(self, message=''):
+        self._failure_message = str(message or '')
+        self.set_group_state(dict(self._group_data, group_id=self._group_id,
+                                  status='failed', error=self._failure_message))
+
+    def set_group_state(self, group):
+        group = group if isinstance(group, dict) else {}
+        self._group_data = dict(group)
+        self._group_id = str(group.get('group_id') or '')
+        self._group_state = str(group.get('status') or '')
+        totals = group.get('totals')
+        manifest = group.get('manifest') or {}
+        items = manifest.get('items') if isinstance(manifest, dict) else []
+        items = items if isinstance(items, list) else []
+        statuses = [str(item.get('status') or '') for item in items if isinstance(item, dict)]
+
+        def count(value, fallback=0):
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError, OverflowError):
+                return fallback
+
+        totals = totals if isinstance(totals, dict) else {}
+        succeeded = count(totals.get('succeeded'), statuses.count('succeeded'))
+        failed = count(totals.get('failed'), statuses.count('failed'))
+        cancelled = (count(totals.get('cancelled'), statuses.count('cancelled')) +
+                     count(totals.get('skipped'), statuses.count('skipped')))
+        completed = succeeded + failed + cancelled
+        # Live snapshots contain status counts without a total; completed manifests
+        # may belong to an earlier run, so valid current totals always take precedence.
+        counted_total = sum(count(totals.get(key)) for key in
+                            ('pending', 'running', 'succeeded', 'failed', 'cancelled', 'skipped'))
+        total = max(completed, count(totals.get('total'), max(counted_total, len(statuses))))
+        self._success_count = succeeded
+        status = self._group_state
+        if status == 'analyzing':
+            badge, progress = tr('分析中…'), tr('分析中…')
+        elif status == 'generating':
+            badge = tr('出图中')
+            progress = tr('出图中 {done}/{total}').format(done=completed, total=max(total, completed))
+        elif status in ('succeeded', 'completed'):
+            badge = tr('已完成')
+            progress = tr('完成 {done}/{total}').format(done=completed or total, total=max(total, completed))
+        elif status in ('cancelled', 'canceled'):
+            badge, progress = tr('已取消'), tr('已取消')
+        elif status == 'partial' or (failed and succeeded):
+            badge, progress = tr('部分失败'), tr('部分失败')
+        elif status == 'failed' or failed:
+            badge, progress = tr('失败'), tr('失败')
+        else:
+            badge, progress = self.status_text(), ''
+        self.status_badge.setText(badge)
+        self.progress_label.setText(progress)
+        self.progress_label.setToolTip(str(group.get('error') or ''))
+        tone = {'analyzing': 'brand_blue', 'generating': 'brand_blue',
+                'succeeded': 'success', 'completed': 'success',
+                'partial': 'warning', 'failed': 'danger'}.get(status, 'warning')
+        self._badge_key = _badge_style(materials.ECOMMERCE[tone])
+        self.status_badge.setStyleSheet(self._badge_key)
+        self._apply_row_style(True)
+        self._refresh_action_states()
+
+    def _refresh_action_states(self):
+        terminal = self._group_state not in ('', 'analyzing', 'generating')
+        has_group = bool(self._group_id)
+        for button in (self.platform_preview_button, self.detail_button, self.regenerate_button):
+            button.setVisible(has_group)
+        self.progress_label.setVisible(bool(self._group_state))
+        self.platform_preview_button.setEnabled(has_group and self._success_count > 0)
+        self.detail_button.setEnabled(has_group and terminal and not self._busy)
+        self.regenerate_button.setEnabled(has_group and terminal and not self._busy)
+
     def apply_scale(self):
         self._grid.setContentsMargins(px(12), px(12), px(12), px(12))
         self._grid.setHorizontalSpacing(px(12))
@@ -764,9 +897,16 @@ class EcommerceBatchRow(QFrame):
         self.name_edit.setFixedHeight(px(34))
         self.info_edit.setFixedHeight(px(68))
         self.image_cell.apply_scale()
+        for button in (self.platform_preview_button, self.detail_button,
+                       self.regenerate_button):
+            button.setFixedHeight(px(28))
         self.refresh_state()
 
     def refresh_state(self):
+        if self._group_state:
+            self.set_group_state(self._group_data)
+            return
+        self._refresh_action_states()
         ready = self.ready
         self.status_badge.setText(tr('就绪') if ready else tr('待完善'))
         self._apply_badge(ready)
@@ -778,16 +918,21 @@ class EcommerceBatchRow(QFrame):
         self.index_label.setStyleSheet(
             'color: %s; font-size: %dpx;' % (colors['text2'], px(11)))
         self.image_cell.refresh_colors()
+        self.progress_label.setStyleSheet('color: %s;' % colors['text2'])
+        self._refresh_action_states()
         self.refresh_state()
 
     def retranslate_ui(self):
         self.checkbox.setToolTip(tr('选择此行'))
         self.copy_button.setToolTip(tr('复制行'))
         self.delete_button.setToolTip(tr('删除行'))
+        self.platform_preview_button.setText(tr('查看平台效果'))
+        self.detail_button.setText(tr('打开详情'))
+        self.regenerate_button.setText(tr('重新制作'))
         self.name_edit.setPlaceholderText(
             tr('产品名称（建议填写，用作任务标签）'))
         self.info_edit.setPlaceholderText(tr('产品信息（必填）'))
-        self.image_cell.thumb.setToolTip(tr('添加产品图'))
+        self.image_cell.thumb.setToolTip(tr('图片预览') if self.product_image_paths else tr('添加产品图'))
         self.image_cell.count_label.setText(
             tr('产品图 {count}/6').format(
                 count=len(self.product_image_paths)))
@@ -845,12 +990,19 @@ class EcommerceBatchPage(QWidget):
     submit_requested = pyqtSignal(object)
     history_requested = pyqtSignal()
     single_requested = pyqtSignal()
+    row_group_updated = pyqtSignal(object)
+    preview_group_requested = pyqtSignal(str)
+    detail_group_requested = pyqtSignal(str)
+    regenerate_group_requested = pyqtSignal(str)
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
         self.setObjectName('ecommerceBatchPage')
         self.config_manager = config_manager
         self.rows = []
+        self._busy = False
+        self._run_rows = None
+        self._lightbox = None
         self._loading = True
         self._panels = []
         self._platform_selection_order = []
@@ -1449,15 +1601,101 @@ class EcommerceBatchPage(QWidget):
         row.copy_requested.connect(self.copy_row)
         row.delete_requested.connect(self.delete_row)
         row.browse_requested.connect(self.browse_row_images)
+        row.preview_requested.connect(self._preview_row_images)
         row.gallery_requested.connect(self.pick_gallery_for_row)
         row.used_requested.connect(self.pick_used_for_row)
         row.url_requested.connect(self.pick_url_for_row)
         row.files_dropped.connect(self._on_row_files_dropped)
         row.paste_requested.connect(self._on_row_paste_requested)
+        row.platform_preview_requested.connect(self.open_platform_preview)
+        row.detail_requested.connect(self.open_detail)
+        row.regenerate_requested.connect(self.regenerate_row)
         self.rows.append(row)
         self._rows_layout.addWidget(row)
         row.set_index(len(self.rows))
         return row
+
+    def set_busy(self, busy):
+        self._busy = bool(busy)
+        self._panels[0].setEnabled(not self._busy)
+        for button in (self.add_one_button, self.add_five_button,
+                       self.select_all_button, self.clear_button):
+            button.setEnabled(not self._busy)
+        for row in self.rows:
+            row.set_busy(self._busy)
+        self._refresh_summary()
+
+    def begin_run(self, row_indices):
+        self._run_rows = {row.row_index: row for row in self.rows
+                          if row.row_index in row_indices}
+        for row in self._run_rows.values():
+            row.reset_state()
+        return dict(self._run_rows)
+
+    def end_run(self):
+        self._run_rows = None
+
+    def _row_for_index(self, row_index):
+        try:
+            index = int(row_index) - 1
+        except (TypeError, ValueError):
+            return None
+        if self._run_rows is not None:
+            row = self._run_rows.get(index + 1)
+            return row if row in self.rows else None
+        return self.rows[index] if 0 <= index < len(self.rows) else None
+
+    def update_row_group(self, row_index, group):
+        row = self._row_for_index(row_index)
+        if row is None:
+            return False
+        row.set_group_state(group)
+        payload = dict(group) if isinstance(group, dict) else {}
+        payload.setdefault('row_index', int(row_index))
+        self.row_group_updated.emit(payload)
+        return True
+
+    def mark_row_failed(self, row_index, message=''):
+        row = self._row_for_index(row_index)
+        if row is None:
+            return False
+        row.set_failed_state(message)
+        return True
+
+    def _preview_row_images(self, paths, index=0):
+        paths = [str(path) for path in (paths or []) if str(path or '').strip()]
+        if not paths:
+            return None
+        try:
+            if self._lightbox is not None:
+                self._lightbox.close()
+        except RuntimeError:
+            pass
+        dialog = ImageLightbox.show_images(self, paths, index)
+        self._lightbox = dialog
+        if dialog is not None:
+            dialog.closed.connect(lambda: self._on_lightbox_closed(dialog))
+        return self._lightbox
+
+    def _on_lightbox_closed(self, dialog):
+        if self._lightbox is dialog:
+            self._lightbox = None
+        safe_delete_dialog(dialog)
+
+    def open_platform_preview(self, row):
+        group_id = getattr(row, 'group_id', '')
+        if group_id and row.platform_preview_button.isEnabled():
+            self.preview_group_requested.emit(str(group_id))
+
+    def open_detail(self, row):
+        group_id = getattr(row, 'group_id', '')
+        if group_id and row.detail_button.isEnabled():
+            self.detail_group_requested.emit(str(group_id))
+
+    def regenerate_row(self, row):
+        group_id = getattr(row, 'group_id', '')
+        if group_id and row.regenerate_button.isEnabled():
+            self.regenerate_group_requested.emit(str(group_id))
 
     def add_row(self):
         added = self.add_rows(1)
@@ -1664,6 +1902,8 @@ class EcommerceBatchPage(QWidget):
         return submissions
 
     def submit(self):
+        if self._busy:
+            return False
         try:
             payload = self.build_submissions()
         except ValueError as error:
@@ -1740,9 +1980,7 @@ class EcommerceBatchPage(QWidget):
         self.style_grid.set_paths(merged[:3])
 
     def _preview_style_image(self, index):
-        paths = self.style_grid.paths()
-        if paths:
-            self._lightbox = ImageLightbox.show_images(self, paths, index)
+        self._preview_row_images(self.style_grid.paths(), index)
 
     def pick_style_file(self):
         paths, _filter = QFileDialog.getOpenFileNames(
@@ -1899,14 +2137,14 @@ class EcommerceBatchPage(QWidget):
             total=total, ready=ready))
         self.copy_button.setText(tr('复制选中（{count}）').format(
             count=selected))
-        self.copy_button.setEnabled(selected > 0)
-        self.delete_button.setEnabled(selected > 0)
+        self.copy_button.setEnabled(selected > 0 and not self._busy)
+        self.delete_button.setEnabled(selected > 0 and not self._busy)
         all_selected = total > 0 and selected == total
         self.select_all_button.setText(
             tr('取消全选') if all_selected else tr('全选'))
         self.submit_button.setText(tr('开始批量制作（{count}）').format(
             count=ready))
-        self.submit_button.setEnabled(ready > 0)
+        self.submit_button.setEnabled(ready > 0 and not self._busy)
         self.submit_button.setToolTip('' if ready else tr('没有可提交的行'))
 
     # ------------------------------------------------------------------
@@ -2022,6 +2260,8 @@ class EcommerceBatchPage(QWidget):
         self.update()
 
     def closeEvent(self, event):
+        if self._lightbox is not None:
+            self._lightbox.close()
         # 关闭前落盘一次，避免 500ms 防抖窗口内的最后编辑丢失；失败保持静默。
         try:
             if not self._loading:

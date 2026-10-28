@@ -1108,6 +1108,175 @@ class EcommercePageTests(unittest.TestCase):
         self.notices.assert_called()
         self.assertIn('没有可提交', self.notices.call_args.args[1])
 
+    def test_batch_worker_row_indices_failures_continue_and_redact(self):
+        manager = Mock(api_key=TEST_KEY)
+
+        def start(**arguments):
+            self.assertNotIn('row_index', arguments)
+            name = arguments['product_name']
+            manager.on_group(dict(group_id=name, status='analyzing'))
+            if name == 'first':
+                raise ValueError('本地测试失败 ' + TEST_KEY)
+            manager.on_group(dict(group_id=name, status='succeeded',
+                                  totals=dict(total=1, succeeded=1)))
+            return name
+
+        manager.start_group.side_effect = start
+        token = threading.Event()
+        worker = EcommerceWorker(lambda: manager, dict(groups=[
+            dict(row_index=2, product_name='first'),
+            dict(row_index=5, product_name='second'),
+        ]), token, operation='batch')
+        changed = QSignalSpy(worker.batch_row_changed)
+        failed = QSignalSpy(worker.batch_row_failed)
+        finished = QSignalSpy(worker.finished)
+        worker.start()
+        self.wait_until(lambda: len(finished) == 1 and not worker.isRunning())
+        self.assertEqual([record[0] for record in changed], [2, 5, 5])
+        self.assertEqual([record[1]['group_id'] for record in changed], ['first', 'second', 'second'])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0][0], 2)
+        self.assertNotIn(TEST_KEY, failed[0][1])
+        self.assertEqual(manager.start_group.call_count, 2)
+        self.assertEqual(finished[0][0], 'second')
+        worker.deleteLater()
+
+    def test_batch_failure_is_reported_as_partial_completion(self):
+        page = self.page
+        with patch.object(page, '_worker', Mock(operation='batch')), \
+                patch.object(page, '_append_log') as append, \
+                patch.object(page, '_notice') as notice, \
+                patch.object(page, 'show_task_list'), \
+                patch.object(page, '_flush_history_refresh'), \
+                patch.object(page, '_sync_right_states'), \
+                patch.object(page, '_refresh_results'):
+            page._on_result('', '第 2 行失败')
+        message = '批量制作结束，失败行已标记：第 2 行失败'
+        append.assert_called_once_with(message, 'warning')
+        notice.assert_called_once_with(message, warning=True)
+
+    def test_batch_live_progress_partial_preview_and_final_row_groups(self):
+        page, batch = self.page, self._batch_ready_rows(2)
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        calls = []
+
+        def slow_image(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 2:
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError('测试未释放批量图片任务')
+            return fake_image(*args, **kwargs)
+
+        self.config.config['ecommerce']['max_concurrency'] = 1
+        self.image.side_effect = slow_image
+        batch.submit_button.click()
+        self.wait_until(entered.is_set)
+        first = batch.rows[0]
+        self.wait_until(lambda: first.progress_label.text() == '出图中 1/2')
+        self.assertTrue(batch.isEnabled())
+        self.assertTrue(first.platform_preview_button.isEnabled())
+        self.assertFalse(first.detail_button.isEnabled())
+        self.assertFalse(first.regenerate_button.isEnabled())
+        self.assertFalse(batch.submit_button.isEnabled())
+        release.set()
+        self.wait_until(lambda: not page.busy)
+        self.assertNotEqual(batch.rows[0].group_id, batch.rows[1].group_id)
+        for row in batch.rows:
+            self.assertEqual(row.progress_label.text(), '完成 2/2')
+            self.assertTrue(row.detail_button.isEnabled())
+            self.assertTrue(row.regenerate_button.isEnabled())
+        self.assertEqual(page._batch_row_snapshot, {})
+        self.assertIsNone(batch._run_rows)
+
+    def test_batch_row_fallback_items_and_stable_host_mapping(self):
+        page, batch = self.page, self._batch_ready_rows(2)
+        group, items = self.seed_history('row-fallback', 'generating',
+                                         states=('succeeded', 'running', 'pending'))
+        group.pop('totals', None)
+        original_second = batch.rows[1]
+        page._batch_row_snapshot = batch.begin_run({1, 2})
+        batch.delete_row(batch.rows[0])
+        page._on_batch_row_changed(2, group)
+        self.assertEqual(original_second.group_id, 'row-fallback')
+        self.assertEqual(original_second.progress_label.text(), '出图中 1/3')
+        page._on_batch_row_failed(1, '已删除行')
+        self.assertEqual(original_second.progress_label.text(), '出图中 1/3')
+        page._on_batch_row_failed(2, '测试失败')
+        self.assertEqual(original_second.progress_label.text(), '失败')
+        self.assertEqual(original_second.progress_label.toolTip(), '测试失败')
+        page._batch_row_snapshot = {}
+        batch.end_run()
+
+    def test_batch_and_single_platform_preview_use_identical_dialog_payload(self):
+        page, batch = self.page, self.page.batch_page
+        group, items = self.seed_history('same-preview', 'partial',
+                                         states=('succeeded', 'failed'))
+        batch.update_row_group(1, group)
+        fake = Mock()
+        fake.exec_.return_value = 0
+        with patch('ui.pages.ecommerce_page.PlatformPreviewDialog', return_value=fake) as dialog:
+            batch.rows[0].platform_preview_button.click()
+            page._show_platform_preview('same-preview')
+        self.assertEqual(dialog.call_count, 2)
+        first, second = (call.args[1] for call in dialog.call_args_list)
+        self.assertEqual(first, second)
+        self.assertEqual(first['group_id'], 'same-preview')
+        self.assertEqual(len(first['manifest']['items']), len(items))
+        self.assertEqual(first['manifest']['items'][0]['file'], items[0]['file_path'])
+
+    def test_batch_open_detail_loads_correct_group_and_restores_single_view(self):
+        page, batch = self.page, self.page.batch_page
+        group, items = self.seed_history('batch-detail', 'succeeded',
+                                         states=('succeeded', 'succeeded'), name='批量详情商品')
+        batch.update_row_group(1, group)
+        page._show_batch_view()
+        batch.rows[0].detail_button.click()
+        self.assertEqual(page.current_view_index(), page.SINGLE_VIEW)
+        self.assertEqual(page._group['group_id'], 'batch-detail')
+        self.assertEqual(page.product_name.text(), '批量详情商品')
+        self.assertEqual(page.product_info.toPlainText(), '保存的资料')
+        self.assertEqual(len(page._items), 2)
+
+    def test_batch_regenerate_confirmation_completed_all_items_and_resume(self):
+        page, batch = self.page, self.page.batch_page
+        group, items = self.seed_history('batch-recreate', 'succeeded',
+                                         states=('succeeded', 'succeeded'))
+        batch.update_row_group(1, group)
+        with patch.object(page, '_confirm_batch_regenerate', return_value=False), \
+                patch.object(page, '_launch_worker') as launch:
+            batch.rows[0].regenerate_button.click()
+            launch.assert_not_called()
+        with patch.object(page, '_confirm_batch_regenerate', return_value=True), \
+                patch.object(page, '_launch_worker') as launch:
+            batch.rows[0].regenerate_button.click()
+            launch.assert_called_once_with(dict(group_id='batch-recreate',
+                item_keys=[item['item_id'] for item in items]), operation='regenerate')
+        self.seed_history('batch-resume', 'partial')
+        with patch.object(page, '_confirm_batch_regenerate', return_value=True), \
+                patch.object(page, '_run_resume') as resume:
+            page._regenerate_batch_group('batch-resume')
+            resume.assert_called_once_with('batch-resume')
+        with patch.object(page, '_confirm_batch_regenerate') as confirm, \
+                patch.object(page, '_launch_worker') as launch:
+            page._regenerate_batch_group('nonexistent')
+            confirm.assert_not_called()
+            launch.assert_not_called()
+
+    def test_batch_detail_and_recreate_busy_guard(self):
+        page = self.page
+        with patch.object(page, '_view_history_group') as detail, \
+                patch.object(page, '_confirm_batch_regenerate') as confirm:
+            page._worker = Mock()
+            try:
+                page._open_batch_detail('busy-group')
+                page._regenerate_batch_group('busy-group')
+            finally:
+                page._worker = None
+            detail.assert_not_called()
+            confirm.assert_not_called()
+
     def test_batch_cancel_skips_all_remaining_rows(self):
         page = self.page
         batch = self._batch_ready_rows(2)

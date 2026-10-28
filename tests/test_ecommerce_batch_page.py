@@ -748,6 +748,198 @@ class _BatchCase(unittest.TestCase):
         self.assertIsNotNone(page.style_used_button)
         self.assertIsNotNone(page.style_gallery_button)
 
+    def test_row_thumbnail_preview_signal_and_empty_browse(self):
+        page = self.page
+        row = page.rows[0]
+        image = self.png_file('preview.png')
+        preview = QSignalSpy(row.image_cell.preview_requested)
+        browse = QSignalSpy(row.image_cell.browse_requested)
+        row.set_images([image])
+        row.image_cell._on_thumb_clicked()
+        self.assertEqual(len(preview), 1)
+        self.assertEqual(list(preview[0]), [[image], 0])
+        row.set_images([])
+        with patch.object(batch_module.QFileDialog, 'getOpenFileNames', return_value=([], '')):
+            row.image_cell._on_thumb_clicked()
+        self.assertEqual(len(browse), 1)
+
+    def test_batch_row_preview_lightbox_and_actions(self):
+        page = self.page
+        row = page.rows[0]
+        paths = [self.png_file('one.png'), self.png_file('two.png')]
+        row.set_images(paths)
+        with patch('ui.pages.ecommerce_batch_page.ImageLightbox.show_images') as show:
+            row.image_cell._on_thumb_clicked()
+            self.assertEqual(show.call_args.args[1:], (paths, 0))
+
+        row.set_group_state({
+            'group_id': 'batch-group', 'status': 'succeeded',
+            'totals': {'total': 2, 'succeeded': 2, 'failed': 0},
+        })
+        self.assertEqual(row.group_id, 'batch-group')
+        self.assertIn('完成', row.progress_label.text())
+        platform = QSignalSpy(page.preview_group_requested)
+        detail = QSignalSpy(page.detail_group_requested)
+        regenerate = QSignalSpy(page.regenerate_group_requested)
+        row.platform_preview_button.click()
+        row.detail_button.click()
+        row.regenerate_button.click()
+        self.assertEqual(list(platform[0]), ['batch-group'])
+        self.assertEqual(list(detail[0]), ['batch-group'])
+        self.assertEqual(list(regenerate[0]), ['batch-group'])
+        page.set_busy(True)
+        self.assertTrue(row.platform_preview_button.isEnabled())
+        self.assertFalse(row.detail_button.isEnabled())
+        self.assertFalse(row.regenerate_button.isEnabled())
+        page.set_busy(False)
+
+    def test_batch_row_group_progress_states(self):
+        row = self.page.rows[0]
+        cases = [
+            ('analyzing', {}, '分析中…', False, False),
+            ('generating', {'total': 3, 'succeeded': 1}, '出图中 1/3', True, False),
+            ('succeeded', {'total': 3, 'succeeded': 3}, '完成 3/3', True, True),
+            ('partial', {'total': 3, 'succeeded': 2, 'failed': 1}, '部分失败', True, True),
+            ('failed', {'total': 3, 'failed': 3}, '失败', False, True),
+            ('cancelled', {'total': 3, 'cancelled': 3}, '已取消', False, True),
+        ]
+        for status, totals, expected, preview, terminal in cases:
+            with self.subTest(status=status):
+                row.set_group_state({
+                    'group_id': 'g-' + status, 'status': status,
+                    'totals': totals,
+                })
+                self.assertEqual(row.progress_label.text(), expected)
+                self.assertEqual(row.platform_preview_button.isEnabled(), preview)
+                self.assertEqual(row.detail_button.isEnabled(), terminal)
+                self.assertEqual(row.regenerate_button.isEnabled(), terminal)
+
+    def test_row_lightbox_six_images_navigation_close_and_reopen(self):
+        page, row = self.page, self.page.rows[0]
+        paths = [self.png_file(f'preview-{n}.png') for n in range(6)]
+        row.set_images(paths)
+        page.resize(1280, 900)
+        page.show()
+        QTest.mouseClick(row.image_cell.thumb, Qt.LeftButton)
+        dialog = page._lightbox
+        self.assertIsNotNone(dialog)
+        self.assertEqual(dialog.images(), paths)
+        self.assertEqual(dialog.current_index(), 0)
+        self.assertEqual(dialog.counter_label.text(), '1 / 6')
+        self.assertFalse(dialog.prev_button.isEnabled())
+        QTest.mouseClick(dialog.next_button, Qt.LeftButton)
+        self.assertEqual(dialog.current_index(), 1)
+        QTest.keyClick(dialog, Qt.Key_Left)
+        self.assertEqual(dialog.current_index(), 0)
+        QTest.keyClick(dialog, Qt.Key_Escape)
+        self.assertIsNone(page._lightbox)
+        self.app.processEvents()
+        QTest.mouseClick(row.image_cell.thumb, Qt.LeftButton)
+        self.assertIsNotNone(page._lightbox)
+        self.assertIsNot(page._lightbox, dialog)
+        self.assertEqual(page._lightbox.images(), paths)
+
+    def test_busy_keeps_partial_preview_and_blocks_edit_detail_regenerate(self):
+        page, row = self.page, self.make_ready()
+        row.set_group_state(dict(group_id='partial-live', status='generating',
+                                totals=dict(total=3, succeeded=1, running=1, pending=1)))
+        page.set_busy(True)
+        preview = QSignalSpy(page.preview_group_requested)
+        detail = QSignalSpy(page.detail_group_requested)
+        regenerate = QSignalSpy(page.regenerate_group_requested)
+        page.refresh_colors()
+        page.refresh_interface_scale()
+        row.platform_preview_button.click()
+        page.open_detail(row)
+        page.regenerate_row(row)
+        self.assertEqual(list(preview[0]), ['partial-live'])
+        self.assertEqual(len(detail), 0)
+        self.assertEqual(len(regenerate), 0)
+        self.assertFalse(row.name_edit.isEnabled())
+        self.assertFalse(page.submit_button.isEnabled())
+        self.assertFalse(page.submit())
+        self.assertEqual(row.progress_label.text(), '出图中 1/3')
+        page.set_busy(False)
+        self.assertTrue(row.name_edit.isEnabled())
+        self.assertTrue(page.submit_button.isEnabled())
+        self.assertFalse(row.detail_button.isEnabled())  # Still generating.
+
+    def test_run_snapshot_survives_row_removal_and_renumbering(self):
+        page = self.page
+        first, second = page.rows[0], page.add_row()
+        snapshot = page.begin_run({1, 2})
+        self.assertIs(snapshot[2], second)
+        page.delete_row(first)
+        self.assertEqual(second.row_index, 1)
+        self.assertFalse(page.update_row_group(1, dict(group_id='removed', status='succeeded')))
+        self.assertTrue(page.update_row_group(2, dict(group_id='original-second', status='analyzing')))
+        self.assertEqual(second.group_id, 'original-second')
+        page.end_run()
+
+    def test_failure_and_progress_survive_theme_language_and_reset(self):
+        from ui.theme import apply_ui_mode
+        row = self.page.rows[0]
+        self.assertTrue(row.detail_button.isHidden())
+        row.set_failed_state('本地测试失败')
+        for mode in ('light', 'dark'):
+            apply_ui_mode(mode)
+            self.page.refresh_colors()
+            self.assertEqual(row.progress_label.text(), '失败')
+            self.assertEqual(row.progress_label.toolTip(), '本地测试失败')
+        row.set_group_state(dict(group_id='live', status='generating',
+                                totals=dict(total=3, succeeded=1)))
+        set_language('English')
+        self.page.retranslate_ui()
+        self.assertEqual(row.progress_label.text(), 'Generating 1/3')
+        self.assertFalse(CJK.search(row.detail_button.text()))
+        self.assertTrue(row.platform_preview_button.isEnabled())
+        row.reset_state()
+        self.assertEqual(row.group_id, '')
+        self.assertTrue(row.progress_label.isHidden())
+        self.assertTrue(row.platform_preview_button.isHidden())
+        apply_ui_mode('light')
+
+    def test_group_counts_prefer_live_totals_then_manifest_and_handle_bad_values(self):
+        row = self.page.rows[0]
+        items = [dict(status='succeeded'), dict(status='failed'), dict(status='pending')]
+        group = dict(group_id='counts', status='generating', manifest=dict(items=items))
+        row.set_group_state(group)
+        self.assertEqual(row.progress_label.text(), '出图中 2/3')
+        row.set_group_state(dict(group, totals=dict(pending=2, running=1, succeeded=0, failed=0)))
+        self.assertEqual(row.progress_label.text(), '出图中 0/3')
+        self.assertFalse(row.platform_preview_button.isEnabled())
+        row.set_group_state(dict(group, totals=dict(total='bad', succeeded=None, failed='bad')))
+        self.assertEqual(row.progress_label.text(), '出图中 2/3')
+
+    def test_completed_row_actions_fit_four_scales_and_both_themes(self):
+        from tests.qt_scale_support import flush_layout
+        from ui.theme import apply_ui_mode
+        from ui.tokens import px
+        page, row = self.page, self.page.rows[0]
+        row.set_group_state(dict(group_id='layout', status='succeeded',
+                                totals=dict(total=6, succeeded=6)))
+        page.show()
+        try:
+            for mode in ('light', 'dark'):
+                apply_ui_mode(mode)
+                for scale in (1., 1.25, 1.5, 1.75):
+                    with self.subTest(mode=mode, scale=scale):
+                        tokens.set_interface_scale(scale)
+                        page.refresh_interface_scale()
+                        page.resize(px(1280), px(900))
+                        page.body_scroll.ensureWidgetVisible(row)
+                        flush_layout(self.app, page)
+                        buttons = (row.platform_preview_button, row.detail_button, row.regenerate_button)
+                        for button in buttons:
+                            self.assertTrue(button.isVisible())
+                            self.assertTrue(row.rect().contains(button.geometry()))
+                            self.assertGreaterEqual(button.height(), px(28))
+                        for a, b in zip(buttons, buttons[1:]):
+                            self.assertFalse(a.geometry().intersects(b.geometry()))
+                        self.assertEqual(row.progress_label.text(), '完成 6/6')
+        finally:
+            apply_ui_mode('light')
+
     def test_callable_theme_scale_and_language_refresh(self):
         page = self.page
         page.refresh_colors()

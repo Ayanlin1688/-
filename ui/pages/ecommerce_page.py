@@ -78,6 +78,8 @@ class EcommerceWorker(QThread):
     item_changed = pyqtSignal(object)
     log_message = pyqtSignal(str, str)
     finished = pyqtSignal(str, str)
+    batch_row_changed = pyqtSignal(int, object)
+    batch_row_failed = pyqtSignal(int, str)
 
     def __init__(self, manager_factory, arguments, cancel_event, secrets=(), *, operation='start'):
         super().__init__()
@@ -92,11 +94,15 @@ class EcommerceWorker(QThread):
 
     def run(self):
         group_id = self.arguments.get('group_id', '')
+        current_row_index = 0
 
         def on_group(record):
             nonlocal group_id
             group_id = record['group_id']
-            self.group_changed.emit(redact_structure(record, self._clean))
+            clean_record = redact_structure(record, self._clean)
+            self.group_changed.emit(clean_record)
+            if self.operation == 'batch' and current_row_index:
+                self.batch_row_changed.emit(current_row_index, clean_record)
 
         try:
             manager = self.manager_factory()
@@ -113,24 +119,36 @@ class EcommerceWorker(QThread):
                 groups = [dict(item) for item in (self.arguments.get('groups') or ())
                           if isinstance(item, dict)]
                 last_error = ''
-                for position, group_arguments in enumerate(groups):
+                for position, original_arguments in enumerate(groups):
                     if self.cancel_event.is_set():
                         break
-                    group_arguments.pop('row_index', None)
+                    group_arguments = dict(original_arguments)
+                    current_row_index = int(group_arguments.pop('row_index', position + 1) or position + 1)
                     try:
                         group_arguments.pop('group_id', None)
                         runners['start'](**group_arguments, cancel_event=self.cancel_event)
                     except Exception as error:  # noqa: BLE001 - 单行失败不阻断后续行
                         last_error = self._clean(error)
+                        self.batch_row_failed.emit(current_row_index, last_error)
                         self.log_message.emit(
                             tr('批量第 {index} 行失败：{message}').format(
-                                index=position + 1, message=last_error), 'error')
+                                index=current_row_index, message=last_error), 'error')
                 self.finished.emit(group_id, last_error)
                 return
             group_id = runners[self.operation](**self.arguments, cancel_event=self.cancel_event)
             self.finished.emit(group_id, '')
         except Exception as error:
-            self.finished.emit(group_id, self._clean(error))
+            message = self._clean(error)
+            if self.operation == 'batch':
+                groups = [item for item in (self.arguments.get('groups') or ())
+                          if isinstance(item, dict)]
+                for position, item in enumerate(groups, 1):
+                    row_index = int(item.get('row_index') or position)
+                    self.batch_row_failed.emit(row_index, message)
+                    self.log_message.emit(
+                        tr('批量第 {index} 行失败：{message}').format(
+                            index=row_index, message=message), 'error')
+            self.finished.emit(group_id, message)
         finally:
             self.manager_factory = None
 
@@ -195,6 +213,8 @@ class EcommercePage(QWidget):
         self._history_first_show = True
         self._close_when_idle = False
         self._manager_overrides = {}
+        self._batch_row_snapshot = {}
+        self._batch_row_failures = set()
         self.product_image_paths = []
         self.style_image_paths = []
         self._form_cards = []
@@ -258,6 +278,9 @@ class EcommercePage(QWidget):
         self.batch_page.submit_requested.connect(self._start_batch)
         self.batch_page.history_requested.connect(self.show_task_list)
         self.batch_page.single_requested.connect(self.show_single_creation)
+        self.batch_page.preview_group_requested.connect(self._show_platform_preview)
+        self.batch_page.detail_group_requested.connect(self._open_batch_detail)
+        self.batch_page.regenerate_group_requested.connect(self._regenerate_batch_group)
         self.batch_view = QWidget()
         self.batch_view.setObjectName('ecommerceBatchView')
         batch_layout = QVBoxLayout(self.batch_view)
@@ -527,7 +550,74 @@ class EcommercePage(QWidget):
         self._append_log(tr('批量制作：共 {count} 行，按顺序逐行提交').format(
             count=len(groups)), 'info')
         self.show_task_list()
+        row_indices = {int(item.get('row_index') or 0) for item in groups}
+        self._batch_row_failures.clear()
+        self._batch_row_snapshot = self.batch_page.begin_run(row_indices)
         self._launch_worker(dict(groups=groups), operation='batch')
+
+    def _open_batch_detail(self, group_id):
+        if self.busy:
+            self._notice(tr('批量生成中，完成后可打开详情'))
+            return
+        self._view_history_group(group_id)
+
+    def _regenerate_batch_group(self, group_id):
+        if self.busy:
+            self._notice(tr('批量生成中，完成后可重新制作'))
+            return
+        store = self.config_manager.ecommerce_store()
+        group = store.get_group(group_id)
+        if not group:
+            self._notice(tr('当前生成组不存在'))
+            return
+        if not self._confirm_batch_regenerate():
+            return
+        if group.get('status') in RESUMABLE_STATUSES:
+            self._run_resume(group_id)
+        else:
+            keys = [item['item_id'] for item in store.list_items(group_id)]
+            if not keys:
+                self._notice(tr('请选择当前组中的图片'))
+                return
+            self._view_history_group(group_id)
+            self._run_regenerate(keys)
+
+    def _confirm_batch_regenerate(self):
+        dialog = StudioDialog(self, tr('重新制作'))
+        label = self._text_label(tr('确认重新制作此商品？已完成的图片重新生成可能产生费用。'))
+        label.setWordWrap(True)
+        dialog.body_layout.addWidget(label)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = PushButton(tr('取消'), dialog)
+        confirm = PrimaryPushButton(tr('重新制作'), dialog)
+        cancel.clicked.connect(dialog.reject)
+        confirm.clicked.connect(dialog.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(confirm)
+        dialog.body_layout.addLayout(actions)
+        try:
+            return dialog.exec_() == dialog.Accepted
+        finally:
+            safe_delete_dialog(dialog)
+
+    @pyqtSlot(int, object)
+    def _on_batch_row_changed(self, row_index, group):
+        if int(row_index) not in self._batch_row_snapshot:
+            return
+        group = dict(group)
+        manifest = group.get('manifest')
+        if not isinstance(manifest, dict) or not manifest.get('items'):
+            items = self.config_manager.ecommerce_store().list_items(group['group_id'])
+            group['manifest'] = dict(manifest if isinstance(manifest, dict) else {}, items=items)
+        self.batch_page.update_row_group(row_index, group)
+
+    @pyqtSlot(int, str)
+    def _on_batch_row_failed(self, row_index, message):
+        if int(row_index) not in self._batch_row_snapshot:
+            return
+        self._batch_row_failures.add(int(row_index))
+        self.batch_page.mark_row_failed(row_index, message)
 
     def _start_new_creation(self):
         """「+ 新建制作」：切到单个制作视图并清空当前制作内容。"""
@@ -1780,6 +1870,9 @@ class EcommercePage(QWidget):
         worker.item_changed.connect(self._on_item, Qt.QueuedConnection)
         worker.log_message.connect(self._append_log, Qt.QueuedConnection)
         worker.finished.connect(self._on_result, Qt.QueuedConnection)
+        if operation == 'batch':
+            worker.batch_row_changed.connect(self._on_batch_row_changed, Qt.QueuedConnection)
+            worker.batch_row_failed.connect(self._on_batch_row_failed, Qt.QueuedConnection)
         native_finished = QThread.finished.__get__(worker, QThread)
         native_finished.connect(self._thread_stopped, Qt.QueuedConnection)
         native_finished.connect(lambda: _LIVE_WORKERS.discard(worker))
@@ -1789,7 +1882,7 @@ class EcommercePage(QWidget):
         self.start_button.setEnabled(False)
         self.result_panel.set_busy(True)
         self.task_list.set_busy(True)
-        self.batch_page.setEnabled(False)
+        self.batch_page.set_busy(True)
         self.cancel_button.setEnabled(True)
         self._sync_right_states()
         worker.start()
@@ -1814,6 +1907,10 @@ class EcommercePage(QWidget):
             self._clear_results()
         self._right_launch_stage = None
         self._group = redact_structure(record, self._clean)
+        if not self._batch_row_snapshot:
+            for row in self.batch_page.rows:
+                if row.group_id == record['group_id']:
+                    row.set_group_state(self._group)
         status = self._group['status']
         self.stage_label.setText(tr('取消中…') if self.busy and self.cancel_event.is_set()
                                  and status in ('analyzing', 'generating') else _stage_text(status))
@@ -1908,8 +2005,9 @@ class EcommercePage(QWidget):
         self._refresh_results(group_id, refresh_history=False)
         if operation == 'batch':
             if error:
-                self._append_log(tr('批量制作异常中断：{message}').format(message=error), 'error')
-                self._notice(error)
+                message = tr('批量制作结束，失败行已标记：{message}').format(message=error)
+                self._append_log(message, 'warning')
+                self._notice(message, warning=True)
             else:
                 self._append_log(tr('批量制作结束，可在任务列表查看各任务组'), 'info')
             self.show_task_list()
@@ -1935,7 +2033,18 @@ class EcommercePage(QWidget):
         # Pool callbacks may be queued from different threads. Read the final
         # database snapshot once more before enabling regeneration actions.
         self._refresh_results(refresh_history=False)
+        store = self.config_manager.ecommerce_store()
+        for index, row in self._batch_row_snapshot.items():
+            if index in self._batch_row_failures:
+                continue
+            if row in self.batch_page.rows and row.group_id:
+                group = store.get_group(row.group_id)
+                if group:
+                    self._on_batch_row_changed(index, group)
         self._worker = None
+        self._batch_row_snapshot = {}
+        self._batch_row_failures.clear()
+        self.batch_page.end_run()
         self.cancel_event = threading.Event()
         for card in self._form_cards:
             card.setEnabled(True)
@@ -1947,6 +2056,7 @@ class EcommercePage(QWidget):
         self.task_list.set_busy(False)
         try:
             self.batch_page.setEnabled(True)
+            self.batch_page.set_busy(False)
         except RuntimeError:
             pass
         self._refresh_conflicts()

@@ -34,6 +34,17 @@ PREVIEW_LABELS = {
 }
 
 EN_ECOMMERCE = {
+    '分析中…': 'Analyzing…',
+    '出图中': 'Generating images',
+    '出图中 {done}/{total}': 'Generating {done}/{total}',
+    '完成 {done}/{total}': 'Completed {done}/{total}',
+    '部分失败': 'Partially failed',
+    '打开详情': 'Open details',
+    '重新制作': 'Recreate',
+    '批量生成中，完成后可打开详情': 'Batch generation is running. Open details when it finishes.',
+    '批量生成中，完成后可重新制作': 'Batch generation is running. Recreate when it finishes.',
+    '确认重新制作此商品？已完成的图片重新生成可能产生费用。':
+        'Recreate this product? Regenerating completed images may incur charges.',
     '请选择平台': 'Select platforms',
     '最近使用': 'Recently used',
     '已选 {count}/{max} 个': 'Selected {count}/{max}',
@@ -326,6 +337,8 @@ EN_ECOMMERCE = {
     '待完善': 'Incomplete',
     '批量制作': 'Batch creation',
     '批量制作异常中断：{message}': 'Batch creation interrupted: {message}',
+    '批量制作结束，失败行已标记：{message}':
+        'Batch creation finished; failed rows are marked: {message}',
     '批量制作结束，可在任务列表查看各任务组':
         'Batch creation finished; view each task group in the task list',
     '批量制作：共 {count} 行，按顺序逐行提交':
