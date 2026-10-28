@@ -1,5 +1,6 @@
 """分析过程卡片：折叠思考内容与排序后的生成提示词预览。"""
 from collections import deque
+from math import ceil
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
@@ -52,9 +53,11 @@ class EcommerceAnalysisView(QFrame):
         self._raw_output = ''
         self._prompt_full_expanded = False
         self._layout = QVBoxLayout(self)
+        self._layout.setAlignment(Qt.AlignTop)
 
         self.status_card = QFrame(self)
         self.status_card.setObjectName('ecommerceAnalysisStatusCard')
+        self.status_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.status_layout = QVBoxLayout(self.status_card)
         self.status_header = QHBoxLayout()
         self.status_dot = QLabel(self.status_card)
@@ -87,12 +90,15 @@ class EcommerceAnalysisView(QFrame):
 
         self.reasoning_title, self.reasoning_toggle, self.reasoning_header = self._section_header()
         self.reasoning_body = QWidget(self)
+        self.reasoning_body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._reasoning_layout = QVBoxLayout(self.reasoning_body)
         self._reasoning_layout.setContentsMargins(0, 0, 0, 0)
+        self._reasoning_layout.setAlignment(Qt.AlignTop)
         self.reasoning_placeholder = _label(self.reasoning_body)
         self.reasoning_placeholder.setWordWrap(True)
         self.reasoning_placeholder.setAlignment(Qt.AlignCenter)
         self.reasoning_edit = self._make_edit('ecommerceReasoning', self.reasoning_body)
+        self.reasoning_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._reasoning_layout.addWidget(self.reasoning_placeholder)
         self._reasoning_layout.addWidget(self.reasoning_edit)
         self._layout.addWidget(self.reasoning_body)
@@ -103,9 +109,11 @@ class EcommerceAnalysisView(QFrame):
         self.prompt_expand_button.setCursor(Qt.PointingHandCursor)
         self.prompt_header.insertWidget(1, self.prompt_expand_button)
         self.prompt_edit = self._make_edit('ecommercePromptPreview', self)
+        self.prompt_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._layout.addWidget(self.prompt_edit)
         self.raw_title, self.raw_toggle, self.raw_header = self._section_header()
         self.raw_edit = self._make_edit('ecommerceRawAnalysis', self)
+        self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._layout.addWidget(self.raw_edit)
         self.reasoning_toggle.clicked.connect(self._toggle_reasoning)
         self.prompt_toggle.clicked.connect(self._toggle_prompt)
@@ -281,11 +289,36 @@ class EcommerceAnalysisView(QFrame):
         self.reasoning_edit.setPlainText(text)
         self.reasoning_edit.setVisible(bool(text))
         self.reasoning_placeholder.setVisible(not bool(text))
+        # Keep the section at its content height; a preferred child otherwise lets
+        # the outer card stretch the reasoning area into a large blank block.
+        self._fit_editor_height(self.reasoning_edit, 36, 150, text)
+        self.reasoning_body.setMaximumHeight(px(150 if text else 36))
         self.reasoning_placeholder.setText(
             tr('正在思考… 已用时 {seconds} 秒').format(seconds=self._analysis_elapsed)
             if self._analysis_state in ('analyzing', 'running') else tr('等待模型返回思考内容…'))
         self._scroll_reasoning_to_bottom()
         QTimer.singleShot(0, self._scroll_reasoning_to_bottom)
+
+    def _fit_editor_height(self, edit, minimum, maximum, text=None):
+        text = edit.toPlainText() if text is None else str(text)
+        width = edit.viewport().width()
+        if width <= px(100):
+            width = max(px(100), self.width() - px(60))
+        metrics = edit.fontMetrics()
+        lines = sum(max(1, ceil(metrics.horizontalAdvance(line) / max(1, width - px(8))))
+                    for line in (text.splitlines() or ['']))
+        height = min(px(maximum), max(px(minimum), lines * metrics.lineSpacing() + px(16)))
+        # QPlainTextEdit's default size hint is much taller than short streamed
+        # content. Pin it to the measured height; the measured value is already
+        # clamped to the scale-aware maximum above.
+        edit.setFixedHeight(height)
+
+    def _fit_visible_editors(self):
+        reasoning = '\n'.join(self._reasoning_chunks)[-MAX_REASONING_TEXT:]
+        self._fit_editor_height(self.reasoning_edit, 36, 150, reasoning)
+        self.reasoning_body.setMaximumHeight(px(150 if reasoning else 36))
+        self._fit_editor_height(self.prompt_edit, 48, 220)
+        self._fit_editor_height(self.raw_edit, 48, 180)
 
     def _scroll_reasoning_to_bottom(self):
         bar = self.reasoning_edit.verticalScrollBar()
@@ -323,6 +356,7 @@ class EcommerceAnalysisView(QFrame):
         text = text or tr('分析完成后显示生成提示词')
         if self.prompt_edit.toPlainText() != text:
             self.prompt_edit.setPlainText(text)
+        self._fit_editor_height(self.prompt_edit, 48, 220, text)
         if self.prompt_edit.property('hasPromptItems') != bool(sections):
             self.prompt_edit.setProperty('hasPromptItems', bool(sections))
         self.prompt_expand_button.setVisible(bool(sections) and truncated)
@@ -359,19 +393,21 @@ class EcommerceAnalysisView(QFrame):
 
     def refresh_interface_scale(self):
         self._layout.setContentsMargins(px(20), px(20), px(20), px(20))
-        self._layout.setSpacing(px(12))
+        # Keep the analysis card dense while retaining room for long streaming text.
+        self._layout.setSpacing(px(6))
         self._reasoning_layout.setSpacing(0)
         self.status_layout.setContentsMargins(px(12), px(10), px(12), px(10))
-        self.status_layout.setSpacing(px(5))
+        self.status_layout.setSpacing(px(3))
         self.status_header.setSpacing(px(8))
         self.status_dot.setFixedSize(px(10), px(10))
-        self.reasoning_placeholder.setMinimumHeight(px(90))
-        self.reasoning_edit.setMaximumHeight(px(180))
-        self.reasoning_edit.setMinimumHeight(px(90))
-        self.prompt_edit.setMaximumHeight(px(220))
-        self.prompt_edit.setMinimumHeight(px(120))
-        self.raw_edit.setMaximumHeight(px(180))
-        self.raw_edit.setMinimumHeight(px(90))
+        self.reasoning_placeholder.setMinimumHeight(px(36))
+        self.status_card.setMaximumHeight(px(320))
+        self.reasoning_body.setMaximumHeight(px(150 if self._reasoning_chunks else 36))
+        self.reasoning_edit.setMinimumHeight(px(36))
+        self.prompt_edit.setMinimumHeight(px(48))
+        self.reasoning_edit.setMinimumHeight(px(36))
+        self.raw_edit.setMinimumHeight(px(48))
+        self._fit_visible_editors()
         for widget in (self.reasoning_title, self.prompt_title, self.reasoning_placeholder,
                        self.reasoning_edit, self.prompt_edit, self.raw_title, self.raw_edit,
                        self.status_label, self.status_detail, self.status_error,
@@ -388,6 +424,10 @@ class EcommerceAnalysisView(QFrame):
         self.prompt_expand_button.setMinimumHeight(px(28))
         self.prompt_expand_button.setMaximumWidth(px(230))
         self.refresh_colors()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_visible_editors)
 
     def refresh_colors(self):
         self.setStyleSheet(

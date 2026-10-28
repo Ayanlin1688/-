@@ -189,7 +189,7 @@ class _SubmissionCell(QFrame):
         if index is not None:
             self.index = index
         status = str(self.record.get('status') or 'pending')
-        status = status if status in ('running', 'succeeded', 'failed', 'cancelled') else 'pending'
+        status = status if status in ('running', 'succeeded', 'failed', 'cancelled', 'skipped', 'retried') else 'pending'
         self.setProperty('cellState', status)
         self.number_label.setText(str(self.index))
         self.thumbnail.setVisible(status == 'succeeded')
@@ -217,7 +217,9 @@ class _SubmissionCell(QFrame):
         self.badge_label.setText((tr('轮{seq}') if self.key[0] == 'carousel'
                                  else tr('详{seq}')).format(seq=self.key[1]))
         self.status_label.setText({'pending': tr('排队中'), 'running': tr('生成中'),
-                                   'failed': tr('失败'), 'cancelled': tr('取消')}.get(self.property('cellState'), ''))
+                                   'failed': tr('失败'), 'cancelled': tr('取消'),
+                                   'skipped': tr('跳过'),
+                                   'retried': tr('已重试')}.get(self.property('cellState'), ''))
         self.retry_button.setText(tr('重试'))
         self.thumbnail._render()
 
@@ -264,7 +266,11 @@ class EcommerceSubmissionView(QFrame):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.cells = {}
         self._items = {}
+        self.rounds = {}
+        self._round_sections = []
         self._total = self._done = self._failed = 0
+        self._phase = 'generating'
+        self._submitted = 0
         self.column_count = 3
         self._arranged_keys = ()
         self._layout = QVBoxLayout(self)
@@ -290,7 +296,7 @@ class EcommerceSubmissionView(QFrame):
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(100)
-        self._resize_timer.timeout.connect(self._arrange_cells)
+        self._resize_timer.timeout.connect(self._arrange_all)
         self.retranslate_ui()
         self.refresh_colors()
         register_retranslate(self)
@@ -325,6 +331,145 @@ class EcommerceSubmissionView(QFrame):
             self.setUpdatesEnabled(True)
             self.update()
 
+    def _create_round_section(self, round_no, keys, total):
+        section = QFrame(self)
+        section.setObjectName('ecommerceRetryRound')
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(px(8))
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title = _label(13, True, section)
+        progress = _label(parent=section)
+        progress.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        header.addWidget(title)
+        header.addWidget(progress, 1)
+        section_layout.addLayout(header)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(px(10))
+        section_layout.addLayout(grid)
+        self._layout.addWidget(section)
+        cells = {}
+        records = []
+        for key in sorted(keys, key=_sort_key):
+            source = dict(self._items.get(key) or {'kind': key[0], 'seq': key[1]})
+            source['status'] = 'pending'
+            records.append(source)
+        for index, key in enumerate(sorted(keys, key=_sort_key), 1):
+            cell = _SubmissionCell(records[index - 1], index, section)
+            cell.retry_requested.connect(self.retry_requested)
+            cells[key] = cell
+        data = dict(number=round_no, section=section, title=title, progress=progress,
+                    grid=grid, cells=cells, keys=tuple(sorted(keys, key=_sort_key)),
+                    total=max(int(total or 0), len(keys)), done=0, failed=0)
+        self.rounds[round_no] = data
+        self._round_sections.append(data)
+        title.setText(tr('第 {n} 次重新生成').format(n=round_no))
+        self._set_round_progress(data)
+        self._arrange_round(data)
+        self._style_round(data)
+        return data
+
+    def begin_retry_round(self, keys, total=None):
+        normalized = []
+        for key in keys or ():
+            if isinstance(key, list):
+                key = tuple(key)
+            if isinstance(key, tuple) and len(key) == 2:
+                key = (str(key[0]), int(key[1]))
+                if key[0] in ('carousel', 'detail') and key not in normalized:
+                    normalized.append(key)
+        if not normalized:
+            return 0
+        round_no = max(self.rounds.keys(), default=0) + 1
+        self._create_round_section(round_no, normalized, total or len(normalized))
+        self.updateGeometry()
+        return round_no
+
+    def update_round_item(self, round_no, record):
+        data = self.rounds.get(int(round_no))
+        if not data or not isinstance(record, dict):
+            return
+        key = _row_key(record)
+        cell = data['cells'].get(key)
+        if cell is None:
+            return
+        cell.update_record(record)
+        status = str(record.get('status') or '')
+        if status == 'succeeded':
+            self._supersede_previous(key, keep_round=int(round_no))
+        total, succeeded, failed, done = self.round_item_counts(round_no)
+        data['done'] = done
+        data['failed'] = failed
+        self._set_round_progress(data)
+
+    def set_round_progress(self, round_no, done, failed):
+        data = self.rounds.get(int(round_no))
+        if not data:
+            return
+        data['done'] = max(0, int(done or 0))
+        data['failed'] = max(0, int(failed or 0))
+        self._set_round_progress(data)
+
+    def round_item_counts(self, round_no):
+        data = self.rounds.get(int(round_no))
+        if not data:
+            return 0, 0, 0, 0
+        records = [cell.record for cell in data['cells'].values()]
+        done = sum(record.get('status') in ('succeeded', 'failed', 'cancelled', 'skipped')
+                   for record in records)
+        succeeded = sum(record.get('status') == 'succeeded' for record in records)
+        failed = sum(record.get('status') == 'failed' for record in records)
+        return len(records), succeeded, failed, done
+
+    def _set_round_progress(self, data):
+        data['progress'].setText(tr('完成 {done}/{total}（失败 {failed}）').format(
+            done=data['done'], total=data['total'], failed=data['failed']))
+
+    def _supersede_previous(self, key, keep_round=None):
+        cell = self.cells.get(key)
+        if cell is not None:
+            cell.setProperty('superseded', True)
+            cell.hide()
+        for number, data in self.rounds.items():
+            if keep_round is not None and number == keep_round:
+                continue
+            previous = data['cells'].get(key)
+            if previous is not None:
+                previous.setProperty('superseded', True)
+                previous.hide()
+        self._arrange_all()
+
+    def _arrange_round(self, data):
+        grid = data['grid']
+        while grid.count():
+            grid.takeAt(0)
+        section = data['section']
+        available = max(0, section.width() - section.layout().contentsMargins().left() -
+                        section.layout().contentsMargins().right())
+        spacing = px(10)
+        columns = min(6, max(3, (available + spacing) // max(1, px(96) + spacing)))
+        for column in range(6):
+            grid.setColumnStretch(column, 1 if column < columns else 0)
+            grid.setColumnMinimumWidth(column, 0)
+        visible_keys = [key for key in data['keys']
+                        if not data['cells'][key].property('superseded')]
+        for index, key in enumerate(visible_keys):
+            cell = data['cells'][key]
+            grid.addWidget(cell, index // columns, index % columns)
+            cell.show()
+        for key in data['keys']:
+            if key not in visible_keys:
+                data['cells'][key].hide()
+        grid.invalidate()
+
+    def _style_round(self, data):
+        data['title'].setStyleSheet('color:%s; background:transparent;' % materials.text_color(1))
+        data['progress'].setStyleSheet('color:%s; background:transparent;' % materials.text_color(2))
+        for cell in data['cells'].values():
+            cell.refresh_colors()
+
     def update_item(self, record):
         if not isinstance(record, dict):
             return
@@ -341,10 +486,37 @@ class EcommerceSubmissionView(QFrame):
         self._failed = max(0, int(failed or 0))
         self.progress_label.setText(tr('已完成 {done}/{total}（失败 {failed}）').format(
             done=self._done, total=self._total, failed=self._failed))
+        self._phase = 'complete'
+
+    def set_submission_progress(self, submitted, total):
+        """Show prompt submission progress while keeping all plan cells visible."""
+        self._phase = 'submitting'
+        self._submitted = max(0, int(submitted or 0))
+        self._total = max(0, int(total or 0))
+        self.title_label.setText(tr('提交中'))
+        self.progress_label.setText(tr('已提交 {done}/{total}').format(
+            done=self._submitted, total=self._total))
+
+    def set_generation_phase(self, total, done, failed):
+        """Update the first grid header without replacing planned cells."""
+        self._phase = 'generating'
+        self._total = max(0, int(total or 0))
+        self._done = max(0, int(done or 0))
+        self._failed = max(0, int(failed or 0))
+        self.title_label.setText(tr('生成中'))
+        self.progress_label.setText(tr('成功 {success} / 失败 {failed} / 共 {total}').format(
+            success=self._done, failed=self._failed, total=self._total))
 
     def clear(self):
         self._resize_timer.stop()
         self.set_items([])
+        for data in self._round_sections:
+            data['section'].hide()
+            data['section'].deleteLater()
+        self.rounds.clear()
+        self._round_sections.clear()
+        self._phase = 'generating'
+        self._submitted = 0
         self.set_progress(0, 0, 0)
 
     def _arrange_cells(self):
@@ -353,7 +525,8 @@ class EcommerceSubmissionView(QFrame):
         available = max(0, self.width() - margins.left() - margins.right())
         spacing = px(10)
         columns = min(6, max(3, (available + spacing) // max(1, px(96) + spacing)))
-        ordered = tuple(sorted(self.cells, key=_sort_key))
+        ordered = tuple(sorted((key for key, cell in self.cells.items()
+                                if not cell.property('superseded')), key=_sort_key))
         if columns == self.column_count and ordered == self._arranged_keys:
             return
         self.column_count = columns
@@ -366,8 +539,16 @@ class EcommerceSubmissionView(QFrame):
         for index, key in enumerate(ordered):
             self.grid_layout.addWidget(self.cells[key], index // columns, index % columns)
             self.cells[key].show()
+        for key, cell in self.cells.items():
+            if key not in ordered:
+                cell.hide()
         self.grid_layout.invalidate()
         self.updateGeometry()
+
+    def _arrange_all(self):
+        self._arrange_cells()
+        for data in self._round_sections:
+            self._arrange_round(data)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -378,11 +559,26 @@ class EcommerceSubmissionView(QFrame):
         super().closeEvent(event)
 
     def retranslate_ui(self):
-        self.title_label.setText(tr('生成中'))
+        if self._phase == 'submitting':
+            self.title_label.setText(tr('提交中'))
+            self.progress_label.setText(tr('已提交 {done}/{total}').format(
+                done=self._submitted, total=self._total))
+        elif self._phase == 'generating':
+            self.title_label.setText(tr('生成中'))
+            self.progress_label.setText(tr('成功 {success} / 失败 {failed} / 共 {total}').format(
+                success=self._done, failed=self._failed, total=self._total))
+        else:
+            self.title_label.setText(tr('生成中'))
         self.cancel_button.setText(tr('取消'))
-        self.set_progress(self._total, self._done, self._failed)
+        if self._phase not in ('submitting', 'generating'):
+            self.set_progress(self._total, self._done, self._failed)
         for cell in self.cells.values():
             cell.retranslate_ui()
+        for data in self._round_sections:
+            data['title'].setText(tr('第 {n} 次重新生成').format(n=data['number']))
+            self._set_round_progress(data)
+            for cell in data['cells'].values():
+                cell.retranslate_ui()
 
     def refresh_colors(self):
         self.setStyleSheet('QFrame#ecommerceSubmissionView { background:%s; '
@@ -393,6 +589,8 @@ class EcommerceSubmissionView(QFrame):
         self.progress_label.setStyleSheet('color:%s; background:transparent;' % materials.text_color(2))
         for cell in self.cells.values():
             cell.refresh_colors()
+        for data in self._round_sections:
+            self._style_round(data)
 
     def refresh_interface_scale(self):
         self._layout.setContentsMargins(px(20), px(20), px(20), px(20))
@@ -406,5 +604,11 @@ class EcommerceSubmissionView(QFrame):
             label.setFont(font)
         for cell in self.cells.values():
             cell.refresh_interface_scale()
+        for data in self._round_sections:
+            data['section'].layout().setSpacing(px(8))
+            self._arrange_round(data)
+            for cell in data['cells'].values():
+                cell.refresh_interface_scale()
+            self._style_round(data)
         self.refresh_colors()
         self._arrange_cells()

@@ -38,6 +38,7 @@ class EcommerceStepBarTests(unittest.TestCase):
         expected = {
             'idle': ('pending', 'pending', 'pending'),
             'analyzing': ('active', 'pending', 'pending'),
+            'analysis_failed': ('failed', 'pending', 'pending'),
             'generating': ('done', 'active', 'pending'),
             'finished': ('done', 'done', 'done'),
             'failed': ('done', 'done', 'failed'),

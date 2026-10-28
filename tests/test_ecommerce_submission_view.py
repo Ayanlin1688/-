@@ -78,6 +78,86 @@ class EcommerceSubmissionViewTests(unittest.TestCase):
         self.view.set_items(self.items())
         self.assertEqual(previous, {key: id(cell) for key, cell in self.view.cells.items()})
 
+    def test_thirty_planned_cells_exist_before_any_generation_result(self):
+        plan = [dict(kind='carousel' if index < 18 else 'detail',
+                     seq=index + 1 if index < 18 else index - 17, status='pending')
+                for index in range(30)]
+        self.view.set_items(plan)
+        self.view.set_submission_progress(18, 30)
+        self.assertEqual(len(self.view.cells), 30)
+        self.assertEqual(self.view.title_label.text(), '提交中')
+        self.assertEqual(self.view.progress_label.text(), '已提交 18/30')
+        self.assertTrue(all(cell.property('cellState') == 'pending'
+                            for cell in self.view.cells.values()))
+        self.assertEqual(self.view.cells[('carousel', 18)].badge_label.text(), '轮18')
+        self.assertEqual(self.view.cells[('detail', 1)].badge_label.text(), '详1')
+
+    def test_retry_rounds_keep_only_requested_keys_and_hide_superseded_success(self):
+        original = [dict(kind='carousel', seq=1, status='failed', error='first failure'),
+                    dict(kind='detail', seq=1, status='failed', error='detail failure')]
+        self.view.set_items(original)
+
+        first = self.view.begin_retry_round([('carousel', 1)], total=1)
+        self.assertEqual(first, 1)
+        self.assertEqual(self.view.rounds[first]['title'].text(), '第 1 次重新生成')
+        self.assertEqual(set(self.view.rounds[first]['cells']), {('carousel', 1)})
+        self.view.update_round_item(first, dict(kind='carousel', seq=1, status='succeeded',
+                                                file_path=str(self.path)))
+        initial = self.view.cells[('carousel', 1)]
+        retried_success = self.view.rounds[first]['cells'][('carousel', 1)]
+        self.assertTrue(initial.isHidden())
+        self.assertEqual(retried_success.property('cellState'), 'succeeded')
+        self.assertEqual(sum(not cell.isHidden() and cell.property('cellState') == 'succeeded'
+                             for cell in (initial, retried_success)), 1)
+
+        second = self.view.begin_retry_round([('carousel', 1)], total=1)
+        self.view.update_round_item(second, dict(kind='carousel', seq=1, status='failed',
+                                                 error='second failure'))
+        third = self.view.begin_retry_round([('carousel', 1)], total=1)
+        self.assertEqual([self.view.rounds[index]['title'].text() for index in (1, 2, 3)],
+                         ['第 1 次重新生成', '第 2 次重新生成', '第 3 次重新生成'])
+        self.assertEqual(self.view.rounds[second]['cells'][('carousel', 1)].property('cellState'),
+                         'failed')
+        self.view.update_round_item(third, dict(kind='carousel', seq=1, status='cancelled'))
+        self.assertEqual(self.view.rounds[third]['cells'][('carousel', 1)].status_label.text(), '取消')
+
+        self.view.update_round_item(third, dict(kind='carousel', seq=1,
+                                                status='succeeded', file_path=str(self.path)))
+        self.assertTrue(self.view.rounds[first]['cells'][('carousel', 1)].isHidden())
+        self.assertTrue(self.view.rounds[second]['cells'][('carousel', 1)].isHidden())
+        self.assertFalse(self.view.rounds[third]['cells'][('carousel', 1)].isHidden())
+
+    def test_retry_round_grids_rearrange_when_the_view_resizes(self):
+        keys = [('carousel', 1), ('carousel', 2), ('carousel', 3), ('detail', 1)]
+        self.view.set_items([dict(kind=kind, seq=seq, status='failed') for kind, seq in keys])
+        round_no = self.view.begin_retry_round(keys, total=len(keys))
+        self.view.resize(820, 560)
+        QTest.qWait(130)
+        flush_layout(self.app, self.view)
+        section = self.view.rounds[round_no]['section']
+        cells = self.view.rounds[round_no]['cells']
+        self.assertTrue(all(section.rect().contains(cell.geometry()) for cell in cells.values()))
+
+    def test_superseded_cells_are_removed_from_grid_positions(self):
+        keys = [('carousel', index) for index in range(1, 5)]
+        self.view.set_items([dict(kind=kind, seq=seq, status='failed')
+                             for kind, seq in keys])
+        round_no = self.view.begin_retry_round(keys, total=len(keys))
+        self.view.update_round_item(round_no, dict(kind='carousel', seq=1,
+                                                   status='succeeded',
+                                                   file_path=str(self.path)))
+
+        original_grid = self.view.grid_layout
+        original_second = self.view.cells[('carousel', 2)]
+        self.assertTrue(self.view.cells[('carousel', 1)].isHidden())
+        self.assertEqual(original_grid.getItemPosition(original_grid.indexOf(original_second))[:2],
+                         (0, 0))
+        retry_grid = self.view.rounds[round_no]['grid']
+        retry_second = self.view.rounds[round_no]['cells'][('carousel', 2)]
+        self.assertFalse(self.view.rounds[round_no]['cells'][('carousel', 1)].isHidden())
+        self.assertEqual(retry_grid.getItemPosition(retry_grid.indexOf(retry_second))[:2],
+                         (0, 1))
+
     def test_running_failed_and_retry_use_row_key_signals(self):
         self.view.set_items([dict(kind='carousel', seq=1, status='running'),
                              dict(kind='detail', seq=2, status='failed', error='本地失败')])

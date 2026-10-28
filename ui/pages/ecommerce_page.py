@@ -230,6 +230,11 @@ class EcommercePage(QWidget):
         self._prompt_items = {}
         self._right_state = 'idle'
         self._right_launch_stage = None
+        self._submission_round_no = 0
+        self._submission_round_keys = set()
+        self._submission_phase_active = False
+        self._submission_submitted = 0
+        self._submission_submitted_keys = set()
         self._analysis_timer = QTimer(self)
         self._analysis_timer.setInterval(1000)
         self._analysis_timer.timeout.connect(self._tick_analysis)
@@ -681,15 +686,18 @@ class EcommercePage(QWidget):
             return
         try:
             manifest = group.get('manifest')
-            if not (isinstance(manifest, dict) and manifest.get('items')):
-                items = store.list_items(group_id)
-                manifest = dict(manifest or {}, items=[
-                    dict(kind=item.get('kind'), seq=item.get('seq'),
-                         title=item.get('title'), file=item.get('file_path'),
-                         status=item.get('status'), size=item.get('size'),
-                         model=item.get('model'), error=item.get('error'))
-                    for item in items])
-                group = dict(group, manifest=manifest)
+            manifest = dict(manifest) if isinstance(manifest, dict) else {}
+            # The persisted manifest can lag behind a retry round. Store rows are
+            # the unique current state for each planned image and remain the source
+            # of truth for preview counts and files.
+            items = store.list_items(group_id)
+            manifest['items'] = [
+                dict(kind=item.get('kind'), seq=item.get('seq'),
+                     title=item.get('title'), file=item.get('file_path'),
+                     status=item.get('status'), size=item.get('size'),
+                     model=item.get('model'), error=item.get('error'))
+                for item in items]
+            group = dict(group, manifest=manifest)
             dialog = PlatformPreviewDialog(self, redact_structure(group, self._clean))
             try:
                 from core.i18n import register_retranslate
@@ -965,19 +973,44 @@ class EcommercePage(QWidget):
         items = self._right_items()
         total, ok, failed = self._right_progress(items)
         if state == 'generating':
-            self.submission_view.set_items(items)
-            self.submission_view.set_progress(total, ok + failed, failed)
+            # The first generating callback contains the full configured plan;
+            # keep every planned cell visible while item callbacks arrive.
+            if not self.submission_view.cells:
+                self.submission_view.set_items(items)
+            if self._submission_phase_active:
+                self.submission_view.set_submission_progress(
+                    self._submission_submitted, total)
+            elif self._submission_round_no:
+                round_total, round_success, round_failed, round_done = self.submission_view.round_item_counts(
+                    self._submission_round_no)
+                self.submission_view.set_round_progress(self._submission_round_no,
+                                                        round_done, round_failed)
+                self.submission_view.set_generation_phase(round_total, round_success,
+                                                          round_failed)
+            else:
+                self.submission_view.set_generation_phase(total, ok, failed)
         self.submission_view.cancel_button.setEnabled(self.busy and not self.cancel_event.is_set())
         self.submission_view.cancel_button.setText(tr('取消中…') if self.busy and self.cancel_event.is_set() else tr('取消'))
         incomplete = status in ('partial', 'failed', 'cancelled') or failed > 0
-        self.step_bar.set_stage('cancelled' if status == 'cancelled'
-                                else 'failed' if state in ('analysis_failed', 'finished') and incomplete else state)
+        if state == 'analysis_failed':
+            step_stage = 'analysis_failed'
+        elif status == 'cancelled':
+            step_stage = 'cancelled'
+        elif state == 'finished' and incomplete:
+            step_stage = 'failed'
+        else:
+            step_stage = state
+        self.step_bar.set_stage(step_stage)
         if state == 'analyzing':
             self.step_bar.set_progress(tr('分析中… 已用时 {seconds} 秒').format(
                 seconds=self.analysis_view._analysis_elapsed))
         elif state == 'generating':
-            self.step_bar.set_progress(tr('生成中 {done}/{total}').format(
-                done=ok + failed, total=total))
+            if self._submission_phase_active:
+                self.step_bar.set_progress(tr('提交中') + ' ' + tr('已提交 {done}/{total}').format(
+                    done=self._submission_submitted, total=total))
+            else:
+                self.step_bar.set_progress(tr('生成中 {done}/{total}').format(
+                    done=ok + failed, total=total))
         elif state == 'analysis_failed':
             self.step_bar.set_progress(tr('分析失败'))
         elif status == 'cancelled':
@@ -1719,6 +1752,11 @@ class EcommercePage(QWidget):
         self._right_launch_stage = None
         self._reasoning_chunks.clear()
         self._prompt_items.clear()
+        self._submission_round_no = 0
+        self._submission_round_keys.clear()
+        self._submission_phase_active = False
+        self._submission_submitted = 0
+        self._submission_submitted_keys.clear()
         self.analysis_view.clear()
         self.submission_view.clear()
         self._logged_group_errors.clear()
@@ -1879,6 +1917,12 @@ class EcommercePage(QWidget):
             self._notice(tr('当前组无需断点恢复'))
             return
         self._view_history_group(group_id)
+        items = self.config_manager.ecommerce_store().list_items(group_id)
+        retry_keys = [(item['kind'], item['seq']) for item in items
+                      if item.get('status') in ('pending', 'running', 'failed')
+                      or (item.get('status') == 'succeeded'
+                          and not os.path.isfile(item.get('file_path') or ''))]
+        self._begin_submission_retry_round(retry_keys)
         self._secrets = (self.config_manager.config.get('api', {}).get('api_key', ''),)
         self.summary_label.clear()
         self.stage_label.setText(tr('图片生成中'))
@@ -1949,10 +1993,18 @@ class EcommercePage(QWidget):
         except (ValueError, TypeError) as error:
             self._notice(str(error))
             return
+        retry_keys = [(by_id[item_id]['kind'], by_id[item_id]['seq']) for item_id in keys]
+        self._begin_submission_retry_round(retry_keys)
         self._secrets = (self.config_manager.config.get('api', {}).get('api_key', ''),)
         self.summary_label.clear()
         self.stage_label.setText(tr('图片生成中'))
         self._launch_worker(dict(group_id=group['group_id'], item_keys=keys), operation='regenerate')
+
+    def _begin_submission_retry_round(self, keys):
+        self._submission_round_no = self.submission_view.begin_retry_round(
+            keys, total=len(keys))
+        self._submission_round_keys = set(
+            (str(kind), int(seq)) for kind, seq in keys) if self._submission_round_no else set()
 
     def _launch_worker(self, arguments, *, operation='start'):
         # Each worker run is a new reporting window, including regeneration of
@@ -1963,6 +2015,10 @@ class EcommercePage(QWidget):
         self._worker = worker
         # 恢复/重生成复用旧组；在首个组回调前先呈现本次生成阶段。
         self._right_launch_stage = 'generating' if operation in ('resume', 'regenerate') else None
+        if operation == 'start':
+            self._submission_phase_active = True
+            self._submission_submitted = 0
+            self._submission_submitted_keys.clear()
         _LIVE_WORKERS.add(worker)
         worker.group_changed.connect(self._on_group, Qt.QueuedConnection)
         worker.item_changed.connect(self._on_item, Qt.QueuedConnection)
@@ -2071,7 +2127,29 @@ class EcommercePage(QWidget):
         self._items[key] = record
         self._prompt_items[key] = record
         self.analysis_view.set_prompt_items(list(self._prompt_items.values()))
-        self.submission_view.update_item(record)
+        if self._submission_phase_active and record.get('status') != 'pending':
+            # The manager emits the generating group before its queued pending
+            # records. Keep the submission header until the first real task
+            # starts or settles, then switch to generation progress.
+            self._submission_phase_active = False
+        if self._submission_phase_active and record.get('status') == 'pending':
+            self._submission_submitted_keys.add(key)
+            items = self._right_items()
+            if not self.submission_view.cells:
+                self.submission_view.set_items(items)
+            self._submission_submitted = len(self._submission_submitted_keys)
+            self._right_launch_stage = 'generating'
+            self.submission_view.set_submission_progress(
+                self._submission_submitted, len(items))
+        if self._submission_round_no and key in self._submission_round_keys:
+            self.submission_view.update_round_item(self._submission_round_no, record)
+            total, success, failed, completed = self.submission_view.round_item_counts(
+                self._submission_round_no)
+            self.submission_view.set_round_progress(
+                self._submission_round_no, completed, failed)
+            self.submission_view.set_generation_phase(total, success, failed)
+        else:
+            self.submission_view.update_item(record)
         if key not in self.item_labels:
             label = self._text_label()
             self.item_labels[key] = label

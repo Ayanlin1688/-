@@ -1792,7 +1792,9 @@ class EcommercePageTests(unittest.TestCase):
         self.assertLess(time.monotonic() - clicked, 0.1)
         self.assertEqual(self.page.stage_label.text(), '取消中…')
         self.assertFalse(self.page.submission_view.cancel_button.isEnabled())
-        self.wait_until(lambda: sum(i['status'] == 'cancelled' for i in self.config.ecommerce_store().list_items(self.page._group['group_id'])) == 2)
+        self.wait_until(lambda: bool(self.page._group) and sum(
+            i['status'] == 'cancelled' for i in self.config.ecommerce_store().list_items(
+                self.page._group['group_id'])) == 2)
         self.assertTrue(self.page.cancel_event.is_set())
         self.assertFalse(self.page.cancel_button.isEnabled())
         release.set()
@@ -1822,6 +1824,11 @@ class EcommercePageTests(unittest.TestCase):
         self.image.assert_not_called()
         self.assertFalse(self.page._analysis_timer.isActive())
         self.assertEqual(self.page.analysis_view._analysis_state, 'failed')
+        self.assertEqual(self.page.step_bar.stage, 'analysis_failed')
+        self.assertEqual(
+            tuple(circle.property('stepState') for circle in self.page.step_bar.circles),
+            ('failed', 'pending', 'pending'),
+        )
         self.assertFalse(self.page.analysis_view.retry_button.isHidden())
         with patch.object(self.page, 'start_generation') as retry:
             self.page.analysis_view.retry_button.click()
@@ -1842,6 +1849,17 @@ class EcommercePageTests(unittest.TestCase):
             self.page._analysis_started_at = None
             self.page._analysis_last_reasoning_at = None
             self.page._stop_analysis_watchdog()
+
+    def test_submission_phase_is_reflected_in_step_bar_progress(self):
+        self.page._group = {'group_id': 'submitting-group', 'status': 'generating',
+                            'totals': {'total': 3}}
+        self.page._submission_phase_active = True
+        self.page._submission_submitted = 2
+        self.page._sync_right_states()
+
+        self.assertIn('提交中', self.page.step_bar.progress_label.text())
+        self.assertIn('2/3', self.page.step_bar.progress_label.text())
+        self.assertEqual(self.page.submission_view.progress_label.text(), '已提交 2/3')
 
     def test_partial_image_failure_and_warning_logs_are_redacted(self):
         self.fill_valid()

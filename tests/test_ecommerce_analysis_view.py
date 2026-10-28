@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtTest import QSignalSpy, QTest
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import QApplication
@@ -187,9 +187,39 @@ class EcommerceAnalysisViewTests(unittest.TestCase):
             self.view.refresh_interface_scale()
             self.view.refresh_interface_scale()
             self.assertEqual(self.view.layout().contentsMargins().left(), tokens.px(20))
-            self.assertEqual(self.view.reasoning_edit.maximumHeight(), tokens.px(180))
-            self.assertEqual(self.view.prompt_edit.maximumHeight(), tokens.px(220))
+            self.assertLessEqual(self.view.reasoning_edit.maximumHeight(), tokens.px(180))
+            self.assertLessEqual(self.view.prompt_edit.maximumHeight(), tokens.px(220))
             self.assertEqual(self.view.prompt_title.font().pixelSize(), tokens.px(13))
+
+    def test_analysis_sections_stay_compact_at_supported_scales(self):
+        self.view.set_analysis_state('analyzing', 18, 'fixture-chat')
+        self.view.set_reasoning_chunks(['正在核对商品材质和卖点。', '分析内容继续流式返回。'])
+        self.view.set_prompt_items([dict(kind='carousel', seq=1, title='主图',
+                                         prompt='保留商品外观与材质细节。')])
+        self.view.prompt_toggle.click()
+        for scale in (1.0, 1.25, 1.5, 1.75):
+            tokens.set_interface_scale(scale)
+            self.view.refresh_interface_scale()
+            self.view.resize(tokens.px(540), tokens.px(500))
+            flush_layout(self.app, self.view)
+            def rect_in_view(widget):
+                return QRect(widget.mapTo(self.view, QPoint(0, 0)), widget.size())
+
+            status = rect_in_view(self.view.status_card)
+            reasoning_title = rect_in_view(self.view.reasoning_title)
+            reasoning_edit = rect_in_view(self.view.reasoning_edit)
+            prompt_title = rect_in_view(self.view.prompt_title)
+            prompt_edit = rect_in_view(self.view.prompt_edit)
+            raw_title = rect_in_view(self.view.raw_title)
+            self.assertTrue(self.view.reasoning_edit.isVisible())
+            self.assertTrue(self.view.prompt_edit.isVisible())
+            self.assertLessEqual(reasoning_title.top() - status.bottom() - 1, tokens.px(12))
+            self.assertLessEqual(prompt_title.top() - reasoning_edit.bottom() - 1,
+                                 tokens.px(12))
+            self.assertLessEqual(raw_title.top() - prompt_edit.bottom() - 1, tokens.px(12))
+            self.assertLessEqual(self.view.reasoning_edit.height(), tokens.px(180))
+            self.assertLessEqual(self.view.reasoning_body.height(), tokens.px(180))
+            self.assertLessEqual(self.view.prompt_edit.height(), tokens.px(220))
 
 
 if __name__ == '__main__':

@@ -47,7 +47,7 @@ class _StepCircle(QWidget):
 class EcommerceStepBar(QWidget):
     """显示分析、生成和完成三步；状态变更不创建动画或后台任务。"""
 
-    STAGES = frozenset(('idle', 'analyzing', 'generating', 'finished', 'failed', 'cancelled'))
+    STAGES = frozenset(('idle', 'analyzing', 'analysis_failed', 'generating', 'finished', 'failed', 'cancelled'))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -105,6 +105,7 @@ class EcommerceStepBar(QWidget):
         states = {
             'idle': ('pending', 'pending', 'pending'),
             'analyzing': ('active', 'pending', 'pending'),
+            'analysis_failed': ('failed', 'pending', 'pending'),
             'generating': ('done', 'active', 'pending'),
             'finished': ('done', 'done', 'done'),
             'failed': ('done', 'done', 'failed'),

@@ -263,7 +263,7 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
         self.assertTrue(self.page.submission_view.isVisible())
         self.assertEqual(len(self.page.submission_view.cells), 4)
         labels = [label.text() for label in self.page.submission_view.findChildren(QLabel)]
-        self.assertIn('已完成 2/4（失败 1）', labels)
+        self.assertIn('成功 1 / 失败 1 / 共 4', labels)
         for widget in (self.page.empty_state, self.page.analysis_view,
                        self.page.result_panel, self.page.completion_bar,
                        self.page.completion_footer):
@@ -274,6 +274,38 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
         with patch.object(self.page, '_run_regenerate') as retry:
             self.page.submission_view.retry_requested.emit(('carousel', 2))
             retry.assert_called_once_with([('carousel', 2)])
+
+    def test_submission_progress_is_preserved_until_generation_phase(self):
+        group, records = self.seed_history(status='generating',
+                                          states=tuple('pending' for _ in range(30)))
+        self.page._on_group(group)
+        self.page._items = {(item['kind'], item['seq']): item for item in records}
+        self.page._submission_phase_active = True
+        self.page._submission_submitted = 18
+        self.page.submission_view.set_items(records)
+        self.page.submission_view.set_submission_progress(18, 30)
+        self.page._sync_right_states()
+        self.assertEqual(len(self.page.submission_view.cells), 30)
+        self.assertEqual(self.page.submission_view.title_label.text(), '提交中')
+        self.assertEqual(self.page.submission_view.progress_label.text(), '已提交 18/30')
+
+        self.page._submission_phase_active = False
+        self.page._sync_right_states()
+        self.assertEqual(self.page.submission_view.title_label.text(), '生成中')
+        self.assertEqual(self.page.submission_view.progress_label.text(),
+                         '成功 0 / 失败 0 / 共 30')
+
+    def test_submission_header_switches_after_first_task_starts(self):
+        group, records = self.seed_history(status='generating',
+                                          states=('pending', 'pending'))
+        self.page._submission_phase_active = True
+        self.page._on_group(group)
+        self.assertEqual(self.page.submission_view.title_label.text(), '提交中')
+        self.page._on_item(records[0])
+        self.assertEqual(self.page.submission_view.progress_label.text(), '已提交 1/2')
+        self.page._on_item(dict(records[0], status='running', updated_at=records[0]['updated_at'] + 1))
+        self.assertFalse(self.page._submission_phase_active)
+        self.assertEqual(self.page.submission_view.title_label.text(), '生成中')
 
     def test_success_completion_bars_preserve_existing_actions(self):
         group, _ = self.seed_history(status='succeeded', states=('succeeded', 'succeeded'))
@@ -375,13 +407,13 @@ class EcommerceSingleLayoutTests(unittest.TestCase):
         self.assertEqual(self.page._group['totals']['failed'], 1)
         self.assertEqual(self.page._right_progress(self.page._right_items()), (2, 1, 0))
         labels = [label.text() for label in self.page.submission_view.findChildren(QLabel)]
-        self.assertIn('已完成 1/2（失败 0）', labels)
+        self.assertIn('成功 1 / 失败 0 / 共 2', labels)
 
         self.page._on_item(dict(retried, status='succeeded',
                                 updated_at=retried['updated_at'] + 2))
         self.assertEqual(self.page._right_progress(self.page._right_items()), (2, 2, 0))
         labels = [label.text() for label in self.page.submission_view.findChildren(QLabel)]
-        self.assertIn('已完成 2/2（失败 0）', labels)
+        self.assertIn('成功 2 / 失败 0 / 共 2', labels)
         self.assertFalse(self.page.completion_title_label.property('hasFailures'))
 
     def test_same_right_state_skips_reapplying_styles_until_failure_color_changes(self):
