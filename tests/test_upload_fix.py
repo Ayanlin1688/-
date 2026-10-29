@@ -83,7 +83,7 @@ class UploadFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
             for status, payload, expected in (
-                (401, {'error': 'unauthorized'}, '上传鉴权失败'),
+                (401, {'error': 'unauthorized'}, '参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token'),
                 (403, {'error': 'forbidden'}, '上传鉴权失败'),
                 (413, {'error': 'payload too large'}, '200MB'),
                 (503, {'error': 'service unavailable'}, '服务暂时不可用'),
@@ -198,7 +198,8 @@ class UploadFixTests(unittest.TestCase):
             from core.http_client import RequestError
             with self.assertRaises(RequestError) as caught:
                 client.upload_image(path)
-            self.assertIn('上传鉴权失败', str(caught.exception))
+            self.assertEqual(str(caught.exception),
+                             '参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token')
             self.assertEqual(len(calls), 1)
             _, url, headers, timeout, data = calls[0]
             self.assertEqual(url, 'https://configured/upload')
@@ -207,6 +208,7 @@ class UploadFixTests(unittest.TestCase):
             self.assertEqual(timeout, (15, 60))
             self.assertEqual(data, b'image-contents')
             self.assertTrue(all('upload-secret' not in message for message, _ in logs))
+            self.assertNotIn('unauthorized', str(caught.exception).casefold())
 
     def test_four_response_shapes(self):
         with tempfile.TemporaryDirectory() as directory:

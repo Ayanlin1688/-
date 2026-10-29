@@ -685,7 +685,7 @@ class _MediaUploadWorker(QThread):
                 return
             status = getattr(error, 'status_code', None)
             if status in (401, 403):
-                message = tr('素材上传鉴权失败，请检查上传密钥')
+                message = tr('参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token') if status == 401 else tr('参考素材上传鉴权失败，请检查素材上传凭据')
             elif status == 429:
                 message = tr('素材上传限流，请稍后重试')
             elif status in (400, 413, 415, 422):

@@ -424,7 +424,7 @@ class VideoCreationPageTests(unittest.TestCase):
             self.page._accept_media_files([str(path) for path in paths], 'audios')
             self._wait_upload()
         self.assertEqual(self.page.reference_audios, ['https://fixture.test/first.mp3'])
-        self.assertEqual(self.page.upload_status.text(), '素材上传鉴权失败，请检查上传密钥')
+        self.assertEqual(self.page.upload_status.text(), '参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token')
         self.assertEqual(self.page._retry_upload, ([str(paths[1])], 'audios'))
         warning.assert_called_once()
         uploader = Mock(); uploader.upload_file.return_value = 'https://fixture.test/second.mp3'

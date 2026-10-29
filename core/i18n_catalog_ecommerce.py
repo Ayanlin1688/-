@@ -499,7 +499,9 @@ EN_ECOMMERCE = {
     '参考素材数量超出模型上限': 'Reference count exceeds the model limit',
     '视频已生成\n{path}': 'Video generated\n{path}',
     '未命名视频': 'Untitled video',
-    '素材上传鉴权失败，请检查上传密钥': 'Upload authentication failed. Check the upload key.',
+    '参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token':
+        'Reference upload authentication failed: the upload token differs from the generation API key. Enter the image-hosting upload token in Settings.',
+    '参考素材上传鉴权失败，请检查素材上传凭据': 'Reference upload authentication failed. Check the upload credentials.',
     '无法读取参考素材，请检查文件权限': 'Cannot read the reference file. Check file permissions.',
     '正在上传参考素材（{n}/{total}）': 'Uploading references ({n}/{total})',
     '参考素材上传完成': 'References uploaded',

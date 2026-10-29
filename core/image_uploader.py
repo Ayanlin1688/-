@@ -24,10 +24,7 @@ def connection_probe_png():
 def upload_credentials(api_config):
     url = (api_config.get('upload_url') or '').strip() or DEFAULT_UPLOAD_URL
     key = api_config.get('upload_api_key', '').strip()
-    # The generation key belongs only to the built-in provider. A separate image
-    # host receives only its explicitly configured upload key (or anonymous upload).
-    if not key and url.rstrip('/') == DEFAULT_UPLOAD_URL:
-        key = api_config.get('api_key', '').strip()
+    # Upload authentication is separate from generation API credentials.
     return url, key
 
 
@@ -177,7 +174,9 @@ class ImageUploader(HttpClient):
         if status == 413 or 'too large' in body or 'payload too large' in body:
             return RequestError(f'参考{label}超过服务商上传上限（{limit}），请压缩后重试', status, str(getattr(error, 'body', '') or ''))
         if status in (401, 403):
-            return RequestError(f'参考{label}上传鉴权失败，请检查素材上传凭据', status, str(getattr(error, 'body', '') or ''))
+            message = ('参考素材上传鉴权失败：上传 Token 与生成 API Key 不同，请在设置中填写图床上传 Token'
+                       if status == 401 else f'参考{label}上传鉴权失败，请检查素材上传凭据')
+            return RequestError(message, status, str(getattr(error, 'body', '') or ''))
         if status in (400, 415):
             return RequestError(f'参考{label}上传参数或格式不被服务商接受，请检查文件后重试', status, str(getattr(error, 'body', '') or ''))
         if status is not None:

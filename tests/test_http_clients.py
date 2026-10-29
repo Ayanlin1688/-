@@ -158,11 +158,32 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(result['failure']['category'], 'upstream_reference_fetch_failed')
 
     def test_custom_image_host_does_not_receive_provider_key(self):
-        self.assertEqual(upload_credentials(dict(api_key='provider-key')), (DEFAULT_UPLOAD_URL, 'provider-key'))
+        self.assertEqual(upload_credentials(dict(api_key='provider-key')), (DEFAULT_UPLOAD_URL, ''))
+        self.assertEqual(upload_credentials(dict(api_key='provider-key', upload_api_key='upload-token')),
+                         (DEFAULT_UPLOAD_URL, 'upload-token'))
         self.assertEqual(upload_credentials(dict(api_key='provider-key', upload_url='https://custom.invalid/upload')),
                          ('https://custom.invalid/upload', ''))
         self.assertEqual(upload_credentials(dict(api_key='provider-key', upload_url='https://custom.invalid/upload', upload_api_key='image-key')),
                          ('https://custom.invalid/upload', 'image-key'))
+
+    def test_default_upload_host_never_falls_back_to_generation_key(self):
+        from core.http_client import RequestError
+        session = Mock(); session.request.return_value.status_code = 401
+        session.request.return_value._content = b'{"error":"upload token required"}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'reference.mp4'
+            path.write_bytes(b'media')
+            manager = Mock()
+            manager.config = {'api': {'api_key': 'generation-secret', 'upload_url': DEFAULT_UPLOAD_URL,
+                                      'upload_api_key': ''}}
+            uploader = ImageUploader.from_config(manager, session=session)
+            with self.assertRaises(RequestError):
+                uploader.upload_file(path, kind='videos')
+            headers = session.request.call_args.kwargs['headers']
+            self.assertNotIn('Authorization', headers)
+            self.assertNotIn('X-Upload-Token', headers)
+            self.assertEqual(session.request.call_count, 1)
+            uploader.close()
 
     def test_all_requests_use_connect_and_read_timeouts(self):
         session = Mock()
