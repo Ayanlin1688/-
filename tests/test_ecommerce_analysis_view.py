@@ -109,13 +109,24 @@ class EcommerceAnalysisViewTests(unittest.TestCase):
         self.assertEqual(self.view.status_label.text(), '分析失败')
         self.assertTrue(self.view.retry_button.isVisible())
         self.assertIn('分析超时', self.view.status_error.text())
+        self.assertEqual(self.view.reasoning_placeholder.text(), '分析失败，未生成思考内容。')
+        self.assertNotIn('正在等待模型继续返回', self.view.reasoning_placeholder.text())
         self.assertIn(palette['failed'], self.view.status_label.styleSheet())
         QTest.mouseClick(self.view.retry_button, Qt.LeftButton)
         self.assertEqual(len(retry), 1)
 
         self.view.set_analysis_state('cancelled', 15, 'fixture-chat')
         self.assertEqual(self.view.status_label.text(), '分析已取消')
+        self.assertEqual(self.view.reasoning_placeholder.text(), '已取消')
         self.assertFalse(self.view.retry_button.isVisible())
+
+    def test_warning_messages_are_deduplicated_when_both_thresholds_are_reached(self):
+        self.view.set_analysis_warnings(inactive=True, slow=True)
+        self.assertTrue(self.view.slow_warning.isVisible())
+        self.assertFalse(self.view.inactivity_warning.isVisible())
+        visible = [label.text() for label in (self.view.inactivity_warning, self.view.slow_warning)
+                   if label.isVisible()]
+        self.assertEqual(visible, ['分析较慢，可取消/切换模型'])
 
     def test_raw_output_is_collapsed_until_requested_and_stream_updates_in_place(self):
         self.view.append_raw_output('{"partial":')

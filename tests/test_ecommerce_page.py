@@ -1855,8 +1855,8 @@ class EcommercePageTests(unittest.TestCase):
         try:
             self.page._tick_analysis()
             self.assertIn('91', self.page.stage_label.text())
-            self.assertFalse(self.page.analysis_view.inactivity_warning.isHidden())
             self.assertFalse(self.page.analysis_view.slow_warning.isHidden())
+            self.assertTrue(self.page.analysis_view.inactivity_warning.isHidden())
             self.assertIn('91', self.page.step_bar.progress_label.text())
         finally:
             self.page._worker = None

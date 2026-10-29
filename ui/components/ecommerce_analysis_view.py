@@ -198,21 +198,18 @@ class EcommerceAnalysisView(QFrame):
             self._analysis_model = str(model)
         self._analysis_error = str(error or '')
         self._render_analysis_state()
+        self._render_reasoning_placeholder()
 
     def set_analysis_elapsed(self, seconds):
         self._analysis_elapsed = max(0, int(seconds or 0))
         self._render_analysis_state()
-        if not self._reasoning_chunks:
-            self.reasoning_placeholder.setText(
-                tr('正在思考… 已用时 {seconds} 秒').format(seconds=self._analysis_elapsed)
-                if self._analysis_state in ('analyzing', 'running')
-                else tr('等待模型返回思考内容…'))
+        self._render_reasoning_placeholder()
 
     def set_analysis_warnings(self, *, inactive=False, slow=False):
         self.inactivity_warning.setText(tr('模型响应较慢，可取消后重试'))
-        self.inactivity_warning.setVisible(bool(inactive))
         self.slow_warning.setText(tr('分析较慢，可取消/切换模型'))
         self.slow_warning.setVisible(bool(slow))
+        self.inactivity_warning.setVisible(bool(inactive) and not bool(slow))
         self.inactivity_warning.setStyleSheet(
             'background: transparent; color: %s;' % materials.ecommerce_color('analysis_failed'))
         self.slow_warning.setStyleSheet(
@@ -293,11 +290,24 @@ class EcommerceAnalysisView(QFrame):
         # the outer card stretch the reasoning area into a large blank block.
         self._fit_editor_height(self.reasoning_edit, 36, 150, text)
         self.reasoning_body.setMaximumHeight(px(150 if text else 36))
-        self.reasoning_placeholder.setText(
-            tr('正在思考… 已用时 {seconds} 秒').format(seconds=self._analysis_elapsed)
-            if self._analysis_state in ('analyzing', 'running') else tr('等待模型返回思考内容…'))
+        self._render_reasoning_placeholder()
         self._scroll_reasoning_to_bottom()
         QTimer.singleShot(0, self._scroll_reasoning_to_bottom)
+
+    def _render_reasoning_placeholder(self):
+        if self._reasoning_chunks:
+            return
+        state = self._analysis_state
+        if state in ('analyzing', 'running'):
+            text = tr('正在思考… 已用时 {seconds} 秒').format(seconds=self._analysis_elapsed)
+        elif state == 'failed':
+            text = tr('分析失败，未生成思考内容。')
+        elif state == 'cancelled':
+            text = tr('已取消')
+        else:
+            text = tr('等待模型返回思考内容…')
+        self.reasoning_placeholder.setText(text)
+        self.reasoning_placeholder.setVisible(not bool(self.reasoning_edit.toPlainText()))
 
     def _fit_editor_height(self, edit, minimum, maximum, text=None):
         text = edit.toPlainText() if text is None else str(text)
@@ -384,7 +394,7 @@ class EcommerceAnalysisView(QFrame):
         self.status_label.setText(tr('思考过程'))
         self.retry_button.setText(tr('重试分析'))
         self.prompt_expand_button.setText(tr('展开完整提示词'))
-        self.reasoning_placeholder.setText(tr('等待模型返回思考内容…'))
+        self._render_reasoning_placeholder()
         self.reasoning_edit.setPlaceholderText(tr('等待模型返回思考内容…'))
         self.raw_edit.setPlaceholderText(tr('等待模型返回思考内容…'))
         self._render_prompt_items()

@@ -210,6 +210,8 @@ EN_ECOMMERCE = {
     '分析较慢，可取消/切换模型': 'Analysis is slow. Cancel or switch models.',
     '分析失败': 'Analysis failed',
     '分析已取消': 'Analysis cancelled',
+    '分析失败，未生成思考内容。': 'Analysis failed; no reasoning content was generated.',
+    '已取消': 'Cancelled',
     '查看原始输出': 'View raw output',
     '展开完整提示词': 'Expand full prompt',
     '收起完整提示词': 'Collapse full prompt',
