@@ -58,7 +58,8 @@ class HttpClient:
     def redact(self, text):
         return str(text).replace(self.api_key, '[REDACTED]') if self.api_key else str(text)
 
-    def request(self, method, url, *, check_status=True, authenticated=True, **kwargs):
+    def request(self, method, url, *, check_status=True, authenticated=True,
+                retry_direct=True, retry_timeouts=False, **kwargs):
         headers = {'Accept': 'application/json'}
         if authenticated:
             headers['Authorization'] = 'Bearer ' + self.api_key
@@ -86,7 +87,7 @@ class HttpClient:
             try:
                 response = self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
             except requests.exceptions.ConnectionError as error:
-                if not self._can_retry_direct(error):
+                if not retry_direct or not self._can_retry_direct(error):
                     raise
                 for stream, position in file_positions:
                     if position is None:
@@ -111,8 +112,9 @@ class HttpClient:
             self.log(message, 'error')
             if isinstance(error, RequestError):
                 raise
-            retry_safe = (isinstance(error, requests.exceptions.ConnectionError)
-                          and self._can_retry_direct(error))
+            retry_safe = (retry_timeouts and isinstance(error, requests.exceptions.Timeout)) or (
+                isinstance(error, requests.exceptions.ConnectionError)
+                and self._can_retry_direct(error))
             raise RequestError(message, retry_safe=retry_safe) from None
 
     def json(self, response):

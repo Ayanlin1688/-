@@ -6,6 +6,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 from pathlib import Path
+from .api_errors import classify_connection_error, classify_http_error
 from .http_client import HttpClient, RequestError, Cancelled, objects, extract
 
 DEFAULT_UPLOAD_URL = 'https://video.kkone.vip/api/uploads'
@@ -116,15 +117,16 @@ class ImageUploader(HttpClient):
                     path, cleanup = normalized_reference_path(file_path)
                     if cleanup:
                         self.log('参考图超出服务商尺寸限制，已自动缩小后上传：' + Path(file_path).name, 'warning')
-                    return self._upload_once(path)
+                    return self._upload_once(path, retry_direct=False, retry_timeouts=True)
                 except Cancelled:
                     raise
                 except Exception as error:
                     self.log(f'图片上传失败（{attempt+1}/2）：{Path(file_path).name}：{self.redact(error)}', 'error')
-                    if attempt == 1:
+                    if attempt or not self._should_retry_upload(error):
+                        error = self._classify_upload_error(error, 'images')
                         if 'upload token required' in str(error).lower():
                             self.log('服务端要求独立素材上传 Token；请在设置中的“图床 API Key”填写服务商提供的上传凭据', 'error')
-                        raise
+                        raise error from None
                     self.log('图片上传将在 2 秒后重试一次', 'warning')
                     for _ in range(20):
                         self.check_cancel()
@@ -141,20 +143,59 @@ class ImageUploader(HttpClient):
         for attempt in range(2):
             self.check_cancel()
             try:
-                return self._upload_once(file_path)
+                # Large reference videos are allowed up to 200 MB by the
+                # relay and need a longer read timeout than image uploads.
+                timeout = (15, 300) if kind == 'videos' else (15, 120) if kind == 'audios' else None
+                return self._upload_once(file_path, timeout=timeout,
+                                         retry_direct=False, retry_timeouts=True)
             except Cancelled:
                 raise
             except Exception as error:
-                # Authentication, validation and rate-limit rejections are final.
-                status = getattr(error, 'status_code', None)
-                if attempt or (status is not None and 400 <= status < 500):
-                    raise
+                if attempt or not self._should_retry_upload(error):
+                    raise self._classify_upload_error(error, kind) from None
                 self.log('素材上传失败，将重试一次', 'warning')
                 for _ in range(20):
                     self.check_cancel()
                     time.sleep(0.1)
 
-    def _upload_once(self, file_path):
+    @staticmethod
+    def _should_retry_upload(error):
+        status = getattr(error, 'status_code', None)
+        if status is not None:
+            try:
+                return 500 <= int(status) <= 599
+            except (TypeError, ValueError):
+                return False
+        return bool(getattr(error, 'retry_safe', False))
+
+    @staticmethod
+    def _classify_upload_error(error, kind=None):
+        status = getattr(error, 'status_code', None)
+        body = str(getattr(error, 'body', '') or error).casefold()
+        label = '视频' if kind == 'videos' else '音频' if kind == 'audios' else '素材'
+        limit = '200MB' if kind == 'videos' else '50MB' if kind == 'audios' else '服务商限制'
+        if status == 413 or 'too large' in body or 'payload too large' in body:
+            return RequestError(f'参考{label}超过服务商上传上限（{limit}），请压缩后重试', status, str(getattr(error, 'body', '') or ''))
+        if status in (401, 403):
+            return RequestError(f'参考{label}上传鉴权失败，请检查素材上传凭据', status, str(getattr(error, 'body', '') or ''))
+        if status in (400, 415):
+            return RequestError(f'参考{label}上传参数或格式不被服务商接受，请检查文件后重试', status, str(getattr(error, 'body', '') or ''))
+        if status is not None:
+            classification = classify_http_error(status, str(getattr(error, 'body', '') or error), kind='video')
+            if status == 429:
+                message = f'参考{label}上传被限流，请稍后重试'
+            elif status >= 500:
+                message = f'参考{label}上传服务暂时不可用，请稍后重试'
+            else:
+                message = f'参考{label}上传失败，请检查线路与素材后重试'
+            return RequestError(message, status, str(getattr(error, 'body', '') or ''),
+                                retry_safe=bool(classification.get('retryable')))
+        classification = classify_connection_error(error)
+        return RequestError(f'参考{label}上传失败：{classification["message"]}', None,
+                            str(getattr(error, 'body', '') or ''), retry_safe=True)
+
+    def _upload_once(self, file_path, timeout=None, *, retry_direct=False,
+                     retry_timeouts=False):
         try:
             path = Path(file_path)
             headers = {}
@@ -168,7 +209,13 @@ class ImageUploader(HttpClient):
                         '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
                         '.aac': 'audio/aac', '.ogg': 'audio/ogg'}.get(path.suffix.lower())
                 mime = mime or mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
-                with self.request('POST', self.upload_url, headers=headers, authenticated=bool(self.api_key), files={'files': (path.name, stream, mime)}) as response:
+                request_kwargs = dict(headers=headers, authenticated=bool(self.api_key),
+                                      files={'files': (path.name, stream, mime)},
+                                      retry_direct=retry_direct,
+                                      retry_timeouts=retry_timeouts)
+                if timeout is not None:
+                    request_kwargs['timeout'] = timeout
+                with self.request('POST', self.upload_url, **request_kwargs) as response:
                     self.last_status_code = response.status_code
                     data = self.json(response)
                     url = None

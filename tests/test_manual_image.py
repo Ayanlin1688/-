@@ -187,6 +187,9 @@ class ManualImageTests(unittest.TestCase):
         self.assertFalse(result['files'])
 
     def test_openai_unsupported_endpoint_falls_back_to_gemini_once(self):
+        self.config.config['image_model_pool'] = {
+            'models': [{'name': 'provider-image',
+                        'supported_endpoint_types': ['openai-image', 'gemini']}]}
         task = self._tasks(model='provider-image')[0]
         unsupported = EcommerceImageError('unsupported endpoint', 404,
                                           'unsupported endpoint', retry_safe=False)
@@ -211,6 +214,9 @@ class ManualImageTests(unittest.TestCase):
                 self.assertEqual(gemini.call_count, 0)
 
     def test_two_protocol_failures_leave_a_chinese_failed_record(self):
+        self.config.config['image_model_pool'] = {
+            'models': [{'name': 'provider-image',
+                        'supported_endpoint_types': ['openai-image', 'gemini']}]}
         task = self._tasks(model='provider-image')[0]
         unsupported = EcommerceImageError('unsupported endpoint', 404,
                                           'unsupported endpoint', retry_safe=False)

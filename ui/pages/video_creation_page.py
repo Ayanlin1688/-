@@ -1190,7 +1190,7 @@ class VideoCreationPage(QWidget):
         self.ratio_combo.clear(); self.ratio_combo.addItems(list(caps['ratios']))
         self.ratio_combo.setCurrentText(previous_ratio if previous_ratio in caps['ratios'] else caps['ratios'][0]); del blocker
         previous = self.duration_spin.value()
-        value = caps['default_duration'] if changed and caps['default_duration'] == 30 else min(caps['durations'], key=lambda n: abs(n - previous))
+        value = caps['default_duration'] if changed else min(caps['durations'], key=lambda n: abs(n - previous))
         self.duration_spin.setRange(min(caps['durations']), max(caps['durations'])); self.duration_spin.setValue(value)
         self._rebuild_duration_buttons(tuple(caps['quick_presets']))
         self._duration_changed(self.duration_spin.value())

@@ -268,7 +268,7 @@ class ModelClassificationTests(unittest.TestCase):
     def test_builtins_list_only_verified_video_records_and_add_complete_non_video_records(self):
         records = model_catalog.builtin_models()
         video_ids = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3',
-                     'MiniMax-H3', 'grok-imagine-1.5-video', 'wan-3.0']
+                     'MiniMax-H3', 'grok-imagine-1.5-video']
         self.assertEqual([model for model, row in records.items() if row['kind'] == 'video'], video_ids)
         self.assertFalse(any('seedance' in model.lower() for model in records))
         self.assertEqual(model_catalog.classify_model('seedance-2.5'), 'video')
@@ -355,12 +355,13 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertEqual(options('MiniMax-H3')['resolutions'], ('768p', '1080p', '2K', '4K'))
         self.assertEqual(options('video-v2-fast(渠道甲)')['resolutions'], ('720p',))
         self.assertEqual(options('video-v3-480p-特价')['resolutions'], ('480p',))
-        self.assertEqual(options('video-v3')['durations'], tuple(range(4, 31)))
+        self.assertEqual(options('video-v3')['durations'], tuple(range(4, 30)))
         self.assertEqual(self.module.family_for('video-v2-特价'), 'video-v2')
         self.assertEqual(self.module.family_for('seedance2.5'), 'video-v3')
         self.assertEqual(self.module.family_for('video-v20'), '')
         self.assertFalse(options('wan-3.0')['protocol_known'])
-        self.assertEqual(options('wan-3.0')['resolutions'], ('720p',))
+        self.assertEqual(options('wan-3.0')['resolutions'], ())
+        self.assertNotIn('wan-3.0', self.module.builtin_models())
 
     def test_no_key_uses_builtin_and_never_contacts_the_client(self):
         catalog = self.catalog(key='')

@@ -11,8 +11,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
         for model, durations, default, limits, presets in (
             ('MiniMax-H3', tuple(range(4, 16)), 5, (9, 3, 3), (5, 10, 15)),
             ('video-v2', (5, 10, 15), 5, (9, 3, 3), (5, 10, 15)),
-            ('video-v3', tuple(range(4, 31)), 30, (30, 10, 10), (5, 10, 15, 30)),
-            ('wan-3.0', (5, 10, 15, 30), 5, (10, 3, 5), (5, 10, 15, 30)),
+            ('video-v3', tuple(range(4, 30)), 29, (30, 10, 10), (5, 10, 15, 29)),
         ):
             with self.subTest(model=model):
                 result = capabilities(model)
@@ -29,7 +28,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
             ('video-v2-480P', ('480p',)), ('video-v2-fast', ('720p',)),
             ('video-v2-特价', ('720p',)), ('video-v2-720P', ('720p',)),
             ('video-v3-480P', ('480p',)), ('video-v3-fast', ('720p',)),
-            ('seedance-2.5', ('720p',)), ('wan-3.0', ('720p',)),
+            ('seedance-2.5', ('720p',)),
         ):
             with self.subTest(model=model):
                 self.assertEqual(capabilities(model)['resolutions'], resolutions)
@@ -37,7 +36,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
     def test_catalog_family_is_authoritative_and_false_flags_are_respected(self):
         record = {'family': 'video-v3', 'audio': False, 'seed': False}
         result = capabilities('custom-provider-video', {'custom-provider-video': record})
-        self.assertEqual(result['default_duration'], 30)
+        self.assertEqual(result['default_duration'], 29)
         self.assertFalse(result['supports_audio'])
         self.assertFalse(result['supports_seed'])
 
@@ -82,9 +81,12 @@ class VideoCapabilitiesTests(unittest.TestCase):
                 validate_media_file(empty, 'videos')
             with self.assertRaisesRegex(ValueError, '格式不支持'):
                 validate_media_file(root / '中文素材.mp3', 'videos')
-            for kind, suffix, limit in (('videos', '.mp4', 48), ('audios', '.wav', 16)):
+            for kind, suffix, limit in (('videos', '.mp4', 200), ('audios', '.wav', 50)):
                 path = root / ('oversize' + suffix)
                 with path.open('wb') as stream:
-                    stream.truncate(limit * 1024 * 1024 + 1)
+                    stream.truncate(limit * 1024 * 1024)
+                self.assertEqual(validate_media_file(path, kind), str(path))
+                with path.open('ab') as stream:
+                    stream.write(b'x')
                 with self.assertRaisesRegex(ValueError, str(limit) + 'MB'):
                     validate_media_file(path, kind)

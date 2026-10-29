@@ -9,7 +9,7 @@ from .model_catalog import family_for, options_for, _VIDEO_ENDPOINTS
 V3_MODELS = {'video-v3', 'seedance-2.5', 'seedance2.5', 'sd-2.5', 'sd2.5'}
 GROK = 'grok-imagine-1.5-video'
 H3 = 'MiniMax-H3'
-MODELS = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', H3, GROK, 'wan-3.0']
+MODELS = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', H3, GROK]
 H3_SIZES = {
     '16:9': ('864x480', '1376x768', '1920x1088'),
     '9:16': ('480x864', '768x1376', '1088x1920'),
@@ -26,22 +26,27 @@ BASE_RATIOS = ('16:9', '9:16', '1:1', '4:3', '3:4')
 
 def legacy_model_options(model):
     if model == 'video-v1':
-        return dict(ratios=BASE_RATIOS, resolutions=(), durations=(5, 10, 15), audio=False, seed=False, max_images=9)
+        return dict(ratios=BASE_RATIOS, resolutions=(), durations=(5, 10, 15), audio=False, seed=False,
+                    max_images=9, max_videos=0, max_audios=0)
     if model in {'video-v2', 'video-v2-fast'}:
-        return dict(ratios=BASE_RATIOS + ('21:9',), resolutions=('480p', '720p', '1080p'), durations=(5, 10, 15), audio=True, seed=False, max_images=9)
+        return dict(ratios=BASE_RATIOS + ('21:9',), resolutions=('480p', '720p', '1080p'), durations=(5, 10, 15), audio=True, seed=False,
+                    max_images=9, max_videos=3, max_audios=3)
     if model in V3_MODELS:
-        return dict(ratios=('16:9', '9:16', '1:1'), resolutions=('720p',), durations=tuple(range(4, 31)), audio=True, seed=True, max_images=30)
+        return dict(ratios=('16:9', '9:16', '1:1'), resolutions=('720p',), durations=tuple(range(4, 30)), audio=True, seed=True,
+                    max_images=30, max_videos=10, max_audios=10)
     if model == H3:
-        return dict(ratios=tuple(H3_SIZES), resolutions=H3_RESOLUTIONS, durations=tuple(range(4, 16)), audio=False, seed=False, max_images=9)
+        return dict(ratios=tuple(H3_SIZES), resolutions=H3_RESOLUTIONS, durations=tuple(range(4, 16)), audio=False, seed=False,
+                    max_images=9, max_videos=3, max_audios=3)
     if model == GROK:
-        return dict(ratios=BASE_RATIOS + ('2:3', '3:2'), resolutions=('480p', '720p', '1080p'), durations=tuple(range(1, 16)), audio=False, seed=False, max_images=9)
+        return dict(ratios=BASE_RATIOS + ('2:3', '3:2'), resolutions=('480p', '720p', '1080p'), durations=tuple(range(1, 16)), audio=False, seed=False,
+                    max_images=9, max_videos=0, max_audios=0)
     raise ValueError(f'不支持的模型：{model}')
 
 
 def model_options(model, catalog=None):
     from .video_capabilities import capabilities
     family = family_for(model, catalog)
-    verified = family in ('MiniMax-H3', 'video-v2', 'video-v3') or model == 'wan-3.0'
+    verified = family in ('MiniMax-H3', 'video-v2', 'video-v3')
     if catalog is None:
         if not verified:
             return legacy_model_options(model)
@@ -96,8 +101,9 @@ def generation_fields(model, params, image_count, catalog=None):
     media = {}
     for key, label in (('videos', '视频'), ('audios', '音频')):
         values = params.get(key) or []
-        if not isinstance(values, (list, tuple)) or len(values) > options.get('max_' + key, 0):
-            raise ValueError(f'参考{label}数量超出模型上限')
+        limit = options.get('max_' + key, 0)
+        if not isinstance(values, (list, tuple)) or len(values) > limit:
+            raise ValueError(f'{model} 参考{label}最多支持 {limit} 个，当前为 {len(values) if isinstance(values, (list, tuple)) else "无效"}')
         from urllib.parse import urlsplit
         if any(not isinstance(value, str) or urlsplit(value).scheme not in ('http', 'https') or not urlsplit(value).hostname for value in values):
             raise ValueError(f'参考{label}必须是有效的 HTTP/HTTPS 素材 URL')
@@ -129,8 +135,20 @@ def generation_fields(model, params, image_count, catalog=None):
             fields['seed'] = value
         return fields
     if family == H3:
-        fields = dict(workflow_id='multi-reference' if image_count or any(media.values()) else 'text-to-video', seconds=duration, size=h3_size(ratio, resolution),
-                      **{key: value for key, value in media.items() if value})
+        if not image_count and any(media.values()):
+            raise ValueError('H3 参考视频/音频必须同时提供至少 1 张参考图')
+        workflow = 'text-to-video'
+        if image_count:
+            # H3 uses a separate workflow for 2K/4K image references.  Keep
+            # the aspect_ratio field below because the provider requires it
+            # when size is expressed as 2K or 4K.
+            workflow = 'cf-multi-reference' if resolution in ('2K', '4K') else 'multi-reference'
+        fields = dict(workflow_id=workflow,
+                      seconds=duration, size=h3_size(ratio, resolution))
+        if media['videos']:
+            fields['reference_videos'] = media['videos']
+        if media['audios']:
+            fields['reference_audios'] = media['audios']
         if resolution in ('2K', '4K'):
             fields['aspect_ratio'] = ratio
         return fields

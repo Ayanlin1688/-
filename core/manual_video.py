@@ -430,6 +430,8 @@ class ManualVideoManager:
                     else:
                         validate_media_file(path, key)
             refs[key] = list(value)
+        if family_for(model, self._video_catalog()) == 'MiniMax-H3' and not refs['images'] and (refs['videos'] or refs['audios']):
+            raise ValueError('H3 参考视频/音频必须同时提供至少 1 张参考图')
         config = getattr(self.config_manager, 'config', {})
         catalog = self._video_catalog()
         protocol = self._preferred_protocol(model, config, catalog)

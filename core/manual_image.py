@@ -379,44 +379,56 @@ def _endpoint_unsupported(error):
         'unknown route', '不支持的端点', '端点不存在'))
 
 
-def _preferred_protocol(config_manager, model):
-    model_text = str(model or '')
-    gemini_name = bool(re.search(r'gemini|imagen|nano[\s_-]?banana', model_text, re.I))
-    hints = []
-    explicit_protocols = []
+def _image_protocols(endpoint_types):
+    if isinstance(endpoint_types, str):
+        endpoint_types = [endpoint_types]
+    protocols = set()
+    for item in endpoint_types or ():
+        value = str(item or '').strip().casefold().replace('_', '-')
+        if value in {'gemini', 'gemini-native', 'google', 'google-generative-language',
+                     'generative-language', 'generatecontent'} or 'gemini' in value:
+            protocols.add('gemini')
+        elif value in {'openai', 'openai-image', 'openai-images', 'images',
+                       'image', 'images/generations', 'dall-e'} or 'openai-image' in value:
+            protocols.add('openai')
+    return protocols
+
+
+def _image_model_metadata(config_manager, model):
     config = getattr(config_manager, 'config', {})
+    model_key = normalize_model_id(model)
+    explicit = []
+    supported = set()
+    hints = []
     pool = config.get('image_model_pool', {}) if isinstance(config, dict) else {}
-    for item in pool.get('models', ()) if isinstance(pool, dict) else ():
-        if not isinstance(item, dict) or normalize_model_id(item.get('name')) != model_text:
+    models = pool.get('models', ()) if isinstance(pool, dict) else ()
+    for item in models:
+        if not isinstance(item, dict) or normalize_model_id(item.get('name')) != model_key:
             continue
         for key in ('protocol', 'image_protocol'):
             value = str(item.get(key) or '').strip().casefold()
             if value:
-                explicit_protocols.append(value)
+                explicit.append(value)
+        supported.update(_image_protocols(item.get('supported_endpoint_types', item.get('endpoint_types', ()))))
         hints.append(' '.join(str(item.get(key) or '') for key in
                               ('protocol', 'protocol_hint', 'provider', 'endpoint',
                                'family', 'description')))
+
     controller = getattr(config_manager, 'model_catalog_controller', None)
     if controller is not None:
         try:
-            record = controller.snapshot_for('image').get(model_text, {})
+            record = controller.snapshot_for('image').get(model_key, {})
         except Exception:
             record = {}
         if isinstance(record, dict):
             for key in ('protocol', 'image_protocol'):
                 value = str(record.get(key) or '').strip().casefold()
                 if value:
-                    explicit_protocols.append(value)
+                    explicit.append(value)
+            supported.update(_image_protocols(record.get('supported_endpoint_types', record.get('endpoint_types', ()))))
             hints.append(' '.join(str(record.get(key) or '') for key in
                                   ('protocol', 'protocol_hint', 'provider', 'family', 'description')))
-    # A model-specific protocol is authoritative.  This matters for custom
-    # model ids whose names do not contain a provider hint (for example a
-    # relay alias configured with protocol='gemini').
-    for value in explicit_protocols:
-        if any(marker in value for marker in ('gemini', 'google', 'imagen')):
-            return 'gemini'
-        if any(marker in value for marker in ('openai', 'open_ai', 'dall', 'azure')):
-            return 'openai'
+
     line = resolve_line(config, 'image')
     source = str(line.get('source') or '')
     hints.append(' '.join(str(line.get(key) or '') for key in
@@ -428,10 +440,45 @@ def _preferred_protocol(config_manager, model):
             continue
         hints.append(' '.join(str(station.get(key) or '') for key in
                               ('protocol', 'image_protocol', 'provider', 'description')))
-    hint_text = ' '.join(hints).casefold()
+    return explicit, supported, ' '.join(hints).casefold()
+
+
+def _preferred_protocol(config_manager, model):
+    model_text = str(model or '')
+    gemini_name = bool(re.search(r'gemini|imagen|nano[\s_-]?banana', model_text, re.I))
+    explicit, supported, hint_text = _image_model_metadata(config_manager, model_text)
+    for value in explicit:
+        if any(marker in value for marker in ('gemini', 'google', 'imagen')):
+            requested = 'gemini'
+            break
+        if any(marker in value for marker in ('openai', 'open_ai', 'dall', 'azure')):
+            requested = 'openai'
+            break
+    else:
+        requested = ''
+
+    if supported:
+        if requested in supported:
+            return requested
+        if len(supported) == 1:
+            return next(iter(supported))
+        if gemini_name and 'gemini' in supported:
+            return 'gemini'
+        if not gemini_name and 'openai' in supported:
+            return 'openai'
+        if 'openai' in supported:
+            return 'openai'
+        return 'gemini'
+    if requested:
+        return requested
     if gemini_name and any(marker in hint_text for marker in ('gemini', 'google', 'imagen')):
         return 'gemini'
-    return 'openai'
+    return 'gemini' if gemini_name else 'openai'
+
+
+def _supports_image_protocol_fallback(config_manager, model):
+    _explicit, supported, _hints = _image_model_metadata(config_manager, model)
+    return supported == {'openai', 'gemini'}
 
 
 class ManualImageManager:
@@ -589,12 +636,13 @@ class ManualImageManager:
                 result = self._generate(protocol, base_url, api_key, model,
                                         record['prompt'], ratio, tier, refs)
             except Exception as error:
-                if protocol != 'openai' or not _endpoint_unsupported(error):
+                if (not _supports_image_protocol_fallback(self.config_manager, model)
+                        or not _endpoint_unsupported(error)):
                     raise
-                protocol = 'gemini'
+                protocol = 'gemini' if protocol == 'openai' else 'openai'
                 record['protocol'] = protocol
-                result = generate_gemini_image(base_url, api_key, model,
-                                               record['prompt'], ratio, tier, refs)
+                result = self._generate(protocol, base_url, api_key, model,
+                                        record['prompt'], ratio, tier, refs)
             content = getattr(result, 'png_bytes', None)
             if not isinstance(content, (bytes, bytearray)) or not content:
                 raise ManualImageError('图片服务返回了空图片', category='invalid_image')

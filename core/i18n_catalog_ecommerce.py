@@ -95,10 +95,10 @@ EN_ECOMMERCE = {
     '选择图片': 'Choose images',
     '选择视频': 'Choose videos',
     '选择音频': 'Choose audio',
-    '选择或拖入参考视频 MP4 / WebM / MOV · 单个 48MB':
-        'Choose or drop reference videos: MP4 / WebM / MOV · 48 MB each',
-    '选择或拖入参考音频 MP3 / WAV / M4A / AAC / OGG · 单个 16MB':
-        'Choose or drop reference audio: MP3 / WAV / M4A / AAC / OGG · 16 MB each',
+    '选择或拖入参考视频 MP4 / WebM / MOV · 单个 200MB':
+        'Choose or drop reference videos: MP4 / WebM / MOV · 200 MB each',
+    '选择或拖入参考音频 MP3 / WAV / M4A / AAC / OGG · 单个 50MB':
+        'Choose or drop reference audio: MP3 / WAV / M4A / AAC / OGG · 50 MB each',
     'MiniMax-H3 会按 images、reference_videos、reference_audios 字段提交；可将素材写入 Prompt':
         'MiniMax-H3 submits images, reference_videos, and reference_audios fields; you can insert assets into the prompt.',
     '当前线路未配置视频/音频上传能力': 'Video/audio upload is not configured for the current route',
@@ -510,8 +510,8 @@ EN_ECOMMERCE = {
     '参考音频格式不支持，请重新选择': 'Unsupported audio format. Select another file.',
     '参考视频文件为空，请重新选择': 'The reference video is empty. Select another file.',
     '参考音频文件为空，请重新选择': 'The reference audio is empty. Select another file.',
-    '参考视频不能超过 48MB': 'Reference videos cannot exceed 48MB',
-    '参考音频不能超过 16MB': 'Reference audio cannot exceed 16MB',
+    '参考视频不能超过 200MB': 'Reference videos cannot exceed 200MB',
+    '参考音频不能超过 50MB': 'Reference audio cannot exceed 50MB',
     '删除参考素材': 'Remove reference',
     '参考视频预览': 'Reference video preview',
     '已使用系统默认播放器打开参考视频': 'Opened the reference video in the system player',

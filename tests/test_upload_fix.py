@@ -41,11 +41,29 @@ class UploadFixTests(unittest.TestCase):
                 self.assertEqual(captured, [(name, path.read_bytes(), mime)])
                 client.close()
 
+    def test_media_upload_uses_long_timeout_for_video_and_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, kind, expected in (('片段.mp4', 'videos', (15, 300)),
+                                         ('旁白.wav', 'audios', (15, 120))):
+                path = Path(directory) / name
+                path.write_bytes(b'media')
+                calls = []
+
+                def send(method, url, **kwargs):
+                    calls.append(kwargs['timeout'])
+                    return response(200, {'url': 'https://fixture.test/media'})
+
+                session = Mock(); session.request.side_effect = send
+                client = ImageUploader('https://fixture.test/upload', session=session)
+                self.assertEqual(client.upload_file(path, kind=kind), 'https://fixture.test/media')
+                self.assertEqual(calls, [expected])
+                client.close()
+
     def test_media_upload_rejections_do_not_retry_or_accept_invalid_urls(self):
         from core.http_client import RequestError
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
-            for status in (400, 401, 403, 413, 415, 429):
+            for status in (400, 401, 403, 413, 415, 422, 429):
                 session = Mock(); session.request.return_value = response(status, {'error': 'rejected'})
                 client = ImageUploader('https://fixture.test/upload', session=session)
                 with self.assertRaises(RequestError):
@@ -55,9 +73,28 @@ class UploadFixTests(unittest.TestCase):
             for url in ('file:///private.mp4', 'https:', '', 'javascript:alert(1)'):
                 session = Mock(); session.request.return_value = response(200, {'url': url})
                 client = ImageUploader('https://fixture.test/upload', session=session)
-                with patch('core.image_uploader.time.sleep'), self.assertRaises(RequestError):
+                with self.assertRaises(RequestError):
                     client.upload_file(path, kind='videos')
-                self.assertEqual(session.request.call_count, 2)
+                self.assertEqual(session.request.call_count, 1)
+                client.close()
+
+    def test_media_upload_http_errors_are_classified_in_chinese(self):
+        from core.http_client import RequestError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
+            for status, payload, expected in (
+                (401, {'error': 'unauthorized'}, '上传鉴权失败'),
+                (403, {'error': 'forbidden'}, '上传鉴权失败'),
+                (413, {'error': 'payload too large'}, '200MB'),
+                (503, {'error': 'service unavailable'}, '服务暂时不可用'),
+            ):
+                session = Mock()
+                session.request.side_effect = [response(status, payload)] * (2 if status == 503 else 1)
+                client = ImageUploader('https://fixture.test/upload', session=session)
+                with self.subTest(status=status), self.assertRaises(RequestError) as caught:
+                    client.upload_file(path, kind='videos')
+                self.assertIn(expected, str(caught.exception))
+                self.assertEqual(session.request.call_count, 2 if status == 503 else 1)
                 client.close()
 
     def test_media_upload_network_retry_once_and_cancel_during_backoff(self):
@@ -65,18 +102,62 @@ class UploadFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '旁白.wav'; path.write_bytes(b'media')
             client = ImageUploader('https://fixture.test/upload')
-            with patch.object(client, '_upload_once', side_effect=[RequestError('network'), 'https://fixture.test/media']) as upload, patch('core.image_uploader.time.sleep'):
+            with patch.object(client, '_upload_once', side_effect=[RequestError('network', retry_safe=True), 'https://fixture.test/media']) as upload, patch('core.image_uploader.time.sleep'):
                 self.assertEqual(client.upload_file(path, kind='audios'), 'https://fixture.test/media')
                 self.assertEqual(upload.call_count, 2)
-            with patch.object(client, '_upload_once', side_effect=RequestError('network')) as upload, patch('core.image_uploader.time.sleep'):
+            with patch.object(client, '_upload_once', side_effect=RequestError('network', retry_safe=True)) as upload, patch('core.image_uploader.time.sleep'):
                 with self.assertRaises(RequestError):
                     client.upload_file(path, kind='audios')
                 self.assertEqual(upload.call_count, 2)
             client.check_cancel = Mock(side_effect=[None, Cancelled()])
-            with patch.object(client, '_upload_once', side_effect=RequestError('network')) as upload:
+            with patch.object(client, '_upload_once', side_effect=RequestError('network', retry_safe=True)) as upload:
                 with self.assertRaises(Cancelled):
                     client.upload_file(path, kind='audios')
                 self.assertEqual(upload.call_count, 1)
+            client.close()
+
+    def test_media_upload_retries_server_error_once_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
+            session = Mock()
+            captured = []
+
+            def send(method, url, **kwargs):
+                captured.append((kwargs['headers'].get('Authorization'),
+                                 kwargs['files']['files'][1].read()))
+                return (response(503, {'error': 'temporary'}) if len(captured) == 1
+                        else response(200, {'url': 'https://fixture.test/media'}))
+
+            session.request.side_effect = send
+            client = ImageUploader('https://fixture.test/upload', 'fixture-key', session=session)
+            with patch('core.image_uploader.time.sleep'):
+                self.assertEqual(client.upload_file(path, kind='videos'), 'https://fixture.test/media')
+            self.assertEqual(session.request.call_count, 2)
+            self.assertEqual(captured, [('Bearer fixture-key', b'media')] * 2)
+            client.close()
+
+    def test_media_upload_retries_a_requests_timeout_only_once(self):
+        from core.http_client import RequestError
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '片段.mp4'; path.write_bytes(b'media')
+            session = Mock()
+            session.request.side_effect = [requests.exceptions.ReadTimeout('read timeout'),
+                                           response(200, {'url': 'https://fixture.test/media'})]
+            client = ImageUploader('https://fixture.test/upload', 'fixture-key', session=session)
+            with patch('core.image_uploader.time.sleep'):
+                self.assertEqual(client.upload_file(path, kind='videos'), 'https://fixture.test/media')
+            self.assertEqual(session.request.call_count, 2)
+            self.assertEqual([call.kwargs['timeout'] for call in session.request.call_args_list],
+                             [(15, 300), (15, 300)])
+            client.close()
+
+            session = Mock()
+            session.request.side_effect = [requests.exceptions.ReadTimeout('read timeout'),
+                                           requests.exceptions.ReadTimeout('read timeout')]
+            client = ImageUploader('https://fixture.test/upload', session=session)
+            with patch('core.image_uploader.time.sleep'), self.assertRaises(RequestError):
+                client.upload_file(path, kind='videos')
+            self.assertEqual(session.request.call_count, 2)
             client.close()
 
     def test_connection_probe_is_a_decodable_png(self):
@@ -104,27 +185,28 @@ class UploadFixTests(unittest.TestCase):
             self.assertEqual(headers['Authorization'], 'Bearer upload-token')
             self.assertNotIn('video-key', str(headers))
 
-    def test_auth_timeout_multipart_retry_reopens_full_chinese_file(self):
+    def test_media_upload_does_not_retry_four_xx_auth_response(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '中文图片.png'; path.write_bytes(b'image-contents')
             calls = []
             def send(method, url, **kwargs):
                 calls.append((method, url, kwargs['headers'], kwargs['timeout'], kwargs['files']['files'][1].read()))
-                return response(401, {'error': 'upload token required'}) if len(calls) == 1 else response(200, {'data': {'url': 'https://image/result.png'}})
+                return response(401, {'error': 'upload token required'})
             session = Mock(); session.request.side_effect = send
             logs = []
             client = ImageUploader('https://configured/upload', 'upload-secret', session=session, log=lambda *args: logs.append(args))
-            with patch('core.image_uploader.time.sleep') as sleep:
-                self.assertEqual(client.upload_image(path), 'https://image/result.png')
-                self.assertAlmostEqual(sum(c.args[0] for c in sleep.call_args_list), 2)
-            self.assertEqual(len(calls), 2)
-            for _, url, headers, timeout, data in calls:
-                self.assertEqual(url, 'https://configured/upload')
-                self.assertEqual(headers['Authorization'], 'Bearer upload-secret')
-                self.assertNotIn('Content-Type', headers)  # requests supplies the multipart boundary.
-                self.assertEqual(timeout, (15, 60))
-                self.assertEqual(data, b'image-contents')
-            self.assertTrue(any('HTTP 401' in message and 'upload token required' in message for message, _ in logs))
+            from core.http_client import RequestError
+            with self.assertRaises(RequestError) as caught:
+                client.upload_image(path)
+            self.assertIn('上传鉴权失败', str(caught.exception))
+            self.assertEqual(len(calls), 1)
+            _, url, headers, timeout, data = calls[0]
+            self.assertEqual(url, 'https://configured/upload')
+            self.assertEqual(headers['Authorization'], 'Bearer upload-secret')
+            self.assertNotIn('Content-Type', headers)  # requests supplies the multipart boundary.
+            self.assertEqual(timeout, (15, 60))
+            self.assertEqual(data, b'image-contents')
+            self.assertTrue(all('upload-secret' not in message for message, _ in logs))
 
     def test_four_response_shapes(self):
         with tempfile.TemporaryDirectory() as directory:

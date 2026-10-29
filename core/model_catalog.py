@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 _FIELDS = (
     'id', 'name', 'display_name', 'description', 'kind', 'family',
-    'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images',
+    'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios',
     'pricing_text', 'aliases', 'available', 'protocol_known',
     'capability_source', 'supported_endpoint_types',
 )
@@ -67,7 +67,12 @@ def classify_model(model_id, endpoint_types=()):
     if not value:
         return 'unknown'
     candidate = re.sub(r'-pack$', '', value, flags=re.I)
-    if _base_family(candidate) or candidate.lower() == 'wan-3.0':
+    if _base_family(candidate):
+        return 'video'
+    # Wan is intentionally not a built-in model, but a live catalog may still
+    # advertise this identifier.  Keep classification stable without making it
+    # appear in the offline picker or assigning it a guessed protocol family.
+    if candidate.casefold() == 'wan-3.0':
         return 'video'
     if _IMAGE_MODEL_RE.search(candidate):
         return 'image'
@@ -144,26 +149,22 @@ def _catalog_record(model, catalog):
 def _defaults(family, model=''):
     if family == 'MiniMax-H3':
         return dict(resolutions=('768p', '1080p', '2K', '4K'), ratios=('16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9'),
-                    durations=tuple(range(4, 16)), audio=False, seed=False, max_images=9, protocol_known=True)
+                    durations=tuple(range(4, 16)), audio=False, seed=False, max_images=9, max_videos=3, max_audios=3, protocol_known=True)
     if family == 'video-v1':
         return dict(resolutions=(), ratios=('16:9', '9:16', '1:1', '4:3', '3:4'), durations=(5, 10, 15),
-                    audio=False, seed=False, max_images=9, protocol_known=True)
+                    audio=False, seed=False, max_images=9, max_videos=0, max_audios=0, protocol_known=True)
     if family == 'video-v2':
         resolutions = ('720p',)
         return dict(resolutions=resolutions, ratios=('16:9', '9:16', '1:1', '4:3', '3:4', '21:9'), durations=(5, 10, 15),
-                    audio=True, seed=False, max_images=9, protocol_known=True)
+                    audio=True, seed=False, max_images=9, max_videos=3, max_audios=3, protocol_known=True)
     if family == 'video-v3':
         resolutions = ('480p',) if re.search(r'v3[-_( ]?480p', model, re.I) else ('720p',)
-        return dict(resolutions=resolutions, ratios=('16:9', '9:16', '1:1'), durations=tuple(range(4, 31)),
-                    audio=True, seed=True, max_images=30, protocol_known=True)
+        return dict(resolutions=resolutions, ratios=('16:9', '9:16', '1:1'), durations=tuple(range(4, 30)),
+                    audio=True, seed=True, max_images=30, max_videos=10, max_audios=10, protocol_known=True)
     if family == 'grok-imagine-1.5-video':
         return dict(resolutions=('480p', '720p', '1080p'), ratios=('16:9', '9:16', '1:1', '2:3', '3:2'), durations=tuple(range(1, 16)),
-                    audio=False, seed=False, max_images=9, protocol_known=True)
-    # Wan is visible at its supported UI resolution, but its request protocol
-    # is intentionally unknown until provider documentation is confirmed.
-    if str(model).strip() == 'wan-3.0':
-        return dict(resolutions=('720p',), ratios=(), durations=(), audio=False, seed=False, max_images=0, protocol_known=False)
-    return dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False, max_images=0, protocol_known=False)
+                    audio=False, seed=False, max_images=9, max_videos=0, max_audios=0, protocol_known=True)
+    return dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False, max_images=0, max_videos=0, max_audios=0, protocol_known=False)
 
 
 def _builtin_record(model, description='', display_name=None):
@@ -181,15 +182,15 @@ def _builtin_record(model, description='', display_name=None):
     kind = classify_model(model)
     if kind in {'chat', 'image'}:
         defaults = dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False,
-                        max_images=0, protocol_known=True)
+                        max_images=0, max_videos=0, max_audios=0, protocol_known=True)
     return dict(id=model, name=model, display_name=display_name or model, description=description,
                 kind=kind, family=family, pricing_text='计费未提供', aliases=[], available=True,
-                capability_source='builtin', supported_endpoint_types=[], **{key: defaults[key] for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')})
+                capability_source='builtin', supported_endpoint_types=[], **{key: defaults[key] for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios', 'protocol_known')})
 
 
 def builtin_models():
     names = ['video-v1', 'video-v2', 'video-v2-fast', 'video-v3', 'MiniMax-H3', 'grok-imagine-1.5-video',
-             'wan-3.0', 'deepseek-flash', 'deepseek-v4-pro',
+             'deepseek-flash', 'deepseek-v4-pro',
              'deepseek-chat', 'deepseek-reasoner',
              'gemini-3.8-flash', 'gpt-image-2.5-sunburst', 'gpt-image-2']
     records = {_name: _builtin_record(_name) for _name in names}
@@ -240,7 +241,7 @@ def _record_from_upstream(row):
         family = 'deepseek'
     defaults = _defaults(family, base_model)
     description = str(row.get('description') or '')
-    detail = {name: row[name] for name in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images') if name in row}
+    detail = {name: row[name] for name in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios') if name in row}
     if isinstance(row.get('capabilities'), dict):
         detail.update(row['capabilities'])
     described = _description_capabilities(description)
@@ -257,7 +258,7 @@ def _record_from_upstream(row):
         kind = classify_model(model, endpoint_types)
     if kind in {'chat', 'image'}:
         defaults = dict(resolutions=(), ratios=(), durations=(), audio=False, seed=False,
-                        max_images=0, protocol_known=True)
+                        max_images=0, max_videos=0, max_audios=0, protocol_known=True)
 
     def choose(name, cast=None):
         explicit = _as_list(detail.get(name), cast)
@@ -274,9 +275,11 @@ def _record_from_upstream(row):
     audio = detail.get('audio') if isinstance(detail.get('audio'), bool) else defaults['audio']
     seed = detail.get('seed') if isinstance(detail.get('seed'), bool) else defaults['seed']
     max_images = detail.get('max_images') if isinstance(detail.get('max_images'), int) and not isinstance(detail.get('max_images'), bool) else defaults['max_images']
+    max_videos = detail.get('max_videos') if isinstance(detail.get('max_videos'), int) and not isinstance(detail.get('max_videos'), bool) else defaults['max_videos']
+    max_audios = detail.get('max_audios') if isinstance(detail.get('max_audios'), int) and not isinstance(detail.get('max_audios'), bool) else defaults['max_audios']
     if kind in {'chat', 'image'}:
         resolutions, ratios, durations = [], [], []
-        audio, seed, max_images = False, False, 0
+        audio, seed, max_images, max_videos, max_audios = False, False, 0, 0, 0
     source_name = 'upstream' if detail else ('description' if any((described['resolutions'], described['ratios'], described['durations'], described['pricing_text'])) else 'builtin')
     pricing = row.get('pricing_text') or row.get('price') or row.get('pricing') or row.get('cost')
     if not isinstance(pricing, str) or not pricing.strip():
@@ -285,7 +288,8 @@ def _record_from_upstream(row):
     aliases = [str(item) for item in aliases if isinstance(item, (str, int, float))]
     return dict(id=model, name=model, display_name=str(row.get('display_name') or row.get('name') or model),
                 description=description, kind=kind, family=family, resolutions=resolutions, ratios=ratios,
-                durations=durations, audio=audio, seed=seed, max_images=max_images, pricing_text=pricing,
+                durations=durations, audio=audio, seed=seed, max_images=max_images,
+                max_videos=max_videos, max_audios=max_audios, pricing_text=pricing,
                 aliases=aliases, available=not model.lower().endswith('-pack'),
                 protocol_known=bool(defaults['protocol_known']), capability_source=source_name,
                 supported_endpoint_types=endpoint_types)
@@ -294,14 +298,21 @@ def _record_from_upstream(row):
 def options_for(model, catalog=None):
     record = _catalog_record(model, catalog)
     if record is not None:
-        return {key: deepcopy(record.get(key)) for key in ('ratios', 'resolutions', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')}
+        family = str(record.get('family') or _base_family(model) or '')
+        defaults = _defaults(family, model)
+        values = {}
+        for key in ('ratios', 'resolutions', 'durations', 'audio', 'seed', 'max_images',
+                    'max_videos', 'max_audios', 'protocol_known'):
+            value = record.get(key)
+            values[key] = deepcopy(defaults[key] if value is None else value)
+        return values
     builtin = builtin_models().get(model)
     if builtin is None:
         family = _base_family(model)
         builtin = _builtin_record(model)
-        if not family and model != 'wan-3.0':
+        if not family:
             builtin['kind'] = 'unknown'
-    return {key: deepcopy(builtin[key]) for key in ('ratios', 'resolutions', 'durations', 'audio', 'seed', 'max_images', 'protocol_known')}
+    return {key: deepcopy(builtin[key]) for key in ('ratios', 'resolutions', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios', 'protocol_known')}
 
 
 class ModelCatalog:
@@ -376,6 +387,24 @@ class ModelCatalog:
         if document.get('base_url') != self.base_url or document.get('key_fingerprint') != self.key_fingerprint:
             raise ValueError('缓存身份不匹配')
         models = document.get('models')
+        if isinstance(models, dict):
+            upgraded = {}
+            for key, item in models.items():
+                if isinstance(item, dict):
+                    value = dict(item)
+                    family = str(value.get('family') or _base_family(value.get('id') or key))
+                    defaults = _defaults(family, value.get('id') or key)
+                    for field in ('max_videos', 'max_audios'):
+                        if field not in value:
+                            value[field] = defaults[field]
+                    if 'supported_endpoint_types' not in value:
+                        value['supported_endpoint_types'] = []
+                    upgraded[key] = value
+                else:
+                    upgraded[key] = item
+            if upgraded != models:
+                document = dict(document, models=upgraded)
+                models = upgraded
         if not isinstance(models, dict) or not all(
                 key == item.get('id') and _valid_record(item) for key, item in models.items()):
             raise ValueError('缓存模型内容无效')
@@ -491,7 +520,10 @@ def _valid_record(record):
         return False
     if not isinstance(record['durations'], (list, tuple)) or not all(isinstance(item, int) and not isinstance(item, bool) for item in record['durations']):
         return False
-    return isinstance(record['audio'], bool) and isinstance(record['seed'], bool) and isinstance(record['max_images'], int) and not isinstance(record['max_images'], bool)
+    return (isinstance(record['audio'], bool) and isinstance(record['seed'], bool)
+            and isinstance(record['max_images'], int) and not isinstance(record['max_images'], bool)
+            and isinstance(record['max_videos'], int) and not isinstance(record['max_videos'], bool)
+            and isinstance(record['max_audios'], int) and not isinstance(record['max_audios'], bool))
 
 
 __all__ = ['ModelCatalog', 'builtin_models', 'options_for', 'family_for', 'classify_model',

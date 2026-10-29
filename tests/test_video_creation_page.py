@@ -240,8 +240,19 @@ class VideoCreationPageTests(unittest.TestCase):
         finally:
             apply_ui_mode('light')
 
-    def test_wan_clips_reference_videos_to_real_api_limit_and_rejects_fourth(self):
-        self._use_models(['video-v3', 'wan-3.0'])
+    def test_wan_is_hidden_without_catalog_entry_and_catalog_limits_are_respected(self):
+        self._use_models(['video-v3'])
+        self.assertEqual(self.page.model_combo.findData('wan-3.0'), -1)
+        from core.model_catalog import _record_from_upstream
+        self.config.model_catalog_controller.snapshot_for.return_value = {
+            'video-v3': _record_from_upstream(dict(id='video-v3', supported_endpoint_types=['openai-video'])),
+            'wan-3.0': _record_from_upstream(dict(
+                id='wan-3.0', kind='video', supported_endpoint_types=['openai-video'],
+                durations=[5, 10, 15], ratios=['16:9', '9:16', '1:1'], resolutions=['720p'],
+                max_images=10, max_videos=3, max_audios=5)),
+        }
+        self.page.refresh_catalog()
+        self.assertNotEqual(self.page.model_combo.findData('wan-3.0'), -1)
         self.page._set_mode('reference')
         with patch('ui.pages.video_creation_page.QMediaPlayer', _ReferencePlayerFixture):
             entries = [self._add_media('videos', f'video-{index}.mp4') for index in range(5)]
@@ -256,8 +267,6 @@ class VideoCreationPageTests(unittest.TestCase):
             self.assertFalse(self.page._accept_media_files([str(entries[3][0])], 'videos'))
             uploader.assert_not_called()
         warning.assert_called_once_with('参考素材超出模型上限，最多 3 个')
-        self.page.duration_buttons[-1].click()
-        self.assertEqual(self.page.duration_spin.value(), 30)
 
     def test_reference_upload_failure_blocks_submit_until_retry_or_explicit_removal(self):
         self.page._set_mode('reference')
@@ -273,18 +282,17 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertTrue(self.page.generate_button.isEnabled())
 
     def test_model_capabilities_link_duration_presets_media_and_output_sizes(self):
-        self._use_models(['MiniMax-H3', 'video-v3', 'wan-3.0'])
+        self._use_models(['MiniMax-H3', 'video-v3'])
         for model, duration, limits, presets, resolutions in (
                 ('MiniMax-H3', (4, 15), (9, 3, 3), (5, 10, 15), ('768p', '1080p', '2K', '4K')),
-                ('video-v3', (4, 30), (30, 10, 10), (5, 10, 15, 30), ('720p',)),
-                ('wan-3.0', (5, 30), (10, 3, 5), (5, 10, 15, 30), ('720p',))):
+                ('video-v3', (4, 29), (30, 10, 10), (5, 10, 15, 29), ('720p',))):
             self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
             self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), duration)
             self.assertEqual(tuple(button.property('duration') for button in self.page.duration_buttons), presets)
             self.assertEqual(tuple(self.page._capabilities['max_' + kind] for kind in ('images', 'videos', 'audios')), limits)
             self.assertEqual(self.page._capabilities['resolutions'], resolutions)
             if model == 'video-v3':
-                self.assertEqual(self.page.duration_spin.value(), 30)
+                self.assertEqual(self.page.duration_spin.value(), 29)
                 self.assertEqual(self.page.output_size_combo.currentText(), '720x1280')
         self.page.reference_images = ['image'] * 30
         self.page.reference_videos = ['video'] * 10
@@ -294,20 +302,23 @@ class VideoCreationPageTests(unittest.TestCase):
         warning.assert_called_once()
         self.assertEqual(tuple(len(getattr(self.page, 'reference_' + kind)) for kind in ('images', 'videos', 'audios')), (9, 3, 3))
 
-    def test_unknown_model_requires_video_endpoint_and_uses_conservative_fallback(self):
+    def test_unknown_model_requires_video_endpoint_and_uses_catalog_capabilities(self):
         from core.model_catalog import _record_from_upstream
         self.config.model_catalog_controller.snapshot_for.return_value = {
-            'future-motion': _record_from_upstream(dict(id='future-motion', kind='unknown', supported_endpoint_types=['openai-video'])),
+            'future-motion': _record_from_upstream(dict(
+                id='future-motion', kind='unknown', supported_endpoint_types=['openai-video'],
+                durations=[6, 12], ratios=['16:9'], resolutions=['1080p'],
+                max_images=2, max_videos=1, max_audios=0)),
             'unsupported-motion': _record_from_upstream(dict(id='unsupported-motion', kind='video')),
             'unknown-without-endpoint': _record_from_upstream(dict(id='unknown-without-endpoint')),
         }
-        with self.assertLogs('core.video_capabilities', level='WARNING'):
-            self.page.refresh_catalog()
+        self.page.refresh_catalog()
         self.page.prompt_edit.setPlainText('Offline prompt')
         self.assertEqual(self.page.model_combo.currentData(), 'future-motion')
         self.assertTrue(self.page.generate_button.isEnabled())
-        self.assertEqual(self.page._capabilities['source'], 'fallback')
-        self.assertEqual(self.page._capabilities['durations'], tuple(range(4, 16)))
+        self.assertEqual(self.page._capabilities['source'], 'upstream')
+        self.assertEqual(self.page._capabilities['durations'], (6, 12))
+        self.assertEqual(tuple(self.page._capabilities['max_' + kind] for kind in ('images', 'videos', 'audios')), (2, 1, 0))
         self.assertEqual(self.page.model_combo.findData('unknown-without-endpoint'), -1)
         self.page.model_combo.setCurrentIndex(self.page.model_combo.findData('unsupported-motion'))
         self.assertFalse(self.page.generate_button.isEnabled())
@@ -326,7 +337,8 @@ class VideoCreationPageTests(unittest.TestCase):
             self.page.refresh_catalog()
         warning.assert_called_once()
         self.assertEqual(self.page.model_combo.currentData(), 'video-v3')
-        self.assertEqual(self.page.duration_spin.value(), 30)
+        self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), (4, 29))
+        self.assertEqual(self.page.duration_spin.value(), 29)
 
     def test_media_upload_is_async_disables_submit_and_preserves_order(self):
         self.page.prompt_edit.setPlainText('Offline upload')
@@ -466,7 +478,7 @@ class VideoCreationPageTests(unittest.TestCase):
             apply_interface_scale(self.app, FakeScreen(), scale)
             self.page.resize(px(1440), px(900))
             flush_layout(self.app, self.page)
-            self.assertEqual([button.text() for button in self.page.duration_buttons], ['5秒', '10秒', '15秒', '30秒'])
+            self.assertEqual([button.text() for button in self.page.duration_buttons], ['5秒', '10秒', '15秒', '29秒'])
             for index, button in enumerate(self.page.duration_buttons):
                 self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + px(12))
                 self.assertTrue(self.page.parameters_content.rect().contains(button.geometry()))
@@ -480,14 +492,13 @@ class VideoCreationPageTests(unittest.TestCase):
                     self.assertGreaterEqual(button.y() - self.page.duration_buttons[index-2].geometry().bottom() - 1, px(8))
                 self.assertAlmostEqual(button.width(), self.page.duration_buttons[0].width(), delta=1)
                 button.click()
-                self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 30)[index])
+                self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 29)[index])
                 self.assertEqual([item.isChecked() for item in self.page.duration_buttons], [i == index for i in range(4)])
 
     def test_duration_shortcuts_rebuild_without_ghost_widgets_across_model_switches(self):
-        self._use_models(['video-v3', 'wan-3.0', 'video-v2', 'MiniMax-H3'])
+        self._use_models(['video-v3', 'video-v2', 'MiniMax-H3'])
         expected = {
-            'video-v3': ('5秒', '10秒', '15秒', '30秒'),
-            'wan-3.0': ('5秒', '10秒', '15秒', '30秒'),
+            'video-v3': ('5秒', '10秒', '15秒', '29秒'),
             'video-v2': ('5秒', '10秒', '15秒'),
             'MiniMax-H3': ('5秒', '10秒', '15秒'),
         }
@@ -510,12 +521,12 @@ class VideoCreationPageTests(unittest.TestCase):
         from PyQt5.QtGui import QColor
         from ui.materials import ecommerce_color
         from ui.theme import apply_ui_mode
-        self._use_models(['video-v3', 'wan-3.0'])
+        self._use_models(['video-v3'])
         try:
             for theme in ('light', 'dark'):
                 apply_ui_mode(theme)
                 self.page.refresh_colors()
-                for model in ('video-v3', 'wan-3.0'):
+                for model in ('video-v3',):
                     self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
                     for scale in ('1.0', '1.25', '1.5', '1.75'):
                         apply_interface_scale(self.app, FakeScreen(), scale)

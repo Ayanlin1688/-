@@ -14,7 +14,7 @@ _MODEL_FIELDS = {
     'id', 'object', 'created', 'owned_by', 'name', 'display_name',
     'description', 'kind', 'type', 'supported_endpoint_types',
     'capabilities', 'aliases', 'pricing_text', 'price', 'pricing', 'cost',
-    'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images',
+    'resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios',
 }
 
 
@@ -153,7 +153,7 @@ def _clean_model_record(row, wire_id=None):
             # fields consumed by the catalog and drop arbitrary nested values.
             result['capabilities'] = {
                 key: result['capabilities'][key]
-                for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images')
+                for key in ('resolutions', 'ratios', 'durations', 'audio', 'seed', 'max_images', 'max_videos', 'max_audios')
                 if key in result['capabilities']
             }
     return result

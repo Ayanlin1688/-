@@ -64,7 +64,33 @@ class ModelContractTests(unittest.TestCase):
                 self.assertEqual(json.loads(server.calls[-1][2]), dict(model='MiniMax-H3', prompt='text',
                     workflow_id='text-to-video', seconds=8, size=size, aspect_ratio='9:16'))
                 client.create_task('MiniMax-H3', 'text', ['https://example.com/ref.jpg'], params(resolution=size))
-                self.assertEqual(json.loads(server.calls[-1][2])['workflow_id'], 'multi-reference')
+                body = json.loads(server.calls[-1][2])
+                self.assertEqual(body['workflow_id'], 'cf-multi-reference')
+                self.assertEqual(body['aspect_ratio'], '9:16')
+                self.assertEqual(body['images'], ['https://example.com/ref.jpg'])
+
+    def test_h3_reference_video_and_audio_require_an_image_before_http(self):
+        with LocalServer() as server:
+            client = ApiClient(server.base, 'test'); self.addCleanup(client.close)
+            for values in (
+                params(videos=['https://example.com/ref.mp4']),
+                params(audios=['https://example.com/ref.wav']),
+            ):
+                with self.subTest(values=values), self.assertRaisesRegex(
+                        ValueError, 'H3 参考视频/音频必须同时提供至少 1 张参考图'):
+                    client.create_task('MiniMax-H3', 'text', [], values)
+                self.assertEqual(server.calls, [])
+
+            client.create_task('MiniMax-H3', 'text', ['https://example.com/ref.jpg'],
+                               params(videos=['https://example.com/ref.mp4'],
+                                      audios=['https://example.com/ref.wav']))
+            body = json.loads(server.calls[-1][2])
+            self.assertEqual(body['workflow_id'], 'multi-reference')
+            self.assertEqual(body['images'], ['https://example.com/ref.jpg'])
+            self.assertEqual(body['reference_videos'], ['https://example.com/ref.mp4'])
+            self.assertEqual(body['reference_audios'], ['https://example.com/ref.wav'])
+            self.assertNotIn('videos', body)
+            self.assertNotIn('audios', body)
 
     def test_json_models_match_documented_fields_and_audio_seed_types(self):
         with LocalServer() as server:
@@ -80,6 +106,18 @@ class ModelContractTests(unittest.TestCase):
                 client.create_task(model, 'text', [], params(resolution='720p', seed='4294967295'))
                 self.assertEqual(json.loads(server.calls[-1][2]), dict(model=model, prompt='text', images=[], videos=[], audios=[],
                     duration=8, ratio='9:16', resolution='720p', generate_audio=False, seed=4294967295, bypass_face_check=False))
+
+    def test_video_v3_29_seconds_is_valid_and_30_is_rejected_before_submission(self):
+        with LocalServer() as server:
+            client = ApiClient(server.base, 'test'); self.addCleanup(client.close)
+            client.create_task('video-v3', 'text', [], params(duration=29, resolution='720p'))
+            body = json.loads(server.calls[-1][2])
+            self.assertEqual(body['duration'], 29)
+            self.assertEqual(body['resolution'], '720p')
+            before = len(server.calls)
+            with self.assertRaisesRegex(ValueError, '4–29'):
+                client.create_task('video-v3', 'text', [], params(duration=30, resolution='720p'))
+            self.assertEqual(len(server.calls), before)
 
     def test_invalid_parameters_fail_without_any_network_request(self):
         cases = [
@@ -147,7 +185,7 @@ class ModelContractTests(unittest.TestCase):
 
             v3 = 'video-v3-480p'
             catalog = self.catalog_record(v3, 'video-v3', resolutions=['480p'],
-                                          durations=list(range(4, 31)), seed=True, max_images=30)
+                                          durations=list(range(4, 30)), seed=True, max_images=30)
             client.create_task(v3, 'text', [], params(resolution='480p'), catalog)
             body = json.loads(server.calls[-1][2])
             self.assertEqual(body['model'], v3)
@@ -232,7 +270,7 @@ class ModelWorkflowTests(unittest.TestCase):
                     try:
                         self.assertNotIn(model, [card.model.itemData(i) for i in range(card.model.count())])
                         self.assertNotIn(model, [settings.default_model.itemData(i) for i in range(settings.default_model.count())])
-                        self.assertEqual(model_options(model)['durations'], tuple(range(4, 31)))
+                        self.assertEqual(model_options(model)['durations'], tuple(range(4, 30)))
                         self.assertEqual(model_options(model)['max_images'], 30)
                     finally:
                         card.close(); settings.close()

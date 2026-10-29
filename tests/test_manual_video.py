@@ -476,10 +476,10 @@ class ManualVideoTests(unittest.TestCase):
         self.assertEqual(uploader.upload_file.call_args_list,
                          [mock.call(str(video), kind='videos'), mock.call(str(audio), kind='audios')])
 
-    def test_family_reference_limits_and_v3_thirty_seconds(self):
+    def test_family_reference_limits_and_v3_twenty_nine_seconds(self):
         for model, image_limit, video_limit, audio_limit, duration in (
             ('MiniMax-H3', 9, 3, 3, 15), ('video-v2', 9, 3, 3, 10),
-            ('video-v3', 30, 10, 10, 30), ('wan-3.0', 10, 3, 5, 30)):
+            ('video-v3', 30, 10, 10, 29)):
             refs = {'images': ['https://img/a.png'] * image_limit,
                     'videos': ['https://media/a.mp4'] * video_limit,
                     'audios': ['https://media/a.wav'] * audio_limit}
@@ -533,14 +533,14 @@ class ManualVideoTests(unittest.TestCase):
     def test_wan_and_v3_real_payload_limits_and_sizes_match_ui_capabilities(self):
         from core.video_capabilities import capabilities
         from core.model_parameters import validate_task_parameters
-        for model, video_limit, audio_limit in (('wan-3.0', 3, 5), ('video-v3', 10, 10)):
+        for model, video_limit, audio_limit in (('video-v3', 10, 10),):
             caps = capabilities(model)
             for ratio in caps['ratios']:
                 size = caps['output_sizes'][ratio][0]
                 refs = {'videos': ['https://fixture.test/reference.mp4'] * video_limit,
                         'audios': ['https://fixture.test/reference.wav'] * audio_limit}
                 task = self.manager.prepare_tasks('fixture', model, ratio=ratio, output_size=size,
-                                                  duration=30, refs=refs)[0]
+                                                  duration=29, refs=refs)[0]
                 _FakeApiClient.create_calls = []
                 with mock.patch('core.manual_video.ApiClient', _FakeApiClient), \
                         mock.patch('core.manual_video.VideoDownloader', _FakeDownloader), \
@@ -553,14 +553,62 @@ class ManualVideoTests(unittest.TestCase):
                 self.assertEqual(payload['videos'], refs['videos'])
                 self.assertEqual(payload['audios'], refs['audios'])
                 self.assertEqual(payload['resolution'], '720p')
-                self.assertEqual(payload.get('duration', int(payload.get('seconds', 0))), 30)
+                self.assertEqual(payload.get('duration', int(payload.get('seconds', 0))), 29)
                 invalid = dict(params, videos=params['videos'] + ['https://fixture.test/fourth.mp4'])
                 with self.assertRaisesRegex(ValueError, '参考视频'):
                     validate_task_parameters(model_id, prompt, invalid, 0, catalog)
         with self.assertRaisesRegex(ValueError, '画面比例'):
-            self.manager.prepare_tasks('fixture', 'wan-3.0', ratio='7:11', duration=30)
+            self.manager.prepare_tasks('fixture', 'video-v3', ratio='7:11', duration=29)
         with self.assertRaisesRegex(ValueError, '输出尺寸'):
-            self.manager.prepare_tasks('fixture', 'wan-3.0', output_size='4K', duration=30)
+            self.manager.prepare_tasks('fixture', 'video-v3', output_size='4K', duration=29)
+
+    def test_catalog_advertised_wan_uses_runtime_limits_without_becoming_builtin(self):
+        """Wan is provider-directory data only; never guess it in offline mode."""
+        from core.model_catalog import builtin_models
+        from core.video_capabilities import capabilities
+        from core.model_parameters import validate_task_parameters
+
+        catalog = {
+            'wan-3.0': {
+                'id': 'wan-3.0', 'name': 'wan-3.0', 'kind': 'video', 'family': '',
+                'available': True, 'protocol_known': True,
+                'ratios': ['16:9', '9:16'], 'resolutions': ['720p'],
+                'durations': [5, 10, 15, 30], 'audio': False, 'seed': False,
+                'max_images': 10, 'max_videos': 3, 'max_audios': 5,
+            },
+        }
+        self.config.config['_model_catalog'] = catalog
+        self.assertNotIn('wan-3.0', builtin_models())
+        caps = capabilities('wan-3.0', catalog)
+        self.assertEqual(caps['durations'], (5, 10, 15, 30))
+        self.assertEqual((caps['max_images'], caps['max_videos'], caps['max_audios']), (10, 3, 5))
+
+        refs = {
+            'images': ['https://img/a.png'] * 10,
+            'videos': ['https://media/a.mp4'] * 3,
+            'audios': ['https://media/a.wav'] * 5,
+        }
+        task = self.manager.prepare_tasks('fixture', 'wan-3.0', ratio='16:9',
+                                          output_size='720p', duration=30, refs=refs)[0]
+        _FakeApiClient.create_calls = []
+        with mock.patch('core.manual_video.ApiClient', _FakeApiClient), \
+                mock.patch('core.manual_video.VideoDownloader', _FakeDownloader):
+            result = self.manager.run_tasks([task])[0]
+        self.assertEqual(result['status'], 'succeeded')
+        model, prompt, images, params, passed_catalog = _FakeApiClient.create_calls[0]
+        self.assertEqual(model, 'wan-3.0')
+        self.assertIs(passed_catalog, catalog)
+        self.assertEqual(len(images), 10)
+        fields = validate_task_parameters(model, prompt, params, len(images), catalog)
+        self.assertEqual(fields['seconds'], '30')
+        self.assertEqual(fields['resolution'], '720p')
+        self.assertEqual(len(fields['videos']), 3)
+        self.assertEqual(len(fields['audios']), 5)
+        for kind, limit in (('images', 10), ('videos', 3), ('audios', 5)):
+            too_many = dict(refs, **{kind: refs[kind] + [refs[kind][0]]})
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, '最多'):
+                self.manager.prepare_tasks('fixture', 'wan-3.0', ratio='16:9',
+                                            output_size='720p', duration=30, refs=too_many)
 
     def test_resolution_mapping_and_veo_inline_video_data(self):
         self.assertEqual(self.manager._api_resolution('video-v2', '1920x1088'), '1080p')

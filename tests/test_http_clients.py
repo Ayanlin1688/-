@@ -384,7 +384,7 @@ class HttpTests(unittest.TestCase):
                         self.assertEqual(payload['ratio'], '9:16')
                         self.assertNotIn('aspect_ratio', payload)
                     elif model == 'MiniMax-H3':
-                        self.assertEqual(payload['workflow_id'], 'multi-reference')
+                        self.assertEqual(payload['workflow_id'], 'cf-multi-reference')
                         self.assertEqual(payload['seconds'], 10)
                         self.assertEqual(payload['aspect_ratio'], '9:16')
                     else:

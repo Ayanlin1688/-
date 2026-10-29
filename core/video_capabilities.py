@@ -27,6 +27,12 @@ def capabilities(model, catalog=None):
     family = family_for(model, catalog)
     snapshot = catalog.snapshot() if hasattr(catalog, 'snapshot') else catalog
     record = snapshot.get(model, {}) if isinstance(snapshot, dict) else {}
+    if not isinstance(record, dict):
+        record = {}
+
+    def cap_value(name, fallback):
+        value = record.get(name)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else fallback
     lower = model.lower()
     source = 'upstream'
     durations, default, presets = tuple(range(4, 16)), 5, (5, 10, 15)
@@ -41,14 +47,12 @@ def capabilities(model, catalog=None):
                        if any(value in lower for value in ('720p', 'fast', '特价'))
                        else ('480p', '720p', '1080p'))
     elif family == 'video-v3' or (not family and re.match(r'^video-v3(?:$|[^0-9])', lower)):
-        durations, default, presets = tuple(range(4, 31)), 30, (5, 10, 15, 30)
+        # The documented video-v3 endpoint accepts 4-29 seconds.  The
+        # separate video-v3-480p SKU keeps its own resolution below.
+        durations, default, presets = tuple(range(4, 30)), 29, (5, 10, 15, 29)
         ratios = ('16:9', '9:16', '1:1')
         resolutions = ('480p',) if '480p' in lower else ('720p',)
         limits, audio, seed = (30, 10, 10), True, True
-    elif lower == 'wan-3.0':
-        # Expose the requested 30s capability; the observed OpenAI-video 400
-        # establishes a separate limit of three reference videos.
-        durations, presets, limits = (5, 10, 15, 30), (5, 10, 15, 30), (10, 3, 5)
     elif family in ('video-v1', 'grok-imagine-1.5-video'):
         # Preserve the existing, separately verified legacy protocols.
         from .model_parameters import legacy_model_options
@@ -62,7 +66,16 @@ def capabilities(model, catalog=None):
         ratios = tuple(record.get('ratios') or BASE_RATIOS)
         resolutions = tuple(record.get('resolutions') or ('720p',))
         durations = tuple(record.get('durations') or range(4, 16))
-        limits = (record.get('max_images', 3), 0, 0)
+        limits = (cap_value('max_images', 3), 0, 0)
+    elif record and record.get('kind') == 'video':
+        # Unrecognized SKUs, including Wan when present in a live catalog, are
+        # driven by that route's directory snapshot instead of a built-in name.
+        durations = tuple(record.get('durations') or range(4, 16))
+        ratios = tuple(record.get('ratios') or BASE_RATIOS)
+        resolutions = tuple(record.get('resolutions') or ('720p',))
+        limits = (cap_value('max_images', 9), cap_value('max_videos', 3), cap_value('max_audios', 3))
+        audio = bool(record.get('audio', False))
+        seed = bool(record.get('seed', False))
     else:
         source = 'fallback'
         _LOG.warning('未识别的视频模型，使用保守能力：%s', model)
@@ -83,8 +96,8 @@ def validate_media_file(path, kind):
     if kind not in ('videos', 'audios'):
         raise ValueError('参考素材类型不支持')
     path = Path(path)
-    extensions, limit = ({'.mp4', '.webm', '.mov'}, 48) if kind == 'videos' else (
-        {'.mp3', '.wav', '.m4a', '.aac', '.ogg'}, 16)
+    extensions, limit = ({'.mp4', '.webm', '.mov'}, 200) if kind == 'videos' else (
+        {'.mp3', '.wav', '.m4a', '.aac', '.ogg'}, 50)
     name = '视频' if kind == 'videos' else '音频'
     if not path.is_file():
         raise ValueError(f'参考{name}文件不存在，请重新选择')
