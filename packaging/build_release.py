@@ -59,6 +59,7 @@ def build_bundle() -> Path:
         '--distpath', str(DIST), '--workpath', str(BUILD / 'work'),
         '--specpath', str(BUILD),
         '--collect-all', 'qfluentwidgets',
+        '--collect-all', 'imageio_ffmpeg',
         '--collect-submodules', 'core.ecommerce',
         '--hidden-import', 'assets',
         '--hidden-import', 'ui.pages.ecommerce_page',

@@ -369,6 +369,50 @@ class VideoCreationPageTests(unittest.TestCase):
         self.assertTrue(self.page.generate_button.isEnabled())
         uploader.close.assert_called_once()
 
+    def test_large_reference_video_is_compressed_before_upload_and_keeps_original_display(self):
+        from core.media_transcode import MAX_REFERENCE_BYTES
+
+        source = self.root / '玫瑰毯子.mp4'
+        with source.open('wb') as stream:
+            stream.truncate(MAX_REFERENCE_BYTES + 1)
+        compressed = self.root / 'bendihua-reference-video-test.mp4'
+        compressed.write_bytes(b'compressed')
+        uploader = Mock()
+        uploader.upload_file.return_value = 'https://fixture.test/rose.mp4'
+        with patch('ui.pages.video_creation_page.ffmpeg_binary', return_value='ffmpeg.exe'), \
+                patch('ui.pages.video_creation_page.compress_reference_video',
+                      return_value=(str(compressed), source.stat().st_size, compressed.stat().st_size)), \
+                patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader):
+            self.assertTrue(self.page._accept_media_files([str(source)], 'videos'))
+            deadline = time.monotonic() + 3
+            while (self.page._compress_worker is not None or self.page._upload_worker is not None) and time.monotonic() < deadline:
+                QTest.qWait(10)
+        self.assertEqual(self.page.reference_videos, ['https://fixture.test/rose.mp4'])
+        self.assertEqual(uploader.upload_file.call_args.kwargs['kind'], 'videos')
+        self.assertEqual(uploader.upload_file.call_args.args[0], str(compressed))
+        self.assertEqual(self.page._media_local_paths['https://fixture.test/rose.mp4'], str(source))
+        self.assertTrue(source.exists())
+        self.assertFalse(compressed.exists())
+        self.assertEqual(self.page.upload_status.text(), '参考素材上传完成')
+        self.assertEqual(len(self.page._media_rows['videos']), 1)
+        self.assertIn('已压缩至', self.page._media_rows['videos'][0].meta_label.text())
+
+    def test_small_reference_video_uploads_original_without_compression(self):
+        from core.media_transcode import MAX_REFERENCE_BYTES
+
+        source = self.root / 'small-reference.mp4'
+        source.write_bytes(b'under-limit fixture')
+        uploader = Mock()
+        uploader.upload_file.return_value = 'https://fixture.test/small.mp4'
+        with patch('ui.pages.video_creation_page.compress_reference_video') as compress, \
+                patch('ui.pages.video_creation_page.ImageUploader.from_config', return_value=uploader):
+            self.assertTrue(self.page._accept_media_files([str(source)], 'videos'))
+            self._wait_upload()
+        compress.assert_not_called()
+        self.assertEqual(uploader.upload_file.call_args.args[0], str(source))
+        self.assertFalse(any(self.page._compressed_temp_paths))
+        self.assertLess(source.stat().st_size, MAX_REFERENCE_BYTES)
+
     def test_media_upload_failure_is_classified_and_retry_only_uploads_remaining(self):
         from core.http_client import RequestError
         paths = [self.root / 'first.mp3', self.root / 'second.mp3']

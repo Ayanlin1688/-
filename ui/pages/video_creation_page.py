@@ -43,6 +43,9 @@ from core.line_routing import resolve_line
 from core.video_capabilities import capabilities, validate_media_file
 from core.image_uploader import ImageUploader
 from core.http_client import Cancelled
+from core.media_transcode import (MAX_REFERENCE_BYTES, TranscodeCancelled,
+                                  cleanup_transcoded_video, compress_reference_video,
+                                  ffmpeg_binary)
 from core.model_catalog import builtin_models, classify_model, normalize_model_id, family_for
 from core.model_parameters import model_options
 from .. import materials
@@ -229,7 +232,7 @@ class _ReferenceVideoDialog(QDialog):
 class _ReferenceMediaRow(QFrame):
     remove_requested = pyqtSignal(str)
 
-    def __init__(self, path, kind, warning_callback, parent=None):
+    def __init__(self, path, kind, warning_callback, parent=None, transcode_status=''):
         super().__init__(parent)
         self.path, self.kind = str(path), str(kind)
         self.warning_callback = warning_callback
@@ -240,6 +243,8 @@ class _ReferenceMediaRow(QFrame):
         self._play_requested = False
         self._audio_loaded = False
         self._video_dialog = None
+        self._duration_text = ''
+        self._transcode_status = str(transcode_status or '')
         self.name_label = _ElidedMediaName(Path(self.path).name, self)
         self.name_label.setObjectName('videoReferenceMediaName')
         try:
@@ -250,6 +255,9 @@ class _ReferenceMediaRow(QFrame):
         self._size_text = size_text
         self.meta_label = QLabel(size_text, self)
         self.meta_label.setObjectName('videoReferenceMediaMeta')
+        self.meta_label.setWordWrap(True)
+        self.meta_label.setMinimumWidth(px(120))
+        self.meta_label.setMaximumWidth(px(230))
         self.play_button = ToolButton(FIF.PLAY, self)
         self.play_button.setObjectName('videoReferenceMediaPlay')
         self.play_button.setFixedSize(px(30), px(30))
@@ -273,6 +281,22 @@ class _ReferenceMediaRow(QFrame):
             self._try_add_audio_player()
         self.setCursor(Qt.PointingHandCursor)
         self._refresh_style()
+        self._refresh_meta()
+
+    def set_transcode_status(self, text):
+        self._transcode_status = str(text or '')
+        self._refresh_meta()
+
+    def set_pending(self, pending):
+        self.remove_button.setEnabled(not pending)
+        self.remove_button.setToolTip(tr('参考视频正在压缩') if pending else tr('删除参考素材'))
+
+    def _refresh_meta(self):
+        parts = [part for part in (self._transcode_status, self._duration_text) if part]
+        self.meta_label.setText(' · '.join(parts) if parts else self._size_text)
+        self.meta_label.setToolTip(' · '.join(filter(None, [self._size_text,
+                                                             self._transcode_status,
+                                                             self._duration_text])))
 
     def _try_add_video_duration(self):
         if QMediaPlayer is None:
@@ -322,7 +346,8 @@ class _ReferenceMediaRow(QFrame):
     def _set_duration(self, milliseconds):
         if int(milliseconds or 0) > 0:
             seconds = int(milliseconds) // 1000
-            self.meta_label.setText(f'{self._size_text} · {seconds // 60:02d}:{seconds % 60:02d}')
+            self._duration_text = f'{seconds // 60:02d}:{seconds % 60:02d}'
+            self._refresh_meta()
             QTimer.singleShot(0, self._release_duration_player)
 
     def _release_duration_player(self, *_args):
@@ -617,10 +642,11 @@ class _MediaUploadWorker(QThread):
     progress = pyqtSignal(int, int)
     failed = pyqtSignal(str)
 
-    def __init__(self, config, paths, kind, parent=None):
+    def __init__(self, config, paths, kind, parent=None, transcoded_paths=()):
         super().__init__(parent)
         self.config, self.paths, self.kind = config, paths, kind
         self.remaining = list(paths)
+        self.transcoded_paths = set(map(str, transcoded_paths))
         self._cancel = threading.Event()
         self.cancelled = False
 
@@ -640,11 +666,23 @@ class _MediaUploadWorker(QThread):
                 url = uploader.upload_file(path, kind=self.kind)
                 self._check_cancel()
                 self.remaining.remove(path)
+                if str(path) in self.transcoded_paths:
+                    cleanup_transcoded_video(path)
+                    self.transcoded_paths.discard(str(path))
                 self.uploaded.emit(self.kind, path, url)
                 self.progress.emit(index + 1, len(self.paths))
         except Cancelled:
             self.cancelled = True
+            for path in tuple(self.transcoded_paths):
+                cleanup_transcoded_video(path)
+            self.transcoded_paths.clear()
         except Exception as error:
+            if self._cancel.is_set():
+                self.cancelled = True
+                for path in tuple(self.transcoded_paths):
+                    cleanup_transcoded_video(path)
+                self.transcoded_paths.clear()
+                return
             status = getattr(error, 'status_code', None)
             if status in (401, 403):
                 message = tr('素材上传鉴权失败，请检查上传密钥')
@@ -658,6 +696,48 @@ class _MediaUploadWorker(QThread):
         finally:
             if uploader is not None:
                 uploader.close()
+
+
+class _VideoCompressWorker(QThread):
+    compressed = pyqtSignal(object)
+    progress = pyqtSignal(int, int)
+    failed = pyqtSignal(str)
+
+    def __init__(self, paths, parent=None):
+        super().__init__(parent)
+        self.paths = list(paths)
+        self._cancel = threading.Event()
+        self.cancelled = False
+        self.created_paths = []
+
+    def cancel(self):
+        self._cancel.set()
+
+    def run(self):
+        results = []
+        try:
+            for index, path in enumerate(self.paths):
+                if self._cancel.is_set():
+                    raise TranscodeCancelled()
+                output, original_size, compressed_size = compress_reference_video(
+                    path, cancel_event=self._cancel)
+                if self._cancel.is_set():
+                    cleanup_transcoded_video(output)
+                    raise TranscodeCancelled()
+                self.created_paths.append(output)
+                results.append((str(path), output, original_size, compressed_size))
+                self.progress.emit(index + 1, len(self.paths))
+            if self._cancel.is_set():
+                raise TranscodeCancelled()
+            self.compressed.emit(results)
+        except TranscodeCancelled:
+            self.cancelled = True
+            for path in self.created_paths:
+                cleanup_transcoded_video(path)
+        except Exception as error:
+            for path in self.created_paths:
+                cleanup_transcoded_video(path)
+            self.failed.emit(str(error) or tr('参考视频压缩失败，请检查文件或安装 ffmpeg'))
 
 
 def _video_records(config_manager):
@@ -685,8 +765,14 @@ class VideoCreationPage(QWidget):
         self._tasks = {}; self._history_records = []; self._history_page = 1; self._history_query = ''
         self._history_dirty = True
         self._upload_worker = None
+        self._compress_worker = None
         self._media_names = {}
         self._media_local_paths = {}
+        self._media_upload_display_paths = {}
+        self._compressed_temp_paths = set()
+        self._compression_pending_paths = []
+        self._compression_kind = ''
+        self._transcode_status_by_original = {}
         self._media_rows = {'videos': [], 'audios': []}
         self._retry_upload = None
         self._capabilities = None
@@ -754,7 +840,7 @@ class VideoCreationPage(QWidget):
         self.reference_audios_label = QLabel(tr('参考音频（0/3）'), panel); layout.addWidget(self.reference_audios_label); self.reference_audios_button = PushButton(tr('选择音频'), panel); self.reference_audios_button.clicked.connect(lambda: self._choose_media('audios')); layout.addWidget(self.reference_audios_button)
         self.reference_audios_rows_host = QWidget(panel); self.reference_audios_rows_layout = QVBoxLayout(self.reference_audios_rows_host); self.reference_audios_rows_layout.setContentsMargins(0, 0, 0, 0); self.reference_audios_rows_layout.setSpacing(px(6)); layout.addWidget(self.reference_audios_rows_host)
         self.reference_audios_hint = QLabel('', panel); self.reference_audios_hint.setObjectName('videoReferenceUploadUnavailable'); self.reference_audios_hint.setWordWrap(True); self.reference_audios_hint.setVisible(False); layout.addWidget(self.reference_audios_hint)
-        self.reference_hint = QLabel(tr('参考素材按图片、视频、音频顺序提交，可在画面描述中引用。'), panel); self.reference_hint.setWordWrap(True); self.reference_hint.setObjectName('videoReferenceHint'); layout.addWidget(self.reference_hint)
+        self.reference_hint = QLabel(tr('参考素材按图片、视频、音频顺序提交，可在画面描述中引用。视频单个最多200MB，超过48MB会自动压缩后上传。'), panel); self.reference_hint.setWordWrap(True); self.reference_hint.setObjectName('videoReferenceHint'); layout.addWidget(self.reference_hint)
         self.upload_status = QLabel('', panel); self.upload_status.setWordWrap(True); layout.addWidget(self.upload_status)
         self.retry_upload_button = PushButton(tr('重试上传'), panel); self.retry_upload_button.hide(); self.retry_upload_button.clicked.connect(self._retry_media_upload); layout.addWidget(self.retry_upload_button)
         self.discard_upload_button = PushButton(tr('移除失败素材'), panel)
@@ -1023,7 +1109,7 @@ class VideoCreationPage(QWidget):
         self._accept_media_files(paths, kind)
 
     def _accept_media_files(self, paths, kind):
-        if kind not in ('videos', 'audios') or self._upload_worker is not None or not paths:
+        if kind not in ('videos', 'audios') or self._upload_worker is not None or self._compress_worker is not None or not paths:
             return False
         limit = (self._capabilities or {})['max_' + kind]
         refs = getattr(self, 'reference_' + kind)
@@ -1038,7 +1124,39 @@ class VideoCreationPage(QWidget):
         except OSError:
             self._warning(tr('无法读取参考素材，请检查文件权限'))
             return False
-        worker = _MediaUploadWorker(self.config_manager, paths, kind, self)
+        if kind == 'videos':
+            large_paths = [path for path in paths
+                           if Path(path).stat().st_size > MAX_REFERENCE_BYTES]
+            if large_paths:
+                if ffmpeg_binary() is None:
+                    self._warning(tr('本机无法压缩，请换≤48MB视频或安装 ffmpeg'))
+                    return False
+                self._compression_pending_paths = list(paths)
+                self._compression_kind = kind
+                for path in large_paths:
+                    original_mb = Path(path).stat().st_size / 1024**2
+                    self._transcode_status_by_original[str(path)] = tr(
+                        '{size}MB 超过48MB，正在压缩…').format(size=f'{original_mb:.1f}')
+                self._retry_upload = None
+                self.retry_upload_button.hide(); self.discard_upload_button.hide()
+                self.upload_status.setText(
+                    tr('参考视频超过48MB，正在压缩后上传（{n}个）').format(n=len(large_paths)))
+                self._sync_reference_labels(rebuild=False)
+                worker = _VideoCompressWorker(large_paths, self)
+                self._compress_worker = worker; self._workers.append(worker)
+                worker.compressed.connect(self._compression_done)
+                worker.progress.connect(lambda n, total: self.upload_status.setText(
+                    tr('参考视频正在压缩（{n}/{total}）').format(n=n, total=total)))
+                worker.failed.connect(self._compression_failed)
+                worker.finished.connect(lambda w=worker: self._compression_finished(w))
+                self._update_form_state(); worker.start()
+                return True
+        return self._start_media_upload(paths, kind)
+
+    def _start_media_upload(self, paths, kind):
+        owned = [path for path in paths if str(path) in self._compressed_temp_paths]
+        worker = _MediaUploadWorker(self.config_manager, paths, kind, self,
+                                    transcoded_paths=owned)
         self._upload_worker = worker; self._workers.append(worker)
         self._retry_upload = None; self.retry_upload_button.hide(); self.discard_upload_button.hide()
         self.upload_status.setText(tr('正在上传参考素材（{n}/{total}）').format(n=0, total=len(paths)))
@@ -1049,13 +1167,59 @@ class VideoCreationPage(QWidget):
         self._update_form_state(); worker.start()
         return True
 
+    def _compression_done(self, results):
+        replacements = {str(original): str(output)
+                        for original, output, _original_size, _compressed_size in results}
+        self._compressed_temp_paths.update(replacements.values())
+        upload_paths = [replacements.get(str(path), str(path))
+                        for path in self._compression_pending_paths]
+        self._media_upload_display_paths.update(
+            {str(output): str(original) for original, output in replacements.items()})
+        for original, _output, _original_size, compressed_size in results:
+            self._transcode_status_by_original[str(original)] = tr(
+                '已压缩至 {size}MB（仅上传用）').format(size=f'{compressed_size / 1024**2:.1f}')
+        self._sync_reference_labels(rebuild=False)
+        sizes = [compressed_size for _original, _output, _original_size, compressed_size in results]
+        size_text = f'{sum(sizes) / 1024**2:.1f}MB' if sizes else '较小文件'
+        self.upload_status.setText(tr('已压缩至 {size}（仅上传用），正在上传').format(size=size_text))
+        kind = self._compression_kind
+        self._compression_pending_paths = []
+        self._compression_kind = ''
+        self._start_media_upload(upload_paths, kind)
+
+    def _compression_failed(self, message):
+        for path in self._compression_pending_paths:
+            self._transcode_status_by_original.pop(str(path), None)
+        self._compression_pending_paths = []
+        self._compression_kind = ''
+        self._sync_reference_labels(rebuild=False)
+        self.upload_status.setText(message)
+        self._warning(message)
+
+    def _compression_finished(self, worker):
+        if self._compress_worker is worker:
+            self._compress_worker = None
+        if worker.cancelled:
+            for path in self._compression_pending_paths:
+                self._transcode_status_by_original.pop(str(path), None)
+            self._compression_pending_paths = []
+            self._compression_kind = ''
+            self._sync_reference_labels(rebuild=False)
+        self._worker_finished(worker)
+        self._update_form_state()
+
     def _media_uploaded(self, kind, path, url):
         refs = getattr(self, 'reference_' + kind)
         if len(refs) >= self._capabilities['max_' + kind]:
+            if str(path) in self._compressed_temp_paths:
+                cleanup_transcoded_video(path)
+                self._compressed_temp_paths.discard(str(path))
             return
+        display_path = self._media_upload_display_paths.pop(str(path), str(path))
         refs.append(url)
-        self._media_names[url] = Path(path).name
-        self._media_local_paths[url] = str(path)
+        self._media_names[url] = Path(display_path).name
+        self._media_local_paths[url] = str(display_path)
+        self._compressed_temp_paths.discard(str(path))
         self._sync_reference_labels(rebuild=False)
 
     def _clear_media_rows(self, kind):
@@ -1079,14 +1243,22 @@ class VideoCreationPage(QWidget):
         while layout.count():
             layout.takeAt(0)
         rows = []
-        for url in list(getattr(self, 'reference_' + kind, [])):
-            path = self._media_local_paths.get(url)
+        referenced = [self._media_local_paths.get(url)
+                      for url in list(getattr(self, 'reference_' + kind, []))]
+        pending = (list(self._transcode_status_by_original)
+                   if kind == 'videos' else [])
+        paths = list(dict.fromkeys(str(path) for path in referenced + pending if path))
+        for path in paths:
             if not path or not Path(path).is_file():
                 continue
             row = existing.pop(str(path), None)
+            is_pending = path in self._transcode_status_by_original and path not in referenced
             if row is None:
-                row = _ReferenceMediaRow(path, kind, self._warning, self)
+                row = _ReferenceMediaRow(path, kind, self._warning, self,
+                                         self._transcode_status_by_original.get(path, ''))
                 row.remove_requested.connect(lambda _path, media_kind=kind: self._remove_reference_media(media_kind, _path))
+            row.set_transcode_status(self._transcode_status_by_original.get(path, ''))
+            row.set_pending(is_pending)
             layout.addWidget(row)
             row.show()
             rows.append(row)
@@ -1106,6 +1278,7 @@ class VideoCreationPage(QWidget):
             refs.remove(url)
             self._media_local_paths.pop(url, None)
             self._media_names.pop(url, None)
+        self._transcode_status_by_original.pop(path, None)
         self._sync_reference_labels()
         self._update_form_state()
         return True
@@ -1118,9 +1291,19 @@ class VideoCreationPage(QWidget):
     def _media_upload_finished(self, worker):
         self._upload_worker = None
         if worker.cancelled:
+            self._cleanup_temp_paths(worker.paths)
+            self._retry_upload = None
             self.upload_status.setText(tr('参考素材上传已取消'))
         elif self._retry_upload is None:
             self.upload_status.setText(tr('参考素材上传完成'))
+        else:
+            remaining = set(map(str, worker.remaining))
+            for path in tuple(worker.transcoded_paths):
+                if path not in remaining:
+                    cleanup_transcoded_video(path)
+                    worker.transcoded_paths.discard(path)
+                    self._compressed_temp_paths.discard(path)
+                    self._media_upload_display_paths.pop(path, None)
         self._worker_finished(worker); self._update_form_state()
         if self._catalog_refresh_pending:
             self._catalog_refresh_pending = False
@@ -1131,11 +1314,25 @@ class VideoCreationPage(QWidget):
             self._accept_media_files(*self._retry_upload)
 
     def _discard_failed_upload(self):
+        if self._retry_upload:
+            for upload_path in self._retry_upload[0]:
+                original = self._media_upload_display_paths.pop(str(upload_path), None)
+                if original:
+                    self._transcode_status_by_original.pop(original, None)
+            self._cleanup_temp_paths(self._retry_upload[0])
         self._retry_upload = None
         self.retry_upload_button.hide()
         self.discard_upload_button.hide()
         self.upload_status.clear()
         self._update_form_state()
+
+    def _cleanup_temp_paths(self, paths):
+        for path in tuple(paths or ()):
+            if str(path) in self._compressed_temp_paths:
+                cleanup_transcoded_video(path)
+                self._compressed_temp_paths.discard(str(path))
+            self._media_upload_display_paths.pop(str(path), None)
+        self._sync_reference_labels(rebuild=False)
 
     def _sync_reference_labels(self, rebuild=True):
         caps = self._capabilities or dict(max_images=9, max_videos=3, max_audios=3)
@@ -1286,7 +1483,7 @@ class VideoCreationPage(QWidget):
             del blocker
         self._update_form_state()
     def _update_form_state(self):
-        uploading = self._upload_worker is not None
+        uploading = self._upload_worker is not None or self._compress_worker is not None
         failed_upload = self.mode == 'reference' and self._retry_upload is not None
         valid = bool(self.prompt_edit.toPlainText().strip()) and len(self.prompt_edit.toPlainText()) <= 5000 and bool(self.model_combo.currentData())
         supported = self._model_supported()
@@ -1337,7 +1534,7 @@ class VideoCreationPage(QWidget):
         if not model: self._warning(tr('请选择视频模型')); return False
         if not self._model_supported():
             self._warning(tr('当前模型不支持视频提交，请同步模型或更换模型')); return False
-        if self._upload_worker is not None:
+        if self._upload_worker is not None or self._compress_worker is not None:
             self._warning(tr('参考素材正在上传，请稍候')); return False
         if self.mode == 'reference' and self._retry_upload is not None:
             self._warning(tr('参考素材上传失败，请重试或移除失败素材')); return False
@@ -1606,6 +1803,14 @@ class VideoCreationPage(QWidget):
             for row in rows:
                 row.stop()
         self.shutdown_workers()
+        active = set()
+        worker = self._upload_worker
+        if worker is not None and worker.isRunning():
+            active = set(worker.transcoded_paths)
+        for path in tuple(self._compressed_temp_paths - active):
+            cleanup_transcoded_video(path)
+            self._compressed_temp_paths.discard(path)
+            self._media_upload_display_paths.pop(path, None)
         super().closeEvent(event)
     def showEvent(self, event):
         super().showEvent(event)
@@ -1694,7 +1899,7 @@ class VideoCreationPage(QWidget):
             add.setStyleSheet('QFrame#videoReferenceImageAddTile {background:%s; border:1px dashed %s; border-radius:%dpx;} QLabel {color:%s;}'
                              % (surface, border, px(8), _color('video_creation_muted')))
     def retranslate_ui(self):
-        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('视频生成后会自动保存到本地，可在任务历史中查看。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self._sync_reference_labels(rebuild=False); self._update_duration_range_label(); self._duration_changed(self.duration_spin.value()); self._count_changed(self.count_spin.value()); self._update_form_state()
+        self.title_label.setText(tr('视频创作')); self.caption_label.setText(tr('把想法写成画面，从这里开始。')); self.workspace_link.setText(tr('AI 视频工作台')); self.settings_title.setText(tr('🎬 创作设置')); self.settings_caption.setText(tr('选择模型，描述你的画面')); self.model_label.setText(tr('🎬 视频模型')); self.api_label.setText(tr('🔗 API 连接')); self.api_status.setText(self._api_status_text()); self._style_api_status(); self.mode_label.setText(tr('⚙ 生成模式')); self.text_mode_button.setText(tr('文生视频')); self.reference_mode_button.setText(tr('参考素材')); self.prompt_label.setText(tr('📝 画面描述')); self.prompt_edit.setPlaceholderText(tr('描述你要生成的视频画面（例如：光束掠过湿润的赛博朋克街道，镜头平稳推进，雨水从黑色风衣滴落...）')); self.parameters_title.setText(tr('生成参数')); self.model_parameters_title.setText(tr('🎨 模型专属参数')); self.parameters_toggle.setToolTip(tr('收起') if self.parameters_toggle.isChecked() else tr('展开')); self.info_bar.setText(tr('视频生成后会自动保存到本地，可在任务历史中查看。')); self.reference_image_drop_zone.label.setText(tr('点击或拖入参考图片')); self.reference_hint.setText(tr('参考素材按图片、视频、音频顺序提交，可在画面描述中引用。视频单个最多200MB，超过48MB会自动压缩后上传。')); self._sync_reference_labels(rebuild=False); self._update_duration_range_label(); self._duration_changed(self.duration_spin.value()); self._count_changed(self.count_spin.value()); self._update_form_state()
         for row in self.history_list.findChildren(_HistoryRow):
             row.retranslate_ui()
         self.retry_upload_button.setText(tr('重试上传'))
