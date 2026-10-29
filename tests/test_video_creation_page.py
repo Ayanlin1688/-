@@ -285,14 +285,14 @@ class VideoCreationPageTests(unittest.TestCase):
         self._use_models(['MiniMax-H3', 'video-v3'])
         for model, duration, limits, presets, resolutions in (
                 ('MiniMax-H3', (4, 15), (9, 3, 3), (5, 10, 15), ('768p', '1080p', '2K', '4K')),
-                ('video-v3', (4, 29), (30, 10, 10), (5, 10, 15, 29), ('720p',))):
+                ('video-v3', (4, 30), (30, 10, 10), (5, 10, 15, 30), ('720p',))):
             self.page.model_combo.setCurrentIndex(self.page.model_combo.findData(model))
             self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), duration)
             self.assertEqual(tuple(button.property('duration') for button in self.page.duration_buttons), presets)
             self.assertEqual(tuple(self.page._capabilities['max_' + kind] for kind in ('images', 'videos', 'audios')), limits)
             self.assertEqual(self.page._capabilities['resolutions'], resolutions)
             if model == 'video-v3':
-                self.assertEqual(self.page.duration_spin.value(), 29)
+                self.assertEqual(self.page.duration_spin.value(), 30)
                 self.assertEqual(self.page.output_size_combo.currentText(), '720x1280')
         self.page.reference_images = ['image'] * 30
         self.page.reference_videos = ['video'] * 10
@@ -337,8 +337,8 @@ class VideoCreationPageTests(unittest.TestCase):
             self.page.refresh_catalog()
         warning.assert_called_once()
         self.assertEqual(self.page.model_combo.currentData(), 'video-v3')
-        self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), (4, 29))
-        self.assertEqual(self.page.duration_spin.value(), 29)
+        self.assertEqual((self.page.duration_spin.minimum(), self.page.duration_spin.maximum()), (4, 30))
+        self.assertEqual(self.page.duration_spin.value(), 30)
 
     def test_media_upload_is_async_disables_submit_and_preserves_order(self):
         self.page.prompt_edit.setPlainText('Offline upload')
@@ -522,7 +522,7 @@ class VideoCreationPageTests(unittest.TestCase):
             apply_interface_scale(self.app, FakeScreen(), scale)
             self.page.resize(px(1440), px(900))
             flush_layout(self.app, self.page)
-            self.assertEqual([button.text() for button in self.page.duration_buttons], ['5秒', '10秒', '15秒', '29秒'])
+            self.assertEqual([button.text() for button in self.page.duration_buttons], ['5秒', '10秒', '15秒', '30秒'])
             for index, button in enumerate(self.page.duration_buttons):
                 self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + px(12))
                 self.assertTrue(self.page.parameters_content.rect().contains(button.geometry()))
@@ -536,13 +536,13 @@ class VideoCreationPageTests(unittest.TestCase):
                     self.assertGreaterEqual(button.y() - self.page.duration_buttons[index-2].geometry().bottom() - 1, px(8))
                 self.assertAlmostEqual(button.width(), self.page.duration_buttons[0].width(), delta=1)
                 button.click()
-                self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 29)[index])
+                self.assertEqual(self.page.duration_spin.value(), (5, 10, 15, 30)[index])
                 self.assertEqual([item.isChecked() for item in self.page.duration_buttons], [i == index for i in range(4)])
 
     def test_duration_shortcuts_rebuild_without_ghost_widgets_across_model_switches(self):
         self._use_models(['video-v3', 'video-v2', 'MiniMax-H3'])
         expected = {
-            'video-v3': ('5秒', '10秒', '15秒', '29秒'),
+            'video-v3': ('5秒', '10秒', '15秒', '30秒'),
             'video-v2': ('5秒', '10秒', '15秒'),
             'MiniMax-H3': ('5秒', '10秒', '15秒'),
         }

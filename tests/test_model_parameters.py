@@ -107,17 +107,15 @@ class ModelContractTests(unittest.TestCase):
                 self.assertEqual(json.loads(server.calls[-1][2]), dict(model=model, prompt='text', images=[], videos=[], audios=[],
                     duration=8, ratio='9:16', resolution='720p', generate_audio=False, seed=4294967295, bypass_face_check=False))
 
-    def test_video_v3_29_seconds_is_valid_and_30_is_rejected_before_submission(self):
+    def test_video_v3_30_seconds_is_valid_before_submission(self):
         with LocalServer() as server:
             client = ApiClient(server.base, 'test'); self.addCleanup(client.close)
             client.create_task('video-v3', 'text', [], params(duration=29, resolution='720p'))
             body = json.loads(server.calls[-1][2])
             self.assertEqual(body['duration'], 29)
             self.assertEqual(body['resolution'], '720p')
-            before = len(server.calls)
-            with self.assertRaisesRegex(ValueError, '4–29'):
-                client.create_task('video-v3', 'text', [], params(duration=30, resolution='720p'))
-            self.assertEqual(len(server.calls), before)
+            client.create_task('video-v3', 'text', [], params(duration=30, resolution='720p'))
+            self.assertEqual(json.loads(server.calls[-1][2])['duration'], 30)
 
     def test_invalid_parameters_fail_without_any_network_request(self):
         cases = [
@@ -270,7 +268,7 @@ class ModelWorkflowTests(unittest.TestCase):
                     try:
                         self.assertNotIn(model, [card.model.itemData(i) for i in range(card.model.count())])
                         self.assertNotIn(model, [settings.default_model.itemData(i) for i in range(settings.default_model.count())])
-                        self.assertEqual(model_options(model)['durations'], tuple(range(4, 30)))
+                        self.assertEqual(model_options(model)['durations'], tuple(range(4, 31)))
                         self.assertEqual(model_options(model)['max_images'], 30)
                     finally:
                         card.close(); settings.close()

@@ -159,7 +159,7 @@ def _defaults(family, model=''):
                     audio=True, seed=False, max_images=9, max_videos=3, max_audios=3, protocol_known=True)
     if family == 'video-v3':
         resolutions = ('480p',) if re.search(r'v3[-_( ]?480p', model, re.I) else ('720p',)
-        return dict(resolutions=resolutions, ratios=('16:9', '9:16', '1:1'), durations=tuple(range(4, 30)),
+        return dict(resolutions=resolutions, ratios=('16:9', '9:16', '1:1'), durations=tuple(range(4, 31)),
                     audio=True, seed=True, max_images=30, max_videos=10, max_audios=10, protocol_known=True)
     if family == 'grok-imagine-1.5-video':
         return dict(resolutions=('480p', '720p', '1080p'), ratios=('16:9', '9:16', '1:1', '2:3', '3:2'), durations=tuple(range(1, 16)),

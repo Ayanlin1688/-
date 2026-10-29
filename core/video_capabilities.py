@@ -47,9 +47,9 @@ def capabilities(model, catalog=None):
                        if any(value in lower for value in ('720p', 'fast', '特价'))
                        else ('480p', '720p', '1080p'))
     elif family == 'video-v3' or (not family and re.match(r'^video-v3(?:$|[^0-9])', lower)):
-        # The documented video-v3 endpoint accepts 4-29 seconds.  The
-        # separate video-v3-480p SKU keeps its own resolution below.
-        durations, default, presets = tuple(range(4, 30)), 29, (5, 10, 15, 29)
+        # Current upstream behavior accepts 4-30 seconds; the published docs
+        # still say 4-29 and have not been updated. The 480p SKU shares duration.
+        durations, default, presets = tuple(range(4, 31)), 30, (5, 10, 15, 30)
         ratios = ('16:9', '9:16', '1:1')
         resolutions = ('480p',) if '480p' in lower else ('720p',)
         limits, audio, seed = (30, 10, 10), True, True

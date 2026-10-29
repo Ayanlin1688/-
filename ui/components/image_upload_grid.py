@@ -5,9 +5,11 @@
 """
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QEvent, pyqtSignal
-from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPixmap, QPen
-from PyQt5.QtWidgets import QLabel, QSizePolicy, QWidget
+from PyQt5.QtCore import (Qt, QRect, QRectF, QSize, QEvent, QPoint, QByteArray,
+                          QMimeData, pyqtSignal)
+from PyQt5.QtGui import (QColor, QFontMetrics, QPainter, QPainterPath, QPixmap,
+                         QPen, QDrag)
+from PyQt5.QtWidgets import QApplication, QLabel, QSizePolicy, QWidget
 
 from core.i18n import tr
 from .. import materials
@@ -18,6 +20,7 @@ PRODUCT_MAX = 6
 STYLE_CELL = 80
 GRID_PADDING = 8
 GRID_GAP = 8
+_GRID_INDEX_MIME = 'application/x-image-upload-grid-index'
 
 
 class _CircleButton(QWidget):
@@ -88,6 +91,7 @@ class _ImageTile(QWidget):
         self.setProperty('studioManagedGeometry', True)
         self._hover = False
         self._pixmap = QPixmap()
+        self._press_position = QPoint()
         self._load()
         self.setFixedSize(self._cell, self._cell)
         self.setCursor(Qt.PointingHandCursor)
@@ -195,6 +199,23 @@ class _ImageTile(QWidget):
                 and not self.remove_button.geometry().contains(event.pos())):
             self.clicked.emit(self.index)
         super().mouseReleaseEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_position = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton
+                and (event.pos() - self._press_position).manhattanLength()
+                >= QApplication.startDragDistance()):
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_GRID_INDEX_MIME, QByteArray(str(self.index).encode('ascii')))
+            drag.setMimeData(mime)
+            drag.exec_(Qt.MoveAction)
+            return
+        super().mouseMoveEvent(event)
 
 
 class _AddTile(QWidget):
@@ -306,6 +327,7 @@ class ImageUploadGrid(QWidget):
     changed = pyqtSignal(object)
     preview_requested = pyqtSignal(int)
     add_requested = pyqtSignal()
+    files_dropped = pyqtSignal(object)
 
     def __init__(self, variant='product', max_count=PRODUCT_MAX, parent=None,
                  add_label_provider=None, columns=PRODUCT_COLUMNS, uniform=False):
@@ -327,6 +349,8 @@ class ImageUploadGrid(QWidget):
         self.setProperty('studioManagedGeometry', True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._resizing = False
+        self._editable = True
+        self.setAcceptDrops(self.variant == 'product')
         self._apply_style()
 
     # —— 公共 API ——
@@ -338,6 +362,27 @@ class ImageUploadGrid(QWidget):
         self._paths = paths[:self.max_count]
         self._rebuild(emit=emit)
         return list(self._paths)
+
+    def move_path(self, source, destination, *, emit=True):
+        """Move one image to another slot, preserving the remaining order."""
+        try:
+            source, destination = int(source), int(destination)
+        except (TypeError, ValueError):
+            return False
+        if (source < 0 or source >= len(self._paths)
+                or destination < 0 or destination >= len(self._paths)
+                or source == destination):
+            return False
+        paths = list(self._paths)
+        path = paths.pop(source)
+        paths.insert(destination, path)
+        self._paths = paths
+        self._rebuild(emit=emit)
+        return True
+
+    def set_editable(self, editable):
+        self._editable = bool(editable)
+        self._apply_editability()
 
     def clear(self):
         self.set_paths([])
@@ -426,8 +471,69 @@ class ImageUploadGrid(QWidget):
                 self._add_tile.clicked.connect(self.add_requested)
                 self._add_tile.show()
         self._relayout()
+        self._apply_editability()
         if emit:
             self.changed.emit(list(self._paths))
+
+    def _apply_editability(self):
+        for tile in self._tiles:
+            tile.remove_button.setEnabled(self._editable)
+        if self._add_tile is not None:
+            self._add_tile.setEnabled(self._editable)
+
+    def dragEnterEvent(self, event):
+        if not self._editable:
+            event.ignore()
+        elif (event.mimeData().hasFormat(_GRID_INDEX_MIME)
+              or event.mimeData().hasUrls()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if (self._editable and (event.mimeData().hasFormat(_GRID_INDEX_MIME)
+                                or event.mimeData().hasUrls())):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if not self._editable:
+            event.ignore()
+            return
+        if mime.hasFormat(_GRID_INDEX_MIME):
+            try:
+                source = int(bytes(mime.data(_GRID_INDEX_MIME)).decode('ascii'))
+            except (ValueError, UnicodeError):
+                event.ignore()
+                return
+            destination = self._drop_index(event.pos())
+            if self.move_path(source, destination):
+                event.setDropAction(Qt.MoveAction)
+                event.accept()
+                return
+            event.ignore()
+            return
+        if mime.hasUrls():
+            paths = []
+            for url in mime.urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+                    if path and Path(path).is_file() and path not in paths:
+                        paths.append(path)
+            if paths:
+                self.files_dropped.emit(paths)
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def _drop_index(self, position):
+        if not self._tiles:
+            return 0
+        nearest = min(self._tiles, key=lambda tile: (
+            tile.geometry().center() - position).manhattanLength())
+        return nearest.index
 
     def _product_cell(self):
         width = self.width()

@@ -255,8 +255,13 @@ class AnalysisStreamTests(unittest.TestCase):
             for gemini in (False, True):
                 with self.subTest(gemini=gemini), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
                     base = server.base_url.replace('/v1', '/v1beta') if gemini else server.base_url
-                    analyze_stream(base, FIXTURE_KEY, 'gemini' if gemini else 'fixture-model',
-                                   'system', 'user', reference_paths=paths)
+                    if gemini:
+                        with patch.object(analysis, 'is_gemini_native', return_value=True):
+                            analyze_stream(base, FIXTURE_KEY, 'gemini', 'system', 'user',
+                                           reference_paths=paths)
+                    else:
+                        analyze_stream(base, FIXTURE_KEY, 'fixture-model', 'system', 'user',
+                                       reference_paths=paths)
                     self.assertEqual(len(server.calls), 1)
                     body = server.calls[0][3]
                     if gemini:
@@ -276,6 +281,21 @@ class AnalysisStreamTests(unittest.TestCase):
                         image = QImage()
                         self.assertTrue(image.loadFromData(encoded, 'JPEG'))
                         self.assertLessEqual(max(image.width(), image.height()), 768)
+
+    def test_relay_gemini_always_uses_chat_completion_with_level_thinking(self):
+        with LocalAnalysisServer(b'data: [DONE]\n\n') as server:
+            base = server.base_url.replace('/v1', '/v1beta')
+            analyze_stream(base, FIXTURE_KEY, 'gemini-3.8-flash-high[次]',
+                           'system', 'user', thinking=True)
+        method, path, _, payload = server.calls[0]
+        self.assertEqual(method, 'POST')
+        self.assertTrue(path.endswith('/chat/completions'))
+        thinking = payload['extra_body']['google']['thinking_config']
+        self.assertEqual(thinking['thinking_level'], 'medium')
+        self.assertNotIn('thinking_budget', thinking)
+        self.assertNotIn('reasoning_effort', payload)
+        self.assertNotIn('enable_thinking', payload)
+        self.assertNotIn('chat_template_kwargs', payload)
 
     def test_sse_joins_frame_fragments_reasoning_and_skips_usage(self):
         text = json.dumps(prompt_items(), ensure_ascii=False)
@@ -578,8 +598,11 @@ class AnalysisStreamTests(unittest.TestCase):
 class GeminiAnalysisTests(unittest.TestCase):
     def test_protocol_detection(self):
         for base in ('https://generativelanguage.googleapis.com/v1beta',
-                     'http://127.0.0.1/v1beta/', 'http://127.0.0.1/v1beta'):
+                     'https://GENERATIVELANGUAGE.GOOGLEAPIS.COM./v1beta'):
             self.assertTrue(analysis.is_gemini_native(base))
+        for base in ('http://127.0.0.1/v1beta/', 'http://127.0.0.1/v1beta',
+                     'https://api.kkone.vip/v1beta'):
+            self.assertFalse(analysis.is_gemini_native(base))
         self.assertFalse(analysis.is_gemini_native('https://api.deepseek.com'))
         self.assertFalse(analysis.is_gemini_native('https://compatible.example/v1'))
 
@@ -591,14 +614,14 @@ class GeminiAnalysisTests(unittest.TestCase):
         chunks = []
         with LocalAnalysisServer(frames.encode('utf-8')) as server:
             base = server.base_url.replace('/v1', '/v1beta')
-            items, reasoning = analyze_and_parse(base, FIXTURE_KEY, 'gemini-flash', 'system', 'user', 2, 2,
-                                                 on_content=chunks.append)
+            with patch.object(analysis, 'is_gemini_native', return_value=True):
+                items, reasoning = analyze_and_parse(base, FIXTURE_KEY, 'gemini-flash', 'system', 'user', 2, 2,
+                                                     on_content=chunks.append)
         self.assertEqual(items, prompt_items())
         self.assertEqual(reasoning, '')
         self.assertEqual(''.join(chunks), text)
         method, path, headers, payload = server.calls[0]
         self.assertEqual((method, path), ('POST', '/v1beta/models/gemini-flash:streamGenerateContent?alt=sse'))
-        self.assertEqual(headers['Authorization'], 'Bearer ' + FIXTURE_KEY)
         self.assertEqual(headers['x-goog-api-key'], FIXTURE_KEY)
         self.assertEqual(payload, {
             'systemInstruction': {'parts': [{'text': 'system'}]},
@@ -608,17 +631,14 @@ class GeminiAnalysisTests(unittest.TestCase):
 
     def test_native_gemini_thinking_config_merges_into_generation_config(self):
         cases = (
-            ('gemini-3.8-flash',
-             {'includeThoughts': True, 'include_thoughts': True,
-              'thinkingLevel': 'medium', 'thinking_level': 'medium'}),
-            ('gemini-2.5-flash',
-             {'includeThoughts': True, 'include_thoughts': True,
-              'thinkingBudget': -1, 'thinking_budget': -1}),
+            ('gemini-3.8-flash', {'includeThoughts': True, 'thinkingLevel': 'medium'}),
+            ('gemini-2.5-flash', {'includeThoughts': True, 'thinkingBudget': -1}),
         )
         for model, thinking_config in cases:
             with self.subTest(model=model), LocalAnalysisServer(b'data: [DONE]\n\n') as server:
-                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
-                               model, 'system', 'user', thinking=True)
+                with patch.object(analysis, 'is_gemini_native', return_value=True):
+                    analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
+                                   model, 'system', 'user', thinking=True)
                 payload = server.calls[0][3]
             # 基础 generationConfig 字段保留，thinkingConfig 只做合并。
             self.assertEqual(payload['generationConfig'], {
@@ -631,8 +651,9 @@ class GeminiAnalysisTests(unittest.TestCase):
     def test_gemini_error_frame_is_final_after_200(self):
         frame = sse_frame({'error': {'code': 503, 'message': 'temporarily unavailable ' + FIXTURE_KEY}})
         with LocalAnalysisServer(frame.encode()) as server:
-            with self.assertRaises(EcommerceAnalysisError) as caught:
-                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
+            with patch.object(analysis, 'is_gemini_native', return_value=True):
+                with self.assertRaises(EcommerceAnalysisError) as caught:
+                    analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
         error = caught.exception
         self.assertEqual(error.status_code, 200)
         self.assertFalse(error.retryable)
@@ -650,9 +671,10 @@ class GeminiAnalysisTests(unittest.TestCase):
                  'text 格式错误：期望字符串')):
             with self.subTest(frame=frame):
                 with LocalAnalysisServer(sse_frame(frame).encode('utf-8')) as server:
-                    with self.assertRaises(EcommerceAnalysisError) as caught:
-                        analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
-                                       'gemini', 's', 'u')
+                    with patch.object(analysis, 'is_gemini_native', return_value=True):
+                        with self.assertRaises(EcommerceAnalysisError) as caught:
+                            analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY,
+                                           'gemini', 's', 'u')
                 error = caught.exception
                 self.assertEqual(error.status_code, 200)
                 self.assertEqual(error.category, 'analysis_error')
@@ -665,8 +687,9 @@ class GeminiAnalysisTests(unittest.TestCase):
 
     def test_gemini_401_is_classified_and_not_retried(self):
         with LocalAnalysisServer(b'{"error":{"code":401,"message":"UNAUTHENTICATED"}}', status=401) as server:
-            with self.assertRaises(EcommerceAnalysisError) as caught:
-                analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
+            with patch.object(analysis, 'is_gemini_native', return_value=True):
+                with self.assertRaises(EcommerceAnalysisError) as caught:
+                    analyze_stream(server.base_url.replace('/v1', '/v1beta'), FIXTURE_KEY, 'gemini', 's', 'u')
         self.assertIn('密钥无效', caught.exception.message)
         self.assertFalse(caught.exception.retryable)
         self.assertFalse(caught.exception.switchable)

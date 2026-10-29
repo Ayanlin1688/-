@@ -419,7 +419,7 @@ class _ThumbWidget(QWidget):
 
 
 class RowImageCell(QWidget):
-    """行内图片格：首图 / 「+」+ 产品图计数 + 画廊选图 / 已用图片 / 输入。"""
+    """行内产品图网格：最多六张缩略图、删除、预览和追加。"""
 
     browse_requested = pyqtSignal()
     preview_requested = pyqtSignal(object, int)
@@ -428,23 +428,31 @@ class RowImageCell(QWidget):
     url_requested = pyqtSignal()
     files_dropped = pyqtSignal(object)
     paste_requested = pyqtSignal()
+    changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('batchRowImages')
         self._paths = []
+        self._editable = True
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumWidth(px(140))
         self.setMaximumWidth(px(280))
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
-        self.thumb = _ThumbWidget(self)
-        self.thumb.clicked.connect(self._on_thumb_clicked)
-        self.thumb.files_dropped.connect(self.files_dropped.emit)
-        self.thumb.installEventFilter(self)
-        self.count_label = CaptionLabel(
-            tr('产品图 {count}/6').format(count=0), self)
+        self.grid = ImageUploadGrid(
+            variant='product', max_count=MAX_PRODUCT_IMAGES, columns=3,
+            uniform=False, parent=self,
+            add_label_provider=lambda count, maximum: tr(
+                '继续添加 {count}/{max}').format(count=count, max=maximum))
+        self.grid.preview_requested.connect(self._on_grid_preview)
+        self.grid.add_requested.connect(self._on_grid_add)
+        self.grid.changed.connect(self._on_grid_changed)
+        self.grid.files_dropped.connect(self.files_dropped.emit)
+        self.grid.setAcceptDrops(True)
+        self.grid.installEventFilter(self)
+        self.count_label = CaptionLabel(tr('产品图 0/6'), self)
         self.count_label.setWordWrap(True)
 
         links = WrapLayout(spacing=px(4))
@@ -464,12 +472,7 @@ class RowImageCell(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(px(4))
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(0)
-        top.addWidget(self.thumb)
-        top.addStretch(1)
-        layout.addLayout(top)
+        layout.addWidget(self.grid)
         layout.addWidget(self.count_label)
         layout.addLayout(links)
         layout.addStretch(1)
@@ -478,11 +481,16 @@ class RowImageCell(QWidget):
     # —— 公共 API ——
     def sizeHint(self):
         hint = super().sizeHint()
-        return QSize(px(220), max(px(120), hint.height()))
+        return QSize(px(260), max(px(170), hint.height()))
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
-        return QSize(px(140), max(px(120), hint.height()))
+        return QSize(px(180), max(px(170), hint.height()))
+
+    @property
+    def thumb(self):
+        """兼容旧调用方：返回首个缩略图或空网格的添加格。"""
+        return self.grid.tile_at(0) or self.grid.add_tile() or self.grid
 
     def paths(self):
         return list(self._paths)
@@ -493,10 +501,9 @@ class RowImageCell(QWidget):
     def set_paths(self, paths):
         cleaned = [str(path) for path in (paths or []) if _as_str(path)]
         self._paths = list(dict.fromkeys(cleaned))[:MAX_PRODUCT_IMAGES]
-        self.thumb.set_path(self._paths[0] if self._paths else '')
-        self.count_label.setText(
-            tr('产品图 {count}/6').format(count=len(self._paths)))
-        self.thumb.setToolTip(tr('图片预览') if self._paths else tr('添加产品图'))
+        self.grid.set_paths(self._paths, emit=False)
+        self.grid.set_editable(self._editable)
+        self._refresh_count()
         self.updateGeometry()
 
     def add_paths(self, paths):
@@ -507,11 +514,18 @@ class RowImageCell(QWidget):
         return added
 
     def apply_scale(self):
-        self.thumb.apply_scale()
         self.setMinimumWidth(px(140))
-        self.setMaximumWidth(px(280))
+        self.setMaximumWidth(px(360))
         self._links.setSpacing(px(4))
+        self.grid.refresh_interface_scale()
         self.refresh_colors()
+
+    def set_editable(self, editable):
+        self._editable = bool(editable)
+        self.grid.set_editable(self._editable)
+        for button in (self.gallery_button, self.used_button, self.url_button):
+            button.setEnabled(self._editable)
+        self.setAcceptDrops(self._editable)
 
     def refresh_colors(self):
         colors = materials.palette()
@@ -524,7 +538,7 @@ class RowImageCell(QWidget):
                 'QPushButton#batchLinkButton:hover {text-decoration: underline;}'
                 % (accent, px(12)))
         self.count_label.setStyleSheet('color: %s;' % colors['text3'])
-        self.thumb.update()
+        self.grid.refresh_colors()
 
     def dragEnterEvent(self, event):
         if _mime_image_paths(event.mimeData()):
@@ -540,6 +554,11 @@ class RowImageCell(QWidget):
         self.files_dropped.emit(paths)
         event.acceptProposedAction()
 
+    def setAcceptDrops(self, enabled):
+        super().setAcceptDrops(bool(enabled))
+        if hasattr(self, 'grid'):
+            self.grid.setAcceptDrops(bool(enabled))
+
     def keyPressEvent(self, event):
         if (event.key() == Qt.Key_V
                 and bool(event.modifiers() & Qt.ControlModifier)):
@@ -549,7 +568,7 @@ class RowImageCell(QWidget):
         super().keyPressEvent(event)
 
     def eventFilter(self, watched, event):
-        if (watched is self.thumb and event.type() == QEvent.KeyPress
+        if (watched is self.grid and event.type() == QEvent.KeyPress
                 and event.key() == Qt.Key_V
                 and bool(event.modifiers() & Qt.ControlModifier)):
             self.paste_requested.emit()
@@ -572,6 +591,25 @@ class RowImageCell(QWidget):
             self.preview_requested.emit(list(self._paths), 0)
         else:
             self.browse_requested.emit()
+
+    def _on_grid_preview(self, index):
+        self.setFocus(Qt.MouseFocusReason)
+        if self._paths:
+            self.preview_requested.emit(list(self._paths), int(index))
+
+    def _on_grid_add(self):
+        self.setFocus(Qt.MouseFocusReason)
+        self.browse_requested.emit()
+
+    def _on_grid_changed(self, paths):
+        self._paths = list(paths or [])[:MAX_PRODUCT_IMAGES]
+        self.grid.set_editable(self._editable)
+        self._refresh_count()
+        self.changed.emit()
+
+    def _refresh_count(self):
+        self.count_label.setText(
+            tr('产品图 {count}/6').format(count=len(self._paths)))
 
 
 # ---------------------------------------------------------------------------
@@ -636,10 +674,12 @@ class EcommerceBatchRow(QFrame):
         controls.addStretch(1)
 
         self.image_cell = RowImageCell(self)
+        self.image_cell._editable = True
         self.image_cell.browse_requested.connect(
             lambda: self.browse_requested.emit(self))
         self.image_cell.preview_requested.connect(
             lambda paths, index: self.preview_requested.emit(paths, index))
+        self.image_cell.changed.connect(self.changed.emit)
         self.image_cell.gallery_requested.connect(
             lambda: self.gallery_requested.emit(self))
         self.image_cell.used_requested.connect(
@@ -801,9 +841,7 @@ class EcommerceBatchRow(QFrame):
                         self.name_edit, self.info_edit, self.image_cell.gallery_button,
                         self.image_cell.used_button, self.image_cell.url_button):
             control.setEnabled(not self._busy)
-        self.image_cell.setAcceptDrops(not self._busy)
-        self.image_cell.thumb.setAcceptDrops(not self._busy)
-        self.image_cell.thumb.setEnabled(not self._busy or bool(self.product_image_paths))
+        self.image_cell.set_editable(not self._busy)
         self._refresh_action_states()
 
     def reset_state(self):

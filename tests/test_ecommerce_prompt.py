@@ -281,8 +281,14 @@ class PromptBuilderTests(unittest.TestCase):
             with self.subTest(count=count):
                 text = build_reference_order(6, style_count=count)
                 self.assertIn('Images 1-6', text)
-                if count:
-                    self.assertIn(f'最后 {count} 张为风格参考图', text)
+                if count == 1:
+                    self.assertIn('Image 7 (the last image) is style reference only', text)
+                elif count == 2:
+                    self.assertIn('Images 7 and 8 are style references only', text)
+                    self.assertIn('composition, palette, lighting', text)
+                elif count == 3:
+                    self.assertIn('Images 7 and 8 determine composition', text)
+                    self.assertIn('Image 9 is auxiliary content and text information only', text)
                 else:
                     self.assertNotIn('style reference', text)
                 self.assertEqual(append_reference_order('prompt', 6, style_count=count),

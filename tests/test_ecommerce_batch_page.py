@@ -763,6 +763,32 @@ class _BatchCase(unittest.TestCase):
             row.image_cell._on_thumb_clicked()
         self.assertEqual(len(browse), 1)
 
+    def test_row_product_grid_shows_all_images_and_keeps_order_after_delete(self):
+        row = self.page.rows[0]
+        paths = [self.png_file('grid-%d.png' % index) for index in range(5)]
+        row.set_images(paths)
+        grid = row.image_cell.grid
+
+        self.assertEqual(grid.paths(), paths)
+        self.assertEqual([grid.tile_at(index).path for index in range(5)], paths)
+        self.assertIsNotNone(grid.add_tile())
+        self.assertEqual(row.image_cell.count_label.text(), '产品图 5/6')
+
+        previews = QSignalSpy(row.image_cell.preview_requested)
+        grid.tile_at(3).clicked.emit(3)
+        self.assertEqual(list(previews[0]), [paths, 3])
+
+        remove_button = grid.tile_at(1).remove_button
+        QTest.mouseClick(remove_button, Qt.LeftButton)
+        expected = [paths[0], paths[2], paths[3], paths[4]]
+        self.assertEqual(row.product_image_paths, expected)
+        self.assertEqual([grid.tile_at(index).path for index in range(4)], expected)
+        self.assertEqual(row.image_cell.count_label.text(), '产品图 4/6')
+        self.assertIsNotNone(grid.add_tile())
+
+        self.assertTrue(grid.move_path(2, 0))
+        self.assertEqual(row.product_image_paths, [paths[3], paths[0], paths[2], paths[4]])
+
     def test_batch_row_preview_lightbox_and_actions(self):
         page = self.page
         row = page.rows[0]
@@ -814,6 +840,12 @@ class _BatchCase(unittest.TestCase):
         self.assertFalse(page.add_one_button.isEnabled())
         self.assertFalse(row.name_edit.isEnabled())
         self.assertTrue(row.image_cell.thumb.isEnabled())
+        tile = row.image_cell.grid.tile_at(0)
+        self.assertFalse(tile.remove_button.isEnabled())
+        self.assertFalse(row.image_cell.grid.add_tile().isEnabled())
+        previews = QSignalSpy(row.image_cell.preview_requested)
+        row.image_cell.grid.preview_requested.emit(0)
+        self.assertEqual(len(previews), 1)
         self.assertTrue(row.platform_preview_button.isEnabled())
         page.stop_button.click()
         self.assertEqual(len(stop), 1)

@@ -11,7 +11,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
         for model, durations, default, limits, presets in (
             ('MiniMax-H3', tuple(range(4, 16)), 5, (9, 3, 3), (5, 10, 15)),
             ('video-v2', (5, 10, 15), 5, (9, 3, 3), (5, 10, 15)),
-            ('video-v3', tuple(range(4, 30)), 29, (30, 10, 10), (5, 10, 15, 29)),
+            ('video-v3', tuple(range(4, 31)), 30, (30, 10, 10), (5, 10, 15, 30)),
         ):
             with self.subTest(model=model):
                 result = capabilities(model)
@@ -36,7 +36,7 @@ class VideoCapabilitiesTests(unittest.TestCase):
     def test_catalog_family_is_authoritative_and_false_flags_are_respected(self):
         record = {'family': 'video-v3', 'audio': False, 'seed': False}
         result = capabilities('custom-provider-video', {'custom-provider-video': record})
-        self.assertEqual(result['default_duration'], 29)
+        self.assertEqual(result['default_duration'], 30)
         self.assertFalse(result['supports_audio'])
         self.assertFalse(result['supports_seed'])
 

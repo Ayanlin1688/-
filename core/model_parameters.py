@@ -32,7 +32,7 @@ def legacy_model_options(model):
         return dict(ratios=BASE_RATIOS + ('21:9',), resolutions=('480p', '720p', '1080p'), durations=(5, 10, 15), audio=True, seed=False,
                     max_images=9, max_videos=3, max_audios=3)
     if model in V3_MODELS:
-        return dict(ratios=('16:9', '9:16', '1:1'), resolutions=('720p',), durations=tuple(range(4, 30)), audio=True, seed=True,
+        return dict(ratios=('16:9', '9:16', '1:1'), resolutions=('720p',), durations=tuple(range(4, 31)), audio=True, seed=True,
                     max_images=30, max_videos=10, max_audios=10)
     if model == H3:
         return dict(ratios=tuple(H3_SIZES), resolutions=H3_RESOLUTIONS, durations=tuple(range(4, 16)), audio=False, seed=False,

@@ -16,15 +16,11 @@ from core.thinking_params import (
 
 GEMINI_3_CONFIG = {
     'includeThoughts': True,
-    'include_thoughts': True,
     'thinkingLevel': 'medium',
-    'thinking_level': 'medium',
 }
 GEMINI_BUDGET_CONFIG = {
     'includeThoughts': True,
-    'include_thoughts': True,
     'thinkingBudget': -1,
-    'thinking_budget': -1,
 }
 GEMINI_3_GOOGLE_CONFIG = {'include_thoughts': True, 'thinking_level': 'medium'}
 GEMINI_BUDGET_GOOGLE_CONFIG = {'include_thoughts': True, 'thinking_budget': -1}
@@ -75,8 +71,13 @@ class ModelFamilyDetectionTests(unittest.TestCase):
                 self.assertTrue(is_reasoning(model) and is_deepseek(model))
 
     def test_gemini_config_switches_on_gemini_3_only(self):
-        self.assertEqual(gemini_thinking_config('gemini-3.8-flash'), GEMINI_3_CONFIG)
-        self.assertEqual(gemini_thinking_config('GEMINI-3-pro'), GEMINI_3_CONFIG)
+        for model in ('gemini-3.8-flash', 'gemini-3.8-flash-high[次]', 'gemini-3.8-pro',
+                      'GEMINI-3-pro'):
+            with self.subTest(model=model):
+                config = gemini_thinking_config(model)
+                self.assertEqual(config, GEMINI_3_CONFIG)
+                self.assertNotIn('thinking_budget', config)
+                self.assertNotIn('thinkingBudget', config)
         self.assertEqual(gemini_thinking_config('gemini-2.5-flash'), GEMINI_BUDGET_CONFIG)
         self.assertEqual(gemini_thinking_config('gemini-flash'), GEMINI_BUDGET_CONFIG)
 
@@ -98,9 +99,12 @@ class ThinkingPayloadTests(unittest.TestCase):
                 self.assertEqual(thinking_payload('openai', model, False), {})
 
     def test_openai_gemini_model_enabled_includes_thinking_config(self):
-        self.assertEqual(thinking_payload('openai', 'gemini-3.8-flash', True), {
-            'thinkingConfig': GEMINI_3_CONFIG,
-        })
+        for model in ('gemini-3.8-flash', 'gemini-3.8-flash-high[次]', 'gemini-3.8-pro'):
+            with self.subTest(model=model):
+                config = thinking_payload('openai', model, True)['thinkingConfig']
+                self.assertEqual(config, GEMINI_3_CONFIG)
+                self.assertNotIn('thinking_budget', config)
+                self.assertNotIn('thinkingBudget', config)
         self.assertEqual(thinking_payload('openai', 'gemini-2.5-flash', True), {
             'thinkingConfig': GEMINI_BUDGET_CONFIG,
         })
@@ -185,6 +189,10 @@ class ApplyThinkingPayloadTests(unittest.TestCase):
             {'model': 'gemini-3.8-flash'}, 'openai', 'gemini-3.8-flash', True)
         self.assertEqual(result['extra_body'], {
             'google': {'thinking_config': GEMINI_3_GOOGLE_CONFIG}})
+        google_config = result['extra_body']['google']['thinking_config']
+        self.assertIn('thinking_level', google_config)
+        self.assertNotIn('thinking_budget', google_config)
+        self.assertNotIn('thinkingBudget', google_config)
         self.assertNotIn('reasoning_effort', result)
         self.assertNotIn('enable_thinking', result)
         self.assertNotIn('chat_template_kwargs', result)

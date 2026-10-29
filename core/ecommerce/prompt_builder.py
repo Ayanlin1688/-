@@ -101,11 +101,16 @@ def build_reference_order(product_count: int, has_style_reference: bool | None =
             return build_reference_order(product_count, True) + '（最后 1 张为风格参考图）'
         products = (f'Images 1-{product_count} are product photos; preserve their appearance, '
                     'shape, colors, materials, branding and text. ' if product_count else '')
+        if style_count == 2:
+            return ('Reference image order (critical): ' + products +
+                    f'Images {product_count + 1} and {product_count + 2} are style references '
+                    'only. Match their composition, palette, lighting and visual mood; do not '
+                    'copy products, brands or text from either style reference.')
         return ('Reference image order (critical): ' + products +
-                f'The last {style_count} images are style references only '
-                f'(最后 {style_count} 张为风格参考图). Match their palette, lighting, mood, '
-                'composition and visual atmosphere; do not copy objects, products, logos or text '
-                'from the style references.')
+                f'Images {product_count + 1} and {product_count + 2} determine composition, '
+                'layout, lighting and palette. Image ' + str(product_count + 3) +
+                ' is auxiliary content and text information only. Do not copy its product, brand '
+                'or text, and do not copy products, brands or text from the style references.')
     legacy_layout = has_style_reference is None
     has_style = True if legacy_layout else bool(has_style_reference)
     if product_count == 0 and (legacy_layout or not has_style):

@@ -75,15 +75,11 @@ def gemini_thinking_config(model):
     if _GEMINI_3_RE.search(str(model or '')):
         return {
             'includeThoughts': True,
-            'include_thoughts': True,
             'thinkingLevel': 'medium',
-            'thinking_level': 'medium',
         }
     return {
         'includeThoughts': True,
-        'include_thoughts': True,
         'thinkingBudget': -1,
-        'thinking_budget': -1,
     }
 
 

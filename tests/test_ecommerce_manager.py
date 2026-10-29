@@ -608,7 +608,8 @@ class EcommerceManagerTests(unittest.TestCase):
                               carousel_count=1, detail_count=0)
         self.assertEqual(self.analysis.call_args.kwargs['reference_paths'], expected)
         self.assertEqual(self.image.call_args.kwargs['reference_paths'], expected)
-        self.assertIn('最后 3 张为风格参考图', self.image.call_args.args[3])
+        self.assertIn('Images 7 and 8 determine composition', self.image.call_args.args[3])
+        self.assertIn('Image 9 is auxiliary content and text information only', self.image.call_args.args[3])
         self.store = EcommerceImageStore(self.root / 'history.sqlite3')
         self.manager = self.make_manager()
         config = self.store.get_group(group_id)['config']

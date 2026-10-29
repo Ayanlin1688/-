@@ -98,8 +98,8 @@ class EcommerceAnalysisError(Exception):
 def is_gemini_native(base_url):
     try:
         parts = urlsplit(str(base_url or '').strip())
-        return (parts.hostname == 'generativelanguage.googleapis.com'
-                or '/v1beta' in parts.path.lower())
+        return (str(parts.hostname or '').lower().rstrip('.')
+                == 'generativelanguage.googleapis.com')
     except ValueError:
         return False
 
