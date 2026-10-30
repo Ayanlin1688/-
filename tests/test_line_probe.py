@@ -191,7 +191,7 @@ class LineProbeTests(unittest.TestCase):
         self.assertNotIn('fixture-api-key', result['message'])
         self.assertEqual(calls, 2)
 
-    def test_gemini_model_list_and_generate_content_contract(self):
+    def test_v1beta_relay_model_list_and_chat_contract(self):
         ProbeFixture.models = [{'name': 'models/gemini-flash', 'displayName': 'Gemini Flash'}]
         base = self.base.replace('/v1', '/v1beta')
         result = probe_line(base, 'fixture-api-key', 'chat')
@@ -199,12 +199,16 @@ class LineProbeTests(unittest.TestCase):
         self.assertEqual(result['model'], 'gemini-flash')
         self.assertEqual(result['counts'], {'video': 0, 'chat': 1, 'image': 0})
         self.assertEqual([call[1] for call in ProbeFixture.requests],
-                         ['/v1beta/models', '/v1beta/models/gemini-flash:generateContent'])
+                         ['/v1beta/models', '/v1beta/chat/completions'])
         for _, _, headers, _ in ProbeFixture.requests:
             self.assertEqual(headers['Authorization'], 'Bearer fixture-api-key')
-            self.assertEqual(headers['x-goog-api-key'], 'fixture-api-key')
+            self.assertNotIn('x-goog-api-key', headers)
         self.assertEqual(ProbeFixture.requests[-1][3], {
-            'contents': [{'role': 'user', 'parts': [{'text': '只回复两个字：好的'}]}]})
+            'model': 'gemini-flash',
+            'stream': False,
+            'max_tokens': 8,
+            'messages': [{'role': 'user', 'content': '只回复两个字：好的'}],
+        })
 
     def test_gemini_http_auth_failure_is_visible_and_final(self):
         ProbeFixture.models = [{'name': 'models/gemini-flash'}]
