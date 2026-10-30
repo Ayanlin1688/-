@@ -201,6 +201,37 @@ class ManualImageTests(unittest.TestCase):
         self.assertEqual(openai.call_count, 1)
         self.assertEqual(gemini.call_count, 1)
 
+    def test_nano_banana_family_gemini_failure_never_falls_back_to_openai(self):
+        cases = (
+            ('Nano Banana 2', 'Nano Banana 2'),
+            ('Nano Banana 2.1', 'Nano Banana 2.1'),
+            ('Nano Banana Pro', 'Nano Banana Pro'),
+            ('image-alias', 'Nano Banana Pro'),
+        )
+        self.config.config['image_model_pool'] = {
+            'models': [{'name': model,
+                        'supported_endpoint_types': ['openai-image', 'gemini']}
+                       for model in ('Nano Banana 2', 'Nano Banana 2.1', 'Nano Banana Pro')]}
+        for model, model_version in cases:
+            with self.subTest(model=model, model_version=model_version):
+                if model == model_version:
+                    task = self._tasks(model=model)[0]
+                else:
+                    task = self.manager.prepare_tasks(
+                        'fixture prompt', model, model_version=model_version,
+                        ratio='1:1', tier='1K', count=1)[0]
+                with mock.patch(
+                        'core.manual_image.generate_gemini_image',
+                        side_effect=ManualImageError('Gemini 图片请求失败', 404,
+                                                     category='model_not_found')) as gemini, \
+                        mock.patch('core.manual_image.image_client.generate_image') as openai:
+                    result = self.manager.run_tasks([task])[0]
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['protocol'], 'gemini')
+                self.assertEqual(gemini.call_count, 1)
+                self.assertEqual(gemini.call_args.args[2], model_version)
+                openai.assert_not_called()
+
     def test_authentication_and_content_policy_do_not_fallback(self):
         for status, body in ((401, 'invalid api key'), (400, 'content policy violation')):
             with self.subTest(status=status):

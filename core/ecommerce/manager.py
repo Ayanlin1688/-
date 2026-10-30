@@ -22,6 +22,8 @@ from core.line_routing import resolve_line
 from core.i18n import tr
 from core.api_errors import classify_http_error
 from core.http_client import Cancelled
+from core.image_protocols import preferred_image_protocol
+from core import manual_image
 from core.model_catalog import normalize_model_id
 from .analysis import DEFAULT_ANALYSIS_MODEL, EcommerceAnalysisError, analyze_and_parse, parse_prompt_items
 from .image_client import EcommerceImageError, DEFAULT_IMAGE_MODEL, generate_image, image_dimensions
@@ -80,7 +82,7 @@ class EcommerceImageManager:
         self.concurrency = max(1, int(concurrency))
         self.log = log
         self.analysis_func = analysis_func if analysis_func is not None else analyze_and_parse
-        self.image_func = image_func if image_func is not None else generate_image
+        self.image_func = image_func if image_func is not None else self._generate_image_by_protocol
         self.on_group, self.on_item, self.on_log = on_group, on_item, on_log
         self._warned_persistence = False
         self._warned_touch = False
@@ -302,6 +304,36 @@ class EcommerceImageManager:
         return self._unique_models([model, self.image_model, *self.image_model_candidates,
                                     *self._catalog_model_ids('image')])[:3]
 
+    def _image_protocol_metadata(self, model):
+        catalog = self.model_catalog.get('image', {}) if isinstance(self.model_catalog, dict) else {}
+        record = catalog.get(normalize_model_id(model), {}) if isinstance(catalog, dict) else {}
+        return record if isinstance(record, dict) else {}
+
+    def _image_protocol(self, model):
+        return preferred_image_protocol(model, self._image_protocol_metadata(model))
+
+    def _generate_image_by_protocol(self, base_url, api_key, model, prompt, ratio, tier, *,
+                                    reference_paths=None):
+        protocol = self._image_protocol(model)
+        if protocol == 'gemini':
+            endpoint = f"/models/{model}:generateContent"
+            self._log(f'图片模型 {model} 使用 Gemini 协议，端点 {endpoint}', 'info')
+            try:
+                return manual_image.generate_gemini_image(
+                    base_url, api_key, model, prompt, ratio, tier, reference_paths or ())
+            except manual_image.ManualImageError as error:
+                raise EcommerceImageError(
+                    str(error), getattr(error, 'status_code', None),
+                    getattr(error, 'body_excerpt', ''),
+                    retry_safe=getattr(error, 'retryable', False)) from None
+            except Exception:
+                raise EcommerceImageError('Gemini 图片请求失败，请检查线路配置或参考图') from None
+        endpoint = '/images/edits' if reference_paths else '/images/generations'
+        self._log(f'图片模型 {model} 使用 OpenAI 协议，端点 {endpoint}', 'info')
+        return generate_image(
+            base_url, api_key, model, prompt, ratio, tier,
+            reference_paths=reference_paths)
+
     @staticmethod
     def _multi_image_rejection(error):
         if getattr(error, 'status_code', None) != 400:
@@ -359,7 +391,10 @@ class EcommerceImageManager:
                 if cancel_event is not None and cancel_event.is_set():
                     raise Cancelled('已取消，不再重试图片请求') from None
                 failures.append(error)
+                current_protocol = self._image_protocol(model)
+                next_protocol = self._image_protocol(candidates[position + 1]) if position + 1 < len(candidates) else ''
                 if (not self._multi_image_rejection(error)
+                        and not (current_protocol == 'gemini' and next_protocol == 'openai')
                         and position + 1 < len(candidates) and self._can_skip_to_next(error)):
                     next_model = candidates[position + 1]
                     self._log(tr('图片模型 {old} 不可用（{reason}），切换 {new}').format(

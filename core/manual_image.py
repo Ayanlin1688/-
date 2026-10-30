@@ -26,6 +26,7 @@ from core.ecommerce import image_client
 from core.http_client import HttpClient, RequestError
 from core.line_routing import resolve_line
 from core.model_catalog import normalize_model_id
+from core.image_protocols import preferred_image_protocol
 
 
 TASK_STATUSES = ('pending', 'running', 'succeeded', 'failed', 'cancelled')
@@ -445,38 +446,18 @@ def _image_model_metadata(config_manager, model):
 
 def _preferred_protocol(config_manager, model):
     model_text = str(model or '')
-    gemini_name = bool(re.search(r'gemini|imagen|nano[\s_-]?banana', model_text, re.I))
     explicit, supported, hint_text = _image_model_metadata(config_manager, model_text)
-    for value in explicit:
-        if any(marker in value for marker in ('gemini', 'google', 'imagen')):
-            requested = 'gemini'
-            break
-        if any(marker in value for marker in ('openai', 'open_ai', 'dall', 'azure')):
-            requested = 'openai'
-            break
-    else:
-        requested = ''
-
-    if supported:
-        if requested in supported:
-            return requested
-        if len(supported) == 1:
-            return next(iter(supported))
-        if gemini_name and 'gemini' in supported:
-            return 'gemini'
-        if not gemini_name and 'openai' in supported:
-            return 'openai'
-        if 'openai' in supported:
-            return 'openai'
-        return 'gemini'
-    if requested:
-        return requested
-    if gemini_name and any(marker in hint_text for marker in ('gemini', 'google', 'imagen')):
-        return 'gemini'
-    return 'gemini' if gemini_name else 'openai'
+    protocol = explicit[0] if explicit else ''
+    return preferred_image_protocol(model_text, {
+        'protocol': protocol,
+        'supported_endpoint_types': list(supported),
+        'hints': hint_text,
+    })
 
 
 def _supports_image_protocol_fallback(config_manager, model):
+    if re.search(r'nano[\s_-]*banana', str(model or ''), re.I):
+        return False
     _explicit, supported, _hints = _image_model_metadata(config_manager, model)
     return supported == {'openai', 'gemini'}
 

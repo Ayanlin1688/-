@@ -116,6 +116,97 @@ class EcommerceManagerTests(unittest.TestCase):
             self.assertEqual(call.args[4], '1:1' if 'carousel' in call.args[3] else '3:4')
         self.assertNotIn(TEST_KEY, json.dumps(group, ensure_ascii=False))
 
+    def test_default_image_dispatch_sends_two_and_seven_nano_banana_refs_as_gemini_json(self):
+        models = ('Nano Banana 2', 'Nano Banana 2.1', 'Nano Banana Pro')
+        catalog = {'image': {model: {
+            'id': model,
+            'supported_endpoint_types': ['openai-image', 'gemini'],
+        } for model in models}}
+        manager = self.make_manager(
+            image_func=None,
+            model_catalog=catalog,
+        )
+        response = Mock(status_code=200, text='', content=b'{}')
+        response.json.return_value = {'candidates': [{'content': {'parts': [
+            {'inlineData': {'mimeType': 'image/png',
+                            'data': base64.b64encode(PNG).decode('ascii')}}]}}]}
+
+        with patch('core.manual_image.HttpClient.request', autospec=True,
+                   return_value=response) as request, \
+                patch('core.ecommerce.manager.generate_image') as openai:
+            for model in models:
+                for count in (2, 7):
+                    refs = []
+                    for index in range(count):
+                        path = self.root / f'{model.replace(" ", "-")}-ref-{count}-{index}.png'
+                        path.write_bytes(PNG)
+                        refs.append(str(path))
+                    result, used_model = manager._request_image(dict(
+                        model=model, prompt='fixture image', ratio='1:1', tier='1K',
+                        reference_paths=refs))
+                    self.assertEqual(result.png_bytes, PNG)
+                    self.assertEqual(used_model, model)
+
+                    call = request.call_args
+                    self.assertEqual(call.args[-2], 'POST')
+                    self.assertEqual(
+                        call.args[-1],
+                        f"offline-fixture/models/{model.replace(' ', '%20')}:generateContent")
+                    body = call.kwargs['json']
+                    self.assertEqual(len(body['contents'][0]['parts']), count + 1)
+                    self.assertEqual(body['contents'][0]['parts'][0]['text'], 'fixture image')
+                    self.assertEqual(
+                        [part['inlineData']['data'] for part in body['contents'][0]['parts'][1:]],
+                        [base64.b64encode(PNG).decode('ascii')] * count)
+                    self.assertNotIn('files', call.kwargs)
+                    self.assertNotIn('data', call.kwargs)
+            self.assertEqual(request.call_count, len(models) * 2)
+            openai.assert_not_called()
+
+    def test_gemini_protocol_failure_does_not_fall_back_to_openai_multipart(self):
+        manager = self.make_manager(
+            image_func=None,
+            model_catalog={'image': {'Nano Banana 2': {
+                'id': 'Nano Banana 2',
+                'supported_endpoint_types': ['openai-image', 'gemini'],
+            }}},
+        )
+        response = Mock(status_code=400, text='unsupported model', content=b'unsupported model')
+        with patch('core.manual_image.HttpClient.request', autospec=True,
+                   return_value=response) as request, \
+                patch('core.ecommerce.manager.generate_image') as openai:
+            with self.assertRaises(EcommerceImageError) as caught:
+                manager._request_image(dict(
+                    model='Nano Banana 2', prompt='fixture image', ratio='1:1', tier='1K',
+                    reference_paths=[]))
+        self.assertEqual(request.call_count, 1)
+        self.assertIn(':generateContent', request.call_args.args[-1])
+        openai.assert_not_called()
+        self.assertTrue(any('\u4e00' <= char <= '\u9fff' for char in str(caught.exception)))
+
+    def test_default_image_dispatch_keeps_gpt_image_and_grok_on_openai_client(self):
+        models = ('gpt-image-2.5-sunburst', 'grok-imagine-image')
+        manager = self.make_manager(
+            image_func=None,
+            model_catalog={'image': {model: {
+                'id': model,
+                'supported_endpoint_types': ['openai-image', 'gemini'],
+            } for model in models}},
+        )
+        for model in models:
+            with self.subTest(model=model), \
+                    patch('core.ecommerce.manager.generate_image', return_value=ImageResult(
+                        PNG, model, '1024x1024', '1K', 'auto', '/images/edits')) as openai, \
+                    patch('core.manual_image.generate_gemini_image') as gemini:
+                result, used_model = manager._request_image(dict(
+                    model=model, prompt='fixture image', ratio='1:1', tier='1K',
+                    reference_paths=['one.png']))
+            self.assertEqual(result.png_bytes, PNG)
+            self.assertEqual(used_model, model)
+            self.assertEqual(openai.call_args.args[:3], ('offline-fixture', TEST_KEY, model))
+            self.assertEqual(openai.call_args.kwargs['reference_paths'], ['one.png'])
+            gemini.assert_not_called()
+
     def test_manifest_records_url_delivery_and_200_errors_cannot_switch(self):
         self.image.side_effect = lambda *args, **kwargs: ImageResult(
             PNG, args[2], '1024x1024', args[5], 'auto', '/images/generations',
